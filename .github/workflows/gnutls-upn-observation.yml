@@ -1,0 +1,145 @@
+name: Native Windows UPN observations
+
+on:
+  pull_request:
+    paths:
+      - 'runtime-security/gnutls-upn-observation/**'
+      - '.github/workflows/gnutls-upn-observation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'runtime-security/gnutls-upn-observation/**'
+      - '.github/workflows/gnutls-upn-observation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.3.14'
+      - name: Verify frozen inputs and observe with outbound traffic blocked
+        shell: pwsh
+        env:
+          OBSERVATION_RUNNER: ${{ matrix.runner }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -ne 'Aelira-AI/aelira-core') { throw 'Repository identity refused' }
+          $revision = (& git rev-parse HEAD).Trim()
+          $tree = (& git rev-parse 'HEAD^{tree}').Trim()
+          if ($revision -ne $env:GITHUB_SHA -or (& git status --porcelain)) { throw 'Clean exact checkout required' }
+          $component = Join-Path $env:GITHUB_WORKSPACE 'runtime-security/gnutls-upn-observation'
+          $fixtures = Join-Path $component 'fixtures'
+          $evidence = Join-Path $env:RUNNER_TEMP 'upn-public-observation'
+          $controls = Join-Path $env:RUNNER_TEMP 'upn-input-controls'
+          if ((Test-Path $evidence) -or (Test-Path $controls)) { throw 'New output directories required' }
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $bun = (Get-Command bun).Source
+          if ((& $bun --version).Trim() -ne '1.3.14') { throw 'Pinned Bun required' }
+          $sources = @{}
+          foreach ($file in @(Get-ChildItem -File $component)) {
+            $sources[$file.Name] = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLowerInvariant()
+          }
+          $receipt = [ordered]@{
+            schema = 'aelira-windows-upn-ci-v1'; status = 'running'; phase = 'inputs'
+            revision = $revision; tree = $tree; sources = $sources
+            runner = $env:OBSERVATION_RUNNER; image_os = $env:ImageOS; image_version = $env:ImageVersion
+            bun_version = '1.3.14'; bun_sha256 = (Get-FileHash -Algorithm SHA256 $bun).Hash.ToLowerInvariant()
+            firewall = $null; firewall_profiles = $null; firewall_restored = $false; restoration_state = 'not_run'; stages = [ordered]@{}
+          }
+          $ruleName = 'Aelira-UPN-Observation-' + [guid]::NewGuid().ToString('N')
+          function Invoke-BoundedBun([string]$name, [string[]]$arguments) {
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = [Diagnostics.ProcessStartInfo]::new()
+            $process.StartInfo.FileName = $bun
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            foreach ($argument in $arguments) { $process.StartInfo.ArgumentList.Add($argument) }
+            try {
+              if (-not $process.Start()) { throw 'Child launch failed' }
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              if (-not $process.WaitForExit(120000)) {
+                $process.Kill($true)
+                $receipt.stages[$name] = @{ state = 'timeout'; exit = $null }
+                if (-not $process.WaitForExit(10000)) { throw 'Child termination timeout' }
+                throw 'Child timeout'
+              }
+              $readers = [Threading.Tasks.Task]::WhenAll([Threading.Tasks.Task[]]@($stdout, $stderr))
+              if (-not $readers.Wait(5000)) { throw 'Child output timeout' }
+              $out = $stdout.GetAwaiter().GetResult()
+              $err = $stderr.GetAwaiter().GetResult()
+              if ($out.Length -gt 65536 -or $err.Length -gt 65536) { throw 'Child output bound' }
+              [IO.File]::WriteAllText((Join-Path $evidence ($name + '.stdout.txt')), $out)
+              $receipt.stages[$name] = @{ state = 'executed'; exit = $process.ExitCode }
+              if ($process.ExitCode -ne 0) { throw 'Child failed' }
+            } finally { $process.Dispose() }
+          }
+          try {
+            Invoke-BoundedBun 'frozen-inputs' @((Join-Path $component 'verify-inputs.ts'), $fixtures)
+            Invoke-BoundedBun 'input-controls' @((Join-Path $component 'test-inputs.ts'), $fixtures, $controls)
+            $receipt.phase = 'network-baseline'
+            Invoke-BoundedBun 'network-online' @((Join-Path $component 'network-control.ts'), 'online')
+            $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
+            $receipt.firewall_profiles = @($profiles | ForEach-Object {
+              @{ name = $_.Name; enabled = $_.Enabled.ToString(); disabled_interface_aliases = $_.DisabledInterfaceAliases }
+            })
+            if ($profiles.Count -ne 3 -or @($profiles | Where-Object { $_.Enabled.ToString() -ne 'True' }).Count -ne 0 -or
+                @($profiles | Where-Object { $null -ne $_.DisabledInterfaceAliases -and @($_.DisabledInterfaceAliases).Count -ne 0 }).Count -ne 0 -or
+                (Get-Service MpsSvc).Status -ne 'Running') { throw 'Enabled firewall service and profiles required' }
+            $receipt.phase = 'isolation'
+            New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block -Profile Any -Protocol Any -Enabled True | Out-Null
+            $active = Get-NetFirewallRule -PolicyStore ActiveStore -Name $ruleName
+            $address = $active | Get-NetFirewallAddressFilter
+            $application = $active | Get-NetFirewallApplicationFilter
+            $ports = $active | Get-NetFirewallPortFilter
+            $enforcement = @($active.EnforcementStatus | ForEach-Object { [uint16]$_ })
+            $receipt.firewall = @{ direction = $active.Direction.ToString(); action = $active.Action.ToString(); enabled = $active.Enabled.ToString(); profile_store = 'ActiveStore'; profile = $active.Profile.ToString(); enforcement = $enforcement; protocol = $ports.Protocol.ToString(); local_port = $ports.LocalPort; remote_port = $ports.RemotePort; local_address = $address.LocalAddress; remote_address = $address.RemoteAddress; program = $application.Program }
+            if ($active.Enabled.ToString() -ne 'True' -or $active.Action -ne 'Block' -or $active.Direction -ne 'Outbound' -or $active.Profile.ToString() -ne 'Any' -or
+                $enforcement.Count -eq 0 -or @($enforcement | Where-Object { $_ -ne 1 }).Count -ne 0 -or
+                $ports.Protocol.ToString() -ne 'Any' -or $ports.LocalPort -ne 'Any' -or $ports.RemotePort -ne 'Any' -or
+                $address.RemoteAddress -ne 'Any' -or $address.LocalAddress -ne 'Any' -or $application.Program -ne 'Any') { throw 'Active broad outbound block required' }
+            Invoke-BoundedBun 'network-blocked' @((Join-Path $component 'network-control.ts'), 'blocked')
+            $receipt.phase = 'observe'
+            Invoke-BoundedBun 'native-observer' @((Join-Path $component 'observe-windows.ts'), $fixtures, (Join-Path $evidence 'observation.json'))
+            $receipt.status = 'observed'
+          } catch {
+            $receipt.status = 'fail'
+          } finally {
+            try {
+              $receipt.restoration_state = 'querying'
+              $owned = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object { $_.Name -eq $ruleName })
+              if ($owned.Count -gt 0) { Remove-NetFirewallRule -Name $ruleName -ErrorAction Stop }
+              $remaining = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { $_.Name -eq $ruleName })
+              if ($remaining.Count -ne 0) { throw 'Firewall restoration failed' }
+              $receipt.firewall_restored = $true
+              $receipt.restoration_state = 'absent'
+            } catch { $receipt.status = 'fail'; $receipt.restoration_state = 'unavailable' }
+            if ($receipt.firewall_restored) {
+              try { Invoke-BoundedBun 'network-restored' @((Join-Path $component 'network-control.ts'), 'online') }
+              catch { $receipt.status = 'fail' }
+            }
+            [IO.File]::WriteAllText((Join-Path $evidence 'ci-receipt.json'), ($receipt | ConvertTo-Json -Depth 12) + "`n")
+          }
+          if ($receipt.status -ne 'observed' -or -not $receipt.firewall_restored) { throw 'Native observation failed' }
+      - name: Retain public observation receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: gnutls-upn-${{ matrix.runner }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/upn-public-observation/
+          if-no-files-found: error
+          retention-days: 14

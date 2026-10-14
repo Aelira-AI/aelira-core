@@ -1,0 +1,210 @@
+{
+  "schema": "aelira-upn-synthetic-sentinels-v1",
+  "generator_sha256": "fed02945ea8cd5736a724d7f79c93fa290d2f27fabaa7a8329119ec005a65289",
+  "fixed_validation_time": "2026-10-14T14:09:23.000Z",
+  "certificates": {
+    "root": {
+      "file": "root.der",
+      "sha256": "b4fc409f8cc0051a4a10f99a1f411906f144bad300f01f2d59a50803d870e8f3",
+      "size": 426,
+      "issuer": "root",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "plain": {
+      "file": "plain.der",
+      "sha256": "e2034444c978bcd092185f076653b261953889f3e114be068be50d98628d116f",
+      "size": 424,
+      "issuer": "root",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_excluded": {
+      "file": "upn_excluded.der",
+      "sha256": "578e8bc9f797d9322a324e6df204317fe48b3fc47d8a2fa0a9c28d349ac1f602",
+      "size": 483,
+      "issuer": "root",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_permitted": {
+      "file": "upn_permitted.der",
+      "sha256": "9012d984f7e4932aafadbc08ccd35c1bdadcdbfcfbfc545594bb9d1d828ab678",
+      "size": 483,
+      "issuer": "root",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unknown_constrained": {
+      "file": "unknown_constrained.der",
+      "sha256": "1972474e094dfd0822059a1ee06ca761d828f22a27b1660073b1bdad248ccd63",
+      "size": 463,
+      "issuer": "root",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unconstrained_allowed": {
+      "file": "unconstrained_allowed.der",
+      "sha256": "c8ab3b54e635ce7f6cc56f4cc517f4fdaf738244728257352e423b36e31f9e35",
+      "size": 490,
+      "issuer": "plain",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unconstrained_blocked": {
+      "file": "unconstrained_blocked.der",
+      "sha256": "d76c6b6304aaaba67538bde5e0fe74519186eb6b66bf4b28c623bbc59c455499",
+      "size": 489,
+      "issuer": "plain",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_excluded_good": {
+      "file": "upn_excluded_good.der",
+      "sha256": "74d4f46f54215787172f2e27f3baad3aca5a54bf67da1d846d297fd447d64575",
+      "size": 491,
+      "issuer": "upn_excluded",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_excluded_bad": {
+      "file": "upn_excluded_bad.der",
+      "sha256": "82aa788fab15bcd6e3f091c3822340299bc2aa80a4bce8da28bac9b8aa326157",
+      "size": 490,
+      "issuer": "upn_excluded",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_permitted_good": {
+      "file": "upn_permitted_good.der",
+      "sha256": "dcd00741f4b4b507381ce9e22bce3ba51d4e3214c3d7dfc5491bb5a3c6225793",
+      "size": 489,
+      "issuer": "upn_permitted",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_permitted_bad": {
+      "file": "upn_permitted_bad.der",
+      "sha256": "61288a88a45018b5302ff0a24f0ec62e510914aa2f00bc511baa8a082dc68a6e",
+      "size": 490,
+      "issuer": "upn_permitted",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "upn_absent": {
+      "file": "upn_absent.der",
+      "sha256": "9afaa4987d34843efb36769c0aa001c00c1191143649f4063e0d852d91e5e819",
+      "size": 452,
+      "issuer": "upn_excluded",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unknown_othername": {
+      "file": "unknown_othername.der",
+      "sha256": "9bfe69e1010865afc3ee932a1edcd6204952fa0c561193745e761be76d72193a",
+      "size": 469,
+      "issuer": "unknown_constrained",
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    }
+  },
+  "cases": [
+    {
+      "id": "A0",
+      "name": "unconstrained_allowed",
+      "issuer": "plain",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:allowed@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "unconstrained_allowed",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "A1",
+      "name": "unconstrained_blocked",
+      "issuer": "plain",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:blocked@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "unconstrained_blocked",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "A2",
+      "name": "upn_excluded_good",
+      "issuer": "upn_excluded",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:allowed@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "upn_excluded_good",
+        "upn_excluded",
+        "root"
+      ]
+    },
+    {
+      "id": "A3",
+      "name": "upn_excluded_bad",
+      "issuer": "upn_excluded",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:blocked@corp.example,DNS:localhost",
+      "original_expected": false,
+      "intended_path": [
+        "upn_excluded_bad",
+        "upn_excluded",
+        "root"
+      ]
+    },
+    {
+      "id": "A4",
+      "name": "upn_permitted_good",
+      "issuer": "upn_permitted",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:allowed@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "upn_permitted_good",
+        "upn_permitted",
+        "root"
+      ]
+    },
+    {
+      "id": "A5",
+      "name": "upn_permitted_bad",
+      "issuer": "upn_permitted",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:blocked@corp.example,DNS:localhost",
+      "original_expected": false,
+      "intended_path": [
+        "upn_permitted_bad",
+        "upn_permitted",
+        "root"
+      ]
+    },
+    {
+      "id": "A6",
+      "name": "upn_absent",
+      "issuer": "upn_excluded",
+      "san": "DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "upn_absent",
+        "upn_excluded",
+        "root"
+      ]
+    },
+    {
+      "id": "A7",
+      "name": "unknown_othername",
+      "issuer": "unknown_constrained",
+      "san": "otherName:1.2.3.4;UTF8:allowed,DNS:localhost",
+      "original_expected": null,
+      "intended_path": [
+        "unknown_othername",
+        "unknown_constrained",
+        "root"
+      ]
+    }
+  ],
+  "scope": "Eight empirical Windows chain-policy sentinels; original GnuTLS expectations and matcher remain separate"
+}
