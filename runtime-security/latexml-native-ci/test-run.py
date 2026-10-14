@@ -706,6 +706,50 @@ def main():
         ),
         0,
     )
+    (interrupted / "status/plan.started").write_bytes(b"1\n")
+    (interrupted / "status/plan.exit").write_bytes(b"0\n")
+    (interrupted / "download-plan.txt").write_text(positive)
+    (interrupted / "download-args").write_bytes(
+        b"\0".join((uri.encode(), b"perl_1_all.deb", b"512", b"SHA256:" + b"a" * 64))
+        + b"\0"
+    )
+    workers = interrupted / "status/workers"
+    workers.mkdir()
+    (workers / "perl_1_all.deb.started").write_bytes(b"1\n")
+    (workers / "perl_1_all.deb.exit").write_bytes(b"2\n")
+
+    def observed_worker():
+        receipt = {"downloads": [], "download_plan_sha256": None}
+        common.observe_capture_process(interrupted, receipt)
+        return receipt["downloads"][0]
+
+    control(
+        "capture-worker-prelaunch-refusal-is-not-APT",
+        lambda: common.require(
+            observed_worker()["apt"] == {"state": "not_run", "exit": None}
+            and observed_worker()["result"] == {"state": "executed", "exit": 2}
+        ),
+        0,
+    )
+    (workers / "perl_1_all.deb.apt.started").write_bytes(b"1\n")
+    control(
+        "capture-worker-started-APT-without-terminal-unavailable",
+        lambda: common.require(
+            observed_worker()["apt"] == {"state": "unavailable", "exit": None}
+        ),
+        0,
+    )
+    (workers / "perl_1_all.deb.apt.exit").write_bytes(b"100\n")
+    (workers / "perl_1_all.deb.exit").write_bytes(b"100\n")
+    control(
+        "capture-worker-original-APT-refusal-retained",
+        lambda: common.require(
+            observed_worker()["apt"]
+            == observed_worker()["result"]
+            == {"state": "executed", "exit": 100}
+        ),
+        0,
+    )
     result = {
         "schema": "aelira-latexml-ci-portable-controls-v1",
         "source_kind": "synthetic",

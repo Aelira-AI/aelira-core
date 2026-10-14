@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 
 const stages = ['source-check', 'native-check', 'input-capture', 'input-pin', 'prepare',
   'bootstrap', 'native-run', 'caller-export', 'evidence-export', 'evidence-check'];
-const runnerHash = '0b8689098f6a3d2e3ad07138afeff67ab16de74d875d00a167c7204f27e03613';
+const runnerHash = '45f3c9df6dc25a79862e4aa8d4cd42ed697191aa63c2336cace20f0e24962e72';
 type Identity = { revision: string; tree: string; architecture: string; remote: string; runner_sha256: string };
 
 // A retry never includes a pin, preparation, build or evidence failure.
@@ -79,6 +79,12 @@ export function aptDownloadRefused(row: any, id: Identity): boolean {
   return failed && total <= 1_000_000_000;
 }
 
+export function parseCaptureProcess(bytes: Uint8Array): any {
+  const row = JSON.parse(Buffer.from(bytes).toString('utf8'));
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new Error('Capture process record required');
+  return row;
+}
+
 async function absent(path: string) {
   try { await lstat(path); throw new Error('New output required'); }
   catch (e: any) { if (e.code !== 'ENOENT') throw e; }
@@ -134,7 +140,7 @@ async function main() {
     } finally { await log.close(); }
     let row: any = null, outerHash: string | null = null, captureProcess: any = null, captureHash: string | null = null;
     try { const bytes = await regular(join(scratch, 'outer.json')); outerHash = createHash('sha256').update(bytes).digest('hex'); row = JSON.parse(bytes.toString('utf8')); } catch {}
-    try { const bytes = await regular(join(scratch, 'capture-process.json')); captureHash = createHash('sha256').update(bytes).digest('hex'); captureProcess = JSON.parse(bytes.toString('utf8')); }
+    try { const bytes = await regular(join(scratch, 'capture-process.json')); captureHash = createHash('sha256').update(bytes).digest('hex'); captureProcess = parseCaptureProcess(bytes); }
     catch (e: any) { if (e.code !== 'ENOENT') captureProcess = {}; }
     const eligible = captureRefused(row, exit, id, captureProcess);
     receipt.attempts.push({ attempt, exit, outer_sha256: outerHash, capture_process_sha256: captureHash, capture_refusal: eligible });

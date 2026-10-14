@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { captureRefused } from './capture-retry.ts';
+import { captureRefused, parseCaptureProcess } from './capture-retry.ts';
 
 const bytes = await readFile(new URL('./fixtures/capture-refusal.json', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== '67096ed230fca4689edad03c649045c5a94e83a821095c26afe5f98e8f9a4f64') throw new Error('Frozen public receipt changed');
@@ -41,7 +41,7 @@ const aptBytes = await readFile(new URL('./fixtures/capture-apt-refusal.json', i
 const processBytes = await readFile(new URL('./fixtures/capture-apt-process.json', import.meta.url));
 if (createHash('sha256').update(aptBytes).digest('hex') !== '72c46950b2008f7c6078f5a5153c618a1763e4c440476f786c0cb0c3e8f94da5' ||
   createHash('sha256').update(processBytes).digest('hex') !== '5d741ddcacfdace58b03d0b81af8ec9067a655458e4f7cb15a08860744c9722f') throw new Error('Frozen native APT receipts changed');
-const apt = JSON.parse(aptBytes.toString('utf8')), processRow = JSON.parse(processBytes.toString('utf8'));
+const apt = JSON.parse(aptBytes.toString('utf8')), processRow = parseCaptureProcess(processBytes);
 const aptId = { revision: apt.operator_ref, tree: apt.operator_tree, architecture: apt.architecture, remote: apt.remote_ref,
   runner_sha256: apt.selected_sources['runtime-security/latexml-native-ci/run.py'].sha256 };
 if (!captureRefused(apt, 2, aptId, processRow)) throw new Error('Actual APT capture refusal was not recognized');
@@ -91,6 +91,13 @@ Object.assign(parallel, { schema: 'aelira-latexml-capture-process-v3', docker_ex
 parallel.stages.update.exit = 0; parallel.stages.download = { state: 'executed', exit: 123 };
 if (!captureRefused(parallelOuter, 2, aptId, parallel)) throw new Error('Typed parallel boundary was not recognized');
 const v3Controls: string[] = [];
+for (const text of ['null', '[]', '100', 'true', '"record"']) {
+  let parsed: any = {}, refused = false;
+  try { parsed = parseCaptureProcess(Buffer.from(text)); } catch { refused = true; }
+  const outer = structuredClone(apt); outer.stages['input-capture'].exit = 2;
+  if (!refused || captureRefused(outer, 2, aptId, parsed)) throw new Error('Present non-record process accepted');
+  v3Controls.push('present-process-' + text + '-refused');
+}
 function parallelRefuse(name: string, mutate: (outer: any, process: any) => void) {
   const outer = structuredClone(parallelOuter), process = structuredClone(parallel); mutate(outer, process);
   if (captureRefused(outer, 2, aptId, process)) throw new Error('Parallel boundary failed');

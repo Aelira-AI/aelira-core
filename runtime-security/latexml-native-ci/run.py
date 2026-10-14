@@ -745,10 +745,10 @@ def download_worker(options):
                 'printf "1\\n" > "$status.started" || exit 2',
                 # The frozen Ubuntu /bin/sh uses POSIX 512-byte units. Native controls
                 # exercise this limit; at most 511 bytes above the signed size can be written.
-                '( ulimit -f "$(( (size + 511) / 512 ))" || exit 2; exec /usr/lib/apt/apt-helper '
+                '( ulimit -f "$(( (size + 511) / 512 ))" || exit 2; printf "1\\n" > "$status.apt.started" || exit 2; exec /usr/lib/apt/apt-helper '
                 + options
                 + ' download-file "$uri" "$target" "$hash" ) > "$status.log" 2>&1',
-                'rc=$?; printf "%s\\n" "$rc" > "$status.apt.exit" || exit 2',
+                'rc=$?; if test -f "$status.apt.started"; then printf "%s\\n" "$rc" > "$status.apt.exit" || exit 2; fi',
                 'if test "$rc" = 0; then',
                 '  ( set -eu; test -f "$target"; test ! -L "$target"; test "$(stat -c %h -- "$target")" = 1;',
                 '    test "$(stat -c %s -- "$target")" = "$size";',
@@ -812,23 +812,11 @@ def observe_capture_process(cache, process):
             )
             for row in rows:
                 state = capture_status(cache / "status/workers", row["file"])
-                apt_path = cache / "status/workers" / (row["file"] + ".apt.exit")
-                apt = {
-                    "state": (
-                        "not_run" if state["state"] == "not_run" else "unavailable"
-                    ),
-                    "exit": None,
-                }
-                if apt_path.exists() or apt_path.is_symlink():
-                    require(state["state"] != "not_run", "unstarted APT worker")
-                    regular(apt_path, 4)
-                    text = apt_path.read_text()
-                    require(
-                        re.fullmatch(r"(?:0|[1-9][0-9]{0,2})\n", text)
-                        and int(text) <= 255,
-                        "APT worker original status malformed",
-                    )
-                    apt = {"state": "executed", "exit": int(text)}
+                apt = capture_status(cache / "status/workers", row["file"] + ".apt")
+                require(
+                    state["state"] != "not_run" or apt["state"] == "not_run",
+                    "unstarted APT worker",
+                )
                 process["downloads"].append(
                     {k: row[k] for k in ("file", "size", "sha256")}
                     | {"apt": apt, "result": state}
