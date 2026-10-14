@@ -627,7 +627,7 @@ jobs:
           python3 -B runtime-security/latexml-native-ci/test-run.py \
             --operator-repo "$GITHUB_WORKSPACE" --operator-ref "$GITHUB_SHA" \
             --operator-tree "$expected_tree" \
-            --scratch "$RUNNER_TEMP/latexml-native-portable-controls"
+            --scratch "$RUNNER_TEMP/latexml-native-portable-controls" --native-cleanup
           bun runtime-security/latexml-native-ci/test-capture-retry.ts
       - name: Build and verify the native LaTeXML component
         id: component

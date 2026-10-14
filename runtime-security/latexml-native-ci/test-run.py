@@ -181,6 +181,7 @@ def main():
     control(
         "snapshot-empty-CA-archive-refused", lambda: common.snapshot_ca_bundle(b""), 2
     )
+    control("source-selector-without-capture-state", lambda: common.selector(a), 0)
     # Exercise cleanup's success path before any protocol/refusal fixture.
     cid = a.scratch / "synthetic-container.cid"
     cid.write_text("a" * 64)
@@ -230,6 +231,8 @@ def main():
             "native nonroot cleanup control required",
         )
         actual_cid = a.scratch / "actual-container.cid"
+        # Fetch only the immutable base before the deliberately short client timeout.
+        common.command(["/usr/bin/docker", "pull", common.BASE], timeout=600)
 
         def native_cleanup():
             try:
