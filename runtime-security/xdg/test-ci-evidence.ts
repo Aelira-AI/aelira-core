@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { assert, command, hashFile, imageContents, json, regular, same, small } from './evidence-core.ts';
+import { assert, command, hashFile, hashManifest, imageContents, json, regular, same, small } from './evidence-core.ts';
 import { CLIENT_CASES, EXPORT_CONTROLS, OUTPUTS, RECIPE, SOURCE_FILES, exportEvidence } from './ci-evidence.ts';
 import { clientCase } from './client-contract.ts';
 
@@ -114,6 +114,21 @@ controls.push('all-real-compose-case-oracles');
 await symlink(join(source, 'build-status.json'), join(scratch, 'symlink.json'));
 await refused('evidence-symlink', () => regular(scratch, 'symlink.json'));
 await refused('evidence-path-traversal', () => regular(scratch, '../outside'));
+for (const role of ['source', 'client']) {
+  for (const [folder, manifest] of [['apt-lists', 'apt-index-sha256.txt'], ['toolchain-debs', 'toolchain-debs.sha256']]) {
+    const identities: Record<string, { sha256: string; size: number }> = Object.create(null);
+    for (const name of await readdir(join(source, role + '-provenance', folder))) identities[name] = await hashFile(await regular(source, role + '-provenance/' + folder + '/' + name));
+    hashManifest(await small(source, role + '-provenance/' + manifest), identities);
+  }
+}
+controls.push('all-real-apt-and-deb-manifests');
+const hashes = { 'one.deb': { sha256: 'a'.repeat(64), size: 1 }, 'two.deb': { sha256: 'b'.repeat(64), size: 2 } };
+const manifest = Buffer.from(`${hashes['one.deb'].sha256}  ./one.deb\n${hashes['two.deb'].sha256}  ./two.deb\n`);
+hashManifest(manifest, hashes);
+await refused('auxiliary-hash-comment', () => hashManifest(Buffer.concat([manifest, Buffer.from('# capture text\n')]), hashes));
+await refused('auxiliary-hash-duplicate', () => hashManifest(Buffer.concat([manifest, manifest]), hashes));
+await refused('auxiliary-hash-closure', () => hashManifest(Buffer.from(manifest.toString().split('\n')[0] + '\n'), hashes));
+await refused('auxiliary-hash-byte-drift', () => hashManifest(Buffer.from(manifest.toString().replace('a', 'c')), hashes));
 const receipt = { schema: 'aelira-xdg-export-controls-v1', status: 'pass', count: controls.length, controls };
 assert(same(controls, EXPORT_CONTROLS), 'Export control closure changed');
 await writeFile(join(dest, 'export-controls.json'), JSON.stringify(receipt, null, 2) + '\n');

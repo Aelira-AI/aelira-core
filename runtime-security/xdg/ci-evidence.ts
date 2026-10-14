@@ -1,7 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { assert, command, hashFile, imageContents, imageIdentity, json, keys, pathName, regular, same, sha, small } from './evidence-core.ts';
+import { assert, command, hashFile, hashManifest, imageContents, imageIdentity, json, keys, pathName, regular, same, sha, small } from './evidence-core.ts';
 import { clientCase } from './client-contract.ts';
 
 export const RECIPE = ['README.md', 'build.sh', 'prepare-native.sh', 'prepare-client.sh',
@@ -39,7 +39,9 @@ export const EXPORT_CONTROLS = ['real-native-complete-export', 'all-exported-byt
   'native-log-missing-footer', 'client-claim-drift', 'physical-compose-body-drift',
   'physical-compose-recipient-drift', 'physical-compose-attachment-drift',
   'physical-compose-parser-drift', 'physical-refusal-exit-drift',
-  'all-real-compose-case-oracles', 'evidence-symlink', 'evidence-path-traversal'];
+  'all-real-compose-case-oracles', 'evidence-symlink', 'evidence-path-traversal',
+  'all-real-apt-and-deb-manifests', 'auxiliary-hash-comment', 'auxiliary-hash-duplicate',
+  'auxiliary-hash-closure', 'auxiliary-hash-byte-drift'];
 const SCRIPT = '61f66c933cf71ab2786ded6d7038c748406bea5e309af0cd6b737f93fa1cdc26';
 const VERSION = '1.2.1-2ubuntu2+aelira2';
 const CLIENT_VERSION = '1:140.17.0esr-1~deb13u1';
@@ -220,15 +222,29 @@ export async function exportEvidence(options: Options): Promise<any> {
       const expectedDelta = (await small(options.source, prefix + 'toolchain-delta.tsv')).toString().trimEnd().split('\n').sort();
       assert(same(signedDebs.map(([, r]) => `${r.package}\t${r.version}\t${r.architecture}`).sort(), expectedDelta), 'Signed toolchain does not match actual delta');
       assert(same(signedDebs.map(([n]) => n).sort(), (await readdir(join(options.source, prefix, 'toolchain-debs'))).sort()), 'Toolchain archive closure mismatch');
+      hashManifest(await small(options.source, prefix + 'toolchain-debs.sha256'), signed.toolchain_files);
       for (const [name, row] of signedDebs) {
         keys(row, ['package', 'version', 'architecture', 'sha256', 'size']);
         assert(hex(row.sha256) && Number.isSafeInteger(row.size) && row.size > 0 && verified.integers.has('/toolchain_files/' + name.replaceAll('~', '~0').replaceAll('/', '~1') + '/size'), 'Invalid signed package identity');
         await copy(prefix + 'toolchain-debs/' + name, { sha256: row.sha256, size: row.size });
       }
-      for (const [name, row] of Object.entries(signed.authenticated_files) as [string, any][]) {
+      const indexIdentities: Record<string, Identity> = { ...signed.authenticated_files };
+      const extraReleases: Record<string, Identity> = Object.create(null);
+      for (const name of await readdir(join(options.source, prefix, 'apt-lists'))) {
+        if (name in indexIdentities) continue;
+        assert(signedIndexName(name, role) && name.endsWith('_InRelease'), 'Unsigned index in capture');
+        await command('docker', ['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--user', `${process.getuid!()}:${process.getgid!()}`, '-v', join(options.source, role + '-provenance') + ':/provenance:ro', '--entrypoint', '/usr/bin/gpgv', builders.source, '--keyring', '/provenance/' + KEYRINGS[role][0], '/provenance/apt-lists/' + name]);
+        indexIdentities[name] = extraReleases[name] = await hashFile(await regular(options.source, prefix + 'apt-lists/' + name, 128 * 1024 ** 2));
+      }
+      hashManifest(await small(options.source, prefix + 'apt-index-sha256.txt'), indexIdentities);
+      for (const [name, row] of Object.entries(indexIdentities)) {
         keys(row, ['sha256', 'size']); assert(signedIndexName(name, role) && hex(row.sha256) && Number.isSafeInteger(row.size) && row.size > 0, 'Invalid signed index identity');
         await copy(prefix + 'apt-lists/' + name, row);
       }
+      const extras = { schema: 'aelira-xdg-extra-release-signatures-v1', status: 'pass', keyring_sha256: KEYRINGS[role][1], files: extraReleases };
+      const extraFile = join(scratch, role + '-additional-release-signatures.json');
+      await writeFile(extraFile, JSON.stringify(extras, null, 2) + '\n');
+      await copy(prefix + 'additional-release-signatures.json', undefined, extraFile);
       const original = json(await small(options.source, role === 'source' ? 'build-a/signed-chain.json' : prefix + 'signed-chain.json')).value;
       assert(same(original, signed), 'Captured signature receipt mismatch');
       await copy(role === 'source' ? 'build-a/signed-chain.json' : prefix + 'signed-chain.json');

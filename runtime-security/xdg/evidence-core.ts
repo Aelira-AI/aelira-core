@@ -106,6 +106,18 @@ export function keys(value: any, expected: string[]): void {
     same(Object.keys(value).sort(), [...expected].sort()), 'Unexpected receipt fields');
 }
 
+/** Accept only complete hash records, without comments or extra capture text. */
+export function hashManifest(data: Buffer, expected: Record<string, { sha256: string; size: number }>): void {
+  const text = data.toString(); assert(text.endsWith('\n'), 'Unterminated hash manifest');
+  const rows: Record<string, string> = Object.create(null);
+  for (const line of text.slice(0, -1).split('\n')) {
+    const match = /^([a-f0-9]{64})  (?:\.\/)?([A-Za-z0-9+._:%~\-]+)$/.exec(line);
+    assert(match && pathName(match[2]) && !(match[2] in rows), 'Unexpected hash manifest text');
+    rows[match[2]] = match[1];
+  }
+  assert(same(rows, Object.fromEntries(Object.entries(expected).map(([name, row]) => [name, row.sha256]))), 'Hash manifest closure mismatch');
+}
+
 /** Hash logical saved-image contents; do not execute or extract the archive. */
 export async function imageContents(path: string, metadata?: Map<string, Buffer>): Promise<Record<string, any>> {
   const file = await open(path, 'r');
