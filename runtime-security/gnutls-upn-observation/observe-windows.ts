@@ -14,14 +14,15 @@ phase = 'fixtures';
 partial.architecture = process.arch;
 partial.bun_version = Bun.version;
 partial.observer_sha256 = createHash('sha256').update(await readFile(import.meta.path)).digest('hex');
-await verifyInputs(root);
+const inputs = await verifyInputs(root);
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const manifestBytes = await readFile(join(root, 'manifest.json'));
 phase = 'fixtures';
 partial.manifest_sha256 = createHash('sha256').update(manifestBytes).digest('hex');
 const manifest = JSON.parse(manifestBytes.toString());
-if (manifest.schema !== 'aelira-upn-synthetic-sentinels-v1' || manifest.cases.length !== 8 ||
-  manifest.cases.map((c: any) => c.id).join(',') !== 'A0,A1,A2,A3,A4,A5,A6,A7') throw new Error('Invalid sentinel contract');
+const lexical = manifest.schema === 'aelira-upn-lexical-vectors-v1';
+if (manifest.schema !== (lexical ? 'aelira-upn-lexical-vectors-v1' : 'aelira-upn-synthetic-sentinels-v1') ||
+  manifest.cases.length !== (lexical ? 34 : 8) || inputs.cases !== manifest.cases.length) throw new Error('Invalid experiment contract');
 const system = process.env.SystemRoot;
 if (!system || !/^[A-Za-z]:\\Windows$/i.test(system)) throw new Error('Expected Windows system directory');
 const cryptoPath = join(system, 'System32', 'crypt32.dll');
@@ -155,8 +156,8 @@ if (versionLength[0] < 52) throw new Error('Short DLL fixed version');
 const fixedVersion = memory(Number(versionPointer[0]), 52);
 if (fixedVersion.readUInt32LE(0) !== 0xfeef04bd) throw new Error('DLL version signature');
 const ms = fixedVersion.readUInt32LE(8), ls = fixedVersion.readUInt32LE(12);
-const status = rows.length !== 8 ? 'baseline-failed' : rows.some(r => !r.build_bool || !r.path_matches || !r.policy?.bool) ? 'experiment-failed' : 'observed';
-const result = { schema: 'aelira-native-windows-upn-observation-v1', status,
+const status = rows.length !== manifest.cases.length ? 'baseline-failed' : rows.some(r => !r.build_bool || !r.path_matches || !r.policy?.bool) ? 'experiment-failed' : 'observed';
+const result = { schema: lexical ? 'aelira-native-windows-upn-lexical-observation-v1' : 'aelira-native-windows-upn-observation-v1', status,
   manifest_sha256: sha(manifestBytes), observer_sha256: sha(await readFile(import.meta.path)), architecture: process.arch, bun_version: Bun.version,
   os_version: [4, 8, 12].map(n => data(version).getUint32(n, true)), user_lcid: kernel.GetUserDefaultLCID(), system_lcid: kernel.GetSystemDefaultLCID(),
   crypt32_sha256: sha(await readFile(cryptoPath)), crypt32_version: [ms >>> 16, ms & 65535, ls >>> 16, ls & 65535], fixed_validation_time: manifest.fixed_validation_time,

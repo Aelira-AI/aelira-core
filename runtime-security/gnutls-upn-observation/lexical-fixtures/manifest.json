@@ -1,0 +1,1070 @@
+{
+  "schema": "aelira-upn-lexical-vectors-v1",
+  "plan_sha256": "89551f701e5d0bd8ce40b8a52fac5fd2d4cc12bcd928c12d709cd33ce887d30f",
+  "generator_sha256": "7831491599fa070e52720e009f3e418212b14c208c1363573693f0dd42e4b70b",
+  "original_manifest_sha256": "00bee665853ba68fb12e0ed547f61933e547f43c9da2114d6f39681b55a05b19",
+  "fixed_validation_time": "2026-10-14T16:25:09.000Z",
+  "certificates": {
+    "root": {
+      "file": "root.der",
+      "issuer": "root",
+      "sha256": "b4fc409f8cc0051a4a10f99a1f411906f144bad300f01f2d59a50803d870e8f3",
+      "size": 426,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "plain": {
+      "file": "plain.der",
+      "issuer": "root",
+      "sha256": "e2034444c978bcd092185f076653b261953889f3e114be068be50d98628d116f",
+      "size": 424,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unconstrained_allowed": {
+      "file": "unconstrained_allowed.der",
+      "issuer": "plain",
+      "sha256": "c8ab3b54e635ce7f6cc56f4cc517f4fdaf738244728257352e423b36e31f9e35",
+      "size": 490,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unconstrained_blocked": {
+      "file": "unconstrained_blocked.der",
+      "issuer": "plain",
+      "sha256": "d76c6b6304aaaba67538bde5e0fe74519186eb6b66bf4b28c623bbc59c455499",
+      "size": 489,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "b00_issuer": {
+      "file": "b00_issuer.der",
+      "issuer": "root",
+      "sha256": "11928a9934e39ddfdfef4e1802d9c9c5c039ccf13ccf736e1dd206cf2ca78568",
+      "size": 483,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b00": {
+      "file": "b00.der",
+      "issuer": "b00_issuer",
+      "sha256": "31343cb5fc422ee609ae1668034faf6e790193cb55e960eba9fc4d810c17cf66",
+      "size": 490,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b01_issuer": {
+      "file": "b01_issuer.der",
+      "issuer": "root",
+      "sha256": "b67d9f793172a437cd3b691a9b84c118aaae38d1e14ab003d1a2f68e5864f5df",
+      "size": 483,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b01": {
+      "file": "b01.der",
+      "issuer": "b01_issuer",
+      "sha256": "04daceabbf5cdf84c9085acc7bcbe5d7b215dfccb8e91d523bc47425a10d12bb",
+      "size": 489,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b02_issuer": {
+      "file": "b02_issuer.der",
+      "issuer": "root",
+      "sha256": "abe3fd1e9b08f175f7363a52865791a33634400cd47a4106303fa861d10b190e",
+      "size": 483,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b02": {
+      "file": "b02.der",
+      "issuer": "b02_issuer",
+      "sha256": "347756c1f29f155bc2728638dcebf7c231eab9f8eb1aed10a7dc5555dcdeecaf",
+      "size": 491,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b03_issuer": {
+      "file": "b03_issuer.der",
+      "issuer": "root",
+      "sha256": "9c360057ba8d296ea0792305b040d2754642498303be2a7eee926955aa3f8f6d",
+      "size": 482,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b03": {
+      "file": "b03.der",
+      "issuer": "b03_issuer",
+      "sha256": "772385d3aa779ef9ca791d07421aff9c9e63c01320c91ce4c7bee00457b41f9d",
+      "size": 491,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b04_issuer": {
+      "file": "b04_issuer.der",
+      "issuer": "root",
+      "sha256": "893cabb6e656aaf309df3c8fa040562028b717c8c4404ec2f1f47dace2dcd787",
+      "size": 480,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b04": {
+      "file": "b04.der",
+      "issuer": "b04_issuer",
+      "sha256": "211f7e4b2888cce8bc7b992f5c4e08f7582e016c5071821bd94d0d890dd2c215",
+      "size": 488,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b05_issuer": {
+      "file": "b05_issuer.der",
+      "issuer": "root",
+      "sha256": "4093bc7ce8065cb5e9ba4cbd6ed5a784928ec9ce9937c6aff48cafe7c03a7474",
+      "size": 485,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b05": {
+      "file": "b05.der",
+      "issuer": "b05_issuer",
+      "sha256": "1faba58779d143f52eb1b1df2c1ee1f4265032dd0eeb693449f637f79f7aa254",
+      "size": 492,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b06_issuer": {
+      "file": "b06_issuer.der",
+      "issuer": "root",
+      "sha256": "37694ca61d489f09286784e209adec45b10b367f1a97915c30b31d50a4764f89",
+      "size": 482,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b06": {
+      "file": "b06.der",
+      "issuer": "b06_issuer",
+      "sha256": "afaf7313353da3874c9d6dc404caa21399da5d38c182f8c5cf0419f63e961b87",
+      "size": 487,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b07_issuer": {
+      "file": "b07_issuer.der",
+      "issuer": "root",
+      "sha256": "dddb1c25fd440791e94cae09eea8ad434445256df8f029ce75cb230c75603dde",
+      "size": 482,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b07": {
+      "file": "b07.der",
+      "issuer": "b07_issuer",
+      "sha256": "3e9ce75b5b9c2a251613d62223119b1ed10cf8cfcfaa3cd0d64d87c15f55038d",
+      "size": 489,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b08_issuer": {
+      "file": "b08_issuer.der",
+      "issuer": "root",
+      "sha256": "24377fee56da0062b5ca32ca1b646b8c76a993b8422a747603ae8f785903e25c",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b08": {
+      "file": "b08.der",
+      "issuer": "b08_issuer",
+      "sha256": "d2d132107b866b38b7f937b3ad75c65ff68ae0710097cb6fe8c534cd2fe1f429",
+      "size": 490,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b09_issuer": {
+      "file": "b09_issuer.der",
+      "issuer": "root",
+      "sha256": "7329cda7800c6c2f7765cd8d8cb4d42219fd1cd4149db98310b1eb7284404869",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b09": {
+      "file": "b09.der",
+      "issuer": "b09_issuer",
+      "sha256": "a4c38d9593c353d1dc1b96bcdf274da82d90b4e142378f28be583eb43ccf02c9",
+      "size": 497,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b10_issuer": {
+      "file": "b10_issuer.der",
+      "issuer": "root",
+      "sha256": "d89d9223604d55b9f58c3f844844f03b68ce8ded1293eda05f6aab627030cdc3",
+      "size": 477,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b10": {
+      "file": "b10.der",
+      "issuer": "b10_issuer",
+      "sha256": "c4dca47904b3b8141db3720ed6c9112576ec35da90bc18a66e1f5fd1a2040d6d",
+      "size": 495,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b11_issuer": {
+      "file": "b11_issuer.der",
+      "issuer": "root",
+      "sha256": "e6c56768c649a61c666f911eca1c47447b7f1bb42e46b463f943a7fe7e06ef5d",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:07.000Z",
+      "not_after": "2026-10-16T15:25:07.000Z"
+    },
+    "b11": {
+      "file": "b11.der",
+      "issuer": "b11_issuer",
+      "sha256": "5bb81112cf625101dbad842fae6895fea9906f50257bd83e0103461ebfd07441",
+      "size": 498,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b12_issuer": {
+      "file": "b12_issuer.der",
+      "issuer": "root",
+      "sha256": "3e0cf02ec80900bd33a93a0104011949aa202c193c9c949501da5bce0fe42856",
+      "size": 479,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b12": {
+      "file": "b12.der",
+      "issuer": "b12_issuer",
+      "sha256": "aa23fec3067dff67768e3e1a9d63ddc24b5b06d4794c0b63db0bb6cd861a7dc8",
+      "size": 490,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b13_issuer": {
+      "file": "b13_issuer.der",
+      "issuer": "root",
+      "sha256": "72c8d4154d6d2ee272d71ebb4207cf2534dbb8eed2b97d63deea8280ebd3b05d",
+      "size": 479,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b13": {
+      "file": "b13.der",
+      "issuer": "b13_issuer",
+      "sha256": "c716473820b849e0f684199c9751b62db097b742c863fa31d3e3560d1cb6b953",
+      "size": 495,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b14_issuer": {
+      "file": "b14_issuer.der",
+      "issuer": "root",
+      "sha256": "d7ad3ac0b6b75ef8e7e70889b44c5feed370b364036143bb9c46da8fd8583e3d",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b14": {
+      "file": "b14.der",
+      "issuer": "b14_issuer",
+      "sha256": "c640cc54def912b115a3616fe66fba88a0658d25401b20f4a0c3f88aed531b14",
+      "size": 493,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b15_issuer": {
+      "file": "b15_issuer.der",
+      "issuer": "root",
+      "sha256": "a9ba7ebe62b9e7cf3d1145f185aa16b8c88050ee247630380a383cc9359861ba",
+      "size": 479,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b15": {
+      "file": "b15.der",
+      "issuer": "b15_issuer",
+      "sha256": "2ae08dc6c984cfaa23ec6f968b9093e4b8514e0a0593d13cbda9657bf559bdc0",
+      "size": 497,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b16_issuer": {
+      "file": "b16_issuer.der",
+      "issuer": "root",
+      "sha256": "44d5b7c200019514f94e5adf3f01783ccf00495f2a479f4bf25ad7eb8ec8639e",
+      "size": 484,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b16": {
+      "file": "b16.der",
+      "issuer": "b16_issuer",
+      "sha256": "a7a52dd6ca4fd9638e93e843881af9a73f73deffffc420cbbfb1c9fbac5c6475",
+      "size": 491,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b17_issuer": {
+      "file": "b17_issuer.der",
+      "issuer": "root",
+      "sha256": "02d417f46cbd5de9c66c2b00cf535875a3aeb58280c7e5229786f62a505c8a23",
+      "size": 482,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b17": {
+      "file": "b17.der",
+      "issuer": "b17_issuer",
+      "sha256": "9bcbb469058103e56dbba11d5745fe87d9657a292ebf167edd7bfc169927ee08",
+      "size": 489,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b18_issuer": {
+      "file": "b18_issuer.der",
+      "issuer": "root",
+      "sha256": "2a0edf9cb81b2a52d8dc0414f5232ce7d7e3512dd2743edb7b155ac1869a425f",
+      "size": 482,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b18": {
+      "file": "b18.der",
+      "issuer": "b18_issuer",
+      "sha256": "007953728ed26d15efefd2d4ad04984ca88e2d62131d46502661c5ecbd2d29ce",
+      "size": 490,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b19_issuer": {
+      "file": "b19_issuer.der",
+      "issuer": "root",
+      "sha256": "5f5c30227d3a721a524592680ca2b1478491b38a4da8e29ec52ed08d30c355f0",
+      "size": 482,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b19": {
+      "file": "b19.der",
+      "issuer": "b19_issuer",
+      "sha256": "9a74425141cc10f7ae285bad3977b3c63851860b87417d1b1148ae1c0a58522c",
+      "size": 489,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b20_issuer": {
+      "file": "b20_issuer.der",
+      "issuer": "root",
+      "sha256": "c7492e31161b25242bec1d1739b9c7e560faa221931dddcb439f697c71ba86e4",
+      "size": 480,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b20": {
+      "file": "b20.der",
+      "issuer": "b20_issuer",
+      "sha256": "d411e848e63d5a96b6419c212e922ae2572dc597c7760aa64e7eebe6fef73be8",
+      "size": 489,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b21_issuer": {
+      "file": "b21_issuer.der",
+      "issuer": "root",
+      "sha256": "d36f581ad2ba3a3cddd42f17d6cf2d3720e7786c10724c8add1b3300d1f15335",
+      "size": 487,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b21": {
+      "file": "b21.der",
+      "issuer": "b21_issuer",
+      "sha256": "9b1bab7e437a2e38bb12a5c101f4388b82ee61f224732c02d9e426ea5da44bca",
+      "size": 493,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b22_issuer": {
+      "file": "b22_issuer.der",
+      "issuer": "root",
+      "sha256": "1423dfa8ecfe1acbd0131b6cee76b8d677ef700d3cce171be7f31432df36157b",
+      "size": 480,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b22": {
+      "file": "b22.der",
+      "issuer": "b22_issuer",
+      "sha256": "0f4106bb12e0dfefde01c6a4dafa71a47f7f7fd6e55d64f6deb86ddcb7965c02",
+      "size": 487,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b23_issuer": {
+      "file": "b23_issuer.der",
+      "issuer": "root",
+      "sha256": "94959c6a5d7ae5304d22723d3840d5fb8ca514149b031d34b8d883640b3fc360",
+      "size": 480,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b23": {
+      "file": "b23.der",
+      "issuer": "b23_issuer",
+      "sha256": "b7b5c9646244c4dca0aa3d27de81b6d79e5c4dc6f7b1e51b8e2e18a28636c180",
+      "size": 488,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b24_issuer": {
+      "file": "b24_issuer.der",
+      "issuer": "root",
+      "sha256": "eba3dac6e3e5f259c87d8b64deabc35067789ff81f699a9ff6297ea527161cd8",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b24": {
+      "file": "b24.der",
+      "issuer": "b24_issuer",
+      "sha256": "496ca6bacc40e5a816eb81f24936b80fd81a5c0b8a00c04884f73423777a1636",
+      "size": 490,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b25_issuer": {
+      "file": "b25_issuer.der",
+      "issuer": "root",
+      "sha256": "42adce6225dc445d995432288caabea19d305719a94072fb5ca325e3b170f77f",
+      "size": 477,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b25": {
+      "file": "b25.der",
+      "issuer": "b25_issuer",
+      "sha256": "30e63aa7ecb5335ab6d358e9a7f4996975cb9ecc9e5ef6ce2e38c1001a1f861a",
+      "size": 495,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b26_issuer": {
+      "file": "b26_issuer.der",
+      "issuer": "root",
+      "sha256": "bcae06470dbfe344b332d0a1023e137a93c294e660fa82476aa4f0f76f338322",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b26": {
+      "file": "b26.der",
+      "issuer": "b26_issuer",
+      "sha256": "9193c48da0026f352cc795da02b900e73c8189562c80d4e785a57b7342aa0287",
+      "size": 493,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b27_issuer": {
+      "file": "b27_issuer.der",
+      "issuer": "root",
+      "sha256": "d79d82a587c144236d2a710c6331b4ef68704f6bce673bbb47308de3a1aae6a1",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b27": {
+      "file": "b27.der",
+      "issuer": "b27_issuer",
+      "sha256": "b764cc24e6f206387925a6b35d3303145f293a8e28ed9570052c22dc24404a2a",
+      "size": 498,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b28_issuer": {
+      "file": "b28_issuer.der",
+      "issuer": "root",
+      "sha256": "2cdaee639f5eba35f14eda1036a4b19693e860e1ff6536a136ab78057deade42",
+      "size": 479,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b28": {
+      "file": "b28.der",
+      "issuer": "b28_issuer",
+      "sha256": "2132d0f85c1e316f8f3fbbcbf345b5bf1015d61908860728af8d1bc19ba7569c",
+      "size": 489,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b29_issuer": {
+      "file": "b29_issuer.der",
+      "issuer": "root",
+      "sha256": "47a66bb095c636006e1f73f8c09a81674d950205fbabb481a2ec5e7f864344a5",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b29": {
+      "file": "b29.der",
+      "issuer": "b29_issuer",
+      "sha256": "c2eed8c7cc3ae11054582a8776f6dddc5845d4261fc88f18e63ce658f4fa40c9",
+      "size": 496,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b30_issuer": {
+      "file": "b30_issuer.der",
+      "issuer": "root",
+      "sha256": "edec2d7142f6e698b4911911bde62841335ee814644e1ce77557363a350d73b6",
+      "size": 479,
+      "not_before": "2026-10-14T15:25:08.000Z",
+      "not_after": "2026-10-16T15:25:08.000Z"
+    },
+    "b30": {
+      "file": "b30.der",
+      "issuer": "b30_issuer",
+      "sha256": "6bf38a263f05bcefee9cf74fcb2e67232eccd3c177acc7dbf9f4d0f6724cb553",
+      "size": 494,
+      "not_before": "2026-10-14T15:25:09.000Z",
+      "not_after": "2026-10-16T15:25:09.000Z"
+    },
+    "b31_issuer": {
+      "file": "b31_issuer.der",
+      "issuer": "root",
+      "sha256": "9bc53da8bb1a35575462df75ed4df2c3ffb97dfd34ea8776be08cb3130d06d6c",
+      "size": 478,
+      "not_before": "2026-10-14T15:25:09.000Z",
+      "not_after": "2026-10-16T15:25:09.000Z"
+    },
+    "b31": {
+      "file": "b31.der",
+      "issuer": "b31_issuer",
+      "sha256": "f8b288e9b81b481f1c64c2ea3fafcd2364d8a3dbb5bd8004dfba6e108d8d2b11",
+      "size": 498,
+      "not_before": "2026-10-14T15:25:09.000Z",
+      "not_after": "2026-10-16T15:25:09.000Z"
+    }
+  },
+  "cases": [
+    {
+      "id": "A0",
+      "name": "unconstrained_allowed",
+      "issuer": "plain",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:allowed@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "unconstrained_allowed",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "A1",
+      "name": "unconstrained_blocked",
+      "issuer": "plain",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:blocked@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "unconstrained_blocked",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "B0",
+      "name": "b00",
+      "issuer": "b00_issuer",
+      "role": "permitted",
+      "constraint": "User@Corp.Example",
+      "principal": "User@Corp.Example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b00",
+        "b00_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B1",
+      "name": "b01",
+      "issuer": "b01_issuer",
+      "role": "permitted",
+      "constraint": "User@Corp.Example",
+      "principal": "user@Corp.Example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b01",
+        "b01_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B2",
+      "name": "b02",
+      "issuer": "b02_issuer",
+      "role": "permitted",
+      "constraint": "User@Corp.Example",
+      "principal": "User@corp.example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b02",
+        "b02_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B3",
+      "name": "b03",
+      "issuer": "b03_issuer",
+      "role": "permitted",
+      "constraint": "User@Corp.Example",
+      "principal": "user@corp.example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b03",
+        "b03_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B4",
+      "name": "b04",
+      "issuer": "b04_issuer",
+      "role": "permitted",
+      "constraint": "é@corp.example",
+      "principal": "é@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b04",
+        "b04_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B5",
+      "name": "b05",
+      "issuer": "b05_issuer",
+      "role": "permitted",
+      "constraint": "straße@corp.example",
+      "principal": "strasse@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b05",
+        "b05_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B6",
+      "name": "b06",
+      "issuer": "b06_issuer",
+      "role": "permitted",
+      "constraint": "İ@corp.example",
+      "principal": "i@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b06",
+        "b06_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B7",
+      "name": "b07",
+      "issuer": "b07_issuer",
+      "role": "permitted",
+      "constraint": "Σ@corp.example",
+      "principal": "ς@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b07",
+        "b07_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B8",
+      "name": "b08",
+      "issuer": "b08_issuer",
+      "role": "permitted",
+      "constraint": "corp.example",
+      "principal": "user@corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b08",
+        "b08_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B9",
+      "name": "b09",
+      "issuer": "b09_issuer",
+      "role": "permitted",
+      "constraint": "corp.example",
+      "principal": "user@child.corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b09",
+        "b09_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B10",
+      "name": "b10",
+      "issuer": "b10_issuer",
+      "role": "permitted",
+      "constraint": "corp.example",
+      "principal": "user@nearcorp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b10",
+        "b10_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B11",
+      "name": "b11",
+      "issuer": "b11_issuer",
+      "role": "permitted",
+      "constraint": "corp.example",
+      "principal": "user@corp.example.invalid",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b11",
+        "b11_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B12",
+      "name": "b12",
+      "issuer": "b12_issuer",
+      "role": "permitted",
+      "constraint": ".corp.example",
+      "principal": "user@corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b12",
+        "b12_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B13",
+      "name": "b13",
+      "issuer": "b13_issuer",
+      "role": "permitted",
+      "constraint": ".corp.example",
+      "principal": "user@child.corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b13",
+        "b13_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B14",
+      "name": "b14",
+      "issuer": "b14_issuer",
+      "role": "permitted",
+      "constraint": ".corp.example",
+      "principal": "user@nearcorp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b14",
+        "b14_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B15",
+      "name": "b15",
+      "issuer": "b15_issuer",
+      "role": "permitted",
+      "constraint": ".corp.example",
+      "principal": "user@corp.example.invalid",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b15",
+        "b15_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B16",
+      "name": "b16",
+      "issuer": "b16_issuer",
+      "role": "excluded",
+      "constraint": "User@Corp.Example",
+      "principal": "User@Corp.Example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b16",
+        "b16_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B17",
+      "name": "b17",
+      "issuer": "b17_issuer",
+      "role": "excluded",
+      "constraint": "User@Corp.Example",
+      "principal": "user@Corp.Example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b17",
+        "b17_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B18",
+      "name": "b18",
+      "issuer": "b18_issuer",
+      "role": "excluded",
+      "constraint": "User@Corp.Example",
+      "principal": "User@corp.example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b18",
+        "b18_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B19",
+      "name": "b19",
+      "issuer": "b19_issuer",
+      "role": "excluded",
+      "constraint": "User@Corp.Example",
+      "principal": "user@corp.example",
+      "comparison_class": "case",
+      "original_expected": null,
+      "intended_path": [
+        "b19",
+        "b19_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B20",
+      "name": "b20",
+      "issuer": "b20_issuer",
+      "role": "excluded",
+      "constraint": "é@corp.example",
+      "principal": "é@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b20",
+        "b20_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B21",
+      "name": "b21",
+      "issuer": "b21_issuer",
+      "role": "excluded",
+      "constraint": "straße@corp.example",
+      "principal": "strasse@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b21",
+        "b21_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B22",
+      "name": "b22",
+      "issuer": "b22_issuer",
+      "role": "excluded",
+      "constraint": "İ@corp.example",
+      "principal": "i@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b22",
+        "b22_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B23",
+      "name": "b23",
+      "issuer": "b23_issuer",
+      "role": "excluded",
+      "constraint": "Σ@corp.example",
+      "principal": "ς@corp.example",
+      "comparison_class": "unicode",
+      "original_expected": null,
+      "intended_path": [
+        "b23",
+        "b23_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B24",
+      "name": "b24",
+      "issuer": "b24_issuer",
+      "role": "excluded",
+      "constraint": "corp.example",
+      "principal": "user@corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b24",
+        "b24_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B25",
+      "name": "b25",
+      "issuer": "b25_issuer",
+      "role": "excluded",
+      "constraint": "corp.example",
+      "principal": "user@child.corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b25",
+        "b25_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B26",
+      "name": "b26",
+      "issuer": "b26_issuer",
+      "role": "excluded",
+      "constraint": "corp.example",
+      "principal": "user@nearcorp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b26",
+        "b26_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B27",
+      "name": "b27",
+      "issuer": "b27_issuer",
+      "role": "excluded",
+      "constraint": "corp.example",
+      "principal": "user@corp.example.invalid",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b27",
+        "b27_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B28",
+      "name": "b28",
+      "issuer": "b28_issuer",
+      "role": "excluded",
+      "constraint": ".corp.example",
+      "principal": "user@corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b28",
+        "b28_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B29",
+      "name": "b29",
+      "issuer": "b29_issuer",
+      "role": "excluded",
+      "constraint": ".corp.example",
+      "principal": "user@child.corp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b29",
+        "b29_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B30",
+      "name": "b30",
+      "issuer": "b30_issuer",
+      "role": "excluded",
+      "constraint": ".corp.example",
+      "principal": "user@nearcorp.example",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b30",
+        "b30_issuer",
+        "root"
+      ]
+    },
+    {
+      "id": "B31",
+      "name": "b31",
+      "issuer": "b31_issuer",
+      "role": "excluded",
+      "constraint": ".corp.example",
+      "principal": "user@corp.example.invalid",
+      "comparison_class": "namespace",
+      "original_expected": null,
+      "intended_path": [
+        "b31",
+        "b31_issuer",
+        "root"
+      ]
+    }
+  ],
+  "scope": "32 new empirical lexical vectors plus two unchanged healthy DER baselines; no normative comparator or GnuTLS oracle replacement",
+  "deferred": [
+    "at-prefixed bases",
+    "wildcards",
+    "other Unicode pairs",
+    "malformed syntax",
+    "multiple UPNs",
+    "path composition",
+    "self-issued transitions",
+    "APPEND serialization"
+  ]
+}

@@ -14,6 +14,7 @@ const controls: [string, (root: string) => Promise<unknown>][] = [
   ['extra-file', async root => writeFile(join(root, 'extra.json'), '{}\n')],
   ['symlink-certificate', async root => { await rename(join(root, 'root.der'), join(scratch, 'retained-symlink-root.der')); await symlink(join(source, 'root.der'), join(root, 'root.der')); }],
 ];
+if (files.includes('plan.json')) controls.push(['changed-plan', async root => writeFile(join(root, 'plan.json'), '{}\n')]);
 const rows = [];
 for (const [name, mutate] of controls) {
   const root = join(scratch, name); await mkdir(root);
