@@ -1,0 +1,67 @@
+--- a/scripts/xdg-email.in
++++ b/scripts/xdg-email.in
+@@ -47,22 +47,24 @@
+     fi
+ 
+     MAILTO="$(echo "$MAILTO" | sed 's/&/\n/g')"
+-    TO="$(/bin/echo -e "$(echo "$MAILTO" | grep '^to=' | sed 's/^to=//;s/%\(..\)/\\x\1/g' | awk '{ printf "%s,",$0 }')")"
+-    CC="$(/bin/echo -e "$(echo "$MAILTO" | grep '^cc=' | sed 's/^cc=//;s/%\(..\)/\\x\1/g' | awk '{ printf "%s,",$0 }')")"
+-    BCC="$(/bin/echo -e "$(echo "$MAILTO" | grep '^bcc=' | sed 's/^bcc=//;s/%\(..\)/\\x\1/g' | awk '{ printf "%s,",$0 }')")"
++    # GetArgs splits compose delimiters before URI decoding. Keep recipient
++    # encoding until that decode so legitimate quotes and commas remain data.
++    TO="$(printf '%s\n' "$MAILTO" | sed -n 's/^to=//p' | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g' | awk '{ printf "%s%%2c",$0 }')"
++    CC="$(printf '%s\n' "$MAILTO" | sed -n 's/^cc=//p' | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g' | awk '{ printf "%s%%2c",$0 }')"
++    BCC="$(printf '%s\n' "$MAILTO" | sed -n 's/^bcc=//p' | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g' | awk '{ printf "%s%%2c",$0 }')"
+     SUBJECT="$(printf '%s\n' "$MAILTO" | sed -n 's/^subject=//p' | tail -n 1 | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g')"
+     BODY="$(printf '%s\n' "$MAILTO" | sed -n 's/^body=//p' | tail -n 1 | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g')"
+ 
+     if [ -z "$TO" ] ; then
+         NEWMAILTO=
+     else
+-        NEWMAILTO="to='$TO'"
++        NEWMAILTO="to=$TO"
+     fi
+     if [ -n "$CC" ] ; then
+-        NEWMAILTO="${NEWMAILTO},cc='$CC'"
++        NEWMAILTO="${NEWMAILTO},cc=$CC"
+     fi
+     if [ -n "$BCC" ] ; then
+-        NEWMAILTO="${NEWMAILTO},bcc='$BCC'"
++        NEWMAILTO="${NEWMAILTO},bcc=$BCC"
+     fi
+     if [ -n "$SUBJECT" ] ; then
+         NEWMAILTO="${NEWMAILTO},subject=$SUBJECT"
+@@ -131,7 +133,7 @@
+         fi
+     else
+         DEBUG 1 "$command missing; trying generic mode instead."
+-        open_generic "$1"
++        open_generic "$1" "$2"
+     fi
+ 
+     if [ $? = 0 ]; then
+@@ -392,7 +394,7 @@
+         fi
+ 
+         url_encode "$file"
+-        attach="${attach}${attach:+,}${result}"
++        attach="${attach}${attach:+,}file://${result}"
+         shift
+         ;;
+ 
+@@ -401,6 +403,7 @@
+         ;;
+ 
+       mailto:*)
++        [ "$parm" = "$(printf '%s' "$parm" | tr -d '\r\n')" ] || exit_failure_syntax "raw newline in mailto URI"
+         mailto="$parm"
+         ;;
+ 
+--- a/autotests/t-xdg-email.sh
++++ b/autotests/t-xdg-email.sh
+@@ -31,4 +31,4 @@
+ mock kmailservice
+ mock kmailservice5
+ run kde5 xdg-email test@example.org
+-assert_run thunderbird -compose to=\'test@example.org,\'
++assert_run thunderbird -compose to=test@example.org%2c

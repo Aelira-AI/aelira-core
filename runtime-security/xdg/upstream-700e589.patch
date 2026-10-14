@@ -1,0 +1,29 @@
+From 700e5891fdbc252c192d366eb4b91a2a4fb13400 Mon Sep 17 00:00:00 2001
+From: Slatian <baschdel@disroot.org>
+Date: Wed, 25 Mar 2026 15:17:21 +0100
+Subject: [PATCH] Make sure no unescpad characters can leak through the subject
+ and body URL parameters
+
+Fixes: #205
+---
+ scripts/xdg-email.in | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/xdg-email.in b/scripts/xdg-email.in
+index 2c0329d..2f27a0f 100644
+--- a/scripts/xdg-email.in
++++ b/scripts/xdg-email.in
+@@ -50,8 +50,8 @@ run_thunderbird()
+     TO="$(printf "%s\n" "$MAILTO" | sed -n 's/^to=//p' | url_decode | sed "s/[,\']//g" | tr '\n' , )"
+     CC="$(printf "%s\n" "$MAILTO" | sed -n 's/^cc=//p' | url_decode | sed "s/[,\']//g" | tr '\n' , )"
+     BCC="$(printf "%s\n" "$MAILTO" | sed -n 's/^bcc=//p' | url_decode | sed "s/[,\']//g" | tr '\n' , )"
+-    SUBJECT="$(printf "%s\n" "$MAILTO" | grep '^subject=' | tail -n 1)"
+-    BODY="$(printf "%s\n" "$MAILTO" | grep '^body=' | tail -n 1)"
++    SUBJECT="$(printf "%s\n" "$MAILTO" | grep '^subject=' | tail -n 1 | sed -e 's/,/%2c/g' -e "s/\'/%27/g" -e 's/"/%22/g' )"
++    BODY="$(printf "%s\n" "$MAILTO" | grep '^body=' | tail -n 1 | sed -e 's/,/%2c/g' -e "s/\'/%27/g" -e 's/"/%22/g')" #' <- Fix confused syntax highlishting
+ 
+     if [ -z "$TO" ] ; then
+         NEWMAILTO=
+-- 
+GitLab
+

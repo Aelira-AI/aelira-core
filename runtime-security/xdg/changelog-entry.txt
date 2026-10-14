@@ -1,0 +1,9 @@
+xdg-utils (1.2.1-2ubuntu2+aelira2) resolute; urgency=medium
+
+  * Backport upstream CVE-2020-27748 attachment-origin separation.
+  * Preserve literal Thunderbird subject/body and recipient delimiters.
+  * Use explicit file URIs and retain attachments through the KDE fallback.
+  * Reject raw mailto CR/LF before frontend normalization.
+
+ -- Aelira Core maintainers <security@aelira.ai>  Tue, 13 Oct 2026 00:00:00 +0000
+

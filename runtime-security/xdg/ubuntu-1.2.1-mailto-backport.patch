@@ -1,0 +1,34 @@
+--- a/scripts/xdg-email.in
++++ b/scripts/xdg-email.in
+@@ -35,6 +35,7 @@
+ {
+     local THUNDERBIRD MAILTO NEWMAILTO TO CC BCC SUBJECT BODY ATTACH
+     THUNDERBIRD="$1"
++    [ "$2" = "$(printf '%s' "$2" | tr -d '\r\n')" ] || exit_failure_syntax "raw newline in mailto URI"
+     MAILTO="$(echo "$2" | sed 's/^mailto://')"
+     ATTACH="$3"
+     
+@@ -49,8 +50,8 @@
+     TO="$(/bin/echo -e "$(echo "$MAILTO" | grep '^to=' | sed 's/^to=//;s/%\(..\)/\\x\1/g' | awk '{ printf "%s,",$0 }')")"
+     CC="$(/bin/echo -e "$(echo "$MAILTO" | grep '^cc=' | sed 's/^cc=//;s/%\(..\)/\\x\1/g' | awk '{ printf "%s,",$0 }')")"
+     BCC="$(/bin/echo -e "$(echo "$MAILTO" | grep '^bcc=' | sed 's/^bcc=//;s/%\(..\)/\\x\1/g' | awk '{ printf "%s,",$0 }')")"
+-    SUBJECT="$(echo "$MAILTO" | grep '^subject=' | tail -n 1)"
+-    BODY="$(echo "$MAILTO" | grep '^body=' | tail -n 1)"
++    SUBJECT="$(printf '%s\n' "$MAILTO" | sed -n 's/^subject=//p' | tail -n 1 | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g')"
++    BODY="$(printf '%s\n' "$MAILTO" | sed -n 's/^body=//p' | tail -n 1 | sed -e 's/,/%2c/g' -e 's/\o047/%27/g' -e 's/\o042/%22/g')"
+ 
+     if [ -z "$TO" ] ; then
+         NEWMAILTO=
+@@ -64,10 +65,10 @@
+         NEWMAILTO="${NEWMAILTO},bcc='$BCC'"
+     fi
+     if [ -n "$SUBJECT" ] ; then
+-        NEWMAILTO="${NEWMAILTO},$SUBJECT"
++        NEWMAILTO="${NEWMAILTO},subject=$SUBJECT"
+     fi
+     if [ -n "$BODY" ] ; then
+-        NEWMAILTO="${NEWMAILTO},$BODY"
++        NEWMAILTO="${NEWMAILTO},body=$BODY"
+     fi
+ 
+     if [ -n "$ATTACH" ] ; then
