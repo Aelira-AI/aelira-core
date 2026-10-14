@@ -17,6 +17,7 @@ def main():
     p.add_argument("--operator-repo", required=True, type=Path)
     p.add_argument("--operator-ref", required=True)
     p.add_argument("--operator-tree", required=True)
+    p.add_argument("--native-cleanup", action="store_true")
     a = p.parse_args()
     os.umask(0o022)
     a.source_kind = "synthetic"
@@ -46,6 +47,7 @@ def main():
     )
     # Synthetic transport controls test response/refusal logic, not native TLS.
     original_connection = common.http.client.HTTPSConnection
+    original_sleep = common.time.sleep
 
     class Response:
         def __init__(self, status, data):
@@ -82,6 +84,7 @@ def main():
 
     try:
         common.http.client.HTTPSConnection = Connection
+        common.time.sleep = lambda _: None
         control(
             "snapshot-synthetic-bounded-response-positive",
             lambda: common.require(
@@ -107,11 +110,174 @@ def main():
             lambda: common.snapshot_file("arbitrary/source", 100),
             2,
         )
+
+        class SequenceConnection(Connection):
+            answers = []
+            calls = 0
+            closes = 0
+
+            def __init__(self, host, *, timeout, context):
+                super().__init__(host, timeout=timeout, context=context)
+                self.answer = self.answers[type(self).calls]
+                type(self).calls += 1
+
+            def getresponse(self):
+                if isinstance(self.answer, BaseException):
+                    raise self.answer
+                return self.answer
+
+            def close(self):
+                type(self).closes += 1
+
+        common.http.client.HTTPSConnection = SequenceConnection
+        delays = []
+        common.time.sleep = delays.append
+
+        def sequence(name, answers, expected, waits):
+            SequenceConnection.answers = answers
+            SequenceConnection.calls = SequenceConnection.closes = 0
+            delays.clear()
+            control(
+                "snapshot-retry-" + name,
+                lambda: common.require(
+                    common.snapshot_file("dists/resolute/InRelease", 100)
+                    == b"known bounded metadata"
+                ),
+                expected,
+            )
+            control(
+                "snapshot-retry-" + name + "-bounded-closed",
+                lambda: common.require(
+                    SequenceConnection.calls == len(answers)
+                    and SequenceConnection.closes == len(answers)
+                    and delays == waits
+                ),
+                0,
+            )
+
+        good = Response(200, b"known bounded metadata")
+        sequence("http-recovery", [Response(503, b""), good], 0, [2])
+        sequence("timeout-recovery", [TimeoutError(), good], 0, [2])
+        sequence(
+            "http-error-recovery", [common.http.client.HTTPException(), good], 0, [2]
+        )
+        sequence(
+            "all-transient-statuses",
+            [Response(s, b"") for s in (500, 502, 503, 504)] + [good],
+            0,
+            [2, 4, 8, 16],
+        )
+        sequence("http-exhausted", [Response(503, b"")] * 5, 2, [2, 4, 8, 16])
+        sequence("transport-exhausted", [TimeoutError()] * 5, 2, [2, 4, 8, 16])
+        sequence("certificate-refused", [common.ssl.SSLCertVerificationError()], 2, [])
+        sequence("tls-refused", [common.ssl.SSLError()], 2, [])
+        sequence("redirect-refused", [Response(302, b"")], 2, [])
+        sequence("not-found-refused", [Response(404, b"")], 2, [])
+        sequence("empty-refused", [Response(200, b"")], 2, [])
+        sequence("oversized-refused", [Response(200, b"x" * 101)], 2, [])
     finally:
         common.http.client.HTTPSConnection = original_connection
+        common.time.sleep = original_sleep
     control(
         "snapshot-empty-CA-archive-refused", lambda: common.snapshot_ca_bundle(b""), 2
     )
+    control("source-selector-without-capture-state", lambda: common.selector(a), 0)
+    # Exercise cleanup's success path before any protocol/refusal fixture.
+    cid = a.scratch / "synthetic-container.cid"
+    cid.write_text("a" * 64)
+    original_command, original_sleep = common.command, common.time.sleep
+    answers, calls = [], []
+
+    def docker_control(args, timeout=60):
+        calls.append((args, timeout))
+        value = answers.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def cleanup_case(name, sequence, expected, stops):
+        answers[:] = sequence
+        calls.clear()
+        control(
+            "capture-cleanup-" + name, lambda: common.cleanup_capture(cid), expected
+        )
+        control(
+            "capture-cleanup-" + name + "-exact-target",
+            lambda: common.require(
+                sum(args[1] == "stop" for args, _ in calls) == stops
+                and all(args[-1] in ("id=" + "a" * 64, "a" * 64) for args, _ in calls)
+                and not answers
+            ),
+            0,
+        )
+
+    try:
+        common.command = docker_control
+        common.time.sleep = lambda _: None
+        active = ("a" * 64 + "\n").encode()
+        cleanup_case("absent-positive", [b""], 0, 0)
+        cleanup_case("active-positive", [active, active, b""], 0, 1)
+        cleanup_case("wrong-query-refused", [("b" * 64 + "\n").encode()], 2, 0)
+        cleanup_case("query-unavailable", [common.ProcessFailure(1)], 2, 0)
+        cleanup_case("stop-unavailable", [active, common.ProcessFailure(1)], 2, 1)
+        cleanup_case("retained-container-refused", [active] * 7, 2, 1)
+        cid.write_text("a" * 12)
+        cleanup_case("invalid-id-before-query", [], 2, 0)
+    finally:
+        common.command, common.time.sleep = original_command, original_sleep
+    if a.native_cleanup:
+        common.require(
+            sys.platform.startswith("linux") and os.getuid() != 0,
+            "native nonroot cleanup control required",
+        )
+        actual_cid = a.scratch / "actual-container.cid"
+        # Fetch only the immutable base before the deliberately short client timeout.
+        common.command(["/usr/bin/docker", "pull", common.BASE], timeout=600)
+
+        def native_cleanup():
+            try:
+                subprocess.run(
+                    [
+                        "/usr/bin/docker",
+                        "run",
+                        "--rm",
+                        "--cidfile",
+                        str(actual_cid),
+                        "--network",
+                        "none",
+                        "--read-only",
+                        "--cap-drop",
+                        "ALL",
+                        "--security-opt",
+                        "no-new-privileges",
+                        "--user",
+                        "1000:1000",
+                        "--memory",
+                        "64m",
+                        "--cpus",
+                        "1",
+                        "--pids-limit",
+                        "16",
+                        "--entrypoint",
+                        "/bin/sh",
+                        common.BASE,
+                        "-c",
+                        "printf ready; sleep 30",
+                    ],
+                    capture_output=True,
+                    timeout=2,
+                    check=False,
+                )
+                raise ValueError("native timeout control did not time out")
+            except subprocess.TimeoutExpired as error:
+                common.require(
+                    error.stdout == b"ready",
+                    "native started-container positive missing",
+                )
+            finally:
+                common.cleanup_capture(actual_cid)
+
+        control("capture-cleanup-actual-started-timeout", native_cleanup, 0)
     empty = a.scratch / "empty"
     empty.mkdir()
     (empty / "unexpected").mkdir()
@@ -392,6 +558,198 @@ def main():
         0,
     )
     caller._FAILURE_TRACKER = None
+    plan_dir = a.scratch / "download-plan-controls"
+    plan_dir.mkdir()
+    plan = plan_dir / "plan.txt"
+    awk = plan_dir / "plan.awk"
+    awk.write_text(common.DOWNLOAD_PLAN_AWK)
+    uri = "https://snapshot.ubuntu.com/ubuntu/20261013T060000Z/pool/main/p/perl/perl_1_all.deb"
+    positive = "'" + uri + "' perl_1_all.deb 512 SHA256:" + "a" * 64 + "\n"
+
+    def check_plan(text, expected=0):
+        plan.write_text(text)
+        result = subprocess.run(
+            ["/usr/bin/awk", "-f", str(awk), str(plan)],
+            capture_output=True,
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        common.require(
+            result.returncode == expected, "plan parser original exit differs"
+        )
+        if expected == 0:
+            values = common.download_plan(plan)
+            common.require(
+                result.stdout
+                == b"".join(
+                    str(value).encode("ascii") + b"\0"
+                    for row in values
+                    for value in (
+                        row["uri"],
+                        row["file"],
+                        row["size"],
+                        "SHA256:" + row["sha256"],
+                    )
+                ),
+                "plan arguments differ",
+            )
+        else:
+            common.require(result.stdout == b"", "invalid plan emitted arguments")
+            try:
+                common.download_plan(plan)
+            except ValueError:
+                return
+            raise ValueError("invalid plan accepted")
+
+    control(
+        "download-plan-positive-complete-argument-parity",
+        lambda: check_plan(positive),
+        0,
+    )
+    for name, text in (
+        ("wrong-host", positive.replace("snapshot.ubuntu.com", "example.com")),
+        ("http", positive.replace("https:", "http:")),
+        ("wrong-snapshot", positive.replace("20261013T060000Z", "20261014T060000Z")),
+        ("dot-traversal", positive.replace("/p/perl/", "/p/../")),
+        ("encoded-slash", positive.replace("perl_1_all.deb'", "perl%2f1_all.deb'")),
+        ("shell-value", positive.replace("perl_1_all.deb 512", "$(id).deb 512")),
+        ("nested-file", positive.replace("' perl_1_all.deb", "' ../perl.deb")),
+        ("duplicate-name", positive + positive),
+        ("weak-hash", positive.replace("SHA256:", "MD5Sum:")),
+        ("short-hash", positive[:-2] + "\n"),
+        ("zero-size", positive.replace(" 512 ", " 0 ")),
+        ("negative-size", positive.replace(" 512 ", " -1 ")),
+        ("file-bound", positive.replace(" 512 ", " 200000001 ")),
+        ("extra-field", positive.rstrip() + " extra\n"),
+        ("empty", "Reading package lists...\n"),
+        (
+            "total-bound",
+            "".join(
+                positive.replace(
+                    "' perl_1_all.deb", "' perl_" + str(i) + "_all.deb"
+                ).replace(" 512 ", " 200000000 ")
+                for i in range(6)
+            ),
+        ),
+        (
+            "count-bound",
+            "".join(
+                positive.replace("' perl_1_all.deb", "' perl_" + str(i) + "_all.deb")
+                for i in range(1101)
+            ),
+        ),
+    ):
+        control(
+            "download-plan-" + name + "-refused-without-arguments",
+            lambda text=text: check_plan(text, 2),
+            0,
+        )
+    status_dir = a.scratch / "capture-status-controls"
+    status_dir.mkdir()
+    control(
+        "capture-status-unstarted",
+        lambda: common.require(
+            common.capture_status(status_dir, "download")
+            == {"state": "not_run", "exit": None}
+        ),
+        0,
+    )
+    (status_dir / "download.started").write_bytes(b"1\n")
+    control(
+        "capture-status-started-timeout",
+        lambda: common.require(
+            common.capture_status(status_dir, "download")
+            == {"state": "unavailable", "exit": None}
+        ),
+        0,
+    )
+    (status_dir / "download.exit").write_bytes(b"123\n")
+    control(
+        "capture-status-original-parallel-exit",
+        lambda: common.require(
+            common.capture_status(status_dir, "download")
+            == {"state": "executed", "exit": 123}
+        ),
+        0,
+    )
+    (status_dir / "download.exit").write_bytes(b"1000\n")
+    control(
+        "capture-status-out-of-range",
+        lambda: common.capture_status(status_dir, "download"),
+        2,
+    )
+    (status_dir / "download.started").write_bytes(b"0\n")
+    control(
+        "capture-status-marker-substitution",
+        lambda: common.capture_status(status_dir, "download"),
+        2,
+    )
+    interrupted = a.scratch / "interrupted-capture-controls"
+    (interrupted / "status").mkdir(parents=True)
+    for name in ("setup", "update", "download"):
+        (interrupted / "status" / (name + ".started")).write_bytes(b"1\n")
+    for name in ("setup", "update"):
+        (interrupted / "status" / (name + ".exit")).write_bytes(b"0\n")
+    process = {"downloads": [], "download_plan_sha256": None}
+    common.observe_capture_process(interrupted, process)
+    control(
+        "capture-observe-completed-before-timeout",
+        lambda: common.require(
+            process["stages"]["setup"]
+            == process["stages"]["update"]
+            == {"state": "executed", "exit": 0}
+            and process["stages"]["download"] == {"state": "unavailable", "exit": None}
+            and process["stages"]["select"]
+            == process["stages"]["restore"]
+            == {"state": "not_run", "exit": None}
+        ),
+        0,
+    )
+    (interrupted / "status/plan.started").write_bytes(b"1\n")
+    (interrupted / "status/plan.exit").write_bytes(b"0\n")
+    (interrupted / "download-plan.txt").write_text(positive)
+    (interrupted / "download-args").write_bytes(
+        b"\0".join((uri.encode(), b"perl_1_all.deb", b"512", b"SHA256:" + b"a" * 64))
+        + b"\0"
+    )
+    workers = interrupted / "status/workers"
+    workers.mkdir()
+    (workers / "perl_1_all.deb.started").write_bytes(b"1\n")
+    (workers / "perl_1_all.deb.exit").write_bytes(b"2\n")
+
+    def observed_worker():
+        receipt = {"downloads": [], "download_plan_sha256": None}
+        common.observe_capture_process(interrupted, receipt)
+        return receipt["downloads"][0]
+
+    control(
+        "capture-worker-prelaunch-refusal-is-not-APT",
+        lambda: common.require(
+            observed_worker()["apt"] == {"state": "not_run", "exit": None}
+            and observed_worker()["result"] == {"state": "executed", "exit": 2}
+        ),
+        0,
+    )
+    (workers / "perl_1_all.deb.apt.started").write_bytes(b"1\n")
+    control(
+        "capture-worker-started-APT-without-terminal-unavailable",
+        lambda: common.require(
+            observed_worker()["apt"] == {"state": "unavailable", "exit": None}
+        ),
+        0,
+    )
+    (workers / "perl_1_all.deb.apt.exit").write_bytes(b"100\n")
+    (workers / "perl_1_all.deb.exit").write_bytes(b"100\n")
+    control(
+        "capture-worker-original-APT-refusal-retained",
+        lambda: common.require(
+            observed_worker()["apt"]
+            == observed_worker()["result"]
+            == {"state": "executed", "exit": 100}
+        ),
+        0,
+    )
     result = {
         "schema": "aelira-latexml-ci-portable-controls-v1",
         "source_kind": "synthetic",
