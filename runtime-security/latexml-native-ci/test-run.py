@@ -270,13 +270,12 @@ def main():
                 )
                 raise ValueError("native timeout control did not time out")
             except subprocess.TimeoutExpired as error:
-                try:
-                    common.require(
-                        error.stdout == b"ready",
-                        "native started-container positive missing",
-                    )
-                finally:
-                    common.cleanup_capture(actual_cid)
+                common.require(
+                    error.stdout == b"ready",
+                    "native started-container positive missing",
+                )
+            finally:
+                common.cleanup_capture(actual_cid)
 
         control("capture-cleanup-actual-started-timeout", native_cleanup, 0)
     empty = a.scratch / "empty"
