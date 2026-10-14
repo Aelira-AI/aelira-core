@@ -6,7 +6,7 @@ on:
       - 'runtime-security/gnutls-upn-observation/**'
       - '.github/workflows/gnutls-upn-observation.yml'
   push:
-    branches: [main, codex/gnutls-upn-native, codex/gnutls-upn-lexical, codex/gnutls-upn-baselines, codex/gnutls-upn-paths]
+    branches: [main, codex/gnutls-upn-native, codex/gnutls-upn-lexical, codex/gnutls-upn-baselines, codex/gnutls-upn-paths, codex/gnutls-upn-at]
     paths:
       - 'runtime-security/gnutls-upn-observation/**'
       - '.github/workflows/gnutls-upn-observation.yml'
@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         runner: [windows-2022, windows-2025]
-        experiment: [sentinels, lexical, baselines, paths]
+        experiment: [sentinels, lexical, baselines, paths, at]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -43,8 +43,8 @@ jobs:
           $tree = (& git rev-parse 'HEAD^{tree}').Trim()
           if ($revision -ne $env:GITHUB_SHA -or (& git status --porcelain)) { throw 'Clean exact checkout required' }
           $component = Join-Path $env:GITHUB_WORKSPACE 'runtime-security/gnutls-upn-observation'
-          if ($env:OBSERVATION_EXPERIMENT -notin @('sentinels', 'lexical', 'baselines', 'paths')) { throw 'Known experiment required' }
-          $fixtures = Join-Path $component $(if ($env:OBSERVATION_EXPERIMENT -eq 'paths') { 'path-fixtures' } elseif ($env:OBSERVATION_EXPERIMENT -eq 'baselines') { 'baseline-fixtures' } elseif ($env:OBSERVATION_EXPERIMENT -eq 'lexical') { 'lexical-fixtures' } else { 'fixtures' })
+          if ($env:OBSERVATION_EXPERIMENT -notin @('sentinels', 'lexical', 'baselines', 'paths', 'at')) { throw 'Known experiment required' }
+          $fixtures = Join-Path $component $(if ($env:OBSERVATION_EXPERIMENT -eq 'at') { 'at-fixtures' } elseif ($env:OBSERVATION_EXPERIMENT -eq 'paths') { 'path-fixtures' } elseif ($env:OBSERVATION_EXPERIMENT -eq 'baselines') { 'baseline-fixtures' } elseif ($env:OBSERVATION_EXPERIMENT -eq 'lexical') { 'lexical-fixtures' } else { 'fixtures' })
           $evidence = Join-Path $env:RUNNER_TEMP 'upn-public-observation'
           $controls = Join-Path $env:RUNNER_TEMP 'upn-input-controls'
           if ((Test-Path $evidence) -or (Test-Path $controls)) { throw 'New output directories required' }
