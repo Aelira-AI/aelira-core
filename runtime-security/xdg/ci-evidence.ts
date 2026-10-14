@@ -166,6 +166,7 @@ export async function exportEvidence(options: Options): Promise<any> {
     }
     const builders: Record<string, string> = Object.create(null);
     const scratch = await mkdtemp(join(tmpdir(), 'xdg-image-replay-'));
+    const comparisonArchives: string[] = [];
     async function validateImage(image: string, base: string, archive: string, exportName: string): Promise<void> {
       assert(/^sha256:[a-f0-9]{64}$/.test(image), 'Invalid immutable image ID');
       assert((await command('docker', ['image', 'inspect', '--format', '{{.Architecture}}', image])).toString().trim() === options.arch, 'Image architecture mismatch');
@@ -173,15 +174,12 @@ export async function exportEvidence(options: Options): Promise<any> {
       const layers = json(await command('docker', ['image', 'inspect', '--format', '{{json .RootFS.Layers}}', image])).value;
       assert(Array.isArray(baseLayers) && baseLayers.length > 0 && Array.isArray(layers) && same(layers.slice(0, baseLayers.length), baseLayers), 'Image base ancestry mismatch');
       const captured = await regular(options.source, archive);
-      const identity = await hashFile(captured);
-      const fresh = join(scratch, 'image-comparison.tar');
+      const fresh = join(scratch, exportName.replaceAll('/', '-'));
       await command('docker', ['save', image, '-o', fresh], 300_000);
       await imageIdentity(captured, image, options.arch);
       assert(same(await imageContents(captured), await imageContents(fresh)), 'Saved image differs from actual immutable image');
-      await copy(exportName, identity, captured);
-      // The complete producer archive remains preserved; only this successful
-      // temporary comparison copy is emptied before comparing the next image.
-      await writeFile(fresh, Buffer.alloc(0));
+      await copy(exportName, undefined, fresh);
+      comparisonArchives.push(fresh);
     }
     phase = 'builders';
     for (const role of ['source', 'client'] as const) {
@@ -277,6 +275,9 @@ export async function exportEvidence(options: Options): Promise<any> {
       await copyFile(sources[name], target);
       assert(same(await hashFile(target), identity), 'Changed evidence during copy');
     }
+    // Complete producer archives and failed comparisons stay preserved. Only
+    // successful temporary comparison copies are emptied after verified export.
+    for (const path of comparisonArchives) await writeFile(path, Buffer.alloc(0));
     receipt.status = 'pass'; phase = 'complete';
   } catch (error) {
     receipt.error_type = error instanceof Error ? error.name : 'Error';
