@@ -1,4 +1,5 @@
-import { copyFile, link, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { assert, command, hashFile, hashManifest, imageContents, json, regular, same, small } from './evidence-core.ts';
 import { CLIENT_CASES, EXPORT_CONTROLS, OUTPUTS, RECIPE, SOURCE_FILES, exportEvidence } from './ci-evidence.ts';
@@ -12,9 +13,12 @@ for (let i = 2; i < process.argv.length; i += 2) {
 }
 assert(['source', 'repo', 'scratch', 'dest', 'arch'].every(k => k in values), 'Missing test arguments');
 const source = resolve(values.source), repo = resolve(values.repo), scratch = resolve(values.scratch), dest = resolve(values.dest);
+try { await lstat(dest); throw new Error('Existing evidence destination'); }
+catch (error: any) { if (error.code !== 'ENOENT') throw error; }
 await mkdir(scratch, { mode: 0o700 });
 const options = { source, repo, arch: values.arch, revision: (await command('git', ['-C', repo, 'rev-parse', 'HEAD'])).toString().trim(), tree: (await command('git', ['-C', repo, 'rev-parse', 'HEAD^{tree}'])).toString().trim(), buildExit: 0 };
 const controls: string[] = [];
+let phase = 'real-export';
 async function refused(name: string, action: () => unknown | Promise<unknown>): Promise<void> {
   let blocked = false; try { await action(); } catch { blocked = true; }
   assert(blocked, 'Refusal did not fire: ' + name); controls.push(name);
@@ -37,12 +41,14 @@ async function archive(name: string, data: Buffer): Promise<string> {
 }
 
 // A real successful export establishes the success path before refusal claims.
+try {
 const good = await exportEvidence({ ...options, dest });
 assert(good.status === 'pass', 'Real export failed in phase ' + good.phase);
 controls.push('real-native-complete-export');
 assert(Object.keys(good.files).length > 400, 'Incomplete real closure');
 for (const [name, identity] of Object.entries(good.files)) assert(same(await hashFile(await regular(dest, name)), identity), 'Exported byte mismatch');
 controls.push('all-exported-bytes-rehashed');
+phase = 'contracts';
 await refused('existing-export-preserved', () => exportEvidence({ ...options, dest }));
 assert(same(json(await small(dest, 'component.json')).value, good), 'Existing evidence changed');
 
@@ -74,6 +80,7 @@ const localNames = ['build-status.json', 'recipe-sha256.txt', 'client-console-pr
   ...['a', 'b'].flatMap(a => ['source-controls.json', 'source-receipt.json', 'console-private.log', ...OUTPUTS.map(n => 'packages/' + n)].map(n => `build-${a}/` + n)),
   'installed/frontend-controls.json', ...CLIENT_CASES.flatMap(n => [`installed/${n}-result.json`, `installed/${n}-handoff.log`])];
 let attempt = 0;
+phase = 'local-refusals';
 async function mutation(name: string, phase: string, target: string | null, change: (data: Buffer) => Buffer, override: Record<string, unknown> = {}, provenance = false): Promise<void> {
   const root = join(scratch, 'mutation-' + attempt++); await mkdir(root);
   for (const file of localNames) {
@@ -90,9 +97,9 @@ async function mutation(name: string, phase: string, target: string | null, chan
         if (entry.isDirectory()) {
           assert(['apt-lists', 'toolchain-debs'].includes(entry.name), 'Unexpected provenance directory');
           await mkdir(join(root, name));
-          for (const leaf of await readdir(join(source, name))) await link(await regular(source, name + '/' + leaf), join(root, name, leaf));
+          for (const leaf of await readdir(join(source, name))) await copyFile(await regular(source, name + '/' + leaf), join(root, name, leaf), constants.COPYFILE_FICLONE);
         } else if (name === target) await writeFile(join(root, name), change(await readFile(await regular(source, name))));
-        else await link(await regular(source, name), join(root, name));
+        else if (entry.name !== 'builder.tar' || (role === 'source' && !target?.startsWith('source-provenance/'))) await copyFile(await regular(source, name), join(root, name), constants.COPYFILE_FICLONE);
       }
     }
   }
@@ -137,6 +144,7 @@ for (const role of ['source', 'client']) {
   }
 }
 controls.push('all-real-apt-and-deb-manifests');
+phase = 'manifest-contracts';
 const hashes = { 'one.deb': { sha256: 'a'.repeat(64), size: 1 }, 'two.deb': { sha256: 'b'.repeat(64), size: 2 } };
 const manifest = Buffer.from(`${hashes['one.deb'].sha256}  ./one.deb\n${hashes['two.deb'].sha256}  ./two.deb\n`);
 hashManifest(manifest, hashes);
@@ -147,10 +155,24 @@ await refused('auxiliary-hash-byte-drift', () => hashManifest(Buffer.from(manife
 for (const [name, target] of [
   ['exporter-apt-capture-comment', 'source-provenance/apt-index-sha256.txt'],
   ['exporter-deb-capture-comment', 'client-provenance/toolchain-debs.sha256'],
-]) await mutation(name, 'signed-inputs', target, d => Buffer.concat([d, Buffer.from('# unexpected metadata\n')]), {}, true);
+]) {
+  phase = name;
+  await mutation(name, 'signed-inputs', target, d => Buffer.concat([d, Buffer.from('# unexpected metadata\n')]), {}, true);
+}
 const receipt = { schema: 'aelira-xdg-export-controls-v1', status: 'pass', count: controls.length, controls };
 assert(same(controls, EXPORT_CONTROLS), 'Export control closure changed');
 await writeFile(join(dest, 'export-controls.json'), JSON.stringify(receipt, null, 2) + '\n');
 good.files['export-controls.json'] = await hashFile(join(dest, 'export-controls.json'));
 await writeFile(join(dest, 'component.json'), JSON.stringify(good, null, 2) + '\n');
 console.log(JSON.stringify(receipt));
+} catch (error: any) {
+  const status = { schema: 'aelira-xdg-export-test-failure-v1', status: 'fail', phase,
+    completed: controls, count: controls.length, error_type: error instanceof Error ? error.name : 'Error',
+    error_code: ['EPERM', 'EACCES', 'EXDEV', 'ENOENT', 'EEXIST', 'ENOSPC'].includes(error?.code) ? error.code : null };
+  await writeFile(join(dest, 'export-test-failure.json'), JSON.stringify(status, null, 2) + '\n');
+  const component = json(await small(dest, 'component.json')).value;
+  if (component.status === 'pass') { component.status = 'fail'; component.phase = 'export-controls'; }
+  component.files['export-test-failure.json'] = await hashFile(join(dest, 'export-test-failure.json'));
+  await writeFile(join(dest, 'component.json'), JSON.stringify(component, null, 2) + '\n');
+  console.log(JSON.stringify(status)); process.exitCode = 1;
+}

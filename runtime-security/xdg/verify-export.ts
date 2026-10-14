@@ -14,7 +14,8 @@ assert(['source', 'repo', 'arch', 'revision', 'tree'].every(k => k in values), '
 const source = resolve(values.source), repo = resolve(values.repo);
 const parsed = json(await small(source, 'component.json')), receipt = parsed.value;
 if (process.env.AELIRA_XDG_CI_EXIT !== undefined && process.env.AELIRA_XDG_CI_EXIT !== '0') {
-  receipt.status = 'fail'; receipt.phase = 'export-controls';
+  if (receipt.status === 'pass') receipt.phase = 'export-controls';
+  receipt.status = 'fail';
   await writeFile(join(source, 'component.json'), JSON.stringify(receipt, null, 2) + '\n');
 }
 assert(receipt.schema === 'aelira-xdg-native-evidence-v1' && receipt.status === 'pass' && receipt.phase === 'complete' && parsed.integers.has('/build_exit') && receipt.build_exit === 0, 'Incomplete component');
