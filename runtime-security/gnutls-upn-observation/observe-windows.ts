@@ -91,10 +91,14 @@ try {
       checked(issuers, 'CertOpenStore-issuers');
       checked(crypt.CertAddCertificateContextToStore(anchor, contexts.get('root'), 1, null), 'CertAddCertificateContextToStore-anchor');
       checked(crypt.CertAddCertificateContextToStore(issuers, contexts.get(row.issuer), 1, null), 'CertAddCertificateContextToStore-issuer');
+      const additionalStores = aligned(8); additionalStores[0] = issuers;
       const config = aligned(88), configView = data(config);
-      configView.setUint32(0, 88, true); configView.setBigUint64(16, anchor, true); configView.setBigUint64(24, issuers, true);
+      // The SDK makes exclusive and restricted stores mutually exclusive.
+      configView.setUint32(0, 88, true); configView.setUint32(32, 1, true);
+      configView.setBigUint64(40, BigInt(ptr(additionalStores)), true);
       configView.setUint32(48, 4 | 0x2000, true); configView.setBigUint64(64, anchor, true);
       checked(crypt.CertCreateCertificateChainEngine(config, engineOutput), 'CertCreateCertificateChainEngine');
+      if (additionalStores[0] !== issuers) throw new Error('Additional issuer store changed');
       const parameters = aligned(96); data(parameters).setUint32(0, 96, true);
       data(parameters).setUint32(16, 1, true); data(parameters).setBigUint64(24, BigInt(ptr(usagePointers)), true);
       const chainOutput = aligned(8);
@@ -156,7 +160,7 @@ const result = { schema: 'aelira-native-windows-upn-observation-v1', status,
   manifest_sha256: sha(manifestBytes), observer_sha256: sha(await readFile(import.meta.path)), architecture: process.arch, bun_version: Bun.version,
   os_version: [4, 8, 12].map(n => data(version).getUint32(n, true)), user_lcid: kernel.GetUserDefaultLCID(), system_lcid: kernel.GetSystemDefaultLCID(),
   crypt32_sha256: sha(await readFile(cryptoPath)), crypt32_version: [ms >>> 16, ms & 65535, ls >>> 16, ls & 65535], fixed_validation_time: manifest.fixed_validation_time,
-  engine_flags: 4 | 0x2000, chain_flags: flags, policy_id: 1, policy_ignore_flags: 0, requested_usage_oid: usageOID.toString().slice(0, -1), exclusive_synthetic_anchor: true, cases: rows,
+  engine_flags: 4 | 0x2000, chain_flags: flags, policy_id: 1, policy_ignore_flags: 0, requested_usage_oid: usageOID.toString().slice(0, -1), exclusive_synthetic_anchor: true, restricted_stores: false, additional_issuer_store: true, cases: rows,
   scope: 'Empirical native Windows observations; no universal UPN matcher or GnuTLS repair acceptance' };
 await writeFile(resolve(output), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
 console.log(JSON.stringify({ schema: result.schema, status: result.status, cases: rows.length, os_version: result.os_version }));
