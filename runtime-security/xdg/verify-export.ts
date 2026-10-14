@@ -1,7 +1,7 @@
 import { readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { assert, hashFile, imageIdentity, json, keys, pathName, regular, same, small } from './evidence-core.ts';
-import { CLIENT_CASES, RECIPE } from './ci-evidence.ts';
+import { CLIENT_CASES, EXPORT_CONTROLS, RECIPE } from './ci-evidence.ts';
 import { clientCase } from './client-contract.ts';
 
 const values: Record<string, string> = Object.create(null);
@@ -30,12 +30,15 @@ for (const name of names) {
   total += row.size; assert(total <= 5 * 1024 ** 3, 'Component exceeds bound');
   assert(same(await hashFile(await regular(source, name)), row), 'Changed component bytes');
 }
-async function walk(prefix = ''): Promise<string[]> {
+let visited = 0;
+async function walk(prefix = '', depth = 0): Promise<string[]> {
+  assert(depth <= 16, 'Component directory depth bound');
   const paths: string[] = [];
   for (const item of await readdir(join(source, prefix), { withFileTypes: true })) {
+    assert(++visited <= 2000, 'Component directory entry bound');
     assert(!item.isSymbolicLink(), 'Component symlink');
     const name = prefix + item.name;
-    if (item.isDirectory()) paths.push(...await walk(name + '/'));
+    if (item.isDirectory()) paths.push(...await walk(name + '/', depth + 1));
     else { assert(item.isFile(), 'Unexpected component file kind'); paths.push(name); }
     assert(paths.length <= 1500, 'Component path bound');
   }
@@ -46,7 +49,7 @@ for (const name of RECIPE) assert(same(await hashFile(await regular(source, 'fro
 for (const name of ['ci-evidence.ts', 'evidence-core.ts', 'client-contract.ts', 'test-ci-evidence.ts', 'verify-export.ts']) assert(same(await hashFile(await regular(source, 'export-tools/' + name)), await hashFile(await regular(join(repo, 'runtime-security/xdg'), name))), 'Wrong export source');
 assert(same(await hashFile(await regular(source, 'export-tools/ci-workflow.yml')), await hashFile(await regular(repo, '.github/workflows/ci.yml'))), 'Wrong workflow source');
 const controls = json(await small(source, 'export-controls.json'));
-assert(controls.value.schema === 'aelira-xdg-export-controls-v1' && controls.value.status === 'pass' && controls.integers.has('/count') && controls.value.count === controls.value.controls.length && controls.value.count > 40 && new Set(controls.value.controls).size === controls.value.count && controls.value.controls.includes('real-native-complete-export') && controls.value.controls.includes('all-real-compose-case-oracles'), 'Incomplete export controls');
+assert(controls.value.schema === 'aelira-xdg-export-controls-v1' && controls.value.status === 'pass' && controls.integers.has('/count') && controls.value.count === EXPORT_CONTROLS.length && same(controls.value.controls, EXPORT_CONTROLS), 'Incomplete export controls');
 for (const name of CLIENT_CASES) clientCase(name, json(await small(source, `installed/${name}-result.json`)).value);
 const sourceLayers = await imageIdentity(await regular(source, 'source-provenance/builder.tar'), receipt.builders.source, values.arch);
 const clientLayers = await imageIdentity(await regular(source, 'client-provenance/builder.tar'), receipt.builders.client, values.arch);

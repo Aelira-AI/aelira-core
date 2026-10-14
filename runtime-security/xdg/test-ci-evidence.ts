@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { assert, command, hashFile, imageContents, json, regular, same, small } from './evidence-core.ts';
-import { CLIENT_CASES, OUTPUTS, RECIPE, SOURCE_FILES, exportEvidence } from './ci-evidence.ts';
+import { CLIENT_CASES, EXPORT_CONTROLS, OUTPUTS, RECIPE, SOURCE_FILES, exportEvidence } from './ci-evidence.ts';
 import { clientCase } from './client-contract.ts';
 
 const values: Record<string, string> = Object.create(null);
@@ -115,6 +115,7 @@ await symlink(join(source, 'build-status.json'), join(scratch, 'symlink.json'));
 await refused('evidence-symlink', () => regular(scratch, 'symlink.json'));
 await refused('evidence-path-traversal', () => regular(scratch, '../outside'));
 const receipt = { schema: 'aelira-xdg-export-controls-v1', status: 'pass', count: controls.length, controls };
+assert(same(controls, EXPORT_CONTROLS), 'Export control closure changed');
 await writeFile(join(dest, 'export-controls.json'), JSON.stringify(receipt, null, 2) + '\n');
 good.files['export-controls.json'] = await hashFile(join(dest, 'export-controls.json'));
 await writeFile(join(dest, 'component.json'), JSON.stringify(good, null, 2) + '\n');

@@ -27,6 +27,19 @@ export const CLIENT_CASES = ['plain', 'literal-text', 'apostrophe-recipient', 'm
   'quoted-local-part', 'multiple-explicit-attachments', 'kde-generic-attachment-fallback',
   'uri-lf-body', 'encoded-recipient-list', 'recipient-percent-once', 'uri-attachment-refused', 'empty-to-with-cc'];
 export const CLIENT_CONTROLS = [...CLIENT_CASES, 'raw-crlf-front-refused', 'terminal-lf-front-refused', 'explicit-attachment-mailer-refused'];
+export const EXPORT_CONTROLS = ['real-native-complete-export', 'all-exported-bytes-rehashed',
+  'existing-export-preserved', ...[3, 4, 5, 6, 7, 8].map(n => 'strict-json:' + n),
+  'integer-token-contract', 'benign-image-order-and-time', 'image-path-traversal',
+  'image-absolute-path', 'image-symlink', 'image-duplicate-member', 'image-truncation',
+  'image-nonzero-trailer', 'image-header-checksum', 'image-payload-identity',
+  'wrong-revision', 'wrong-tree', 'failed-build-exit', 'unsupported-architecture',
+  'typed-build-exit:false', 'typed-build-exit:0.0', 'typed-build-exit:0e0',
+  'incomplete-build', 'changed-recipe', 'changed-authenticated-source', 'unequal-package-pair',
+  'source-receipt-byte-forgery', 'missing-source-control', 'float-source-control-count',
+  'native-log-missing-footer', 'client-claim-drift', 'physical-compose-body-drift',
+  'physical-compose-recipient-drift', 'physical-compose-attachment-drift',
+  'physical-compose-parser-drift', 'physical-refusal-exit-drift',
+  'all-real-compose-case-oracles', 'evidence-symlink', 'evidence-path-traversal'];
 const SCRIPT = '61f66c933cf71ab2786ded6d7038c748406bea5e309af0cd6b737f93fa1cdc26';
 const VERSION = '1.2.1-2ubuntu2+aelira2';
 const CLIENT_VERSION = '1:140.17.0esr-1~deb13u1';
@@ -156,11 +169,16 @@ export async function exportEvidence(options: Options): Promise<any> {
       const baseLayers = json(await command('docker', ['image', 'inspect', '--format', '{{json .RootFS.Layers}}', base])).value;
       const layers = json(await command('docker', ['image', 'inspect', '--format', '{{json .RootFS.Layers}}', image])).value;
       assert(Array.isArray(baseLayers) && baseLayers.length > 0 && Array.isArray(layers) && same(layers.slice(0, baseLayers.length), baseLayers), 'Image base ancestry mismatch');
-      const fresh = join(scratch, exportName.replaceAll('/', '-'));
+      const captured = await regular(options.source, archive);
+      const identity = await hashFile(captured);
+      const fresh = join(scratch, 'image-comparison.tar');
       await command('docker', ['save', image, '-o', fresh], 300_000);
-      await imageIdentity(await regular(options.source, archive), image, options.arch);
-      assert(same(await imageContents(await regular(options.source, archive)), await imageContents(fresh)), 'Saved image differs from actual immutable image');
-      await copy(exportName, undefined, fresh);
+      await imageIdentity(captured, image, options.arch);
+      assert(same(await imageContents(captured), await imageContents(fresh)), 'Saved image differs from actual immutable image');
+      await copy(exportName, identity, captured);
+      // The complete producer archive remains preserved; only this successful
+      // temporary comparison copy is emptied before comparing the next image.
+      await writeFile(fresh, Buffer.alloc(0));
     }
     phase = 'builders';
     for (const role of ['source', 'client'] as const) {
