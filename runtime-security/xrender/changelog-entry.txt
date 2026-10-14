@@ -1,0 +1,8 @@
+libxrender (1:0.9.12-1build1+aelira1) resolute; urgency=medium
+
+  * Backport upstream 0564bce to bound QueryFormats subpixel counts
+    by the allocated screen count (CVE-2026-88807).
+  * Preserve the Ubuntu source configuration, features, and ABI.
+
+ -- Aelira Core maintainers <security@aelira.ai>  Tue, 13 Oct 2026 00:00:00 +0000
+

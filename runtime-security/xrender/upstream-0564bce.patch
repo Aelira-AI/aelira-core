@@ -1,0 +1,12 @@
+diff --git a/src/Xrender.c b/src/Xrender.c
+index 3080d0046154a2bae604bcbde9c8c041904a3cdb..5cdd4371fa519bc9995908be6a6f271b200f659d 100644
+--- a/src/Xrender.c
++++ b/src/Xrender.c
+@@ -478,6 +478,7 @@ XRenderQueryFormats (Display *dpy)
+ 	(rep.numDepths  < ((INT_MAX / 4) / sizeof (XRenderDepth))) &&
+ 	(rep.numVisuals < ((INT_MAX / 4) / sizeof (XRenderVisual))) &&
+ 	(rep.numSubpixel < ((INT_MAX / 4) / 4)) &&
++	(rep.numSubpixel <= rep.numScreens) &&
+ 	(rep.length < (INT_MAX >> 2)) ) {
+         /* Zero-initialize so that pointers are NULL if there is a failure. */
+ 	xri = Xcalloc (1, sizeof (XRenderInfo));
