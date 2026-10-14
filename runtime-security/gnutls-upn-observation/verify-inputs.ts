@@ -16,16 +16,17 @@ export async function verifyInputs(root: string) {
   const raw = await regular(join(root, 'manifest.json'), 65_536);
   const digest = sha(raw);
   const lexical = digest === 'e1d96b1c056fdf553a3629c6193018eb4d2bbe104a7e5a36178e219c7852731d';
-  if (!lexical && digest !== '00bee665853ba68fb12e0ed547f61933e547f43c9da2114d6f39681b55a05b19') throw new Error('Frozen manifest changed');
+  const baselines = digest === '8fb7659eeedc63059fbd7a78f3804d0de5b73495b8167ab19bf8d73c29cf3e67';
+  if (!lexical && !baselines && digest !== '00bee665853ba68fb12e0ed547f61933e547f43c9da2114d6f39681b55a05b19') throw new Error('Frozen manifest changed');
   const manifest = JSON.parse(raw.toString());
   const names = Object.keys(manifest.certificates);
-  const ids = lexical ? ['A0','A1',...Array.from({length:32},(_,i)=>'B'+i)] : ['A0','A1','A2','A3','A4','A5','A6','A7'];
-  if (names.length !== (lexical ? 68 : 13) || manifest.cases.map((c: any) => c.id).join(',') !== ids.join(',')) throw new Error('Frozen experiment contract');
-  const files = ['manifest.json', 'der-inspection.json', ...(lexical ? ['plan.json'] : []), ...names.map(n => manifest.certificates[n].file)].sort();
+  const ids = baselines ? ['A0','A1',...Array.from({length:11},(_,i)=>'C'+i)] : lexical ? ['A0','A1',...Array.from({length:32},(_,i)=>'B'+i)] : ['A0','A1','A2','A3','A4','A5','A6','A7'];
+  if (names.length !== (baselines ? 15 : lexical ? 68 : 13) || manifest.cases.map((c: any) => c.id).join(',') !== ids.join(',')) throw new Error('Frozen experiment contract');
+  const files = ['manifest.json', 'der-inspection.json', ...(lexical || baselines ? ['plan.json'] : []), ...names.map(n => manifest.certificates[n].file)].sort();
   if (JSON.stringify((await readdir(root)).sort()) !== JSON.stringify(files)) throw new Error('Exact fixture closure required');
   const inspection = await regular(join(root, 'der-inspection.json'), lexical ? 100_000 : 65_536);
-  if (sha(inspection) !== (lexical ? '5756730bb1c6947b03ed68c536a0b06d863e2c82bf86338653f44ae1f51a6500' : '4e732c656b44f72b38d554fc61dbbbeb8c788915c7e37565cdce538a98ee61e0')) throw new Error('Frozen DER inspection changed');
-  if (lexical && sha(await regular(join(root, 'plan.json'), 16_384)) !== '89551f701e5d0bd8ce40b8a52fac5fd2d4cc12bcd928c12d709cd33ce887d30f') throw new Error('Frozen lexical plan changed');
+  if (sha(inspection) !== (baselines ? '32d61c573daeec3824947b3dc17e2923b2d202a000797878c671c4925713e724' : lexical ? '5756730bb1c6947b03ed68c536a0b06d863e2c82bf86338653f44ae1f51a6500' : '4e732c656b44f72b38d554fc61dbbbeb8c788915c7e37565cdce538a98ee61e0')) throw new Error('Frozen DER inspection changed');
+  if ((lexical || baselines) && sha(await regular(join(root, 'plan.json'), 16_384)) !== (baselines ? 'f5f0c770ff9e97cedfa2687db6a7c2be3faecf293f31fd526ff20fdc9af1c542' : '89551f701e5d0bd8ce40b8a52fac5fd2d4cc12bcd928c12d709cd33ce887d30f')) throw new Error('Frozen experiment plan changed');
   const certificates = new Map<string, X509Certificate>();
   for (const name of names) {
     const expected = manifest.certificates[name];
