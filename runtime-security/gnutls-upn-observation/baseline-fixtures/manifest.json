@@ -1,0 +1,351 @@
+{
+  "schema": "aelira-upn-unconstrained-vectors-v1",
+  "plan_sha256": "f5f0c770ff9e97cedfa2687db6a7c2be3faecf293f31fd526ff20fdc9af1c542",
+  "generator_sha256": "828c45faa46ddb5474415bde4f1ae516eb7f4d3c6f6bb9fb37c7409fe9fc87db",
+  "original_manifest_sha256": "00bee665853ba68fb12e0ed547f61933e547f43c9da2114d6f39681b55a05b19",
+  "lexical_manifest_sha256": "e1d96b1c056fdf553a3629c6193018eb4d2bbe104a7e5a36178e219c7852731d",
+  "fixed_validation_time": "2026-10-14T16:25:09.000Z",
+  "certificates": {
+    "root": {
+      "file": "root.der",
+      "issuer": "root",
+      "sha256": "b4fc409f8cc0051a4a10f99a1f411906f144bad300f01f2d59a50803d870e8f3",
+      "size": 426,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "plain": {
+      "file": "plain.der",
+      "issuer": "root",
+      "sha256": "e2034444c978bcd092185f076653b261953889f3e114be068be50d98628d116f",
+      "size": 424,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unconstrained_allowed": {
+      "file": "unconstrained_allowed.der",
+      "issuer": "plain",
+      "sha256": "c8ab3b54e635ce7f6cc56f4cc517f4fdaf738244728257352e423b36e31f9e35",
+      "size": 490,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "unconstrained_blocked": {
+      "file": "unconstrained_blocked.der",
+      "issuer": "plain",
+      "sha256": "d76c6b6304aaaba67538bde5e0fe74519186eb6b66bf4b28c623bbc59c455499",
+      "size": 489,
+      "not_before": "2026-10-14T13:09:23.000Z",
+      "not_after": "2026-10-16T13:09:23.000Z"
+    },
+    "c00": {
+      "file": "c00.der",
+      "issuer": "plain",
+      "sha256": "21d2524d790cf8b9061ff680de182e56b8055fc7b00cf8e16a7a38c186c415a0",
+      "size": 489,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c01": {
+      "file": "c01.der",
+      "issuer": "plain",
+      "sha256": "5ec0347db6cf2525aff13e0a3393e81edf8923b6b51b63d81dce24d66fb4d98a",
+      "size": 488,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c02": {
+      "file": "c02.der",
+      "issuer": "plain",
+      "sha256": "95daa3f5d4f7ad57e7647dfc83572c02cbacaefe41656d40fe53ba794092b835",
+      "size": 489,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c03": {
+      "file": "c03.der",
+      "issuer": "plain",
+      "sha256": "e358bf9e254a1be736dc308d420f9b326df242c035547d527eaca4b3ded3738a",
+      "size": 488,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c04": {
+      "file": "c04.der",
+      "issuer": "plain",
+      "sha256": "ffcbfcc30dc23b07f77ead8255893e3602e3d453117a9d6587055934baae2302",
+      "size": 486,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c05": {
+      "file": "c05.der",
+      "issuer": "plain",
+      "sha256": "3347a925e6c09aa482bd4ce8998a2b644e29fcc9f5a0b599f9a2d32ceb53cf9b",
+      "size": 490,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c06": {
+      "file": "c06.der",
+      "issuer": "plain",
+      "sha256": "f7ea0bd051b9f1dfefcd6f390ee4ac22da3273679e773b22de9080a3bb54f91a",
+      "size": 485,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c07": {
+      "file": "c07.der",
+      "issuer": "plain",
+      "sha256": "6d8879c77ef7a386204f99dd97aafe3c9d89c3986e59819ebc37ed95c3b5a3b7",
+      "size": 486,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c08": {
+      "file": "c08.der",
+      "issuer": "plain",
+      "sha256": "3cfaa27c10a3f36e5fe8066c2ded8c052ab9acfb3b4ac4f368fc2c294e863a02",
+      "size": 495,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c09": {
+      "file": "c09.der",
+      "issuer": "plain",
+      "sha256": "f7d65004fdccb2f8a68334c15d97d0a3fb2f373152c6b2e056bc245ce0b3e69e",
+      "size": 493,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    },
+    "c10": {
+      "file": "c10.der",
+      "issuer": "plain",
+      "sha256": "ee1b598e08adee27405fcd57194e6bfd5f56f8c5ff56c9c9427cb803824e108d",
+      "size": 496,
+      "not_before": "2026-10-14T16:01:08.000Z",
+      "not_after": "2026-10-16T16:01:08.000Z"
+    }
+  },
+  "cases": [
+    {
+      "id": "A0",
+      "name": "unconstrained_allowed",
+      "issuer": "plain",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:allowed@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "unconstrained_allowed",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "A1",
+      "name": "unconstrained_blocked",
+      "issuer": "plain",
+      "san": "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:blocked@corp.example,DNS:localhost",
+      "original_expected": true,
+      "intended_path": [
+        "unconstrained_blocked",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C0",
+      "name": "c00",
+      "issuer": "plain",
+      "principal": "User@Corp.Example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B0",
+        "B16"
+      ],
+      "intended_path": [
+        "c00",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C1",
+      "name": "c01",
+      "issuer": "plain",
+      "principal": "user@Corp.Example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B1",
+        "B17"
+      ],
+      "intended_path": [
+        "c01",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C2",
+      "name": "c02",
+      "issuer": "plain",
+      "principal": "User@corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B2",
+        "B18"
+      ],
+      "intended_path": [
+        "c02",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C3",
+      "name": "c03",
+      "issuer": "plain",
+      "principal": "user@corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B3",
+        "B8",
+        "B12",
+        "B19",
+        "B24",
+        "B28"
+      ],
+      "intended_path": [
+        "c03",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C4",
+      "name": "c04",
+      "issuer": "plain",
+      "principal": "é@corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B4",
+        "B20"
+      ],
+      "intended_path": [
+        "c04",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C5",
+      "name": "c05",
+      "issuer": "plain",
+      "principal": "strasse@corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B5",
+        "B21"
+      ],
+      "intended_path": [
+        "c05",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C6",
+      "name": "c06",
+      "issuer": "plain",
+      "principal": "i@corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B6",
+        "B22"
+      ],
+      "intended_path": [
+        "c06",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C7",
+      "name": "c07",
+      "issuer": "plain",
+      "principal": "ς@corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B7",
+        "B23"
+      ],
+      "intended_path": [
+        "c07",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C8",
+      "name": "c08",
+      "issuer": "plain",
+      "principal": "user@child.corp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B9",
+        "B13",
+        "B25",
+        "B29"
+      ],
+      "intended_path": [
+        "c08",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C9",
+      "name": "c09",
+      "issuer": "plain",
+      "principal": "user@nearcorp.example",
+      "original_expected": null,
+      "lexical_cases": [
+        "B10",
+        "B14",
+        "B26",
+        "B30"
+      ],
+      "intended_path": [
+        "c09",
+        "plain",
+        "root"
+      ]
+    },
+    {
+      "id": "C10",
+      "name": "c10",
+      "issuer": "plain",
+      "principal": "user@corp.example.invalid",
+      "original_expected": null,
+      "lexical_cases": [
+        "B11",
+        "B15",
+        "B27",
+        "B31"
+      ],
+      "intended_path": [
+        "c10",
+        "plain",
+        "root"
+      ]
+    }
+  ],
+  "scope": "Healthy unconstrained counterparts for every distinct principal in the frozen lexical comparison; no matching-policy adoption",
+  "deferred": [
+    "general Unicode or case rules",
+    "Windows authoring-tool conversion",
+    "malformed or multiple names",
+    "path composition",
+    "self-issued transitions",
+    "APPEND serialization"
+  ]
+}

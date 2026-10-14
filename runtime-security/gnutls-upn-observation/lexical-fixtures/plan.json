@@ -1,0 +1,11 @@
+{
+  "schema": "aelira-upn-lexical-plan-v1",
+  "scope": "32 new empirical lexical vectors plus two unchanged healthy DER baselines; no normative comparator or GnuTLS oracle replacement",
+  "case_constraint": "User@Corp.Example",
+  "case_principals": ["User@Corp.Example", "user@Corp.Example", "User@corp.example", "user@corp.example"],
+  "unicode_pairs": [["é@corp.example", "é@corp.example"], ["straße@corp.example", "strasse@corp.example"], ["İ@corp.example", "i@corp.example"], ["Σ@corp.example", "ς@corp.example"]],
+  "namespace_constraints": ["corp.example", ".corp.example"],
+  "namespace_principals": ["user@corp.example", "user@child.corp.example", "user@nearcorp.example", "user@corp.example.invalid"],
+  "roles": ["permitted", "excluded"],
+  "deferred": ["at-prefixed bases", "wildcards", "other Unicode pairs", "malformed syntax", "multiple UPNs", "path composition", "self-issued transitions", "APPEND serialization"]
+}

@@ -1,0 +1,429 @@
+{
+  "schema": "aelira-upn-sentinel-der-inspection-v1",
+  "status": "pass",
+  "certificates": {
+    "root": {
+      "sha256": "b4fc409f8cc0051a4a10f99a1f411906f144bad300f01f2d59a50803d870e8f3",
+      "extensions": []
+    },
+    "plain": {
+      "sha256": "e2034444c978bcd092185f076653b261953889f3e114be068be50d98628d116f",
+      "extensions": []
+    },
+    "upn_excluded": {
+      "sha256": "578e8bc9f797d9322a324e6df204317fe48b3fc47d8a2fa0a9c28d349ac1f602",
+      "extensions": [
+        {
+          "oid_hex": "551d1e",
+          "critical": true,
+          "der_hex": "302aa1283026a024060a2b060104018237140203a0160c14626c6f636b656440636f72702e6578616d706c65",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "blocked@corp.example",
+              "utf8_hex": "626c6f636b656440636f72702e6578616d706c65",
+              "code_points": [
+                98,
+                108,
+                111,
+                99,
+                107,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "upn_permitted": {
+      "sha256": "9012d984f7e4932aafadbc08ccd35c1bdadcdbfcfbfc545594bb9d1d828ab678",
+      "extensions": [
+        {
+          "oid_hex": "551d1e",
+          "critical": true,
+          "der_hex": "302aa0283026a024060a2b060104018237140203a0160c14616c6c6f77656440636f72702e6578616d706c65",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "allowed@corp.example",
+              "utf8_hex": "616c6c6f77656440636f72702e6578616d706c65",
+              "code_points": [
+                97,
+                108,
+                108,
+                111,
+                119,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "unknown_constrained": {
+      "sha256": "1972474e094dfd0822059a1ee06ca761d828f22a27b1660073b1bdad248ccd63",
+      "extensions": [
+        {
+          "oid_hex": "551d1e",
+          "critical": true,
+          "der_hex": "3016a1143012a01006032a0304a0090c07626c6f636b6564",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2a0304"
+            },
+            {
+              "tag": 12,
+              "value": "blocked",
+              "utf8_hex": "626c6f636b6564",
+              "code_points": [
+                98,
+                108,
+                111,
+                99,
+                107,
+                101,
+                100
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "unconstrained_allowed": {
+      "sha256": "c8ab3b54e635ce7f6cc56f4cc517f4fdaf738244728257352e423b36e31f9e35",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "3031a024060a2b060104018237140203a0160c14616c6c6f77656440636f72702e6578616d706c6582096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "allowed@corp.example",
+              "utf8_hex": "616c6c6f77656440636f72702e6578616d706c65",
+              "code_points": [
+                97,
+                108,
+                108,
+                111,
+                119,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "unconstrained_blocked": {
+      "sha256": "d76c6b6304aaaba67538bde5e0fe74519186eb6b66bf4b28c623bbc59c455499",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "3031a024060a2b060104018237140203a0160c14626c6f636b656440636f72702e6578616d706c6582096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "blocked@corp.example",
+              "utf8_hex": "626c6f636b656440636f72702e6578616d706c65",
+              "code_points": [
+                98,
+                108,
+                111,
+                99,
+                107,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "upn_excluded_good": {
+      "sha256": "74d4f46f54215787172f2e27f3baad3aca5a54bf67da1d846d297fd447d64575",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "3031a024060a2b060104018237140203a0160c14616c6c6f77656440636f72702e6578616d706c6582096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "allowed@corp.example",
+              "utf8_hex": "616c6c6f77656440636f72702e6578616d706c65",
+              "code_points": [
+                97,
+                108,
+                108,
+                111,
+                119,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "upn_excluded_bad": {
+      "sha256": "82aa788fab15bcd6e3f091c3822340299bc2aa80a4bce8da28bac9b8aa326157",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "3031a024060a2b060104018237140203a0160c14626c6f636b656440636f72702e6578616d706c6582096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "blocked@corp.example",
+              "utf8_hex": "626c6f636b656440636f72702e6578616d706c65",
+              "code_points": [
+                98,
+                108,
+                111,
+                99,
+                107,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "upn_permitted_good": {
+      "sha256": "dcd00741f4b4b507381ce9e22bce3ba51d4e3214c3d7dfc5491bb5a3c6225793",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "3031a024060a2b060104018237140203a0160c14616c6c6f77656440636f72702e6578616d706c6582096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "allowed@corp.example",
+              "utf8_hex": "616c6c6f77656440636f72702e6578616d706c65",
+              "code_points": [
+                97,
+                108,
+                108,
+                111,
+                119,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "upn_permitted_bad": {
+      "sha256": "61288a88a45018b5302ff0a24f0ec62e510914aa2f00bc511baa8a082dc68a6e",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "3031a024060a2b060104018237140203a0160c14626c6f636b656440636f72702e6578616d706c6582096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2b060104018237140203"
+            },
+            {
+              "tag": 12,
+              "value": "blocked@corp.example",
+              "utf8_hex": "626c6f636b656440636f72702e6578616d706c65",
+              "code_points": [
+                98,
+                108,
+                111,
+                99,
+                107,
+                101,
+                100,
+                64,
+                99,
+                111,
+                114,
+                112,
+                46,
+                101,
+                120,
+                97,
+                109,
+                112,
+                108,
+                101
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "upn_absent": {
+      "sha256": "9afaa4987d34843efb36769c0aa001c00c1191143649f4063e0d852d91e5e819",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "300b82096c6f63616c686f7374",
+          "strings": []
+        }
+      ]
+    },
+    "unknown_othername": {
+      "sha256": "9bfe69e1010865afc3ee932a1edcd6204952fa0c561193745e761be76d72193a",
+      "extensions": [
+        {
+          "oid_hex": "551d11",
+          "critical": false,
+          "der_hex": "301da01006032a0304a0090c07616c6c6f77656482096c6f63616c686f7374",
+          "strings": [
+            {
+              "tag": 6,
+              "oid_hex": "2a0304"
+            },
+            {
+              "tag": 12,
+              "value": "allowed",
+              "utf8_hex": "616c6c6f776564",
+              "code_points": [
+                97,
+                108,
+                108,
+                111,
+                119,
+                101,
+                100
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema": "aelira-upn-unconstrained-plan-v1",
+  "scope": "Healthy unconstrained counterparts for every distinct principal in the frozen lexical comparison; no matching-policy adoption",
+  "lexical_manifest_sha256": "e1d96b1c056fdf553a3629c6193018eb4d2bbe104a7e5a36178e219c7852731d",
+  "principals": ["User@Corp.Example", "user@Corp.Example", "User@corp.example", "user@corp.example", "é@corp.example", "strasse@corp.example", "i@corp.example", "ς@corp.example", "user@child.corp.example", "user@nearcorp.example", "user@corp.example.invalid"],
+  "cases": 13,
+  "certificates": 15,
+  "deferred": ["general Unicode or case rules", "Windows authoring-tool conversion", "malformed or multiple names", "path composition", "self-issued transitions", "APPEND serialization"]
+}

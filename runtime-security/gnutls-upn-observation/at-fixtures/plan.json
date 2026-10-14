@@ -1,0 +1,13 @@
+{
+  "schema": "aelira-upn-at-plan-v1",
+  "scope": "Eight finite at-prefixed realm measurements to resolve the declared Linux candidate's existing @realm compatibility gap; no automatic comparator adoption",
+  "baseline_manifest_sha256": "8fb7659eeedc63059fbd7a78f3804d0de5b73495b8167ab19bf8d73c29cf3e67",
+  "constraint": "@corp.example",
+  "roles": ["permitted", "excluded"],
+  "principals": ["user@corp.example", "allowed@corp.example", "user@child.corp.example", "user@nearcorp.example"],
+  "health_rows": 13,
+  "measurement_rows": 8,
+  "prior_distinct_controls": 56,
+  "distinct_controls_across_experiments": 64,
+  "deferred": ["other at-prefixed forms", "Windows authoring-tool conversion", "general Unicode or case rules", "malformed or multiple leaf names", "excluded inheritance", "self-issued transitions", "GnuTLS APPEND serialization"]
+}

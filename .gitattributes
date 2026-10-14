@@ -1,2 +1,6 @@
 # Preserve the PDF fixture's byte offsets and fixed-width cross-reference records.
 tests/fixtures/document_stack/metadata.pdf binary
+
+# Keep the frozen Windows comparison inputs and source hashes byte-identical.
+runtime-security/gnutls-upn-observation/** -text
+.github/workflows/gnutls-upn-observation.yml text eol=lf
