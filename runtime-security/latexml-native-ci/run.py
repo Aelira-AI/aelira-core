@@ -19,12 +19,15 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 
 ORIGIN = "https://github.com/Aelira-AI/aelira-core.git"
 BASE = "ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
 KEYRING = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
 ARM_LOCK = "e59ed0151c570dc38e0f95bc75aac5fe3a8dbec66d8f31d086337d1379721e08"
 SNAPSHOT_ID = "20261013T060000Z"
+SNAPSHOT_RETRY_DELAYS = (2, 4, 8, 16)
+SNAPSHOT_RETRY_HTTP = (500, 502, 503, 504)
 SNAPSHOT_SUITES = (
     "resolute",
     "resolute-updates",
@@ -553,20 +556,30 @@ def snapshot_file(relative, limit):
         or relative in {"dists/" + suite + "/InRelease" for suite in SNAPSHOT_SUITES},
         "undeclared snapshot resource",
     )
-    connection = http.client.HTTPSConnection(
-        "snapshot.ubuntu.com", timeout=60, context=ssl.create_default_context()
-    )
-    try:
-        connection.request("GET", "/ubuntu/" + SNAPSHOT_ID + "/" + relative)
-        response = connection.getresponse()
-        require(response.status == 200, "snapshot request refused")
-        data = response.read(limit + 1)
-        require(0 < len(data) <= limit, "snapshot resource bound")
-        return data
-    except (OSError, http.client.HTTPException) as error:
-        raise ValueError("snapshot transport unavailable") from error
-    finally:
-        connection.close()
+    for attempt in range(len(SNAPSHOT_RETRY_DELAYS) + 1):
+        connection = None
+        try:
+            connection = http.client.HTTPSConnection(
+                "snapshot.ubuntu.com", timeout=60, context=ssl.create_default_context()
+            )
+            connection.request("GET", "/ubuntu/" + SNAPSHOT_ID + "/" + relative)
+            response = connection.getresponse()
+            if response.status == 200:
+                data = response.read(limit + 1)
+                require(0 < len(data) <= limit, "snapshot resource bound")
+                return data
+            require(response.status in SNAPSHOT_RETRY_HTTP, "snapshot request refused")
+            if attempt == len(SNAPSHOT_RETRY_DELAYS):
+                raise ValueError("snapshot request refused")
+        except ssl.SSLError as error:
+            raise ValueError("snapshot TLS refused") from error
+        except (OSError, http.client.HTTPException) as error:
+            if attempt == len(SNAPSHOT_RETRY_DELAYS):
+                raise ValueError("snapshot transport unavailable") from error
+        finally:
+            if connection is not None:
+                connection.close()
+        time.sleep(SNAPSHOT_RETRY_DELAYS[attempt])
 
 
 def snapshot_ca_bundle(data):
@@ -702,6 +715,7 @@ def capture(a, root, caller):
         "-o Acquire::https::AllowRedirect=false "
         "-o Acquire::https::CAInfo=/capture/snapshot-roots.pem "
         "-o Acquire::https::Verify-Peer=true -o Acquire::https::Verify-Host=true "
+        "-o Acquire::Retries=3 "
         "-o APT::Update::Error-Mode=any"
     )
     # Root APT needs these five ordinary filesystem/UID capabilities; no others

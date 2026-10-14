@@ -6,7 +6,8 @@ const bytes = await readFile(new URL('./fixtures/capture-refusal.json', import.m
 if (createHash('sha256').update(bytes).digest('hex') !== '67096ed230fca4689edad03c649045c5a94e83a821095c26afe5f98e8f9a4f64') throw new Error('Frozen public receipt changed');
 const original = JSON.parse(bytes.toString('utf8'));
 const id = { revision: original.operator_ref, tree: original.operator_tree,
-  architecture: original.architecture, remote: original.remote_ref };
+  architecture: original.architecture, remote: original.remote_ref,
+  runner_sha256: original.selected_sources['runtime-security/latexml-native-ci/run.py'].sha256 };
 if (!captureRefused(original, 2, id)) throw new Error('Actual capture refusal was not recognized');
 const controls: string[] = [];
 function refuse(name: string, mutate: (row: any) => void, exit = 2) {
@@ -33,13 +34,16 @@ for (const stage of ['input-pin', 'prepare', 'bootstrap', 'native-run', 'caller-
 }
 refuse('extra-stage', r => { r.stages.unexpected = { state: 'not_run', exit: null }; });
 refuse('missing-stage', r => { delete r.stages['input-pin']; });
+if (captureRefused(original, 2, { ...id, runner_sha256: '0'.repeat(64) })) throw new Error('Wrong independent runner accepted');
+controls.push('wrong-independent-runner');
 if (captureRefused(null, 2, id) || captureRefused({}, 2, id)) throw new Error('Missing receipt accepted');
 const aptBytes = await readFile(new URL('./fixtures/capture-apt-refusal.json', import.meta.url));
 const processBytes = await readFile(new URL('./fixtures/capture-apt-process.json', import.meta.url));
 if (createHash('sha256').update(aptBytes).digest('hex') !== '72c46950b2008f7c6078f5a5153c618a1763e4c440476f786c0cb0c3e8f94da5' ||
   createHash('sha256').update(processBytes).digest('hex') !== '5d741ddcacfdace58b03d0b81af8ec9067a655458e4f7cb15a08860744c9722f') throw new Error('Frozen native APT receipts changed');
 const apt = JSON.parse(aptBytes.toString('utf8')), processRow = JSON.parse(processBytes.toString('utf8'));
-const aptId = { revision: apt.operator_ref, tree: apt.operator_tree, architecture: apt.architecture, remote: apt.remote_ref };
+const aptId = { revision: apt.operator_ref, tree: apt.operator_tree, architecture: apt.architecture, remote: apt.remote_ref,
+  runner_sha256: apt.selected_sources['runtime-security/latexml-native-ci/run.py'].sha256 };
 if (!captureRefused(apt, 2, aptId, processRow)) throw new Error('Actual APT capture refusal was not recognized');
 const download = structuredClone(processRow);
 download.stages.update.exit = 0; download.stages.download = { state: 'executed', exit: 100 };

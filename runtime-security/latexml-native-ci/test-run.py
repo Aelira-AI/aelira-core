@@ -46,6 +46,7 @@ def main():
     )
     # Synthetic transport controls test response/refusal logic, not native TLS.
     original_connection = common.http.client.HTTPSConnection
+    original_sleep = common.time.sleep
 
     class Response:
         def __init__(self, status, data):
@@ -82,6 +83,7 @@ def main():
 
     try:
         common.http.client.HTTPSConnection = Connection
+        common.time.sleep = lambda _: None
         control(
             "snapshot-synthetic-bounded-response-positive",
             lambda: common.require(
@@ -107,8 +109,74 @@ def main():
             lambda: common.snapshot_file("arbitrary/source", 100),
             2,
         )
+
+        class SequenceConnection(Connection):
+            answers = []
+            calls = 0
+            closes = 0
+
+            def __init__(self, host, *, timeout, context):
+                super().__init__(host, timeout=timeout, context=context)
+                self.answer = self.answers[type(self).calls]
+                type(self).calls += 1
+
+            def getresponse(self):
+                if isinstance(self.answer, BaseException):
+                    raise self.answer
+                return self.answer
+
+            def close(self):
+                type(self).closes += 1
+
+        common.http.client.HTTPSConnection = SequenceConnection
+        delays = []
+        common.time.sleep = delays.append
+
+        def sequence(name, answers, expected, waits):
+            SequenceConnection.answers = answers
+            SequenceConnection.calls = SequenceConnection.closes = 0
+            delays.clear()
+            control(
+                "snapshot-retry-" + name,
+                lambda: common.require(
+                    common.snapshot_file("dists/resolute/InRelease", 100)
+                    == b"known bounded metadata"
+                ),
+                expected,
+            )
+            control(
+                "snapshot-retry-" + name + "-bounded-closed",
+                lambda: common.require(
+                    SequenceConnection.calls == len(answers)
+                    and SequenceConnection.closes == len(answers)
+                    and delays == waits
+                ),
+                0,
+            )
+
+        good = Response(200, b"known bounded metadata")
+        sequence("http-recovery", [Response(503, b""), good], 0, [2])
+        sequence("timeout-recovery", [TimeoutError(), good], 0, [2])
+        sequence(
+            "http-error-recovery", [common.http.client.HTTPException(), good], 0, [2]
+        )
+        sequence(
+            "all-transient-statuses",
+            [Response(s, b"") for s in (500, 502, 503, 504)] + [good],
+            0,
+            [2, 4, 8, 16],
+        )
+        sequence("http-exhausted", [Response(503, b"")] * 5, 2, [2, 4, 8, 16])
+        sequence("transport-exhausted", [TimeoutError()] * 5, 2, [2, 4, 8, 16])
+        sequence("certificate-refused", [common.ssl.SSLCertVerificationError()], 2, [])
+        sequence("tls-refused", [common.ssl.SSLError()], 2, [])
+        sequence("redirect-refused", [Response(302, b"")], 2, [])
+        sequence("not-found-refused", [Response(404, b"")], 2, [])
+        sequence("empty-refused", [Response(200, b"")], 2, [])
+        sequence("oversized-refused", [Response(200, b"x" * 101)], 2, [])
     finally:
         common.http.client.HTTPSConnection = original_connection
+        common.time.sleep = original_sleep
     control(
         "snapshot-empty-CA-archive-refused", lambda: common.snapshot_ca_bundle(b""), 2
     )

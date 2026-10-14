@@ -6,8 +6,8 @@ import { spawn } from 'node:child_process';
 
 const stages = ['source-check', 'native-check', 'input-capture', 'input-pin', 'prepare',
   'bootstrap', 'native-run', 'caller-export', 'evidence-export', 'evidence-check'];
-const runnerHash = '0d7122a995f82d4d06be89121c9cf0ca66cc32e8de2ca925d6bc749b6b9e4f99';
-type Identity = { revision: string; tree: string; architecture: string; remote: string };
+const runnerHash = 'ba85eef4709bafe34dc1bf7dd3f24bfeef4126fb7e88235dd0d9f3cac39fff80';
+type Identity = { revision: string; tree: string; architecture: string; remote: string; runner_sha256: string };
 
 // A retry never includes a pin, preparation, build or evidence failure.
 export function captureRefused(row: any, exit: number, id: Identity, captureProcess: any = null): boolean {
@@ -18,7 +18,8 @@ export function captureRefused(row: any, exit: number, id: Identity, captureProc
     row.source_kind === 'public' && row.remote_ref === id.remote && row.architecture === id.architecture &&
     row.captured_lock_sha256 === null && row.producer_status_sha256 === null &&
     row.failure_diagnostic?.state === 'not_run' && row.failure_diagnostic.record === null &&
-    row.selected_sources?.['runtime-security/latexml-native-ci/run.py']?.sha256 === runnerHash &&
+    /^[0-9a-f]{64}$/.test(id.runner_sha256) &&
+    row.selected_sources?.['runtime-security/latexml-native-ci/run.py']?.sha256 === id.runner_sha256 &&
     s && Object.keys(s).sort().join(',') === [...stages].sort().join(',') &&
     ['source-check', 'native-check'].every(n => s[n]?.state === 'executed' && s[n].exit === 0) &&
     s['input-capture']?.state === 'executed' &&
@@ -75,7 +76,7 @@ async function main() {
   }
   if (!capture || values.size !== allowed.size || values.get('--source-kind') !== 'public') throw new Error('Public capture required');
   const id: Identity = { revision: values.get('--operator-ref')!, tree: values.get('--operator-tree')!,
-    architecture: values.get('--architecture')!, remote: values.get('--remote-ref')! };
+    architecture: values.get('--architecture')!, remote: values.get('--remote-ref')!, runner_sha256: runnerHash };
   if (!/^[0-9a-f]{40}$/.test(id.revision) || !/^[0-9a-f]{40}$/.test(id.tree) ||
     !['arm64', 'amd64'].includes(id.architecture) || !/^refs\/(heads\/[A-Za-z0-9._/-]+|pull\/[0-9]+\/merge)$/.test(id.remote)) throw new Error('Source identity refused');
   const temp = process.env.RUNNER_TEMP, repo = values.get('--operator-repo')!, scratch = values.get('--scratch')!, out = values.get('--out')!;
