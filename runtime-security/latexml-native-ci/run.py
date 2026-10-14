@@ -243,6 +243,10 @@ class ProcessFailure(ValueError):
         self.code = code
 
 
+class CaptureUnavailable(OSError):
+    """Container tracking or cleanup cannot be established."""
+
+
 def command(args, timeout=60):
     p = subprocess.run(
         args,
@@ -254,6 +258,49 @@ def command(args, timeout=60):
     if p.returncode != 0:
         raise ProcessFailure(p.returncode)
     return p.stdout
+
+
+def cleanup_capture(cidfile):
+    """Stop only the exact Docker-created ID and require successful absence."""
+    try:
+        regular(cidfile, 128)
+        require(
+            cidfile.stat().st_uid == os.getuid(),
+            "capture container identity owner differs",
+        )
+        cid = cidfile.read_text()
+        require(
+            re.fullmatch(r"[0-9a-f]{64}\n?", cid), "capture container identity refused"
+        )
+        cid = cid.strip()
+        query = [
+            "/usr/bin/docker",
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            "id=" + cid,
+        ]
+        present = command(query, timeout=10)
+        require(
+            present in (b"", (cid + "\n").encode()), "capture container query differs"
+        )
+        if present:
+            command(["/usr/bin/docker", "stop", "--time", "5", cid], timeout=15)
+            for attempt in range(5):
+                present = command(query, timeout=10)
+                require(
+                    present in (b"", (cid + "\n").encode()),
+                    "capture container query differs",
+                )
+                if not present:
+                    break
+                if attempt < 4:
+                    time.sleep(0.2)
+        require(not present, "capture container cleanup unavailable")
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        raise CaptureUnavailable("capture container cleanup unavailable") from error
 
 
 def git(repo, *args):
@@ -478,6 +525,8 @@ def read_failure_projection(path, expected, caller_state, validator):
 
 
 def selector(a):
+    cidfile = root.parent / "private/input-capture.cid"
+    path_check(cidfile, new=True)
     args = [
         "--operator-repo",
         str(a.operator_repo),
@@ -716,6 +765,7 @@ def capture(a, root, caller):
         "-o Acquire::https::CAInfo=/capture/snapshot-roots.pem "
         "-o Acquire::https::Verify-Peer=true -o Acquire::https::Verify-Host=true "
         "-o Acquire::Retries=3 "
+        "-o Acquire::https::Timeout=30 "
         "-o APT::Update::Error-Mode=any"
     )
     # Root APT needs these five ordinary filesystem/UID capabilities; no others
@@ -762,6 +812,8 @@ def capture(a, root, caller):
         "3g",
         "--pids-limit",
         "128",
+        "--cidfile",
+        str(cidfile),
         "--mount",
         "type=bind,src=" + str(cache) + ",dst=/capture",
         "--entrypoint",
@@ -809,7 +861,10 @@ def capture(a, root, caller):
                 )
                 process["stages"][name] = {"state": "executed", "exit": int(text)}
     finally:
-        (root.parent / "capture-process.json").write_bytes(canonical(process))
+        try:
+            cleanup_capture(cidfile)
+        finally:
+            (root.parent / "capture-process.json").write_bytes(canonical(process))
     if original != 0:
         raise ProcessFailure(original)
     require(

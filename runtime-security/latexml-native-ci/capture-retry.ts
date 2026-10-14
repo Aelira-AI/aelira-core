@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 
 const stages = ['source-check', 'native-check', 'input-capture', 'input-pin', 'prepare',
   'bootstrap', 'native-run', 'caller-export', 'evidence-export', 'evidence-check'];
-const runnerHash = 'ba85eef4709bafe34dc1bf7dd3f24bfeef4126fb7e88235dd0d9f3cac39fff80';
+const runnerHash = '6d2a06d38fd33aa8a8d9ef048ef57d79834e02a7406c38fd2a6d04c9b3b0d327';
 type Identity = { revision: string; tree: string; architecture: string; remote: string; runner_sha256: string };
 
 // A retry never includes a pin, preparation, build or evidence failure.

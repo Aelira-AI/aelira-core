@@ -17,6 +17,7 @@ def main():
     p.add_argument("--operator-repo", required=True, type=Path)
     p.add_argument("--operator-ref", required=True)
     p.add_argument("--operator-tree", required=True)
+    p.add_argument("--native-cleanup", action="store_true")
     a = p.parse_args()
     os.umask(0o022)
     a.source_kind = "synthetic"
@@ -180,6 +181,101 @@ def main():
     control(
         "snapshot-empty-CA-archive-refused", lambda: common.snapshot_ca_bundle(b""), 2
     )
+    # Exercise cleanup's success path before any protocol/refusal fixture.
+    cid = a.scratch / "synthetic-container.cid"
+    cid.write_text("a" * 64)
+    original_command, original_sleep = common.command, common.time.sleep
+    answers, calls = [], []
+
+    def docker_control(args, timeout=60):
+        calls.append((args, timeout))
+        value = answers.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def cleanup_case(name, sequence, expected, stops):
+        answers[:] = sequence
+        calls.clear()
+        control(
+            "capture-cleanup-" + name, lambda: common.cleanup_capture(cid), expected
+        )
+        control(
+            "capture-cleanup-" + name + "-exact-target",
+            lambda: common.require(
+                sum(args[1] == "stop" for args, _ in calls) == stops
+                and all(args[-1] in ("id=" + "a" * 64, "a" * 64) for args, _ in calls)
+                and not answers
+            ),
+            0,
+        )
+
+    try:
+        common.command = docker_control
+        common.time.sleep = lambda _: None
+        active = ("a" * 64 + "\n").encode()
+        cleanup_case("absent-positive", [b""], 0, 0)
+        cleanup_case("active-positive", [active, active, b""], 0, 1)
+        cleanup_case("wrong-query-refused", [("b" * 64 + "\n").encode()], 2, 0)
+        cleanup_case("query-unavailable", [common.ProcessFailure(1)], 2, 0)
+        cleanup_case("stop-unavailable", [active, common.ProcessFailure(1)], 2, 1)
+        cleanup_case("retained-container-refused", [active] * 7, 2, 1)
+        cid.write_text("a" * 12)
+        cleanup_case("invalid-id-before-query", [], 2, 0)
+    finally:
+        common.command, common.time.sleep = original_command, original_sleep
+    if a.native_cleanup:
+        common.require(
+            sys.platform.startswith("linux") and os.getuid() != 0,
+            "native nonroot cleanup control required",
+        )
+        actual_cid = a.scratch / "actual-container.cid"
+
+        def native_cleanup():
+            try:
+                subprocess.run(
+                    [
+                        "/usr/bin/docker",
+                        "run",
+                        "--rm",
+                        "--cidfile",
+                        str(actual_cid),
+                        "--network",
+                        "none",
+                        "--read-only",
+                        "--cap-drop",
+                        "ALL",
+                        "--security-opt",
+                        "no-new-privileges",
+                        "--user",
+                        "1000:1000",
+                        "--memory",
+                        "64m",
+                        "--cpus",
+                        "1",
+                        "--pids-limit",
+                        "16",
+                        "--entrypoint",
+                        "/bin/sh",
+                        common.BASE,
+                        "-c",
+                        "printf ready; sleep 30",
+                    ],
+                    capture_output=True,
+                    timeout=2,
+                    check=False,
+                )
+                raise ValueError("native timeout control did not time out")
+            except subprocess.TimeoutExpired as error:
+                try:
+                    common.require(
+                        error.stdout == b"ready",
+                        "native started-container positive missing",
+                    )
+                finally:
+                    common.cleanup_capture(actual_cid)
+
+        control("capture-cleanup-actual-started-timeout", native_cleanup, 0)
     empty = a.scratch / "empty"
     empty.mkdir()
     (empty / "unexpected").mkdir()
