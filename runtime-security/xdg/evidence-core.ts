@@ -107,7 +107,11 @@ export function keys(value: any, expected: string[]): void {
 }
 
 /** Accept only complete hash records, without comments or extra capture text. */
+export class HashManifestError extends Error {
+  constructor() { super('Invalid checksum manifest'); this.name = 'HashManifestError'; }
+}
 export function hashManifest(data: Buffer, expected: Record<string, { sha256: string; size: number }>): void {
+  try {
   const text = data.toString(); assert(text.endsWith('\n'), 'Unterminated hash manifest');
   const rows: Record<string, string> = Object.create(null);
   for (const line of text.slice(0, -1).split('\n')) {
@@ -116,6 +120,7 @@ export function hashManifest(data: Buffer, expected: Record<string, { sha256: st
     rows[match[2]] = match[1];
   }
   assert(same(rows, Object.fromEntries(Object.entries(expected).map(([name, row]) => [name, row.sha256]))), 'Hash manifest closure mismatch');
+  } catch { throw new HashManifestError(); }
 }
 
 /** Hash logical saved-image contents; do not execute or extract the archive. */

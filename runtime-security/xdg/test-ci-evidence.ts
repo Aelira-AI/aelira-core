@@ -106,6 +106,7 @@ async function mutation(name: string, phase: string, target: string | null, chan
   const destination = join(scratch, 'refusal-' + attempt);
   const row = await exportEvidence({ ...options, source: root, dest: destination, ...override });
   assert(row.status === 'fail' && row.phase === phase && same(row.files, {}), 'Wrong refusal phase: ' + name);
+  if (provenance) assert(row.error_type === 'HashManifestError', 'Refusal came from a different guard: ' + name);
   assert(same(await readdir(destination), ['component.json']), 'Refusal exported unvalidated files'); controls.push(name);
 }
 const changeJSON = (action: (row: any) => void) => (data: Buffer) => {
