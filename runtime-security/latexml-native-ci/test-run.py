@@ -558,6 +558,154 @@ def main():
         0,
     )
     caller._FAILURE_TRACKER = None
+    plan_dir = a.scratch / "download-plan-controls"
+    plan_dir.mkdir()
+    plan = plan_dir / "plan.txt"
+    awk = plan_dir / "plan.awk"
+    awk.write_text(common.DOWNLOAD_PLAN_AWK)
+    uri = "https://snapshot.ubuntu.com/ubuntu/20261013T060000Z/pool/main/p/perl/perl_1_all.deb"
+    positive = "'" + uri + "' perl_1_all.deb 512 SHA256:" + "a" * 64 + "\n"
+
+    def check_plan(text, expected=0):
+        plan.write_text(text)
+        result = subprocess.run(
+            ["/usr/bin/awk", "-f", str(awk), str(plan)],
+            capture_output=True,
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        common.require(
+            result.returncode == expected, "plan parser original exit differs"
+        )
+        if expected == 0:
+            values = common.download_plan(plan)
+            common.require(
+                result.stdout
+                == b"".join(
+                    str(value).encode("ascii") + b"\0"
+                    for row in values
+                    for value in (
+                        row["uri"],
+                        row["file"],
+                        row["size"],
+                        "SHA256:" + row["sha256"],
+                    )
+                ),
+                "plan arguments differ",
+            )
+        else:
+            common.require(result.stdout == b"", "invalid plan emitted arguments")
+            try:
+                common.download_plan(plan)
+            except ValueError:
+                return
+            raise ValueError("invalid plan accepted")
+
+    control(
+        "download-plan-positive-complete-argument-parity",
+        lambda: check_plan(positive),
+        0,
+    )
+    for name, text in (
+        ("wrong-host", positive.replace("snapshot.ubuntu.com", "example.com")),
+        ("http", positive.replace("https:", "http:")),
+        ("wrong-snapshot", positive.replace("20261013T060000Z", "20261014T060000Z")),
+        ("dot-traversal", positive.replace("/p/perl/", "/p/../")),
+        ("encoded-slash", positive.replace("perl_1_all.deb'", "perl%2f1_all.deb'")),
+        ("shell-value", positive.replace("perl_1_all.deb 512", "$(id).deb 512")),
+        ("nested-file", positive.replace("' perl_1_all.deb", "' ../perl.deb")),
+        ("duplicate-name", positive + positive),
+        ("weak-hash", positive.replace("SHA256:", "MD5Sum:")),
+        ("short-hash", positive[:-2] + "\n"),
+        ("zero-size", positive.replace(" 512 ", " 0 ")),
+        ("negative-size", positive.replace(" 512 ", " -1 ")),
+        ("file-bound", positive.replace(" 512 ", " 200000001 ")),
+        ("extra-field", positive.rstrip() + " extra\n"),
+        ("empty", "Reading package lists...\n"),
+        (
+            "total-bound",
+            "".join(
+                positive.replace(
+                    "' perl_1_all.deb", "' perl_" + str(i) + "_all.deb"
+                ).replace(" 512 ", " 200000000 ")
+                for i in range(6)
+            ),
+        ),
+        (
+            "count-bound",
+            "".join(
+                positive.replace("' perl_1_all.deb", "' perl_" + str(i) + "_all.deb")
+                for i in range(1101)
+            ),
+        ),
+    ):
+        control(
+            "download-plan-" + name + "-refused-without-arguments",
+            lambda text=text: check_plan(text, 2),
+            0,
+        )
+    status_dir = a.scratch / "capture-status-controls"
+    status_dir.mkdir()
+    control(
+        "capture-status-unstarted",
+        lambda: common.require(
+            common.capture_status(status_dir, "download")
+            == {"state": "not_run", "exit": None}
+        ),
+        0,
+    )
+    (status_dir / "download.started").write_bytes(b"1\n")
+    control(
+        "capture-status-started-timeout",
+        lambda: common.require(
+            common.capture_status(status_dir, "download")
+            == {"state": "unavailable", "exit": None}
+        ),
+        0,
+    )
+    (status_dir / "download.exit").write_bytes(b"123\n")
+    control(
+        "capture-status-original-parallel-exit",
+        lambda: common.require(
+            common.capture_status(status_dir, "download")
+            == {"state": "executed", "exit": 123}
+        ),
+        0,
+    )
+    (status_dir / "download.exit").write_bytes(b"1000\n")
+    control(
+        "capture-status-out-of-range",
+        lambda: common.capture_status(status_dir, "download"),
+        2,
+    )
+    (status_dir / "download.started").write_bytes(b"0\n")
+    control(
+        "capture-status-marker-substitution",
+        lambda: common.capture_status(status_dir, "download"),
+        2,
+    )
+    interrupted = a.scratch / "interrupted-capture-controls"
+    (interrupted / "status").mkdir(parents=True)
+    for name in ("setup", "update", "download"):
+        (interrupted / "status" / (name + ".started")).write_bytes(b"1\n")
+    for name in ("setup", "update"):
+        (interrupted / "status" / (name + ".exit")).write_bytes(b"0\n")
+    process = {"downloads": [], "download_plan_sha256": None}
+    common.observe_capture_process(interrupted, process)
+    control(
+        "capture-observe-completed-before-timeout",
+        lambda: common.require(
+            process["stages"]["setup"]
+            == process["stages"]["update"]
+            == {"state": "executed", "exit": 0}
+            and process["stages"]["download"] == {"state": "unavailable", "exit": None}
+            and process["stages"]["select"]
+            == process["stages"]["restore"]
+            == {"state": "not_run", "exit": None}
+        ),
+        0,
+    )
     result = {
         "schema": "aelira-latexml-ci-portable-controls-v1",
         "source_kind": "synthetic",

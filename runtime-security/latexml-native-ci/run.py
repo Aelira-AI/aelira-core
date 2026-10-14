@@ -86,6 +86,33 @@ MAX_TOTAL = 1_000_000_000
 MAX_FILES = 1100
 CAPTURE_CAPABILITIES = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID")
 CAPTURE_STAGES = ("setup", "update", "download", "select", "restore")
+DOWNLOAD_WORKERS = 8
+# APT output is data. Validate the complete plan before emitting NUL-delimited
+# arguments; no URL, filename or index value becomes executable shell text.
+DOWNLOAD_PLAN_AWK = r"""
+function refuse() { bad = 1; exit 2 }
+substr($0, 1, 1) == "\047" {
+    if (NF != 4 || length($1) > 1026 || length($2) > 200) refuse()
+    uri = substr($1, 2, length($1) - 2)
+    if (substr($1, length($1), 1) != "\047" ||
+        uri !~ /^https:\/\/snapshot\.ubuntu\.com\/ubuntu\/20261013T060000Z\/pool\/(main|restricted|universe|multiverse)\/[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9+.-]*\/[A-Za-z0-9][A-Za-z0-9+._%~-]*\.deb$/ ||
+        uri ~ /\/\.\.?\//) refuse()
+    encoded = uri
+    gsub(/%(2[bB]|3[aA]|7[eE])/, "", encoded)
+    if (encoded ~ /%/ || $2 !~ /^[A-Za-z0-9][A-Za-z0-9+._%~-]*\.deb$/ ||
+        $3 !~ /^[1-9][0-9]*$/ || length($3) > 9 || $3 + 0 > 200000000 ||
+        $4 !~ /^SHA256:[0-9a-f]+$/ || length($4) != 71 || seen[$2]++) refuse()
+    count++; total += $3
+    if (count > 1100 || total > 1000000000) refuse()
+    urls[count] = uri; names[count] = $2; sizes[count] = $3; hashes[count] = $4
+}
+END {
+    if (bad) exit 2
+    if (!count) exit 2
+    for (i = 1; i <= count; i++)
+        printf "%s%c%s%c%s%c%s%c", urls[i], 0, names[i], 0, sizes[i], 0, hashes[i], 0
+}
+"""
 
 
 def require(test, message="bounded check refused"):
@@ -671,6 +698,145 @@ def snapshot_ca_bundle(data):
     return bundle
 
 
+def download_plan(path):
+    """Reconcile the same bounded plan used as worker arguments, without eval."""
+    regular(path, 500_000)
+    rows = []
+    names = set()
+    total = 0
+    for line in path.read_text(encoding="ascii").splitlines():
+        if not line.startswith("'"):
+            continue
+        match = re.fullmatch(
+            r"'(https://snapshot\.ubuntu\.com/ubuntu/"
+            + SNAPSHOT_ID
+            + r"/pool/(?:main|restricted|universe|multiverse)/[a-z0-9][a-z0-9-]*/"
+            r"[a-z0-9][a-z0-9+.-]*/[A-Za-z0-9][A-Za-z0-9+._%~-]*\.deb)' "
+            r"([A-Za-z0-9][A-Za-z0-9+._%~-]*\.deb) ([1-9][0-9]{0,8}) SHA256:([0-9a-f]{64})",
+            line,
+        )
+        require(match is not None, "download plan row refused")
+        uri, name, size, digest = match.groups()
+        require(
+            len(uri) <= 1024
+            and len(name) <= 200
+            and name not in names
+            and "/../" not in uri
+            and "/./" not in uri
+            and "%" not in re.sub(r"%(?:2b|3a|7e)", "", uri, flags=re.I)
+            and int(size) <= MAX_FILE,
+            "download plan identity/bound refused",
+        )
+        names.add(name)
+        total += int(size)
+        rows.append({"uri": uri, "file": name, "size": int(size), "sha256": digest})
+    require(0 < len(rows) <= MAX_FILES and total <= MAX_TOTAL, "download plan bound")
+    return rows
+
+
+def download_worker(options):
+    """Trusted fixed script; every external value is a separately quoted argument."""
+    return (
+        "\n".join(
+            (
+                'set -u; umask 022; test "$#" = 4 || exit 2',
+                "uri=$1; name=$2; size=$3; hash=$4",
+                'target=/capture/debs/partial/"$name"; status=/capture/status/workers/"$name"',
+                'printf "1\\n" > "$status.started" || exit 2',
+                # The frozen Ubuntu /bin/sh uses POSIX 512-byte units. Native controls
+                # exercise this limit; at most 511 bytes above the signed size can be written.
+                '( ulimit -f "$(( (size + 511) / 512 ))" || exit 2; exec /usr/lib/apt/apt-helper '
+                + options
+                + ' download-file "$uri" "$target" "$hash" ) > "$status.log" 2>&1',
+                'rc=$?; printf "%s\\n" "$rc" > "$status.apt.exit" || exit 2',
+                'if test "$rc" = 0; then',
+                '  ( set -eu; test -f "$target"; test ! -L "$target"; test "$(stat -c %h -- "$target")" = 1;',
+                '    test "$(stat -c %s -- "$target")" = "$size";',
+                '    printf "%s  %s\\n" "${hash#SHA256:}" "$target" | sha256sum --check --status;',
+                '    test ! -e /capture/debs/"$name"; test ! -L /capture/debs/"$name";',
+                '    chmod 0644 -- "$target"; mv -T -- "$target" /capture/debs/"$name" )',
+                "  rc=$?",
+                "fi",
+                'printf "%s\\n" "$rc" > "$status.exit" || exit 2; exit "$rc"',
+            )
+        )
+        + "\n"
+    )
+
+
+def capture_status(directory, name):
+    """A started process without a numeric terminal receipt is unavailable."""
+    started, terminal = directory / (name + ".started"), directory / (name + ".exit")
+    if not started.exists() and not started.is_symlink():
+        require(not terminal.exists() and not terminal.is_symlink(), "unstarted status")
+        return {"state": "not_run", "exit": None}
+    regular(started, 2)
+    require(started.read_bytes() == b"1\n", "capture start marker differs")
+    if not terminal.exists() and not terminal.is_symlink():
+        return {"state": "unavailable", "exit": None}
+    regular(terminal, 4)
+    text = terminal.read_text()
+    require(
+        re.fullmatch(r"(?:0|[1-9][0-9]{0,2})\n", text) and int(text) <= 255,
+        "capture original status malformed",
+    )
+    return {"state": "executed", "exit": int(text)}
+
+
+def observe_capture_process(cache, process):
+    """Read stopped-container receipts, including completed stages before timeout."""
+    try:
+        process["stages"] = {
+            n: capture_status(cache / "status", n) for n in CAPTURE_STAGES
+        }
+        process["plan"] = capture_status(cache / "status", "plan")
+        process["archive_check"] = capture_status(cache / "status", "archive-check")
+        if process["plan"] == {"state": "executed", "exit": 0}:
+            plan_path = cache / "download-plan.txt"
+            rows = download_plan(plan_path)
+            process["download_plan_sha256"] = regular(plan_path, 500_000)["sha256"]
+            expected_args = b"".join(
+                str(value).encode("ascii") + b"\0"
+                for row in rows
+                for value in (
+                    row["uri"],
+                    row["file"],
+                    row["size"],
+                    "SHA256:" + row["sha256"],
+                )
+            )
+            regular(cache / "download-args", 500_000)
+            require(
+                (cache / "download-args").read_bytes() == expected_args,
+                "worker arguments differ",
+            )
+            for row in rows:
+                state = capture_status(cache / "status/workers", row["file"])
+                apt_path = cache / "status/workers" / (row["file"] + ".apt.exit")
+                apt = {
+                    "state": (
+                        "not_run" if state["state"] == "not_run" else "unavailable"
+                    ),
+                    "exit": None,
+                }
+                if apt_path.exists() or apt_path.is_symlink():
+                    require(state["state"] != "not_run", "unstarted APT worker")
+                    regular(apt_path, 4)
+                    text = apt_path.read_text()
+                    require(
+                        re.fullmatch(r"(?:0|[1-9][0-9]{0,2})\n", text)
+                        and int(text) <= 255,
+                        "APT worker original status malformed",
+                    )
+                    apt = {"state": "executed", "exit": int(text)}
+                process["downloads"].append(
+                    {k: row[k] for k in ("file", "size", "sha256")}
+                    | {"apt": apt, "result": state}
+                )
+    except (OSError, ValueError, UnicodeError) as error:
+        raise CaptureUnavailable("capture process receipt unavailable") from error
+
+
 def capture(a, root, caller):
     """Capture the fixed signed snapshot using the default _apt sandbox and TLS."""
     require(caller.SNAPSHOT_ID == SNAPSHOT_ID, "capture and offline snapshot differ")
@@ -766,21 +932,35 @@ def capture(a, root, caller):
         "-o Acquire::https::Timeout=30 "
         "-o APT::Update::Error-Mode=any"
     )
+    (cache / "download-plan.awk").write_text(DOWNLOAD_PLAN_AWK)
+    (cache / "download-worker.sh").write_text(download_worker(options))
+    for name in ("download-plan.awk", "download-worker.sh"):
+        (cache / name).chmod(0o644)
     # Root APT needs these five ordinary filesystem/UID capabilities; no others
     # are granted. Only this new cache is mounted. Default _apt is not overridden.
     script = "\n".join(
         (
-            "set -u; umask 022",
+            "set -u; umask 022; export LC_ALL=C",
             "mkdir -m 0755 /capture/status || exit $?",
-            'stage() { name=$1; shift; ( set -eu; "$@" ); rc=$?; printf \'%s\\n\' "$rc" > /capture/status/"$name".exit; return "$rc"; }',
+            'stage() { name=$1; shift; printf "1\\n" > /capture/status/"$name".started || return 2; ( set -eu; "$@" ); rc=$?; printf \'%s\\n\' "$rc" > /capture/status/"$name".exit || return 2; return "$rc"; }',
             'setup() { chown 0:0 /capture || return $?; mkdir -m 0755 /capture/debs /capture/lists || return $?; apt_uid=$(id -u _apt) || return $?; test "$apt_uid" = 42 || return $?; sandbox=$(apt-config shell user APT::Sandbox::User) || return $?; test "$sandbox" = "user=\'_apt\'" || return $?; install -d -m 0700 -o _apt -g root /capture/debs/partial /capture/lists/partial || return $?; }',
             "stage setup setup || exit $?",
             "stage update apt-get " + options + " update || exit $?",
-            "stage download apt-get "
+            "download() { mkdir -m 0755 /capture/status/workers || return 2; stage plan apt-get "
             + options
-            + " -y --no-install-recommends --download-only -o Dir::Cache::archives=/capture/debs install "
+            + " -o Acquire::ForceHash=SHA256 --print-uris -y --no-install-recommends --download-only -o Dir::Cache::archives=/capture/debs install "
             + " ".join(caller.PACKAGES)
-            + " || exit $?",
+            + " > /capture/download-plan.txt || return $?; "
+            + "awk -f /capture/download-plan.awk /capture/download-plan.txt > /capture/download-args || return 2; "
+            + "xargs -0 -r -n 4 -P "
+            + str(DOWNLOAD_WORKERS)
+            + " /bin/sh /capture/download-worker.sh < /capture/download-args || return $?; "
+            + "stage archive-check apt-get "
+            + options
+            + " --no-download -y --no-install-recommends --download-only -o Dir::Cache::archives=/capture/debs install "
+            + " ".join(caller.PACKAGES)
+            + "; }",
+            "stage download download || exit $?",
             'select_inputs() { set -- /capture/lists/*_InRelease; test "$#" = 4 || return $?; test -f "$1" || return $?; set -- /capture/lists/*_Packages.lz4; test -f "$1" || return $?; set -- /capture/debs/*.deb; test -f "$1" || return $?; }',
             "stage select select_inputs || exit $?",
             "stage restore chown -R --no-dereference "
@@ -824,7 +1004,7 @@ def capture(a, root, caller):
     ]
     original = None
     process = {
-        "schema": "aelira-latexml-capture-process-v2",
+        "schema": "aelira-latexml-capture-process-v3",
         **identity(a),
         "keyring_sha256": sha(key),
         "snapshot_id": SNAPSHOT_ID,
@@ -834,7 +1014,13 @@ def capture(a, root, caller):
         "apt_uid": 42,
         "capabilities": list(CAPTURE_CAPABILITIES),
         "docker_exit": None,
+        "container_absent": False,
         "stages": {n: {"state": "not_run", "exit": None} for n in CAPTURE_STAGES},
+        "plan": {"state": "not_run", "exit": None},
+        "archive_check": {"state": "not_run", "exit": None},
+        "download_workers": DOWNLOAD_WORKERS,
+        "download_plan_sha256": None,
+        "downloads": [],
     }
     try:
         result = subprocess.run(
@@ -849,20 +1035,16 @@ def capture(a, root, caller):
         )
         original = result.returncode
         process["docker_exit"] = original
-        for name in CAPTURE_STAGES:
-            path = cache / "status" / (name + ".exit")
-            if path.exists():
-                regular(path, 8)
-                text = path.read_text()
-                require(
-                    re.fullmatch(r"(?:0|[1-9][0-9]{0,2})\n", text)
-                    and 0 <= int(text) <= 255,
-                    "capture original status malformed",
-                )
-                process["stages"][name] = {"state": "executed", "exit": int(text)}
+    except subprocess.TimeoutExpired as error:
+        (root.parent / "private/input-capture.log").write_bytes(
+            (error.stdout or b"") + b"\n[stderr]\n" + (error.stderr or b"")
+        )
+        raise
     finally:
         try:
             cleanup_capture(cidfile)
+            process["container_absent"] = True
+            observe_capture_process(cache, process)
         finally:
             (root.parent / "capture-process.json").write_bytes(canonical(process))
     if original != 0:
@@ -873,6 +1055,15 @@ def capture(a, root, caller):
             for row in process["stages"].values()
         ),
         "capture stages incomplete",
+    )
+    require(
+        process["plan"] == process["archive_check"] == {"state": "executed", "exit": 0}
+        and process["downloads"]
+        and all(
+            row["apt"] == row["result"] == {"state": "executed", "exit": 0}
+            for row in process["downloads"]
+        ),
+        "capture package receipts incomplete",
     )
     for folder, suffixes in (
         ("debs", (".deb",)),

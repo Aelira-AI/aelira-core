@@ -81,6 +81,63 @@ for (const stage of ['input-pin', 'prepare', 'bootstrap', 'native-run', 'caller-
   aptRefuse(stage + '-started', o => { o.stages[stage] = { state: 'executed', exit: 2 }; });
 }
 if (captureRefused(apt, 2, aptId) || captureRefused(apt, 2, aptId, {})) throw new Error('Missing APT process accepted');
-console.log(JSON.stringify({ schema: 'aelira-latexml-capture-retry-controls-v2',
+const parallelOuter = structuredClone(apt), parallel = structuredClone(processRow);
+parallelOuter.stages['input-capture'].exit = 123;
+Object.assign(parallel, { schema: 'aelira-latexml-capture-process-v3', docker_exit: 123, container_absent: true,
+  plan: { state: 'executed', exit: 0 }, archive_check: { state: 'not_run', exit: null },
+  download_workers: 8, download_plan_sha256: 'a'.repeat(64), downloads: [0, 100].map((exit, i) => ({
+    file: `bounded_${i}_all.deb`, size: 512, sha256: 'b'.repeat(64),
+    apt: { state: 'executed', exit }, result: { state: 'executed', exit } })) });
+parallel.stages.update.exit = 0; parallel.stages.download = { state: 'executed', exit: 123 };
+if (!captureRefused(parallelOuter, 2, aptId, parallel)) throw new Error('Typed parallel boundary was not recognized');
+const v3Controls: string[] = [];
+function parallelRefuse(name: string, mutate: (outer: any, process: any) => void) {
+  const outer = structuredClone(parallelOuter), process = structuredClone(parallel); mutate(outer, process);
+  if (captureRefused(outer, 2, aptId, process)) throw new Error('Parallel boundary failed');
+  v3Controls.push(name);
+}
+parallelRefuse('aggregate-substituted-100', (o, p) => { o.stages['input-capture'].exit = p.docker_exit = p.stages.download.exit = 100; });
+parallelRefuse('aggregate-mismatch', (_, p) => { p.docker_exit = 100; });
+parallelRefuse('cleanup-unavailable', (_, p) => { p.container_absent = false; });
+parallelRefuse('different-worker-bound', (_, p) => { p.download_workers = 9; });
+parallelRefuse('plan-unavailable', (_, p) => { p.plan = { state: 'unavailable', exit: null }; });
+parallelRefuse('plan-digest-missing', (_, p) => { p.download_plan_sha256 = null; });
+parallelRefuse('archive-check-started', (_, p) => { p.archive_check = { state: 'executed', exit: 100 }; });
+parallelRefuse('no-failed-worker', (_, p) => { p.downloads[1].apt.exit = p.downloads[1].result.exit = 0; });
+parallelRefuse('missing-workers', (_, p) => { p.downloads = []; });
+parallelRefuse('worker-unavailable', (_, p) => { p.downloads[1].apt = { state: 'unavailable', exit: null }; });
+parallelRefuse('worker-unstarted', (_, p) => { p.downloads[1].result = { state: 'not_run', exit: null }; });
+parallelRefuse('worker-signal', (_, p) => { p.downloads[1].apt.exit = p.downloads[1].result.exit = 153; });
+parallelRefuse('worker-validation-refusal', (_, p) => { p.downloads[0].result.exit = 2; });
+parallelRefuse('worker-string-exit', (_, p) => { p.downloads[1].apt.exit = p.downloads[1].result.exit = '100'; });
+parallelRefuse('worker-extra-status', (_, p) => { p.downloads[1].result.extra = true; });
+parallelRefuse('worker-extra-field', (_, p) => { p.downloads[1].extra = true; });
+parallelRefuse('worker-unsafe-name', (_, p) => { p.downloads[1].file = '../outside.deb'; });
+parallelRefuse('worker-duplicate-name', (_, p) => { p.downloads[1].file = p.downloads[0].file; });
+parallelRefuse('worker-size-zero', (_, p) => { p.downloads[1].size = 0; });
+parallelRefuse('worker-file-bound', (_, p) => { p.downloads[1].size = 200_000_001; });
+parallelRefuse('worker-size-string', (_, p) => { p.downloads[1].size = '512'; });
+parallelRefuse('worker-hash-invalid', (_, p) => { p.downloads[1].sha256 = 'c'; });
+parallelRefuse('worker-total-bound', (_, p) => { p.downloads = Array.from({ length: 6 }, (_, i) => ({
+  ...structuredClone(p.downloads[1]), file: `large_${i}_all.deb`, size: 200_000_000 })); });
+parallelRefuse('worker-count-bound', (_, p) => { p.downloads = Array.from({ length: 1101 }, (_, i) => ({
+  ...structuredClone(p.downloads[1]), file: `small_${i}_all.deb` })); });
+parallelRefuse('generic-refusal-with-process', (o, p) => { o.stages['input-capture'].exit = p.docker_exit = 2; });
+const v3Update = structuredClone(parallel), v3Outer = structuredClone(apt);
+Object.assign(v3Update, { docker_exit: 100, downloads: [], download_plan_sha256: null, plan: { state: 'not_run', exit: null } });
+v3Update.stages.update.exit = 100; v3Update.stages.download = { state: 'not_run', exit: null };
+if (!captureRefused(v3Outer, 2, aptId, v3Update)) throw new Error('V3 update boundary was not recognized');
+v3Update.stages.update.exit = 0; v3Update.stages.download = { state: 'executed', exit: 100 };
+v3Update.plan = { state: 'executed', exit: 100 };
+if (!captureRefused(v3Outer, 2, aptId, v3Update)) throw new Error('V3 plan boundary was not recognized');
+const newRunner = createHash('sha256').update(await readFile(new URL('./run.py', import.meta.url))).digest('hex');
+const productionId = { ...aptId, runner_sha256: newRunner }, productionOuter = structuredClone(apt);
+productionOuter.selected_sources['runtime-security/latexml-native-ci/run.py'].sha256 = newRunner;
+if (captureRefused(productionOuter, 2, productionId, processRow)) throw new Error('Production accepted legacy process');
+v3Controls.push('production-refuses-legacy-process');
+productionOuter.stages['input-capture'].exit = 123;
+if (!captureRefused(productionOuter, 2, productionId, parallel)) throw new Error('Production parallel positive refused');
+console.log(JSON.stringify({ schema: 'aelira-latexml-capture-retry-controls-v3',
   positive: 'actual-public-capture-refusal', controls, apt_positive: 'actual-native-apt-update-refusal',
-  download_stage_positive: true, apt_controls: aptControls, missing_receipts_refused: true, status: 'pass' }));
+  legacy_v2_download_positive: true, apt_controls: aptControls, parallel_positive: 'synthetic-original-worker-statuses',
+  v3_update_and_plan_positives: true, parallel_controls: v3Controls, missing_receipts_refused: true, status: 'pass' }));
