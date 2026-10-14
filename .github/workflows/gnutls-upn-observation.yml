@@ -6,7 +6,7 @@ on:
       - 'runtime-security/gnutls-upn-observation/**'
       - '.github/workflows/gnutls-upn-observation.yml'
   push:
-    branches: [main]
+    branches: [main, codex/gnutls-upn-native]
     paths:
       - 'runtime-security/gnutls-upn-observation/**'
       - '.github/workflows/gnutls-upn-observation.yml'
@@ -57,7 +57,7 @@ jobs:
             revision = $revision; tree = $tree; sources = $sources
             runner = $env:OBSERVATION_RUNNER; image_os = $env:ImageOS; image_version = $env:ImageVersion
             bun_version = '1.3.14'; bun_sha256 = (Get-FileHash -Algorithm SHA256 $bun).Hash.ToLowerInvariant()
-            firewall = $null; firewall_profiles = $null; firewall_restored = $false; restoration_state = 'not_run'; stages = [ordered]@{}
+            firewall = $null; firewall_profiles = $null; firewall_restored = $false; restoration_state = 'not_run'; failure = $null; stages = [ordered]@{}
           }
           $ruleName = 'Aelira-UPN-Observation-' + [guid]::NewGuid().ToString('N')
           function Invoke-BoundedBun([string]$name, [string[]]$arguments) {
@@ -100,14 +100,22 @@ jobs:
             if ($profiles.Count -ne 3 -or @($profiles | Where-Object { $_.Enabled.ToString() -ne 'True' }).Count -ne 0 -or
                 @($profiles | Where-Object { $null -ne $_.DisabledInterfaceAliases -and @($_.DisabledInterfaceAliases).Count -ne 0 }).Count -ne 0 -or
                 (Get-Service MpsSvc).Status -ne 'Running') { throw 'Enabled firewall service and profiles required' }
-            $receipt.phase = 'isolation'
+            $receipt.phase = 'rule-create'
             New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block -Profile Any -Protocol Any -Enabled True | Out-Null
+            $receipt.phase = 'rule-read'
             $active = Get-NetFirewallRule -PolicyStore ActiveStore -Name $ruleName
+            $receipt.phase = 'rule-address'
             $address = $active | Get-NetFirewallAddressFilter
+            $receipt.phase = 'rule-application'
             $application = $active | Get-NetFirewallApplicationFilter
+            $receipt.phase = 'rule-ports'
             $ports = $active | Get-NetFirewallPortFilter
-            $enforcement = @($active.EnforcementStatus | ForEach-Object { [uint16]$_ })
+            $receipt.phase = 'rule-enforcement'
+            $rawEnforcement = $active.CimInstanceProperties['EnforcementStatus']
+            if ($null -eq $rawEnforcement -or $rawEnforcement.CimType.ToString() -ne 'UInt16Array') { throw 'Typed effective enforcement required' }
+            $enforcement = @($rawEnforcement.Value)
             $receipt.firewall = @{ direction = $active.Direction.ToString(); action = $active.Action.ToString(); enabled = $active.Enabled.ToString(); profile_store = 'ActiveStore'; profile = $active.Profile.ToString(); enforcement = $enforcement; protocol = $ports.Protocol.ToString(); local_port = $ports.LocalPort; remote_port = $ports.RemotePort; local_address = $address.LocalAddress; remote_address = $address.RemoteAddress; program = $application.Program }
+            $receipt.phase = 'rule-validation'
             if ($active.Enabled.ToString() -ne 'True' -or $active.Action -ne 'Block' -or $active.Direction -ne 'Outbound' -or $active.Profile.ToString() -ne 'Any' -or
                 $enforcement.Count -eq 0 -or @($enforcement | Where-Object { $_ -ne 1 }).Count -ne 0 -or
                 $ports.Protocol.ToString() -ne 'Any' -or $ports.LocalPort -ne 'Any' -or $ports.RemotePort -ne 'Any' -or
@@ -118,6 +126,9 @@ jobs:
             $receipt.status = 'observed'
           } catch {
             $receipt.status = 'fail'
+            $errorType = $_.Exception.GetType().FullName
+            if ($errorType -notmatch '^[A-Za-z0-9_.+]{1,128}$') { $errorType = 'Exception' }
+            $receipt.failure = @{ error_type = $errorType; hresult = $_.Exception.HResult; category = $_.CategoryInfo.Category.ToString() }
           } finally {
             try {
               $receipt.restoration_state = 'querying'
