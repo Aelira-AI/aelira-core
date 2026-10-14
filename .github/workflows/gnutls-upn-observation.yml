@@ -57,9 +57,11 @@ jobs:
             revision = $revision; tree = $tree; sources = $sources
             runner = $env:OBSERVATION_RUNNER; image_os = $env:ImageOS; image_version = $env:ImageVersion
             bun_version = '1.3.14'; bun_sha256 = (Get-FileHash -Algorithm SHA256 $bun).Hash.ToLowerInvariant()
-            firewall = $null; firewall_profiles = $null; firewall_restored = $false; restoration_state = 'not_run'; failure = $null; stages = [ordered]@{}
+            firewall = $null; firewall_profiles = $null; active_profile_mask = $null; profile_coverage = @(); firewall_restored = $false; restoration_state = 'not_run'; failure = $null; stages = [ordered]@{}
           }
           $ruleName = 'Aelira-UPN-Observation-' + [guid]::NewGuid().ToString('N')
+          $ownedRuleNames = [Collections.Generic.List[string]]::new()
+          $ownedRuleNames.Add($ruleName)
           function Invoke-BoundedBun([string]$name, [string[]]$arguments) {
             $process = [Diagnostics.Process]::new()
             $process.StartInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -100,6 +102,10 @@ jobs:
             if ($profiles.Count -ne 3 -or @($profiles | Where-Object { $_.Enabled.ToString() -ne 'True' }).Count -ne 0 -or
                 @($profiles | Where-Object { $null -ne $_.DisabledInterfaceAliases -and @($_.DisabledInterfaceAliases).Count -ne 0 }).Count -ne 0 -or
                 (Get-Service MpsSvc).Status -ne 'Running') { throw 'Enabled firewall service and profiles required' }
+            $policy = New-Object -ComObject HNetCfg.FwPolicy2
+            $activeMask = [int]$policy.CurrentProfileTypes
+            if ($activeMask -le 0 -or ($activeMask -band 7) -ne $activeMask) { throw 'Known active profile mask required' }
+            $receipt.active_profile_mask = $activeMask
             $receipt.phase = 'rule-create'
             New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block -Profile Any -Protocol Any -Enabled True | Out-Null
             $receipt.phase = 'rule-read'
@@ -117,12 +123,30 @@ jobs:
             $receipt.firewall = @{ direction = $active.Direction.ToString(); action = $active.Action.ToString(); enabled = $active.Enabled.ToString(); profile_store = 'ActiveStore'; profile = $active.Profile.ToString(); enforcement = $enforcement; protocol = $ports.Protocol.ToString(); local_port = $ports.LocalPort; remote_port = $ports.RemotePort; local_address = $address.LocalAddress; remote_address = $address.RemoteAddress; program = $application.Program }
             $receipt.phase = 'rule-validation'
             if ($active.Enabled.ToString() -ne 'True' -or $active.Action -ne 'Block' -or $active.Direction -ne 'Outbound' -or $active.Profile.ToString() -ne 'Any' -or
-                $enforcement.Count -eq 0 -or @($enforcement | Where-Object { $_ -ne 1 }).Count -ne 0 -or
+                $enforcement.Count -eq 0 -or -not ($enforcement -contains 1) -or @($enforcement | Where-Object { $_ -notin @(1,5) }).Count -ne 0 -or
                 $ports.Protocol.ToString() -ne 'Any' -or $ports.LocalPort -ne 'Any' -or $ports.RemotePort -ne 'Any' -or
                 $address.RemoteAddress -ne 'Any' -or $address.LocalAddress -ne 'Any' -or $application.Program -ne 'Any') { throw 'Active broad outbound block required' }
+            $receipt.phase = 'profile-coverage'
+            foreach ($entry in @(@{ name = 'Domain'; mask = 1 }, @{ name = 'Private'; mask = 2 }, @{ name = 'Public'; mask = 4 })) {
+              if (($activeMask -band $entry.mask) -eq 0) { continue }
+              $profileRuleName = $ruleName + '-' + $entry.name
+              $ownedRuleNames.Add($profileRuleName)
+              New-NetFirewallRule -Name $profileRuleName -DisplayName $profileRuleName -Direction Outbound -Action Block -Profile $entry.name -Protocol Any -Enabled True | Out-Null
+              $profileRule = Get-NetFirewallRule -PolicyStore ActiveStore -Name $profileRuleName
+              $raw = $profileRule.CimInstanceProperties['EnforcementStatus']
+              if ($null -eq $raw -or $raw.CimType.ToString() -ne 'UInt16Array') { throw 'Typed profile enforcement required' }
+              $status = @($raw.Value)
+              $coverage = @{ profile = $entry.name; mask = $entry.mask; enforcement = $status; direction = $profileRule.Direction.ToString(); action = $profileRule.Action.ToString(); enabled = $profileRule.Enabled.ToString(); returned_profile = $profileRule.Profile.ToString() }
+              $receipt.profile_coverage += $coverage
+              if ($status.Count -eq 0 -or @($status | Where-Object { $_ -ne 1 }).Count -ne 0 -or
+                  $profileRule.Enabled.ToString() -ne 'True' -or $profileRule.Action -ne 'Block' -or $profileRule.Direction -ne 'Outbound' -or
+                  $profileRule.Profile.ToString() -ne $entry.name) { throw 'Full active-profile enforcement required' }
+            }
+            if ([int]$policy.CurrentProfileTypes -ne $activeMask) { throw 'Active profile changed' }
             Invoke-BoundedBun 'network-blocked' @((Join-Path $component 'network-control.ts'), 'blocked')
             $receipt.phase = 'observe'
             Invoke-BoundedBun 'native-observer' @((Join-Path $component 'observe-windows.ts'), $fixtures, (Join-Path $evidence 'observation.json'))
+            if ([int]$policy.CurrentProfileTypes -ne $activeMask) { throw 'Active profile changed' }
             $receipt.status = 'observed'
           } catch {
             $receipt.status = 'fail'
@@ -132,9 +156,9 @@ jobs:
           } finally {
             try {
               $receipt.restoration_state = 'querying'
-              $owned = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object { $_.Name -eq $ruleName })
-              if ($owned.Count -gt 0) { Remove-NetFirewallRule -Name $ruleName -ErrorAction Stop }
-              $remaining = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { $_.Name -eq $ruleName })
+              $owned = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object { $ownedRuleNames.Contains($_.Name) })
+              foreach ($rule in $owned) { Remove-NetFirewallRule -Name $rule.Name -ErrorAction Stop }
+              $remaining = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { $ownedRuleNames.Contains($_.Name) })
               if ($remaining.Count -ne 0) { throw 'Firewall restoration failed' }
               $receipt.firewall_restored = $true
               $receipt.restoration_state = 'absent'
