@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { assert, command, hashFile, hashManifest, imageContents, json, regular, same, small } from './evidence-core.ts';
 import { CLIENT_CASES, EXPORT_CONTROLS, OUTPUTS, RECIPE, SOURCE_FILES, exportEvidence } from './ci-evidence.ts';
@@ -74,12 +74,27 @@ const localNames = ['build-status.json', 'recipe-sha256.txt', 'client-console-pr
   ...['a', 'b'].flatMap(a => ['source-controls.json', 'source-receipt.json', 'console-private.log', ...OUTPUTS.map(n => 'packages/' + n)].map(n => `build-${a}/` + n)),
   'installed/frontend-controls.json', ...CLIENT_CASES.flatMap(n => [`installed/${n}-result.json`, `installed/${n}-handoff.log`])];
 let attempt = 0;
-async function mutation(name: string, phase: string, target: string | null, change: (data: Buffer) => Buffer, override: Record<string, unknown> = {}): Promise<void> {
+async function mutation(name: string, phase: string, target: string | null, change: (data: Buffer) => Buffer, override: Record<string, unknown> = {}, provenance = false): Promise<void> {
   const root = join(scratch, 'mutation-' + attempt++); await mkdir(root);
   for (const file of localNames) {
     await mkdir(dirname(join(root, file)), { recursive: true });
     if (target === file) await writeFile(join(root, file), change(await readFile(await regular(source, file))));
     else await copyFile(await regular(source, file), join(root, file));
+  }
+  if (provenance) {
+    await copyFile(await regular(source, 'build-a/signed-chain.json'), join(root, 'build-a/signed-chain.json'));
+    for (const role of ['source', 'client']) {
+      const prefix = role + '-provenance'; await mkdir(join(root, prefix));
+      for (const entry of await readdir(join(source, prefix), { withFileTypes: true })) {
+        const name = prefix + '/' + entry.name;
+        if (entry.isDirectory()) {
+          assert(['apt-lists', 'toolchain-debs'].includes(entry.name), 'Unexpected provenance directory');
+          await mkdir(join(root, name));
+          for (const leaf of await readdir(join(source, name))) await link(await regular(source, name + '/' + leaf), join(root, name, leaf));
+        } else if (name === target) await writeFile(join(root, name), change(await readFile(await regular(source, name))));
+        else await link(await regular(source, name), join(root, name));
+      }
+    }
   }
   const destination = join(scratch, 'refusal-' + attempt);
   const row = await exportEvidence({ ...options, source: root, dest: destination, ...override });
@@ -129,6 +144,10 @@ await refused('auxiliary-hash-comment', () => hashManifest(Buffer.concat([manife
 await refused('auxiliary-hash-duplicate', () => hashManifest(Buffer.concat([manifest, manifest]), hashes));
 await refused('auxiliary-hash-closure', () => hashManifest(Buffer.from(manifest.toString().split('\n')[0] + '\n'), hashes));
 await refused('auxiliary-hash-byte-drift', () => hashManifest(Buffer.from(manifest.toString().replace('a', 'c')), hashes));
+for (const [name, target] of [
+  ['exporter-apt-capture-comment', 'source-provenance/apt-index-sha256.txt'],
+  ['exporter-deb-capture-comment', 'client-provenance/toolchain-debs.sha256'],
+]) await mutation(name, 'signed-inputs', target, d => Buffer.concat([d, Buffer.from('# unexpected metadata\n')]), {}, true);
 const receipt = { schema: 'aelira-xdg-export-controls-v1', status: 'pass', count: controls.length, controls };
 assert(same(controls, EXPORT_CONTROLS), 'Export control closure changed');
 await writeFile(join(dest, 'export-controls.json'), JSON.stringify(receipt, null, 2) + '\n');

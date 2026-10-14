@@ -41,7 +41,8 @@ export const EXPORT_CONTROLS = ['real-native-complete-export', 'all-exported-byt
   'physical-compose-parser-drift', 'physical-refusal-exit-drift',
   'all-real-compose-case-oracles', 'evidence-symlink', 'evidence-path-traversal',
   'all-real-apt-and-deb-manifests', 'auxiliary-hash-comment', 'auxiliary-hash-duplicate',
-  'auxiliary-hash-closure', 'auxiliary-hash-byte-drift'];
+  'auxiliary-hash-closure', 'auxiliary-hash-byte-drift',
+  'exporter-apt-capture-comment', 'exporter-deb-capture-comment'];
 const SCRIPT = '61f66c933cf71ab2786ded6d7038c748406bea5e309af0cd6b737f93fa1cdc26';
 const VERSION = '1.2.1-2ubuntu2+aelira2';
 const CLIENT_VERSION = '1:140.17.0esr-1~deb13u1';
