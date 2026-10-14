@@ -22,8 +22,10 @@ partial.manifest_sha256 = createHash('sha256').update(manifestBytes).digest('hex
 const manifest = JSON.parse(manifestBytes.toString());
 const lexical = manifest.schema === 'aelira-upn-lexical-vectors-v1';
 const baselines = manifest.schema === 'aelira-upn-unconstrained-vectors-v1';
-if (manifest.schema !== (baselines ? 'aelira-upn-unconstrained-vectors-v1' : lexical ? 'aelira-upn-lexical-vectors-v1' : 'aelira-upn-synthetic-sentinels-v1') ||
-  manifest.cases.length !== (baselines ? 13 : lexical ? 34 : 8) || inputs.cases !== manifest.cases.length) throw new Error('Invalid experiment contract');
+const paths = manifest.schema === 'aelira-upn-path-vectors-v1';
+const healthCount = baselines || paths ? 13 : 2;
+if (manifest.schema !== (paths ? 'aelira-upn-path-vectors-v1' : baselines ? 'aelira-upn-unconstrained-vectors-v1' : lexical ? 'aelira-upn-lexical-vectors-v1' : 'aelira-upn-synthetic-sentinels-v1') ||
+  manifest.cases.length !== (paths ? 18 : baselines ? 13 : lexical ? 34 : 8) || inputs.cases !== manifest.cases.length) throw new Error('Invalid experiment contract');
 const system = process.env.SystemRoot;
 if (!system || !/^[A-Za-z]:\\Windows$/i.test(system)) throw new Error('Expected Windows system directory');
 const cryptoPath = join(system, 'System32', 'crypt32.dll');
@@ -92,7 +94,9 @@ try {
       issuers = crypt.CertOpenStore(provider, 0, 0n, 0x2000, null);
       checked(issuers, 'CertOpenStore-issuers');
       checked(crypt.CertAddCertificateContextToStore(anchor, contexts.get('root'), 1, null), 'CertAddCertificateContextToStore-anchor');
-      checked(crypt.CertAddCertificateContextToStore(issuers, contexts.get(row.issuer), 1, null), 'CertAddCertificateContextToStore-issuer');
+      for (const issuer of row.intended_path.slice(1, -1)) {
+        checked(crypt.CertAddCertificateContextToStore(issuers, contexts.get(issuer), 1, null), 'CertAddCertificateContextToStore-issuer');
+      }
       const additionalStores = aligned(8); additionalStores[0] = issuers;
       const config = aligned(88), configView = data(config);
       // The SDK makes exclusive and restricted stores mutually exclusive.
@@ -134,7 +138,7 @@ try {
         result.path_matches = result.simple_chains.length === 1 && JSON.stringify(result.simple_chains[0].elements.map((e: any) => e.sha256)) === JSON.stringify(result.intended_path);
         result.clean = result.path_matches && result.error_status === 0 && result.simple_chains.every((c: any) => c.error_status === 0 && c.elements.every((e: any) => e.error_status === 0)) && evaluated !== 0 && result.policy.error === 0;
       }
-      if ((baselines || rows.length <= 2) && result.clean !== true) break;
+      if (rows.length <= healthCount && result.clean !== true) break;
     } finally {
       if (chain) crypt.CertFreeCertificateChain(chain);
       if (engineOutput[0]) crypt.CertFreeCertificateChainEngine(engineOutput[0]);
@@ -157,8 +161,8 @@ if (versionLength[0] < 52) throw new Error('Short DLL fixed version');
 const fixedVersion = memory(Number(versionPointer[0]), 52);
 if (fixedVersion.readUInt32LE(0) !== 0xfeef04bd) throw new Error('DLL version signature');
 const ms = fixedVersion.readUInt32LE(8), ls = fixedVersion.readUInt32LE(12);
-const status = rows.length !== manifest.cases.length || (baselines && rows.some(r => !r.clean)) ? 'baseline-failed' : rows.some(r => !r.build_bool || !r.path_matches || !r.policy?.bool) ? 'experiment-failed' : 'observed';
-const result = { schema: baselines ? 'aelira-native-windows-upn-unconstrained-observation-v1' : lexical ? 'aelira-native-windows-upn-lexical-observation-v1' : 'aelira-native-windows-upn-observation-v1', status,
+const status = rows.length !== manifest.cases.length || rows.slice(0, healthCount).some(r => !r.clean) ? 'baseline-failed' : rows.some(r => !r.build_bool || !r.path_matches || !r.policy?.bool) ? 'experiment-failed' : 'observed';
+const result = { schema: paths ? 'aelira-native-windows-upn-path-observation-v1' : baselines ? 'aelira-native-windows-upn-unconstrained-observation-v1' : lexical ? 'aelira-native-windows-upn-lexical-observation-v1' : 'aelira-native-windows-upn-observation-v1', status,
   manifest_sha256: sha(manifestBytes), observer_sha256: sha(await readFile(import.meta.path)), architecture: process.arch, bun_version: Bun.version,
   os_version: [4, 8, 12].map(n => data(version).getUint32(n, true)), user_lcid: kernel.GetUserDefaultLCID(), system_lcid: kernel.GetSystemDefaultLCID(),
   crypt32_sha256: sha(await readFile(cryptoPath)), crypt32_version: [ms >>> 16, ms & 65535, ls >>> 16, ls & 65535], fixed_validation_time: manifest.fixed_validation_time,

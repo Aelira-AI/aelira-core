@@ -1,0 +1,24 @@
+{
+  "schema": "aelira-upn-path-plan-v1",
+  "scope": "Five finite inherited/intersecting UPN constraint measurements after thirteen preserved health prerequisites; no comparator or GnuTLS oracle adoption",
+  "baseline_manifest_sha256": "8fb7659eeedc63059fbd7a78f3804d0de5b73495b8167ab19bf8d73c29cf3e67",
+  "issuers": [
+    {"name":"p_suffix_parent","issuer":"root","permitted":[".corp.example"]},
+    {"name":"p_suffix_child","issuer":"p_suffix_parent","permitted":[]},
+    {"name":"p_disjoint_parent","issuer":"root","permitted":["corp.example"]},
+    {"name":"p_disjoint_child","issuer":"p_disjoint_parent","permitted":["other.example"]},
+    {"name":"p_or_parent","issuer":"root","permitted":["allowed@corp.example","blocked@corp.example"]},
+    {"name":"p_or_child","issuer":"p_or_parent","permitted":["blocked@corp.example","other@corp.example"]}
+  ],
+  "vectors": [
+    {"id":"P0","name":"p00","issuer":"p_suffix_child","principal":"user@child.corp.example","path":["p00","p_suffix_child","p_suffix_parent","root"]},
+    {"id":"P1","name":"p01","issuer":"p_suffix_child","principal":"user@corp.example","path":["p01","p_suffix_child","p_suffix_parent","root"]},
+    {"id":"P2","name":"p02","issuer":"p_disjoint_child","principal":"user@corp.example","path":["p02","p_disjoint_child","p_disjoint_parent","root"]},
+    {"id":"P3","name":"p03","issuer":"p_or_child","principal":"blocked@corp.example","path":["p03","p_or_child","p_or_parent","root"]},
+    {"id":"P4","name":"p04","issuer":"p_or_child","principal":"allowed@corp.example","path":["p04","p_or_child","p_or_parent","root"]}
+  ],
+  "health_rows": 13,
+  "measurement_rows": 5,
+  "distinct_controls_across_experiments": 56,
+  "deferred": ["Windows authoring-tool conversion", "general Unicode or case rules", "malformed or multiple leaf names", "excluded inheritance", "self-issued transitions", "GnuTLS APPEND serialization"]
+}
