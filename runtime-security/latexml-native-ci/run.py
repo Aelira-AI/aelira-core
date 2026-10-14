@@ -525,8 +525,6 @@ def read_failure_projection(path, expected, caller_state, validator):
 
 
 def selector(a):
-    cidfile = root.parent / "private/input-capture.cid"
-    path_check(cidfile, new=True)
     args = [
         "--operator-repo",
         str(a.operator_repo),
@@ -792,6 +790,8 @@ def capture(a, root, caller):
             + " /capture || exit $?",
         )
     )
+    cidfile = root.parent / "private/input-capture.cid"
+    path_check(cidfile, new=True)
     args = [
         "/usr/bin/docker",
         "run",
