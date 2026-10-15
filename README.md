@@ -77,7 +77,7 @@ Connectors are at different stages of verification. We label them honestly rathe
 
 | LMS | Connection | Status |
 |---|---|---|
-| **Canvas** | LTI 1.3 + REST API | **Integration verified** — maintainer production integration testing; institution-specific user-journey acceptance remains necessary |
+| **Canvas** | LTI 1.3 + REST API | **Integration verified** — tested against a live Canvas instance; institution-specific user-journey acceptance remains necessary |
 | **Brightspace (D2L)** | LTI 1.3 + API | **Beta** — built and tested against a D2L developer instance, not recently re-verified |
 | **Blackboard** | LTI 1.3 + API | **Experimental** — implemented, not yet tested end to end |
 | **Moodle** | REST API | **Experimental** — implemented, not yet tested end to end |
