@@ -16,6 +16,21 @@ Two GnuTLS advisories, CVE-2026-88647 and CVE-2026-88648, are also unfixed in
 Debian. Debian rates them low and upstream GnuTLS does not treat them as
 security issues. Aelira's own HTTPS traffic does not use GnuTLS.
 
+## Copies bundled in Python and its packages
+
+The image scanner does not see libraries compiled into Python itself or into
+Python wheels. The copies the application uses to parse user documents are
+handled directly:
+
+- Python 3.14.8 bundles Expat 2.8.5, which includes the fixes for the Expat
+  advisories below.
+- lxml is built from its source release against libxml2 2.15.4 and libxslt
+  1.1.45, which include the fixes for the libxml2 advisories below; the
+  published lxml wheels still bundle libxml2 2.14.
+- The FFmpeg copies inside the PyAV and OpenCV wheels receive the same local
+  file, container and codec restrictions as the system FFmpeg, and the
+  transcriber only reads WAV produced by that restricted path.
+
 ## Affected
 
 | Advisory | Packages | Assessment |
@@ -59,7 +74,7 @@ security issues. Aelira's own HTTPS traffic does not use GnuTLS.
 | CVE-2026-66039 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | CAF demuxer. Media inputs are restricted to the supported container allowlist, which excludes CAF. |
 | CVE-2026-66040 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PNG decoding in FFmpeg. Media inputs are restricted to the supported codec allowlist, which excludes PNG; FFmpeg only writes PNG frames. |
 | CVE-2026-66041 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS. |
-| CVE-2026-66046 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
+| CVE-2026-66046 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-67215 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON JSON Patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-67216 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON object comparison. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-70628 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | WTV demuxer and DVB subtitle parsing. Media inputs are restricted to the supported container and codec allowlists, which exclude both. |
@@ -71,9 +86,9 @@ security issues. Aelira's own HTTPS traffic does not use GnuTLS.
 | CVE-2026-75144 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | Dirac decoder. Media inputs are restricted to the supported codec allowlist, which excludes Dirac. |
 | CVE-2026-75146 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | DASH demuxer. Media inputs are restricted to local files and the supported container allowlist, which excludes DASH. |
 | CVE-2026-76642 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems. |
-| CVE-2026-76956 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
-| CVE-2026-76957 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
-| CVE-2026-77214 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
+| CVE-2026-76956 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
+| CVE-2026-76957 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
+| CVE-2026-77214 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-78408 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux nsenter. The application never runs nsenter and has no privileges to join namespaces. |
 | CVE-2026-78409 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems. |
 | CVE-2026-78410 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux bind-mount handling. The application runs as an unprivileged user and never mounts filesystems. |
@@ -87,5 +102,5 @@ security issues. Aelira's own HTTPS traffic does not use GnuTLS.
 | CVE-2026-88053 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract int-template loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files. |
 | CVE-2026-88806 | libx11-6, libx11-data, libx11-xcb1 | `vulnerable_code_not_in_execute_path` | libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
 | CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
-| CVE-2026-93990 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
+| CVE-2026-93990 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-9538 | libperl5.40, perl, perl-base, perl-modules-5.40 | `vulnerable_code_not_in_execute_path` | Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar. |
