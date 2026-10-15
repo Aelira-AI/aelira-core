@@ -1,9 +1,10 @@
 # Known unfixed advisories in v0.9.12
 
 The v0.9.12 API image is built on Debian 13. The image scanner reports the
-advisories below as HIGH. None has a fix in Debian at publication time, so
-none can be resolved by updating packages. Each one is reviewed, listed here,
-and accepted by the release gate only while its review is current
+advisories below as HIGH, except CVE-2026-6653, which it reports as CRITICAL.
+None has a fix in Debian at publication time, so none can be resolved by
+updating packages. Each one is reviewed, listed here, and accepted by the
+release gate only while its review is current
 (`.trivy-unfixed-dispositions.json`, reviewed 2026-10-15, expires 2027-01-12).
 Every finding stays in the published scan reports.
 
@@ -79,6 +80,7 @@ handled directly:
 | CVE-2026-66040 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PNG decoding in FFmpeg. Media inputs are restricted to the supported codec allowlist, which excludes PNG; FFmpeg only writes PNG frames. |
 | CVE-2026-66041 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS. |
 | CVE-2026-66046 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
+| CVE-2026-6653 | libxml2, libxml2-utils | `vulnerable_code_cannot_be_controlled_by_adversary` | libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4. |
 | CVE-2026-67215 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON JSON Patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-67216 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON object comparison. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-70628 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | WTV demuxer and DVB subtitle parsing. Media inputs are restricted to the supported container and codec allowlists, which exclude both. |

@@ -984,6 +984,16 @@
         "tests/test_latex_pdf_validation.py::test_saved_pdf_negative_controls[untagged]",
         "tests/test_latex_pdf_validation.py::test_saved_pdf_negative_controls[wrong-mcid]",
         "tests/test_latex_pdf_validation.py::test_structural_checker_exception_and_legacy_predicate_fail_closed",
+        "tests/test_latex_sandbox.py::test_confined_command_names_only_declared_directories",
+        "tests/test_latex_sandbox.py::test_confined_process_reads_and_writes_only_declared_directories",
+        "tests/test_latex_sandbox.py::test_launcher_fails_closed_without_running_the_tool",
+        "tests/test_latex_sandbox.py::test_pandoc_keeps_math_and_refuses_outside_files",
+        "tests/test_latex_sandbox.py::test_path_rule_matches_the_kernel_layout",
+        "tests/test_latex_sandbox.py::test_project_runner_converts_a_full_document_within_its_bounds",
+        "tests/test_latex_sandbox.py::test_project_runner_converts_under_confinement",
+        "tests/test_latex_sandbox.py::test_run_tool_passes_no_application_environment",
+        "tests/test_latex_sandbox.py::test_tool_environment_carries_no_application_configuration",
+        "tests/test_latex_sandbox.py::test_unconfined_run_is_only_available_by_request",
         "tests/test_latex_validation_corpus.py::test_corpus_remediation_preserves_source_bytes[M01]",
         "tests/test_latex_validation_corpus.py::test_corpus_remediation_preserves_source_bytes[M03]",
         "tests/test_latex_validation_corpus.py::test_corpus_remediation_preserves_source_bytes[M04]",
@@ -2445,6 +2455,19 @@
           "evidence": [
             "tests/test_web_scanner_e2e.py"
           ]
+        },
+        {
+          "id": "latex-confinement-toolchain",
+          "classification": "environment-gated",
+          "owner": "Document remediation maintainers",
+          "reason": "Real LuaLaTeX, pdflatex and LaTeXML confinement cases need the TeX toolchain, which the main suite does not install. They must pass without skips in the latex-confinement CI profile.",
+          "issue": "https://github.com/Aelira-AI/aelira-core/issues/374",
+          "nodeids": [
+            "tests/test_latex_sandbox.py::test_latexml_keeps_math_and_refuses_outside_files",
+            "tests/test_latex_sandbox.py::test_latexml_postprocessor_cannot_read_outside_bibliography",
+            "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_lualatex]",
+            "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_pdflatex]"
+          ]
         }
       ]
     },
@@ -2517,6 +2540,25 @@
         "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[True]",
         "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair",
         "tests/test_task17b_postgres.py::test_concurrent_enqueue_unique_race_returns_the_single_winner"
+      ],
+      "allowed_skips": []
+    },
+    "latex-confinement": {
+      "required_tests": [
+        "tests/test_latex_sandbox.py::test_confined_command_names_only_declared_directories",
+        "tests/test_latex_sandbox.py::test_confined_process_reads_and_writes_only_declared_directories",
+        "tests/test_latex_sandbox.py::test_latexml_keeps_math_and_refuses_outside_files",
+        "tests/test_latex_sandbox.py::test_latexml_postprocessor_cannot_read_outside_bibliography",
+        "tests/test_latex_sandbox.py::test_launcher_fails_closed_without_running_the_tool",
+        "tests/test_latex_sandbox.py::test_pandoc_keeps_math_and_refuses_outside_files",
+        "tests/test_latex_sandbox.py::test_path_rule_matches_the_kernel_layout",
+        "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_lualatex]",
+        "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_pdflatex]",
+        "tests/test_latex_sandbox.py::test_project_runner_converts_a_full_document_within_its_bounds",
+        "tests/test_latex_sandbox.py::test_project_runner_converts_under_confinement",
+        "tests/test_latex_sandbox.py::test_run_tool_passes_no_application_environment",
+        "tests/test_latex_sandbox.py::test_tool_environment_carries_no_application_configuration",
+        "tests/test_latex_sandbox.py::test_unconfined_run_is_only_available_by_request"
       ],
       "allowed_skips": []
     }

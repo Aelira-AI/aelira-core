@@ -821,6 +821,26 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-6653",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
       "id": "CVE-2026-67215",
       "osFamily": "debian",
       "packages": [

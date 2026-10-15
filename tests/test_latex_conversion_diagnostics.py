@@ -14,6 +14,7 @@ from src.education.latex_diagnostics import (
     inspect_candidate,
     sha,
 )
+from src.education import latex_sandbox as sandbox
 from src.education.remediation.latex_converter import LaTeXConverter
 
 
@@ -62,6 +63,13 @@ def converter(tmp_path):
     return value
 
 
+def confined_tool(args):
+    """The tool command inside the confinement launcher; refuse unconfined runs."""
+    launcher = sandbox.confined(["tool"], Path("/"))
+    assert args[:3] == launcher[:3], args
+    return args[args.index("--") + 1 :]
+
+
 @pytest.fixture
 def source(tmp_path):
     path = tmp_path / "source.tex"
@@ -87,6 +95,7 @@ def runner(
             return SimpleNamespace(
                 returncode=0, stdout=f"{args[0]} version 1.2.3", stderr=""
             )
+        args = confined_tool(args)
         calls.append(args[0])
         if timeout:
             raise subprocess.TimeoutExpired(args, 10)
@@ -433,6 +442,7 @@ def test_simultaneous_calls_keep_stage_evidence_separate(
     def run(args, **kwargs):
         if args[1] in {"--version", "--VERSION"}:
             return SimpleNamespace(returncode=0, stdout="1.2.3", stderr="")
+        args = confined_tool(args)
         target = Path(next(a[7:] for a in args if a.startswith("--dest=")))
         if args[0] == "latexml":
             barrier.wait(timeout=5)

@@ -27,10 +27,16 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests/fixtures/latex_compatibility"
 RESEARCH = ROOT / "tests/fixtures/latex_research"
 CONVERTER = ROOT / "src/education/remediation/latex_converter.py"
+# Load the runtime and its standalone sandbox launcher without importing the
+# application package.
+PACKAGE = types.ModuleType("compatibility_education")
+PACKAGE.__path__ = [str(ROOT / "src/education")]
+sys.modules[PACKAGE.__name__] = PACKAGE
 SPEC = importlib.util.spec_from_file_location(
-    "compatibility_runtime", ROOT / "src/education/latex_runtime.py"
+    "compatibility_education.latex_runtime", ROOT / "src/education/latex_runtime.py"
 )
 runtime = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = runtime
 SPEC.loader.exec_module(runtime)
 
 

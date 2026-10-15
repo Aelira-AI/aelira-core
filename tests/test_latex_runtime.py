@@ -45,18 +45,25 @@ def test_cache_environment_is_owned_per_attempt_without_mutating_process(tmp_pat
 
 
 def test_real_command_success_failure_and_timeout(tmp_path):
+    # The interpreter lives outside the confined system directories, so these
+    # process-group controls run unconfined; test_latex_sandbox covers confinement.
     code, log, error = runtime.run_tool(
-        [sys.executable, "-c", "print('control')"], tmp_path
+        [sys.executable, "-c", "print('control')"], tmp_path, confine=False
     )
     assert (code, log.strip(), error) == (0, "control", None)
     assert runtime.run_tool(["/does-not-exist"], tmp_path)[2] == "tool_unavailable"
     assert (
-        runtime.run_tool([sys.executable, "-c", "print('x' * 131072)"], tmp_path)[2]
+        runtime.run_tool(
+            [sys.executable, "-c", "print('x' * 131072)"], tmp_path, confine=False
+        )[2]
         == "diagnostics_truncated"
     )
     assert (
         runtime.run_tool(
-            [sys.executable, "-c", "import time; time.sleep(10)"], tmp_path, 0.05
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            tmp_path,
+            0.05,
+            confine=False,
         )[2]
         == "timeout"
     )

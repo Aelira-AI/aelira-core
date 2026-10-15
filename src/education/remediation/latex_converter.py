@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
 from ..latex_runtime import tex_environment, version_command
+from ..latex_sandbox import UNAVAILABLE, confined
 from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
 from ..latex_semantics import extract_semantics, save_html_semantics
 from ..latex_compatibility import decide_html, tool_versions
@@ -46,6 +47,9 @@ from .latex_pdf_validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Tools that read files named inside the user's document.
+CONFINED_TOOLS = frozenset({"latexml", "latexmlpost", "lualatex", "pdflatex", "pandoc"})
 
 # Import through LaTeXML's local XML catalog, independent of its install path.
 # Use LaTeXML's own unaligned equation templates so source equation nodes render
@@ -181,23 +185,35 @@ class LaTeXConverter:
         except (OSError, subprocess.SubprocessError):
             pass
         try:
-            if tool in {"lualatex", "pdflatex"}:
+            confine = tool in CONFINED_TOOLS
+            if confine:
+                # Writes stay in the candidate's directory and the source
+                # directory is read-only; nothing else the application can
+                # read is visible, and no application environment is passed.
                 kwargs["env"] = tex_environment(candidate.parent)
-                # Compile in owned scratch. -output-directory leaks into the
-                # format-building child and can leave its .fmt in the wrong
-                # directory on a cold installation. Keep source lookup explicit.
-                kwargs["env"]["TEXINPUTS"] = (
-                    str(source.parent.resolve())
-                    + os.pathsep
-                    + kwargs["env"].get("TEXINPUTS", "")
-                )
+                if tool in {"lualatex", "pdflatex"}:
+                    # Compile in owned scratch. -output-directory leaks into the
+                    # format-building child and can leave its .fmt in the wrong
+                    # directory on a cold installation. Keep source lookup explicit.
+                    kwargs["env"]["TEXINPUTS"] = (
+                        str(source.parent.resolve()) + os.pathsep
+                    )
+                args = confined(args, candidate.parent, (source.parent,))
             result = subprocess.run(args, **kwargs)
-            findings = classify(
-                result.stdout,
-                result.stderr,
-                exit_code=result.returncode,
-                final_pass=final_pass,
-            )
+            stderr = result.stderr if isinstance(result.stderr, str) else ""
+            if (
+                confine
+                and result.returncode == UNAVAILABLE
+                and stderr.startswith("latex_sandbox:")
+            ):
+                findings = [diagnostic("tool_unavailable")]
+            else:
+                findings = classify(
+                    result.stdout,
+                    result.stderr,
+                    exit_code=result.returncode,
+                    final_pass=final_pass,
+                )
         except subprocess.TimeoutExpired:
             result = SimpleNamespace(returncode=1)
             findings = [diagnostic("timeout")]

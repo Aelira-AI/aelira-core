@@ -13,6 +13,7 @@ See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits a
 
 ### Security
 
+- LaTeX conversion runs every LaTeX tool and pandoc with a minimal environment and confined to its own working files and the submitted source, fixing [GHSA-53gp-pqcg-h8q4](https://github.com/Aelira-AI/aelira-core/security/advisories/GHSA-53gp-pqcg-h8q4).
 - Alert email is sent only to the department's configured recipients using the fixed alert templates. An unreleased endpoint that sent custom subjects to arbitrary recipients has been removed.
 - Outbound HTTP connections are pinned to validated public addresses. Browser scan requests use the guarded transport; unsupported frames, popups, workers and alternate network channels leave required checks incomplete rather than producing a verified score ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - New upload writes are confined through directory descriptors. OAuth callback destinations are constrained, and affected API errors and persisted diagnostics omit unfiltered exception details ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
@@ -24,7 +25,7 @@ See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits a
 - Dashboard images install the available pcre2 and tiff security updates on the pinned nginx base ([#574](https://github.com/Aelira-AI/aelira-core/issues/574)).
 - Media decoding accepts only local files in the supported container formats (MP4/MOV/M4A, WebM/MKV, AVI, MP3, WAV, Ogg, FLAC) and mainstream codecs. FFmpeg, ffprobe and OpenCV capture refuse other formats and codecs before an unrelated decoder runs, and audio is converted to WAV before transcription. Media using an unsupported codec is reported as a processing failure.
 - Publication rejects every reported HIGH or CRITICAL image vulnerability regardless of fix availability, retaining the unsuppressed native-image inventory before rejection. The only exception is a distribution-package finding with no vendor fix and a reviewed, expiring, disclosed disposition: HIGH findings as affected, or HIGH and CRITICAL findings as not affected with a stated justification. Known affected embedded libraries remain separate release blockers ([#580](https://github.com/Aelira-AI/aelira-core/issues/580)).
-- The 64 HIGH Debian advisories without a distribution fix are reviewed and disclosed in [known unfixed advisories](docs/security/known-unfixed-advisories-0.9.12.md): 54 not affected in this image and 10 affected (libxml2, ImageMagick and libtiff through LaTeX conversion).
+- The 64 HIGH and one CRITICAL Debian advisories without a distribution fix are reviewed and disclosed in [known unfixed advisories](docs/security/known-unfixed-advisories-0.9.12.md): 55 not affected in this image and 10 affected (libxml2, ImageMagick and libtiff through LaTeX conversion).
 - The API image uses Python 3.14.8, whose bundled Expat 2.8.5 fixes the Expat advisories affecting the copy Python's XML parsers use. lxml is built from its pinned source release against hash-verified libxml2 2.15.4 and libxslt 1.1.45, fixing libxml2 advisories that affect the libxml2 bundled in the published lxml wheels.
 
 ### Added
