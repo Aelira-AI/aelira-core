@@ -2,7 +2,7 @@
 # Multi-stage build for smaller image size
 
 # Stage 1: Builder
-FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS builder
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
 
 ARG SOURCE_DATE_EPOCH=0
 
@@ -14,18 +14,30 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libcairo2-dev \
     pkg-config \
+    curl \
+    ca-certificates \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy requirements and install Python dependencies
+# Copy requirements and install Python dependencies. lxml is built first from
+# its pinned source release against hash-verified libxml2 2.15.4 and libxslt
+# 1.1.45; the published wheels bundle an older, affected libxml2. The pinned
+# requirement is then already satisfied by that build.
 COPY requirements.txt .
+COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
     python -m pip uninstall --yes setuptools && \
+    pip install --no-cache-dir "setuptools==84.0.0" && \
+    sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
+    pip install --no-cache-dir --no-deps /tmp/lxml-wheel/lxml-6.1.3-*.whl && \
+    rm -rf /tmp/lxml-wheel /tmp/build-lxml-wheel.sh && \
     pip install --no-cache-dir -r requirements.txt && \
+    python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
     python -m pip uninstall --yes pip
 
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
@@ -41,7 +53,7 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
     rm -rf /root/.npm
 
 # Stage 2: Runtime
-FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS runtime
 
 ARG SOURCE_DATE_EPOCH=0
 

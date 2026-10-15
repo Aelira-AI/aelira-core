@@ -815,7 +815,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1266,7 +1266,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1282,7 +1282,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1298,7 +1298,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1858,7 +1858,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
