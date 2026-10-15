@@ -7,14 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The next planned release is v0.9.12. Its notes below remain pending protected publication. Published earlier release artifacts remain unchanged.
-
-## [0.9.12] - Pending publication
+## [0.9.12] - 2026-10-15
 
 See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits and publication requirements.
 
 ### Security
 
+- LaTeX conversion runs every LaTeX tool and pandoc with a minimal environment and confined to its own working files and the submitted source, fixing [GHSA-53gp-pqcg-h8q4](https://github.com/Aelira-AI/aelira-core/security/advisories/GHSA-53gp-pqcg-h8q4).
 - Outbound HTTP connections are pinned to validated public addresses. Browser scan requests use the guarded transport; unsupported frames, popups, workers and alternate network channels leave required checks incomplete rather than producing a verified score ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - New upload writes are confined through directory descriptors. OAuth callback destinations are constrained, and affected API errors and persisted diagnostics omit unfiltered exception details ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - Image descriptions require verified source pixels and the workspace vision provider. Text-only fallbacks are removed; missing images remain unresolved ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).

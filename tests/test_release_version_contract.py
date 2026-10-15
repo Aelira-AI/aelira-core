@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 VERSION = "0.9.12"
-RELEASE_HEADING = "## [0.9.12] - Pending publication"
+RELEASE_HEADING = "## [0.9.12] - 2026-10-15"
 RELEASE_BODY = ROOT / "docs/releases/v0.9.12.md"
 PREVIOUS_HEADING = "## [0.9.11] - 2026-09-12"
 
@@ -24,7 +24,7 @@ def test_authoritative_release_versions_are_0_9_12():
     compose = (ROOT / "docker-compose.prod.yml").read_text()
 
     assert f"**Status: {VERSION} beta.**" in readme
-    assert "**Release publication: pending.**" in readme
+    assert "Release publication: pending" not in readme
     assert "A future release may include them" not in readme
     assert f'api_version: str = "{VERSION}"' in settings
     assert project["project"]["version"] == VERSION
@@ -64,14 +64,16 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_marks_v0_9_12_pending_and_preserves_history():
+def test_changelog_dates_v0_9_12_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
     assert "Changes after v0.9.12" not in changelog
     assert "## [0.9.12] - 2026-10-11" not in changelog
+    assert "Pending publication" not in changelog
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
+    assert changelog[unreleased + len("## [Unreleased]") : release].strip() == ""
     previous = changelog.index(PREVIOUS_HEADING)
     historical = changelog.index("## [0.9.8] - 2026-09-08")
     assert unreleased < release < previous < historical
@@ -98,10 +100,9 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
     assert body.startswith(f"# Aelira v{VERSION}\n")
-    assert "These draft notes describe the v0.9.12 release candidate." in body
-    assert "**Publication is pending.**" in body
+    assert "draft notes" not in body
+    assert "Publication is pending" not in body
     for phrase in (
-        "successful protected publication",
         "20260917_unknown_confidence",
         "20260928_pdf_edit_pub",
         "database migration",
