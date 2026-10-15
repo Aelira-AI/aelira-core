@@ -23,6 +23,8 @@ import tempfile
 import logging
 import subprocess
 from abc import ABC, abstractmethod
+
+from src.education.media_inputs import local_media_command
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -403,7 +405,9 @@ class PiperTTSEngine(BaseTTSEngine):
             output_path = input_path.replace(".wav", f".{output_format.value}")
 
             subprocess.run(
-                ["ffmpeg", "-y", "-i", input_path, "-q:a", "2", output_path],
+                local_media_command(
+                    ["ffmpeg", "-y", "-i", input_path, "-q:a", "2", output_path]
+                ),
                 capture_output=True,
                 timeout=30,
             )
@@ -876,19 +880,22 @@ class TTSProcessor:
 
             # Concatenate with ffmpeg
             subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    list_path,
-                    "-c:a",
-                    "libmp3lame" if output_path.endswith(".mp3") else "copy",
-                    output_path,
-                ],
+                local_media_command(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        list_path,
+                        "-c:a",
+                        "libmp3lame" if output_path.endswith(".mp3") else "copy",
+                        output_path,
+                    ],
+                    extra_formats=("concat",),
+                ),
                 capture_output=True,
                 timeout=120,
                 check=True,
