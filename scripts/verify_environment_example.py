@@ -39,6 +39,7 @@ INTERNAL_ENVIRONMENT_NAMES = {
     "MAX_FILE_SIZE_PPTX": "internal byte limit without an environment contract",
     "MAX_FILE_SIZE_VIDEO": "internal byte limit without an environment contract",
     "MAX_IMAGE_PIXELS": "internal image safety limit",
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS": "fixed local-file decoder restriction set by the media pipeline",
     "REQUEST_TIMEOUT": "internal request deadline",
     "TESSDATA_PREFIX": "runtime owned by the system Tesseract installation",
 }
