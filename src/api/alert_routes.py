@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
 from datetime import datetime, timezone
-import html
 import uuid
 
 from ..db.database import get_db_dependency
@@ -112,14 +111,6 @@ class WeeklySummaryRequest(BaseModel):
     total_issues: int
     avg_compliance_score: float
     top_issues: Optional[List[dict]] = None
-
-
-class SendAlertRequest(BaseModel):
-    """Request to send alert to multiple recipients."""
-
-    recipients: List[EmailStr]
-    subject: str
-    body: str
 
 
 class TriggerResponse(BaseModel):
@@ -767,48 +758,4 @@ async def trigger_weekly_summary(
             success=False,
             message="Failed to send weekly summary.",
             recipients_count=0,
-        )
-
-
-@router.post("/send", response_model=TriggerResponse)
-async def send_alert_to_recipients(
-    request: SendAlertRequest,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Send a custom alert email to specified recipients.
-    """
-    from ..mailer import get_email_service
-
-    if not request.recipients:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one recipient email is required.",
-        )
-
-    email_service = get_email_service()
-
-    delivered_count = 0
-    try:
-        for recipient in request.recipients:
-            result = await email_service.send_email(
-                to_emails=[str(recipient)],
-                subject=request.subject,
-                html_content=f"<p>{html.escape(request.body)}</p>",
-            )
-            require_delivery_success(result)
-            delivered_count += 1
-
-        return TriggerResponse(
-            success=True,
-            message=f"Alert sent to {len(request.recipients)} recipient(s)",
-            recipients_count=len(request.recipients),
-        )
-
-    except Exception:
-        return TriggerResponse(
-            success=False,
-            message="Failed to send alert.",
-            recipients_count=delivered_count,
         )

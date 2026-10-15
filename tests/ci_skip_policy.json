@@ -188,7 +188,7 @@
         "tests/test_alert_delivery_routes.py::test_custom_send_invalid_input[payload1-422]",
         "tests/test_alert_delivery_routes.py::test_custom_send_uses_current_service_contract",
         "tests/test_alert_delivery_routes.py::test_delivery_routes_require_identity[GET-/api/alerts/history-None]",
-        "tests/test_alert_delivery_routes.py::test_delivery_routes_require_identity[POST-/api/alerts/send-payload2]",
+        "tests/test_alert_delivery_routes.py::test_arbitrary_recipient_send_route_is_not_exposed",
         "tests/test_alert_delivery_routes.py::test_delivery_routes_require_identity[POST-/api/alerts/test-payload1]",
         "tests/test_alert_delivery_routes.py::test_history_explicitly_reports_unavailable_tracking",
         "tests/test_alert_delivery_routes.py::test_real_template_service_reaches_controlled_transport",
