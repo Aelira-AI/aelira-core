@@ -2,24 +2,1894 @@
   "schemaVersion": 1,
   "dispositions": [
     {
-      "id": "CVE-2026-88647",
+      "id": "CVE-2022-4055",
       "osFamily": "debian",
-      "package": "libgnutls30t64",
-      "installedVersion": "3.8.9-3+deb13u4",
-      "reason": "No Debian or upstream fix exists; upstream does not treat it as a security issue. Application HTTPS does not use GnuTLS, and media tools run on local files with network protocols disabled.",
+      "packages": [
+        {
+          "name": "xdg-utils",
+          "installedVersion": "1.2.1-2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "xdg-utils mailto handling with Thunderbird. The image has no mail client and the application never runs xdg-open.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
-      "disclosure": "docs/releases/v0.9.12.md"
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
-      "id": "CVE-2026-88648",
+      "id": "CVE-2025-69720",
       "osFamily": "debian",
-      "package": "libgnutls30t64",
-      "installedVersion": "3.8.9-3+deb13u4",
-      "reason": "No Debian or upstream fix exists; upstream does not treat it as a security issue. Application HTTPS does not use GnuTLS, and media tools run on local files with network protocols disabled.",
+      "packages": [
+        {
+          "name": "libncursesw6",
+          "installedVersion": "6.5+20250216-2"
+        },
+        {
+          "name": "libtinfo6",
+          "installedVersion": "6.5+20250216-2"
+        },
+        {
+          "name": "ncurses-base",
+          "installedVersion": "6.5+20250216-2"
+        },
+        {
+          "name": "ncurses-bin",
+          "installedVersion": "6.5+20250216-2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "ncurses infocmp tool. The application never runs infocmp.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
-      "disclosure": "docs/releases/v0.9.12.md"
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-12064",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "curl",
+          "installedVersion": "8.14.1-2+deb13u7"
+        },
+        {
+          "name": "libcurl3t64-gnutls",
+          "installedVersion": "8.14.1-2+deb13u7"
+        },
+        {
+          "name": "libcurl4t64",
+          "installedVersion": "8.14.1-2+deb13u7"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "curl SFTP/SCP host verification. The image uses curl only for a local HTTP readiness check; the application never uses SFTP or SCP.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-15308",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpython3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "libpython3.13-stdlib",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Distribution Python 3.13 is installed as a package dependency only. The application runs its own Python 3.14 and virtual environment, which precede it on PATH.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-16554",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcjson1",
+          "installedVersion": "1.7.18-3.1+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "cJSON's only consumer in the image is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-16742",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libsystemd0",
+          "installedVersion": "257.13-1~deb13u1"
+        },
+        {
+          "name": "libudev1",
+          "installedVersion": "257.13-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "systemd-homed. Only the libsystemd and libudev client libraries are installed; systemd-homed is not present.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-19445",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpython3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "libpython3.13-stdlib",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Distribution Python 3.13 is installed as a package dependency only. The application runs its own Python 3.14 and virtual environment, which precede it on PATH.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-19553",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpython3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "libpython3.13-stdlib",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Distribution Python 3.13 is installed as a package dependency only. The application runs its own Python 3.14 and virtual environment, which precede it on PATH.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-24882",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "gnupg",
+          "installedVersion": "2.4.7-21+deb13u1"
+        },
+        {
+          "name": "gnupg-l10n",
+          "installedVersion": "2.4.7-21+deb13u1"
+        },
+        {
+          "name": "dirmngr",
+          "installedVersion": "2.4.7-21+deb13u1+b5"
+        },
+        {
+          "name": "gpg",
+          "installedVersion": "2.4.7-21+deb13u1+b5"
+        },
+        {
+          "name": "gpg-agent",
+          "installedVersion": "2.4.7-21+deb13u1+b5"
+        },
+        {
+          "name": "gpgconf",
+          "installedVersion": "2.4.7-21+deb13u1+b5"
+        },
+        {
+          "name": "gpgsm",
+          "installedVersion": "2.4.7-21+deb13u1+b5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "GnuPG tpm2daemon. The tpm2daemon binary is not installed and the application never runs GnuPG.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-29036",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcjson1",
+          "installedVersion": "1.7.18-3.1+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "cJSON JSON Pointer handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-34980",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcups2t64",
+          "installedVersion": "2.4.10-3+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "CUPS print server shared queues. Only the client library is installed as a browser dependency; cupsd is not present.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-36849",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtiff6",
+          "installedVersion": "4.7.0-3+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libtiff may decode TIFF graphics referenced by submitted LaTeX documents. Denial of service only; Debian will not fix it in this release.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-37555",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libsndfile1",
+          "installedVersion": "1.2.2-2+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libsndfile IMA ADPCM WAV parsing. libsndfile is loaded only through PulseAudio and SDL output-device libraries linked by FFmpeg; FFmpeg decodes WAV itself and the application never plays audio.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-52490",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtiff6",
+          "installedVersion": "4.7.0-3+deb13u3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "tiffcrop command-line option parsing. The tiffcrop tool is not installed; the library package does not contain this code.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-54369",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libacl1",
+          "installedVersion": "2.3.2-2+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libacl pathname functions in privileged processes. The application runs unprivileged and never calls ACL functions on user-controlled paths.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-58049",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "RASC decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude RASC.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-64830",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "VobSub subtitle handling. Media inputs are restricted to the supported container and codec allowlists, which exclude VobSub and DVD subtitles.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-64832",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "NVDEC hardware decoding. The image has no NVIDIA hardware or hwaccel configuration and never requests hardware decoding.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-64833",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "S/PDIF muxer. The application only writes WAV, MP3, PNG, MP4 and Matroska outputs.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-64834",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "RTP/ASF stream handling. Media inputs are restricted to local files and the supported container allowlist, which excludes RTP and ASF.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-64835",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "ADX/AAX audio decoder. Media inputs are restricted to the supported codec allowlist, which excludes ADX.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-66036",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "hqdn3d video filter. The application never applies this filter.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-66039",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "CAF demuxer. Media inputs are restricted to the supported container allowlist, which excludes CAF.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-66040",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "PNG decoding in FFmpeg. Media inputs are restricted to the supported codec allowlist, which excludes PNG; FFmpeg only writes PNG frames.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-66041",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-66046",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.8.3-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-67215",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcjson1",
+          "installedVersion": "1.7.18-3.1+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "cJSON JSON Patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-67216",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcjson1",
+          "installedVersion": "1.7.18-3.1+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "cJSON object comparison. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-70628",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "WTV demuxer and DVB subtitle parsing. Media inputs are restricted to the supported container and codec allowlists, which exclude both.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-70632",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "CFHD decoder. Media inputs are restricted to the supported codec allowlist, which excludes CFHD.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-7210",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpython3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "libpython3.13-stdlib",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Distribution Python 3.13 is installed as a package dependency only. The application runs its own Python 3.14 and virtual environment, which precede it on PATH.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-73066",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtesseract5",
+          "installedVersion": "5.5.0-1+b1"
+        },
+        {
+          "name": "tesseract-ocr",
+          "installedVersion": "5.5.0-1+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Tesseract model (.traineddata) parsing. OCR uses only the distribution-installed English model; users cannot supply model files.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-74860",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-75142",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "MPEG-PS muxer. The application never writes MPEG program streams.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-75143",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "RIST protocol reader. Media inputs are restricted to the local file protocol.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-75144",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "Dirac decoder. Media inputs are restricted to the supported codec allowlist, which excludes Dirac.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-75146",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "ffmpeg",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavcodec61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavdevice61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavfilter10",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavformat61",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libavutil59",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libpostproc58",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswresample5",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        },
+        {
+          "name": "libswscale8",
+          "installedVersion": "7:7.1.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "inline_mitigations_already_exist",
+      "reason": "DASH demuxer. Media inputs are restricted to local files and the supported container allowlist, which excludes DASH.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-76642",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "bsdutils",
+          "installedVersion": "1:2.41.5-0+deb13u1"
+        },
+        {
+          "name": "login",
+          "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libblkid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "liblastlog2-2",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libmount1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libsmartcols1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libuuid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "mount",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "util-linux",
+          "installedVersion": "2.41.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-76956",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.8.3-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-76957",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.8.3-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-77214",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.8.3-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-78408",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "bsdutils",
+          "installedVersion": "1:2.41.5-0+deb13u1"
+        },
+        {
+          "name": "login",
+          "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libblkid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "liblastlog2-2",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libmount1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libsmartcols1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libuuid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "mount",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "util-linux",
+          "installedVersion": "2.41.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "util-linux nsenter. The application never runs nsenter and has no privileges to join namespaces.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-78409",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "bsdutils",
+          "installedVersion": "1:2.41.5-0+deb13u1"
+        },
+        {
+          "name": "login",
+          "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libblkid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "liblastlog2-2",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libmount1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libsmartcols1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libuuid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "mount",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "util-linux",
+          "installedVersion": "2.41.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-78410",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "bsdutils",
+          "installedVersion": "1:2.41.5-0+deb13u1"
+        },
+        {
+          "name": "login",
+          "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libblkid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "liblastlog2-2",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libmount1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libsmartcols1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "libuuid1",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "mount",
+          "installedVersion": "2.41.5-0+deb13u1"
+        },
+        {
+          "name": "util-linux",
+          "installedVersion": "2.41.5-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "util-linux bind-mount handling. The application runs as an unprivileged user and never mounts filesystems.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-82049",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpython3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "libpython3.13-stdlib",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13",
+          "installedVersion": "3.13.5-2+deb13u5"
+        },
+        {
+          "name": "python3.13-minimal",
+          "installedVersion": "3.13.5-2+deb13u5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Distribution Python 3.13 is installed as a package dependency only. The application runs its own Python 3.14 and virtual environment, which precede it on PATH.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-8458",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "curl",
+          "installedVersion": "8.14.1-2+deb13u7"
+        },
+        {
+          "name": "libcurl3t64-gnutls",
+          "installedVersion": "8.14.1-2+deb13u7"
+        },
+        {
+          "name": "libcurl4t64",
+          "installedVersion": "8.14.1-2+deb13u7"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libcurl Negotiate-authenticated connection reuse. The image uses curl only for a single unauthenticated local readiness request; application HTTP uses Python clients.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86138",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86139",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86140",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86142",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86143",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86144",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        },
+        {
+          "name": "libxml2-utils",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+        }
+      ],
+      "status": "affected",
+      "reason": "libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86420",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "affected",
+      "reason": "ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-86421",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "affected",
+      "reason": "ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-87933",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcjson1",
+          "installedVersion": "1.7.18-3.1+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "cJSON merge-patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88047",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtesseract5",
+          "installedVersion": "5.5.0-1+b1"
+        },
+        {
+          "name": "tesseract-ocr",
+          "installedVersion": "5.5.0-1+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Tesseract model (.traineddata) parsing. OCR uses only the distribution-installed English model; users cannot supply model files.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88048",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtesseract5",
+          "installedVersion": "5.5.0-1+b1"
+        },
+        {
+          "name": "tesseract-ocr",
+          "installedVersion": "5.5.0-1+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Tesseract LSTM layer deserialization from model files. OCR uses only the distribution-installed English model; users cannot supply model files.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88051",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtesseract5",
+          "installedVersion": "5.5.0-1+b1"
+        },
+        {
+          "name": "tesseract-ocr",
+          "installedVersion": "5.5.0-1+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Tesseract model (.traineddata) parsing. OCR uses only the distribution-installed English model; users cannot supply model files.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88052",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtesseract5",
+          "installedVersion": "5.5.0-1+b1"
+        },
+        {
+          "name": "tesseract-ocr",
+          "installedVersion": "5.5.0-1+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Tesseract unicharset loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88053",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libtesseract5",
+          "installedVersion": "5.5.0-1+b1"
+        },
+        {
+          "name": "tesseract-ocr",
+          "installedVersion": "5.5.0-1+b1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Tesseract int-template loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88806",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libx11-6",
+          "installedVersion": "2:1.8.12-1"
+        },
+        {
+          "name": "libx11-data",
+          "installedVersion": "2:1.8.12-1"
+        },
+        {
+          "name": "libx11-xcb1",
+          "installedVersion": "2:1.8.12-1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88807",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxrender1",
+          "installedVersion": "1:0.9.12-1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-93990",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.8.3-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "The application Python uses its own bundled Expat 2.8.2. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-9538",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libperl5.40",
+          "installedVersion": "5.40.1-6+deb13u1"
+        },
+        {
+          "name": "perl",
+          "installedVersion": "5.40.1-6+deb13u1"
+        },
+        {
+          "name": "perl-base",
+          "installedVersion": "5.40.1-6+deb13u1"
+        },
+        {
+          "name": "perl-modules-5.40",
+          "installedVersion": "5.40.1-6+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }

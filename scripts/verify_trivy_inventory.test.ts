@@ -123,8 +123,8 @@ test('CLI returns a nonzero exit for findings, malformed JSON and missing inputs
 describe('reviewed dispositions for unfixed distribution findings', () => {
   const today = '2026-10-15';
   const entry = {
-    id: 'CVE-2026-6653', osFamily: 'ubuntu', package: 'libxml2', installedVersion: '2.9.14',
-    reason: 'No distribution fix exists', reviewed: '2026-10-15', expires: '2027-01-15',
+    id: 'CVE-2026-6653', osFamily: 'ubuntu', packages: [{ name: 'libxml2', installedVersion: '2.9.14' }],
+    status: 'affected', reason: 'No distribution fix exists', reviewed: '2026-10-15', expires: '2027-01-15',
     disclosure: 'docs/releases/example.md',
   };
   const withFindings = (...rows: object[]) => {
@@ -144,8 +144,20 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
     expect(verifyInventory(withFindings(finding('HIGH', '2.15.4')), image, 'arm64', dispositions))
       .toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
   });
-  test('never accepts CRITICAL findings', () => {
+  test('never accepts CRITICAL findings as affected', () => {
     expect(verifyInventory(withFindings(finding('CRITICAL')), image, 'arm64', dispositions))
+      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+  });
+  test('accepts unfixed HIGH or CRITICAL findings as justified not_affected', () => {
+    const unreachable = { ...entry, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path' };
+    const checked = verifyDispositions({ schemaVersion: 1, dispositions: [unreachable] }, today);
+    expect(checked.errors).toEqual([]);
+    for (const severity of ['HIGH', 'CRITICAL']) {
+      const result = inspectInventory(withFindings(finding(severity)), image, 'arm64', checked.dispositions);
+      expect(result.errors).toEqual([]);
+      expect(result.accepted).toEqual([unreachable]);
+    }
+    expect(verifyInventory(withFindings(finding('CRITICAL', '2.15.4')), image, 'arm64', checked.dispositions))
       .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
   });
   test('never accepts language-package findings', () => {
@@ -169,6 +181,13 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
     expect(verifyInventory(other, image, 'arm64', dispositions))
       .toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
   });
+  test('matches any listed binary package of the same advisory', () => {
+    const shared = { ...entry, packages: [...entry.packages, { name: 'libxml2-utils', installedVersion: '2.9.14' }] };
+    const accepted = verifyDispositions({ schemaVersion: 1, dispositions: [shared] }, today).dispositions;
+    const result = inspectInventory(withFindings(finding('HIGH'), { ...finding('HIGH'), PkgName: 'libxml2-utils' }),
+      image, 'arm64', accepted);
+    expect(result.errors).toEqual([]);
+  });
   test('counts unmatched rows alongside accepted ones', () => {
     const result = inspectInventory(withFindings(finding('HIGH'), { ...finding('HIGH'), PkgName: 'other' }),
       image, 'arm64', dispositions);
@@ -182,7 +201,11 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
     expect(check([{ ...entry, expires: '2027-03-01' }])).toContain('Disposition review window exceeds 120 days: CVE-2026-6653');
     expect(check([entry, entry]).join(' ')).toContain('Duplicate disposition');
     for (const bad of [{ ...entry, reason: '' }, { ...entry, id: 'GHSA-xxxx' }, { ...entry, expires: '2027-02-30' },
-      { ...entry, disclosure: undefined }, null]) {
+      { ...entry, disclosure: undefined }, { ...entry, packages: [] }, { ...entry, packages: [{ name: 'libxml2' }] },
+      { ...entry, status: undefined }, { ...entry, status: 'fixed' },
+      { ...entry, justification: 'vulnerable_code_not_in_execute_path' },
+      { ...entry, status: 'not_affected' }, { ...entry, status: 'not_affected', justification: 'trust me' },
+      null]) {
       expect(check([bad])).toContain('Dispositions contain a malformed entry');
     }
     expect(verifyDispositions({ dispositions: [] }, today).errors.length).toBeGreaterThan(0);
@@ -205,7 +228,7 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
       writeFileSync(notes, `Known unfixed: ${entry.id}`);
       const disclosed = run();
       expect(disclosed.status).toBe(0);
-      expect(disclosed.stdout).toContain(`Reported unfixed HIGH ${entry.id}`);
+      expect(disclosed.stdout).toContain(`Reported unfixed ${entry.id} (affected)`);
     } finally {
       rmSync(directory, { recursive: true });
     }

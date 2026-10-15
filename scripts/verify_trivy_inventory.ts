@@ -12,15 +12,26 @@ const isoDate = /^\d{4}-\d{2}-\d{2}$/;
 const maxDispositionDays = 120;
 
 /**
- * A reviewed HIGH distribution-package finding that has no vendor fix. It is
- * still reported; it only stops counting as unresolved while every field
- * matches the scanned row exactly and the review has not expired.
+ * A reviewed distribution-package finding that has no vendor fix. It is still
+ * reported; it only stops counting as unresolved while every field matches the
+ * scanned row exactly and the review has not expired. `affected` covers HIGH
+ * findings shipped with disclosure. `not_affected` covers HIGH or CRITICAL
+ * findings whose vulnerable code the image cannot reach, with a VEX justification.
  */
+export const justifications = new Set([
+  'component_not_present',
+  'vulnerable_code_not_present',
+  'vulnerable_code_not_in_execute_path',
+  'vulnerable_code_cannot_be_controlled_by_adversary',
+  'inline_mitigations_already_exist',
+]);
+export type DispositionPackage = { name: string; installedVersion: string };
 export type Disposition = {
   id: string;
   osFamily: string;
-  package: string;
-  installedVersion: string;
+  packages: DispositionPackage[];
+  status: 'affected' | 'not_affected';
+  justification?: string;
   reason: string;
   reviewed: string;
   expires: string;
@@ -42,15 +53,21 @@ export function verifyDispositions(value: unknown, today: string): { disposition
   const seen = new Set<string>();
   for (const entry of value.dispositions) {
     if (!isRecord(entry) || !nonempty(entry.id) || !/^CVE-\d{4}-\d{4,}$/.test(entry.id) ||
-        !nonempty(entry.osFamily) || !nonempty(entry.package) || !nonempty(entry.installedVersion) ||
+        !nonempty(entry.osFamily) || !Array.isArray(entry.packages) || entry.packages.length === 0 ||
+        !entry.packages.every((item) => isRecord(item) && nonempty(item.name) && nonempty(item.installedVersion)) ||
         !nonempty(entry.reason) || !nonempty(entry.disclosure) ||
-        !validDate(entry.reviewed) || !validDate(entry.expires)) {
+        !validDate(entry.reviewed) || !validDate(entry.expires) ||
+        !(entry.status === 'affected' && entry.justification === undefined) &&
+        !(entry.status === 'not_affected' && typeof entry.justification === 'string' &&
+          justifications.has(entry.justification))) {
       errors.push('Dispositions contain a malformed entry');
       continue;
     }
-    const key = `${entry.id} ${entry.osFamily} ${entry.package} ${entry.installedVersion}`;
-    if (seen.has(key)) errors.push(`Duplicate disposition: ${key}`);
-    seen.add(key);
+    for (const item of entry.packages as DispositionPackage[]) {
+      const key = `${entry.id} ${entry.osFamily} ${item.name} ${item.installedVersion}`;
+      if (seen.has(key)) errors.push(`Duplicate disposition: ${key}`);
+      seen.add(key);
+    }
     if (days(entry.reviewed, today) < 0) errors.push(`Disposition reviewed in the future: ${entry.id}`);
     if (days(today, entry.expires) <= 0) errors.push(`Disposition expired: ${entry.id}`);
     if (days(entry.reviewed, entry.expires) > maxDispositionDays) {
@@ -134,20 +151,22 @@ export function inspectInventory(
         errors.push('Inventory contains a malformed vulnerability');
         continue;
       }
-      if (finding.Severity === 'HIGH') {
-        // Only distribution packages without any vendor fix can carry a
-        // disposition. CRITICAL rows, language packages and fixable rows never can.
-        const unfixed = finding.FixedVersion === undefined || finding.FixedVersion === null ||
-          finding.FixedVersion === '';
-        const match = result.Class === 'os-pkgs' && result.Type === os.Family && unfixed
-          ? dispositions.find((entry) => entry.id === finding.VulnerabilityID &&
-            entry.osFamily === os.Family && entry.package === finding.PkgName &&
-            entry.installedVersion === finding.InstalledVersion)
-          : undefined;
-        if (match) accepted.push(match);
-        else high++;
-      }
-      if (finding.Severity === 'CRITICAL') critical++;
+      if (finding.Severity !== 'HIGH' && finding.Severity !== 'CRITICAL') continue;
+      // Only distribution packages without any vendor fix can carry a disposition;
+      // language packages and fixable rows never can. CRITICAL rows additionally
+      // require a not_affected disposition.
+      const unfixed = finding.FixedVersion === undefined || finding.FixedVersion === null ||
+        finding.FixedVersion === '';
+      const match = result.Class === 'os-pkgs' && result.Type === os.Family && unfixed
+        ? dispositions.find((entry) => entry.id === finding.VulnerabilityID &&
+          entry.osFamily === os.Family &&
+          (finding.Severity === 'HIGH' || entry.status === 'not_affected') &&
+          entry.packages.some((item) =>
+            item.name === finding.PkgName && item.installedVersion === finding.InstalledVersion))
+        : undefined;
+      if (match) accepted.push(match);
+      else if (finding.Severity === 'HIGH') high++;
+      else critical++;
     }
   }
   if (!osScanned) errors.push('Inventory lacks the identified OS package scan');
@@ -205,14 +224,15 @@ if (import.meta.main) {
       if (!disclosure.includes(entry.id)) errors.push(`Disclosure ${entry.disclosure} does not name ${entry.id}`);
     }
     for (const entry of result.accepted) {
-      console.log(`Reported unfixed HIGH ${entry.id} in ${entry.package} ${entry.installedVersion}: ` +
+      console.log(`Reported unfixed ${entry.id} (${entry.status}${entry.justification ? `: ${entry.justification}` : ''}) ` +
+        `in ${entry.packages.map((item) => item.name).join(', ')}: ` +
         `disclosed in ${entry.disclosure}, review expires ${entry.expires}`);
     }
     if (errors.length) {
       for (const error of [...new Set(errors)]) console.error(error);
       process.exitCode = 1;
     } else if (result.accepted.length) {
-      console.log('Image report contains no unresolved HIGH or CRITICAL findings; the unfixed HIGH findings above are disclosed');
+      console.log('Image report contains no unresolved HIGH or CRITICAL findings; the unfixed findings above are disclosed');
     } else {
       console.log('Image report contains no HIGH or CRITICAL vulnerability findings');
     }
