@@ -8,7 +8,10 @@
 set -eu
 
 out="$1"
-work="$(mktemp -d)"
+# A fixed build path keeps the compiled output reproducible.
+work=/tmp/lxml-build
+rm -rf "$work"
+mkdir "$work"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 
@@ -37,8 +40,9 @@ fetch https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.18.tar.gz \
     lxml-6.1.3/libs/libiconv-1.18.tar.gz
 
 cd lxml-6.1.3
-# The static libraries are linked into lxml's shared extension modules.
-CFLAGS="-O2 -fPIC" \
+# The static libraries are linked into lxml's shared extension modules. No
+# debug information and mapped source paths keep the output reproducible.
+CFLAGS="-O2 -fPIC -g0 -ffile-prefix-map=$work=." \
 STATIC_DEPS=true \
 LIBXML2_VERSION=2.15.4 \
 LIBXSLT_VERSION=1.1.45 \
