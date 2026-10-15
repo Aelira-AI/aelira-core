@@ -26,6 +26,7 @@ from src.education.speaker_diarization import (
     SpeakerDiarizer,
     DiarizationResult,
 )
+from src.education.media_inputs import local_media_command, restrict_opencv_capture
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +414,9 @@ class MultimediaProcessor:
                 "default=noprint_wrappers=1",
                 file_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(
+                local_media_command(cmd), capture_output=True, text=True, timeout=30
+            )
 
             # Parse output
             output = result.stdout
@@ -460,7 +463,9 @@ class MultimediaProcessor:
                 "default=noprint_wrappers=1",
                 video_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(
+                local_media_command(cmd), capture_output=True, text=True, timeout=30
+            )
             return "codec_type=subtitle" in result.stdout
         except Exception as e:
             print(f"[MultimediaProcessor] Failed to check captions: {e}")
@@ -491,7 +496,10 @@ class MultimediaProcessor:
                 video_path,
             ]
             probe_result = subprocess.run(
-                probe_cmd, capture_output=True, text=True, timeout=30
+                local_media_command(probe_cmd),
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
 
             if not probe_result.stdout.strip():
@@ -520,7 +528,9 @@ class MultimediaProcessor:
                 audio_path,
             ]
 
-            subprocess.run(cmd, capture_output=True, check=True, timeout=300)
+            subprocess.run(
+                local_media_command(cmd), capture_output=True, check=True, timeout=300
+            )
             logger.info(f"[MultimediaProcessor] Extracted audio to: {audio_path}")
             return audio_path
 
@@ -1449,7 +1459,9 @@ class MultimediaProcessor:
                 video_path,
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(
+                local_media_command(cmd), capture_output=True, text=True, timeout=60
+            )
 
             if result.returncode != 0:
                 # Fallback: use simpler frame extraction
@@ -1505,7 +1517,9 @@ class MultimediaProcessor:
                 str(duration),
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(
+                local_media_command(cmd), capture_output=True, text=True, timeout=120
+            )
 
             # Parse showinfo output for frame data
             brightness_values = []
@@ -1648,7 +1662,9 @@ class MultimediaProcessor:
                     "error",
                 ]
 
-                result = subprocess.run(cmd, capture_output=True, timeout=120)
+                result = subprocess.run(
+                    local_media_command(cmd), capture_output=True, timeout=120
+                )
                 if result.returncode != 0:
                     logger.warning(
                         f"[MultimediaProcessor] Frame extraction failed: {result.stderr.decode()}"
@@ -1926,7 +1942,9 @@ class MultimediaProcessor:
                     frame_path,
                 ]
 
-                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                result = subprocess.run(
+                    local_media_command(cmd), capture_output=True, timeout=30
+                )
 
                 if result.returncode == 0 and os.path.exists(frame_path):
                     keyframes.append((timestamp, frame_path))
@@ -1960,6 +1978,7 @@ class MultimediaProcessor:
             List of timestamps where scene changes occur
         """
         try:
+            restrict_opencv_capture()
             from scenedetect import detect, ContentDetector
 
             # ContentDetector with threshold 30.0 is good for presentations
@@ -2027,7 +2046,7 @@ class MultimediaProcessor:
             ]
 
             result = subprocess.run(
-                cmd,
+                local_media_command(cmd),
                 capture_output=True,
                 text=True,
                 timeout=min(300, duration * 2),  # Timeout scales with video length
@@ -2639,7 +2658,7 @@ Format: Just the description text, no labels or explanations."""
 
             # Run ffmpeg
             result = subprocess.run(
-                cmd,
+                local_media_command(cmd),
                 capture_output=True,
                 text=True,
                 timeout=600,  # 10 minutes max

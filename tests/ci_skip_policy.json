@@ -14,6 +14,7 @@
   "profiles": {
     "main": {
       "required_tests": [
+        "tests/test_media_inputs.py::test_local_media_never_opens_network_references",
         "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_private_subresource_refuses_secondary_score",
         "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_public_page_produces_real_htmlcs_issues",
         "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_strict_csp_page_still_runs_trusted_htmlcs",

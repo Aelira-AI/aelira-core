@@ -19,6 +19,8 @@ import os
 import logging
 from pydantic import BaseModel
 
+from src.education.media_inputs import local_media_command
+
 logger = logging.getLogger(__name__)
 
 # Try to import pyannote.audio
@@ -212,16 +214,18 @@ class SpeakerDiarizer:
             import subprocess
 
             result = subprocess.run(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "format=duration",
-                    "-of",
-                    "default=noprint_wrappers=1:nokey=1",
-                    audio_path,
-                ],
+                local_media_command(
+                    [
+                        "ffprobe",
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration",
+                        "-of",
+                        "default=noprint_wrappers=1:nokey=1",
+                        audio_path,
+                    ]
+                ),
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -317,16 +321,18 @@ class SpeakerDiarizer:
         try:
             # Use ffmpeg silencedetect filter
             result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-i",
-                    audio_path,
-                    "-af",
-                    "silencedetect=n=-30dB:d=0.5",
-                    "-f",
-                    "null",
-                    "-",
-                ],
+                local_media_command(
+                    [
+                        "ffmpeg",
+                        "-i",
+                        audio_path,
+                        "-af",
+                        "silencedetect=n=-30dB:d=0.5",
+                        "-f",
+                        "null",
+                        "-",
+                    ]
+                ),
                 capture_output=True,
                 text=True,
                 timeout=120,
