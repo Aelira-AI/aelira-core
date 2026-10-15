@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "dispositions": [
+    {
+      "id": "CVE-2026-88647",
+      "osFamily": "debian",
+      "package": "libgnutls30t64",
+      "installedVersion": "3.8.9-3+deb13u4",
+      "reason": "No Debian or upstream fix exists; upstream does not treat it as a security issue. Application HTTPS does not use GnuTLS, and media tools run on local files with network protocols disabled.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/releases/v0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-88648",
+      "osFamily": "debian",
+      "package": "libgnutls30t64",
+      "installedVersion": "3.8.9-3+deb13u4",
+      "reason": "No Debian or upstream fix exists; upstream does not treat it as a security issue. Application HTTPS does not use GnuTLS, and media tools run on local files with network protocols disabled.",
+      "reviewed": "2026-10-15",
+      "expires": "2027-01-12",
+      "disclosure": "docs/releases/v0.9.12.md"
+    }
+  ]
+}
