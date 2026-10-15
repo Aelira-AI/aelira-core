@@ -37,12 +37,12 @@ another person's sessions during verification.
 ## Recorded scope
 
 The correction was exercised in Chrome 153.0.8010.54 against a native ARM64
-container on a DGX Spark. The checkbox, document-link and keyboard-scroll checks
+container on a native ARM64 Linux host. The checkbox, document-link and keyboard-scroll checks
 passed; screenshots were inspected at 320 and 1280 CSS pixels. Upload, Issues,
 Review Queue, History, Settings and Admin had no whole-page horizontal overflow
 at either width in the tested states. This does not cover every subflow, browser,
 zoom setting, or assistive-technology combination. Those remain tracked in #376.
 
 The dashboard production build, TypeScript check, ESLint and all 393 existing
-dashboard unit tests passed on the Spark. Tests that read backend templates and
+dashboard unit tests passed on that host. Tests that read backend templates and
 branding require the complete repository alongside the dashboard directory.

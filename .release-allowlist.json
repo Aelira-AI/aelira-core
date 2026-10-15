@@ -24,7 +24,7 @@
     {
       "path": "tests/test_url_credential_redaction.py",
       "check": "generic-secret",
-      "reason": "Test fixture, and deliberately so: the constant is the literal string 'not-a-real-password-placeholder'. This test exists because an earlier version used a fragment of a real Redis password. Verified 2026-08-14."
+      "reason": "Test fixture, and deliberately so: the constant is the literal string 'not-a-real-password-placeholder'. Verified 2026-08-14."
     },
     {
       "path": "tests/test_settings_validation.py",
@@ -55,6 +55,21 @@
       "path": "BRANDING.md",
       "check": "vendor-contact",
       "reason": "Correct and intended. A trademark policy without a permission-request address is unusable, and this is the project's own contact rather than something a self-hoster inherits. Verified 2026-08-15."
+    },
+    {
+      "path": "runtime-security/cjson/changelog-entry.txt",
+      "check": "vendor-contact",
+      "reason": "Maintainer trailer in a Debian changelog entry for a repaired package build input; it identifies the package maintainer and is not a contact shown to a deployment's users. The entry is part of frozen, verified package inputs. Verified 2026-10-15."
+    },
+    {
+      "path": "runtime-security/xdg/changelog-entry.txt",
+      "check": "vendor-contact",
+      "reason": "Maintainer trailer in a Debian changelog entry for a repaired package build input; it identifies the package maintainer and is not a contact shown to a deployment's users. The entry is part of frozen, verified package inputs. Verified 2026-10-15."
+    },
+    {
+      "path": "runtime-security/xrender/changelog-entry.txt",
+      "check": "vendor-contact",
+      "reason": "Maintainer trailer in a Debian changelog entry for a repaired package build input; it identifies the package maintainer and is not a contact shown to a deployment's users. The entry is part of frozen, verified package inputs. Verified 2026-10-15."
     }
   ]
 }

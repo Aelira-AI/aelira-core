@@ -6,7 +6,7 @@ on:
       - 'runtime-security/gnutls-upn-observation/**'
       - '.github/workflows/gnutls-upn-observation.yml'
   push:
-    branches: [main, codex/gnutls-upn-native, codex/gnutls-upn-lexical, codex/gnutls-upn-baselines, codex/gnutls-upn-paths, codex/gnutls-upn-at]
+    branches: [main]
     paths:
       - 'runtime-security/gnutls-upn-observation/**'
       - '.github/workflows/gnutls-upn-observation.yml'
