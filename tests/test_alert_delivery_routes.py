@@ -180,46 +180,6 @@ def test_sample_email_input_refusal(alert_route):
     case.mail.send_scan_complete.assert_not_awaited()
 
 
-def test_custom_send_uses_current_service_contract(alert_route):
-    case = alert_route
-    payload = {
-        "recipients": ["one@example.edu", "two@example.edu"],
-        "subject": "Lecture ready",
-        "body": "Ready to review.",
-    }
-    response = case.client.post("/api/alerts/send", json=payload)
-    assert response.status_code == 200
-    assert response.json()["success"] is True
-    assert response.json()["recipients_count"] == 2
-    assert [call.kwargs for call in case.mail.send_email.await_args_list] == [
-        {
-            "to_emails": [email],
-            "subject": payload["subject"],
-            "html_content": "<p>Ready to review.</p>",
-        }
-        for email in payload["recipients"]
-    ]
-    case.mail.send_email.reset_mock()
-    case.mail.send_email.side_effect = [{"success": True}, {"success": False}]
-    response = case.client.post("/api/alerts/send", json=payload)
-    assert response.status_code == 200
-    assert response.json()["success"] is False
-    assert response.json()["recipients_count"] == 1
-
-
-@pytest.mark.parametrize(
-    "payload,status",
-    [
-        ({"recipients": [], "subject": "Lecture", "body": "Ready"}, 400),
-        ({"recipients": ["invalid"], "subject": "Lecture", "body": "Ready"}, 422),
-    ],
-)
-def test_custom_send_invalid_input(alert_route, payload, status):
-    response = alert_route.client.post("/api/alerts/send", json=payload)
-    assert response.status_code == status
-    alert_route.mail.send_email.assert_not_awaited()
-
-
 @pytest.mark.parametrize("path,method,toggle,payload", CASES)
 def test_trigger_requires_identity_and_input(
     alert_route, path, method, toggle, payload
@@ -285,15 +245,6 @@ def test_trigger_recipient_scope_follows_current_department(
     [
         ("GET", "/api/alerts/history", None),
         ("POST", "/api/alerts/test", {"email_type": "scan_complete"}),
-        (
-            "POST",
-            "/api/alerts/send",
-            {
-                "recipients": ["faculty@example.edu"],
-                "subject": "Lecture",
-                "body": "Ready",
-            },
-        ),
     ],
 )
 def test_delivery_routes_require_identity(alert_route, method, path, payload):
@@ -304,26 +255,16 @@ def test_delivery_routes_require_identity(alert_route, method, path, payload):
     assert case.mail.mock_calls == []
 
 
-def test_custom_send_exception_after_success(alert_route):
-    case = alert_route
+def test_arbitrary_recipient_send_route_is_not_exposed(alert_route):
+    """Alert email only reaches the department's configured recipients."""
     payload = {
-        "recipients": ["faculty@example.edu"],
+        "recipients": ["someone@example.edu"],
         "subject": "Lecture",
-        "body": "Research & teaching",
+        "body": "Ready",
     }
-    assert case.client.post("/api/alerts/send", json=payload).json()["success"] is True
-    assert (
-        case.mail.send_email.await_args.kwargs["html_content"]
-        == "<p>Research &amp; teaching</p>"
-    )
-    case.mail.send_email.side_effect = RuntimeError("fixture delivery unavailable")
-    response = case.client.post("/api/alerts/send", json=payload)
-    assert response.status_code == 200
-    assert response.json() == {
-        "success": False,
-        "message": "Failed to send alert.",
-        "recipients_count": 0,
-    }
+    response = alert_route.client.post("/api/alerts/send", json=payload)
+    assert response.status_code in (404, 405)
+    assert alert_route.mail.mock_calls == []
 
 
 def test_real_template_service_reaches_controlled_transport(alert_route, monkeypatch):

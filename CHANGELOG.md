@@ -13,6 +13,7 @@ See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits a
 
 ### Security
 
+- Alert email is sent only to the department's configured recipients using the fixed alert templates. An unreleased endpoint that sent custom subjects to arbitrary recipients has been removed.
 - Outbound HTTP connections are pinned to validated public addresses. Browser scan requests use the guarded transport; unsupported frames, popups, workers and alternate network channels leave required checks incomplete rather than producing a verified score ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - New upload writes are confined through directory descriptors. OAuth callback destinations are constrained, and affected API errors and persisted diagnostics omit unfiltered exception details ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - Image descriptions require verified source pixels and the workspace vision provider. Text-only fallbacks are removed; missing images remain unresolved ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
