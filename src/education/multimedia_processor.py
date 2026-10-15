@@ -26,7 +26,12 @@ from src.education.speaker_diarization import (
     SpeakerDiarizer,
     DiarizationResult,
 )
-from src.education.media_inputs import local_media_command, restrict_opencv_capture
+from src.education.media_inputs import (
+    SUBTITLE_CODECS,
+    SUBTITLE_FORMATS,
+    local_media_command,
+    restrict_opencv_capture,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -230,19 +235,13 @@ class MultimediaProcessor:
         if generate_captions:
             report_progress(2, "Transcribing audio with AI (this may take a minute)...")
 
-            # Determine audio source
-            # For audio files: use file directly
-            # For video files: extract audio first (returns None if no audio stream)
-            if media_type == "video":
-                audio_path = self._extract_audio(file_path)
-                if audio_path is None:
-                    # Video has no audio stream - skip transcription
-                    logger.info(
-                        "[MultimediaProcessor] Video has no audio stream, skipping caption generation"
-                    )
-            else:
-                # Audio file - use directly
-                audio_path = file_path
+            # Decode every upload through the restricted ffmpeg conversion so the
+            # transcriber only reads the plain WAV it produces (None: no audio).
+            audio_path = self._extract_audio(file_path)
+            if audio_path is None:
+                logger.info(
+                    "[MultimediaProcessor] Media has no audio stream, skipping caption generation"
+                )
 
             # Only attempt transcription if we have audio
             if audio_path is not None:
@@ -330,7 +329,7 @@ class MultimediaProcessor:
             )
 
         # 7. Clean up temp audio file
-        if audio_path and media_type == "video" and audio_path != file_path:
+        if audio_path and audio_path != file_path:
             try:
                 os.unlink(audio_path)
             except Exception:
@@ -2656,9 +2655,11 @@ Format: Just the description text, no labels or explanations."""
                 f"[MultimediaProcessor] Creating accessible video: {' '.join(cmd)}"
             )
 
-            # Run ffmpeg
+            # Run ffmpeg; generated subtitle files are the only extra inputs.
             result = subprocess.run(
-                local_media_command(cmd),
+                local_media_command(
+                    cmd, extra_formats=SUBTITLE_FORMATS, extra_codecs=SUBTITLE_CODECS
+                ),
                 capture_output=True,
                 text=True,
                 timeout=600,  # 10 minutes max

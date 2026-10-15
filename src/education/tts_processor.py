@@ -893,7 +893,8 @@ class TTSProcessor:
                         "-c:a",
                         "libmp3lame" if output_path.endswith(".mp3") else "copy",
                         output_path,
-                    ]
+                    ],
+                    extra_formats=("concat",),
                 ),
                 capture_output=True,
                 timeout=120,
