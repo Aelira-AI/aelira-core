@@ -30,6 +30,10 @@ handled directly:
 - The FFmpeg copies inside the PyAV and OpenCV wheels receive the same local
   file, container and codec restrictions as the system FFmpeg, and the
   transcriber only reads WAV produced by that restricted path.
+- Pillow 12.3.0 bundles libtiff 4.7.1, which is assumed affected by
+  CVE-2026-36849 (denial of service through a large SamplesPerPixel tag) and
+  is reachable through uploaded TIFF images. No Pillow release with a fixed
+  libtiff is available yet.
 
 ## Affected
 
