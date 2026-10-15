@@ -290,6 +290,33 @@ def test_project_runner_converts_under_confinement(dirs):
     assert _found(work, MARKER) == []
 
 
+@requires_tool("pandoc")
+def test_project_runner_converts_a_full_document_within_its_bounds(tmp_path):
+    # pandoc reserves more address space on x86-64 than on arm64; the runner's
+    # bound must leave room for it on both.
+    rows = "\n".join(f"{n} & ${n}^2 = {n * n}$ \\\\" for n in range(1, 41))
+    body = "\n".join(
+        [
+            r"\section{Results}",
+            r"\begin{itemize}\item First point\item Second point\end{itemize}",
+            r"\begin{tabular}{ll}n & square \\",
+            rows,
+            r"\end{tabular}",
+            *(
+                rf"\[ \int_0^{n} x^{n}\,dx = \frac{{{n}^{n + 1}}}{{{n + 1}}} \]"
+                for n in range(1, 31)
+            ),
+        ]
+    )
+    (tmp_path / "full.tex").write_text(_document(body))
+    code, error = project_conversion._run_pandoc(
+        tmp_path / "full.tex", tmp_path / "full.html", tmp_path / "full.log"
+    )
+    html = (tmp_path / "full.html").read_text()
+    assert (code, error) == (0, None), (tmp_path / "full.log").read_text()[-500:]
+    assert html.count("<math") >= 70 and "<table" in html and "<li>" in html
+
+
 def test_unconfined_run_is_only_available_by_request(tmp_path, monkeypatch):
     seen = []
     real = subprocess.Popen
