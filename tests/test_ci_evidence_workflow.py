@@ -49,6 +49,7 @@ def test_ci_retains_and_validates_each_profile_at_the_tested_revision():
         ("main", "main-tests"),
         ("worker-postgres", "worker-tests"),
         ("queue-races-postgres", "race-tests"),
+        ("latex-confinement", "latex-confinement-tests"),
     ):
         suite = next(step for step in steps if step.get("id") == step_id)
         assert argument(suite["run"], "--test-evidence-profile") == profile

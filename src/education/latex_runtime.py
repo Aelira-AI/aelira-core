@@ -15,6 +15,8 @@ import signal
 import subprocess
 import tempfile
 
+from .latex_sandbox import UNAVAILABLE, confined, tool_environment
+
 
 def version_command(tool: str) -> list[str]:
     args = [tool, "--VERSION" if tool in {"latexml", "latexmlpost"} else "--version"]
@@ -24,26 +26,26 @@ def version_command(tool: str) -> list[str]:
 
 
 def tex_environment(directory: Path) -> dict[str, str]:
-    """Keep format/font creation inside this already-owned conversion attempt."""
-    environment = dict(os.environ)
-    for name, suffix in (
-        ("TEXMFVAR", "var"),
-        ("TEXMFCONFIG", "config"),
-        ("TEXMFCACHE", "var"),
-        ("XDG_CACHE_HOME", "cache"),
-    ):
-        path = directory.resolve() / ".tex-cache" / suffix
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        environment[name] = str(path)
-    return environment
+    """Keep format/font creation inside this already-owned conversion attempt.
+
+    The environment is minimal: tools never inherit application configuration
+    or credentials.
+    """
+    return tool_environment(directory)
 
 
-def run_tool(args: list[str], directory: Path, timeout: float = 90):
-    """Bound the complete process group, including format/font helper children."""
+def run_tool(
+    args: list[str], directory: Path, timeout: float = 90, *, confine: bool = True
+):
+    """Bound the complete process group, including format/font helper children.
+
+    Tools run confined to ``directory`` unless ``confine`` is false, which is
+    only for fixed commands that never read document input.
+    """
     with tempfile.TemporaryFile() as output:
         try:
             with subprocess.Popen(
-                args,
+                confined(args, directory) if confine else args,
                 cwd=directory,
                 env=tex_environment(directory),
                 stdout=output,
@@ -62,6 +64,8 @@ def run_tool(args: list[str], directory: Path, timeout: float = 90):
         log = output.read(131073)
         if len(log) > 131072:
             return code, "", "diagnostics_truncated"
+        if confine and code == UNAVAILABLE and log.startswith(b"latex_sandbox:"):
+            return None, "", "tool_unavailable"
         return code, log.decode("utf-8", errors="replace"), None
 
 
@@ -185,6 +189,7 @@ def probe_runtime(scratch: Path | None = None, timeout: float = 90) -> dict:
                 ["dpkg-query", "-W", "-f=${Package} ${Version}\n", *package_names],
                 root,
                 5,
+                confine=False,
             )
             if code == 0 and not error:
                 report["packages"] = dict(

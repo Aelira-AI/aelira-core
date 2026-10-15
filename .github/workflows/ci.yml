@@ -1187,6 +1187,30 @@ jobs:
           --policy tests/ci_skip_policy.json --profile queue-races-postgres
           --revision "${{ github.sha }}"
           --output test-results/queue-races-summary.json
+      - name: Install LaTeX confinement toolchain
+        run: |
+          timeout 5m sudo apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            install -y texlive-luatex texlive-latex-recommended latexml
+      - name: Run real-tool LaTeX confinement tests
+        id: latex-confinement-tests
+        env:
+          JWT_SECRET: test-secret-for-ci
+          ENV: test
+        run: >-
+          pytest tests/test_latex_sandbox.py -v --tb=short --no-cov
+          --test-evidence=test-results/latex-confinement.json
+          --test-evidence-profile=latex-confinement
+      - name: Require LaTeX confinement checks to execute
+        if: always() && steps.latex-confinement-tests.outcome != 'skipped'
+        run: >-
+          python scripts/verify_test_evidence.py
+          --report test-results/latex-confinement.json
+          --policy tests/ci_skip_policy.json --profile latex-confinement
+          --revision "${{ github.sha }}"
+          --output test-results/latex-confinement-summary.json
       - name: Retain revision-bound test evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

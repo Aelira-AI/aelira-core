@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 import pytest
 
+from src.education import latex_sandbox as sandbox
 from src.education.latex_diagnostics import conversion_session, sha
 from src.education.latex_semantics import (
     extract_semantics,
@@ -183,6 +184,9 @@ def test_wrapper_refuses_lost_cells_and_does_not_fallback(document, monkeypatch)
     def run(args, **kwargs):
         if args[1] in {"--version", "--VERSION"}:
             return SimpleNamespace(returncode=0, stdout="pandoc 3.1.11", stderr="")
+        launcher = sandbox.confined(["pandoc"], Path("/"))
+        assert args[:3] == launcher[:3], args
+        args = args[args.index("--") + 1 :]
         calls.append(args[0])
         Path(args[args.index("-o") + 1]).write_text(
             candidate.read_text().replace("<td>4</td>", "<td>0</td>")

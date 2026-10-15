@@ -27,6 +27,14 @@ def main():
         ):
             raise SystemExit(2)
         resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024,) * 2)
+        # Beyond pandoc's own sandbox, the process can read only system files
+        # and this analysis directory; output goes to the inherited stdout.
+        from latex_sandbox import restrict
+
+        try:
+            restrict([], [str(Path(source).parent)])
+        except OSError:
+            raise SystemExit(2)
     # No filters, PDF engines, resource embedding, templates or user flags.
     # Pandoc's reader may only read this pre-resolved analysis file.
     os.execve(
