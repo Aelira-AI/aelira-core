@@ -8,13 +8,96 @@ const isRecord = (value: unknown): value is RecordValue =>
 const nonempty = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
 const severities = new Set(['UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+const maxDispositionDays = 120;
+
+/**
+ * A reviewed distribution-package finding that has no vendor fix. It is still
+ * reported; it only stops counting as unresolved while every field matches the
+ * scanned row exactly and the review has not expired. `affected` covers HIGH
+ * findings shipped with disclosure. `not_affected` covers HIGH or CRITICAL
+ * findings whose vulnerable code the image cannot reach, with a VEX justification.
+ */
+export const justifications = new Set([
+  'component_not_present',
+  'vulnerable_code_not_present',
+  'vulnerable_code_not_in_execute_path',
+  'vulnerable_code_cannot_be_controlled_by_adversary',
+  'inline_mitigations_already_exist',
+]);
+export type DispositionPackage = { name: string; installedVersion: string };
+export type Disposition = {
+  id: string;
+  osFamily: string;
+  packages: DispositionPackage[];
+  status: 'affected' | 'not_affected';
+  justification?: string;
+  reason: string;
+  reviewed: string;
+  expires: string;
+  disclosure: string;
+};
+
+const validDate = (value: unknown): value is string =>
+  typeof value === 'string' && isoDate.test(value) &&
+  new Date(`${value}T00:00:00Z`).toISOString().startsWith(value);
+const days = (from: string, to: string) =>
+  (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+
+export function verifyDispositions(value: unknown, today: string): { dispositions: Disposition[]; errors: string[] } {
+  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.dispositions)) {
+    return { dispositions: [], errors: ['Dispositions must be a schemaVersion 1 object with a dispositions array'] };
+  }
+  const errors: string[] = [];
+  const dispositions: Disposition[] = [];
+  const seen = new Set<string>();
+  for (const entry of value.dispositions) {
+    if (!isRecord(entry) || !nonempty(entry.id) || !/^CVE-\d{4}-\d{4,}$/.test(entry.id) ||
+        !nonempty(entry.osFamily) || !Array.isArray(entry.packages) || entry.packages.length === 0 ||
+        !entry.packages.every((item) => isRecord(item) && nonempty(item.name) && nonempty(item.installedVersion)) ||
+        !nonempty(entry.reason) || !nonempty(entry.disclosure) ||
+        !validDate(entry.reviewed) || !validDate(entry.expires) ||
+        !(entry.status === 'affected' && entry.justification === undefined) &&
+        !(entry.status === 'not_affected' && typeof entry.justification === 'string' &&
+          justifications.has(entry.justification))) {
+      errors.push('Dispositions contain a malformed entry');
+      continue;
+    }
+    for (const item of entry.packages as DispositionPackage[]) {
+      const key = `${entry.id} ${entry.osFamily} ${item.name} ${item.installedVersion}`;
+      if (seen.has(key)) errors.push(`Duplicate disposition: ${key}`);
+      seen.add(key);
+    }
+    if (days(entry.reviewed, today) < 0) errors.push(`Disposition reviewed in the future: ${entry.id}`);
+    if (days(today, entry.expires) <= 0) errors.push(`Disposition expired: ${entry.id}`);
+    if (days(entry.reviewed, entry.expires) > maxDispositionDays) {
+      errors.push(`Disposition review window exceeds ${maxDispositionDays} days: ${entry.id}`);
+    }
+    dispositions.push(entry as Disposition);
+  }
+  return { dispositions, errors };
+}
+
+export type InventoryReport = { errors: string[]; accepted: Disposition[] };
 
 export function verifyInventory(
   value: unknown,
   image: string,
   architecture: 'amd64' | 'arm64',
+  dispositions: Disposition[] = [],
 ): string[] {
-  if (!isRecord(value)) return ['Inventory must be a JSON object'];
+  return inspectInventory(value, image, architecture, dispositions).errors;
+}
+
+export function inspectInventory(
+  value: unknown,
+  image: string,
+  architecture: 'amd64' | 'arm64',
+  dispositions: Disposition[] = [],
+): InventoryReport {
+  const report = (errors: string[], accepted: Disposition[] = []) =>
+    ({ errors: [...new Set(errors)], accepted: [...new Set(accepted)] });
+  if (!isRecord(value)) return report(['Inventory must be a JSON object']);
   const errors: string[] = [];
   if (value.SchemaVersion !== 2) errors.push('Unsupported inventory schema');
   const scanner = isRecord(value.Trivy) ? value.Trivy : {};
@@ -33,8 +116,9 @@ export function verifyInventory(
   const os = isRecord(metadata.OS) ? metadata.OS : {};
   if (!nonempty(os.Family) || !nonempty(os.Name)) errors.push('Inventory lacks OS identification');
   if (!Array.isArray(value.Results) || value.Results.length === 0) {
-    return [...errors, 'Inventory lacks scanner results'];
+    return report([...errors, 'Inventory lacks scanner results']);
   }
+  const accepted: Disposition[] = [];
   let osScanned = false;
   let high = 0;
   let critical = 0;
@@ -67,13 +151,27 @@ export function verifyInventory(
         errors.push('Inventory contains a malformed vulnerability');
         continue;
       }
-      if (finding.Severity === 'HIGH') high++;
-      if (finding.Severity === 'CRITICAL') critical++;
+      if (finding.Severity !== 'HIGH' && finding.Severity !== 'CRITICAL') continue;
+      // Only distribution packages without any vendor fix can carry a disposition;
+      // language packages and fixable rows never can. CRITICAL rows additionally
+      // require a not_affected disposition.
+      const unfixed = finding.FixedVersion === undefined || finding.FixedVersion === null ||
+        finding.FixedVersion === '';
+      const match = result.Class === 'os-pkgs' && result.Type === os.Family && unfixed
+        ? dispositions.find((entry) => entry.id === finding.VulnerabilityID &&
+          entry.osFamily === os.Family &&
+          (finding.Severity === 'HIGH' || entry.status === 'not_affected') &&
+          entry.packages.some((item) =>
+            item.name === finding.PkgName && item.installedVersion === finding.InstalledVersion))
+        : undefined;
+      if (match) accepted.push(match);
+      else if (finding.Severity === 'HIGH') high++;
+      else critical++;
     }
   }
   if (!osScanned) errors.push('Inventory lacks the identified OS package scan');
   if (high || critical) errors.push(`Unresolved image findings: ${high} HIGH, ${critical} CRITICAL`);
-  return [...new Set(errors)];
+  return report(errors, accepted);
 }
 
 if (import.meta.main) {
@@ -81,6 +179,7 @@ if (import.meta.main) {
     const { values, positionals } = parseArgs({
       options: {
         file: { type: 'string' }, image: { type: 'string' }, architecture: { type: 'string' },
+        dispositions: { type: 'string' }, today: { type: 'string' },
       },
       allowPositionals: false,
     });
@@ -98,10 +197,42 @@ if (import.meta.main) {
     } catch {
       throw new Error('Inventory is not readable valid JSON');
     }
-    const errors = verifyInventory(inventory, values.image, values.architecture);
+    const today = values.today ?? new Date().toISOString().slice(0, 10);
+    if (!validDate(today)) throw new Error('Use --today YYYY-MM-DD');
+    let dispositions: Disposition[] = [];
+    const errors: string[] = [];
+    if (values.dispositions) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await readFile(values.dispositions, 'utf8'));
+      } catch {
+        throw new Error('Dispositions are not readable valid JSON');
+      }
+      const checked = verifyDispositions(raw, today);
+      dispositions = checked.dispositions;
+      errors.push(...checked.errors);
+    }
+    const result = inspectInventory(inventory, values.image, values.architecture, dispositions);
+    errors.push(...result.errors);
+    for (const entry of result.accepted) {
+      let disclosure = '';
+      try {
+        disclosure = await readFile(entry.disclosure, 'utf8');
+      } catch {
+        // Reported below as an undisclosed finding.
+      }
+      if (!disclosure.includes(entry.id)) errors.push(`Disclosure ${entry.disclosure} does not name ${entry.id}`);
+    }
+    for (const entry of result.accepted) {
+      console.log(`Reported unfixed ${entry.id} (${entry.status}${entry.justification ? `: ${entry.justification}` : ''}) ` +
+        `in ${entry.packages.map((item) => item.name).join(', ')}: ` +
+        `disclosed in ${entry.disclosure}, review expires ${entry.expires}`);
+    }
     if (errors.length) {
-      for (const error of errors) console.error(error);
+      for (const error of [...new Set(errors)]) console.error(error);
       process.exitCode = 1;
+    } else if (result.accepted.length) {
+      console.log('Image report contains no unresolved HIGH or CRITICAL findings; the unfixed findings above are disclosed');
     } else {
       console.log('Image report contains no HIGH or CRITICAL vulnerability findings');
     }

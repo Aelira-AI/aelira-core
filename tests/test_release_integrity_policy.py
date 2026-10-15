@@ -58,13 +58,44 @@ def test_dependency_gates_audit_only_the_four_shipped_surfaces_and_block() -> No
     assert "allow-licenses:" not in workflow
 
 
+def test_api_image_builds_lxml_from_hash_verified_sources() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    script = (ROOT / "docker" / "build-lxml-wheel.sh").read_text()
+
+    assert "sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel" in api
+    assert "e.LIBXML_VERSION >= (2, 15, 4)" in api
+    assert "sha256sum --check --strict" in script
+    sources = {
+        "lxml-6.1.3.tar.gz": (
+            "45222d94ddd511536f3b2f7d9deae3b2339b4ce0f075f1ca25703b07cad9dd21"
+        ),
+        "libxml2-2.15.4.tar.xz": (
+            "98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"
+        ),
+        "libxslt-1.1.45.tar.xz": (
+            "9acfe68419c4d06a45c550321b3212762d92f41465062ca4ea19e632ee5d216e"
+        ),
+        "zlib-1.3.2.tar.gz": (
+            "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+        ),
+        "libiconv-1.18.tar.gz": (
+            "3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8"
+        ),
+    }
+    for name, digest in sources.items():
+        assert name in script and digest in script
+    # Every download goes through the verifying helper.
+    assert script.count("fetch https://") == len(sources)
+    assert script.count("curl ") == 1
+
+
 def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     api = (ROOT / "Dockerfile").read_text()
     dashboard = (ROOT / "dashboard" / "Dockerfile").read_text()
 
     python_base = (
         "python:3.14-slim@sha256:"
-        "ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4"
+        "a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170"
     )
     assert api.count(f"FROM {python_base}") == 2
     assert "pip install --no-cache-dir piper-tts" not in api

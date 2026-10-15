@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { verifyInventory } from './verify_trivy_inventory';
+import { inspectInventory, verifyDispositions, verifyInventory } from './verify_trivy_inventory';
 
 const image = `ghcr.io/example/api@sha256:${'1'.repeat(64)}`;
 function clean(architecture: 'amd64' | 'arm64' = 'arm64') {
@@ -117,5 +117,130 @@ test('CLI returns a nonzero exit for findings, malformed JSON and missing inputs
     expect(run([]).status).toBe(1);
   } finally {
     rmSync(directory, { recursive: true });
+  }
+});
+
+describe('reviewed dispositions for unfixed distribution findings', () => {
+  const today = '2026-10-15';
+  const entry = {
+    id: 'CVE-2026-6653', osFamily: 'ubuntu', packages: [{ name: 'libxml2', installedVersion: '2.9.14' }],
+    status: 'affected', reason: 'No distribution fix exists', reviewed: '2026-10-15', expires: '2027-01-15',
+    disclosure: 'docs/releases/example.md',
+  };
+  const withFindings = (...rows: object[]) => {
+    const value = clean();
+    return { ...value, Results: [{ ...value.Results[0], Vulnerabilities: rows }] };
+  };
+  const dispositions = verifyDispositions({ schemaVersion: 1, dispositions: [entry] }, today).dispositions;
+
+  test('reports an exactly matching unfixed HIGH OS finding as accepted, not unresolved', () => {
+    for (const FixedVersion of [undefined, '']) {
+      const result = inspectInventory(withFindings(finding('HIGH', FixedVersion)), image, 'arm64', dispositions);
+      expect(result.errors).toEqual([]);
+      expect(result.accepted).toEqual([entry]);
+    }
+  });
+  test('still rejects a HIGH finding once a fix is available', () => {
+    expect(verifyInventory(withFindings(finding('HIGH', '2.15.4')), image, 'arm64', dispositions))
+      .toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
+  });
+  test('never accepts CRITICAL findings as affected', () => {
+    expect(verifyInventory(withFindings(finding('CRITICAL')), image, 'arm64', dispositions))
+      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+  });
+  test('accepts unfixed HIGH or CRITICAL findings as justified not_affected', () => {
+    const unreachable = { ...entry, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path' };
+    const checked = verifyDispositions({ schemaVersion: 1, dispositions: [unreachable] }, today);
+    expect(checked.errors).toEqual([]);
+    for (const severity of ['HIGH', 'CRITICAL']) {
+      const result = inspectInventory(withFindings(finding(severity)), image, 'arm64', checked.dispositions);
+      expect(result.errors).toEqual([]);
+      expect(result.accepted).toEqual([unreachable]);
+    }
+    expect(verifyInventory(withFindings(finding('CRITICAL', '2.15.4')), image, 'arm64', checked.dispositions))
+      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+  });
+  test('never accepts language-package findings', () => {
+    const value = clean();
+    const lang = { Target: 'Python', Type: 'python-pkg', Class: 'lang-pkgs', Vulnerabilities: [finding('HIGH')] };
+    expect(verifyInventory({ ...value, Results: [...value.Results, lang] }, image, 'arm64', dispositions))
+      .toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
+  });
+  for (const [field, changed] of [
+    ['VulnerabilityID', 'CVE-2026-6654'], ['PkgName', 'libxml2-utils'], ['InstalledVersion', '2.9.15'],
+  ] as const) {
+    test(`requires an exact ${field} match`, () => {
+      expect(verifyInventory(withFindings({ ...finding('HIGH'), [field]: changed }), image, 'arm64', dispositions))
+        .toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
+    });
+  }
+  test('requires the scanned OS family to match', () => {
+    const value = withFindings(finding('HIGH'));
+    const other = { ...value, Metadata: { ...value.Metadata, OS: { Family: 'debian', Name: '13.7' } },
+      Results: [{ ...value.Results[0], Type: 'debian' }] };
+    expect(verifyInventory(other, image, 'arm64', dispositions))
+      .toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
+  });
+  test('matches any listed binary package of the same advisory', () => {
+    const shared = { ...entry, packages: [...entry.packages, { name: 'libxml2-utils', installedVersion: '2.9.14' }] };
+    const accepted = verifyDispositions({ schemaVersion: 1, dispositions: [shared] }, today).dispositions;
+    const result = inspectInventory(withFindings(finding('HIGH'), { ...finding('HIGH'), PkgName: 'libxml2-utils' }),
+      image, 'arm64', accepted);
+    expect(result.errors).toEqual([]);
+  });
+  test('counts unmatched rows alongside accepted ones', () => {
+    const result = inspectInventory(withFindings(finding('HIGH'), { ...finding('HIGH'), PkgName: 'other' }),
+      image, 'arm64', dispositions);
+    expect(result.errors).toContain('Unresolved image findings: 1 HIGH, 0 CRITICAL');
+  });
+  test('rejects expired, future, overlong, duplicate and malformed dispositions', () => {
+    const check = (dispositionList: unknown[]) =>
+      verifyDispositions({ schemaVersion: 1, dispositions: dispositionList }, today).errors;
+    expect(check([{ ...entry, expires: '2026-10-15' }])).toContain('Disposition expired: CVE-2026-6653');
+    expect(check([{ ...entry, reviewed: '2026-10-16' }])).toContain('Disposition reviewed in the future: CVE-2026-6653');
+    expect(check([{ ...entry, expires: '2027-03-01' }])).toContain('Disposition review window exceeds 120 days: CVE-2026-6653');
+    expect(check([entry, entry]).join(' ')).toContain('Duplicate disposition');
+    for (const bad of [{ ...entry, reason: '' }, { ...entry, id: 'GHSA-xxxx' }, { ...entry, expires: '2027-02-30' },
+      { ...entry, disclosure: undefined }, { ...entry, packages: [] }, { ...entry, packages: [{ name: 'libxml2' }] },
+      { ...entry, status: undefined }, { ...entry, status: 'fixed' },
+      { ...entry, justification: 'vulnerable_code_not_in_execute_path' },
+      { ...entry, status: 'not_affected' }, { ...entry, status: 'not_affected', justification: 'trust me' },
+      null]) {
+      expect(check([bad])).toContain('Dispositions contain a malformed entry');
+    }
+    expect(verifyDispositions({ dispositions: [] }, today).errors.length).toBeGreaterThan(0);
+  });
+  test('CLI requires the disclosure to name each accepted finding', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'image-disposition-test-'));
+    const file = join(directory, 'inventory.json');
+    const notes = join(directory, 'notes.md');
+    const list = join(directory, 'dispositions.json');
+    const run = () => spawnSync(process.execPath, [join(import.meta.dir, 'verify_trivy_inventory.ts'),
+      '--file', file, '--image', image, '--architecture', 'arm64', '--dispositions', list, '--today', today],
+    { encoding: 'utf8' });
+    try {
+      writeFileSync(file, JSON.stringify(withFindings(finding('HIGH'))));
+      writeFileSync(list, JSON.stringify({ schemaVersion: 1, dispositions: [{ ...entry, disclosure: notes }] }));
+      writeFileSync(notes, 'No advisories listed.');
+      const undisclosed = run();
+      expect(undisclosed.status).toBe(1);
+      expect(undisclosed.stderr).toContain(`does not name ${entry.id}`);
+      writeFileSync(notes, `Known unfixed: ${entry.id}`);
+      const disclosed = run();
+      expect(disclosed.status).toBe(0);
+      expect(disclosed.stdout).toContain(`Reported unfixed ${entry.id} (affected)`);
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+});
+
+test('the repository disposition list is valid and unexpired today', async () => {
+  const file = join(import.meta.dir, '..', '.trivy-unfixed-dispositions.json');
+  const value = JSON.parse(await Bun.file(file).text());
+  const today = new Date().toISOString().slice(0, 10);
+  expect(verifyDispositions(value, today).errors).toEqual([]);
+  for (const entry of value.dispositions) {
+    expect(await Bun.file(join(import.meta.dir, '..', entry.disclosure)).text()).toContain(entry.id);
   }
 });
