@@ -644,7 +644,8 @@ class PptxRemediator(BaseRemediator):
         Extracts the actual image from the PPTX shape and sends it to a
         vision model (e.g. Gemini) so the alt text describes the real
         visual content rather than being guessed from surrounding text.
-        Falls back to text-based generation if image extraction fails.
+        Returns None when the image cannot be extracted or vision analysis does
+        not succeed, leaving the issue open for human review.
         """
         slide_index = issue.metadata.get("slide_index", 0)
 
@@ -709,42 +710,6 @@ class PptxRemediator(BaseRemediator):
                         return alt_text[:125]
             except Exception as e:
                 logger.warning(f"Vision-based alt text generation failed: {e}")
-
-        # Fallback: text-based generation using slide context
-        if hasattr(client, "generate_text_sync"):
-            from ...utils.security import sanitize_for_prompt
-
-            safe_context = (
-                sanitize_for_prompt(context_text, max_length=500)
-                if context_text
-                else "None"
-            )
-            safe_shape = sanitize_for_prompt(
-                issue.metadata.get("shape_name", "Unknown"), max_length=100
-            )
-            prompt = (
-                "Generate concise, descriptive alt text for an image "
-                "in a PowerPoint presentation.\n\n"
-                f"Slide context: {safe_context}\n"
-                f"Shape name: {safe_shape}\n\n"
-                "Requirements:\n"
-                "- Be concise (under 125 characters)\n"
-                "- Describe the likely visual content based on context\n"
-                "- Don't start with 'Image of' or 'Picture of'\n\n"
-                "Generate only the alt text, nothing else:"
-            )
-            try:
-                result = client.generate_text_sync(
-                    prompt=prompt,
-                    max_tokens=200,
-                    temperature=0.3,
-                )
-                if result.get("success") and result.get("content"):
-                    alt_text = result["content"].strip().strip("\"'")
-                    if alt_text:
-                        return alt_text[:125]
-            except Exception as e:
-                logger.warning(f"Text-based alt text generation failed: {e}")
 
         # Fail closed: never emit placeholder alt text counted as a fix.
         # Returning None routes this issue to the human review queue (WCAG 1.1.1).

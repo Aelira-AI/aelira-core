@@ -73,7 +73,9 @@ def test_changelog_dates_v0_9_12_and_preserves_history():
     assert "Pending publication" not in changelog
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
-    assert changelog[unreleased + len("## [Unreleased]") : release].strip() == ""
+    pending = changelog[unreleased + len("## [Unreleased]") : release].strip()
+    # Unreleased is empty or holds only Keep a Changelog subsections.
+    assert pending == "" or pending.startswith("### ")
     previous = changelog.index(PREVIOUS_HEADING)
     historical = changelog.index("## [0.9.8] - 2026-09-08")
     assert unreleased < release < previous < historical
