@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Hugging Face Hub is updated to 2.2.0 and Tokenizers to 0.23.3, which accepts Hub 2 and later. Hub 2 adds `httpx2`, `httpcore2` and `truststore` to the pinned runtime set. A real faster-whisper `tiny.en` download, transcription and `HF_HUB_OFFLINE=1` cached load now run in the built API image on both architectures ([#560](https://github.com/Aelira-AI/aelira-core/issues/560)).
 
+### Security
+
+- The API image builds psycopg2-binary 2.9.13 from its hash-verified source archive against Debian's libpq instead of installing the published wheel, which bundles its own libpq, OpenSSL and Kerberos copies in `psycopg2_binary.libs`. The package name and version are unchanged. The final-image package check now fails if a bundled library directory exists or if the extension module resolves libpq, libssl or libcrypto outside `/usr/lib`, and CI runs a PostgreSQL 16 smoke test against the built image on amd64 and arm64 ([#588](https://github.com/Aelira-AI/aelira-core/issues/588)).
+
 ### Fixed
 
 - The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).
