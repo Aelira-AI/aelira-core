@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Hugging Face Hub is updated to 2.2.0 and Tokenizers to 0.23.3, which accepts Hub 2 and later. Hub 2 adds `httpx2`, `httpcore2` and `truststore` to the pinned runtime set. A real faster-whisper `tiny.en` download, transcription and `HF_HUB_OFFLINE=1` cached load now run in the built API image on both architectures ([#560](https://github.com/Aelira-AI/aelira-core/issues/560)).
+
 ### Fixed
 
 - The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).

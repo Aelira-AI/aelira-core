@@ -26,6 +26,15 @@ suggestions, never different scores.
 Speech is always local and does not use Ollama: `faster-whisper` transcribes
 audio/video for captions, `piper-tts` generates audio. They run on CPU.
 
+The faster-whisper model is not baked into the image. It is downloaded through
+`huggingface_hub` on first use into the Hugging Face cache (`HF_HOME`, by
+default `~/.cache/huggingface`). Once a model is cached, setting
+`HF_HUB_OFFLINE=1` makes later loads read only the cache, so an air-gapped
+deployment can pre-seed that directory from a connected machine and keep the
+cache on a persistent volume. With `HF_HUB_OFFLINE=1` and an empty cache the
+load fails rather than reaching out. CI exercises both cases with the `tiny.en`
+model in the built image.
+
 ## Workspace settings
 
 A workspace administrator can open **Settings → AI Provider Settings** to

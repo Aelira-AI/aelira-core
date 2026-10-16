@@ -65,9 +65,9 @@ CI runs both production Dockerfiles natively on `linux/amd64` and `linux/arm64`.
 
 ## Requirements hash evaluation
 
-`requirements.txt` contains **148** runtime dependency entries.
+`requirements.txt` contains **151** runtime dependency entries.
 `requirements-dev.txt` includes that runtime file and adds **30** development-only
-entries. All 178 application dependencies use exact `==` pins. There are no hashes.
+entries. All 181 application dependencies use exact `==` pins. There are no hashes.
 Hashes are deferred; they must not be fabricated from one
 workstation or one platform. Exact pins plus the strict `pip-audit` gates are
 the current controls, but they are not represented as hash-locked installs.
