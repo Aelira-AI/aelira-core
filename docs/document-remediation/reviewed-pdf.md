@@ -92,7 +92,10 @@ start another provider effect for the same artifact.
 
 ## Updating an installation
 
-Deploy the API, worker and dashboard from the same version. No new database
-migration is required for these changes. Run remediation again from the retained
+Deploy the API, worker and dashboard from the same version. This release
+includes the Alembic revisions `20260917_unknown_confidence` and
+`20260928_pdf_edit_pub`, so it is a database migration. Follow the operator
+procedure in the [v0.9.12 release notes](../releases/v0.9.12.md#operator-action-required)
+before deploying. Run remediation again from the retained
 original to create the new per-finding and output-membership evidence. Earlier
 records do not acquire verification or publication approval automatically.

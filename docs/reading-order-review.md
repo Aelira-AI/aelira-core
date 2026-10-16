@@ -40,7 +40,8 @@ Regression coverage is in `tests/test_reading_order_snapshot.py`, `tests/test_re
 
 `src/education/pdf_review_candidate.py` provides a direct-library building block
 for issue #372. The authenticated editing API below uses it; the dashboard
-comparison remains read-only. Callers
+comparison view itself remains read-only, and edits are made only through the
+separate bounded **Edit PDF structure** action. Callers
 can inspect checksum-bound structure targets and request one explicit heading
 level change, complete sibling-order permutation, or first-row column-header
 designation on a simple tagged table. The table request requires a Table target
