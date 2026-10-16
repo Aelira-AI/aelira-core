@@ -32,7 +32,7 @@ fetch https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.tar.xz \
 fetch https://download.gnome.org/sources/libxslt/1.1/libxslt-1.1.45.tar.xz \
     9acfe68419c4d06a45c550321b3212762d92f41465062ca4ea19e632ee5d216e \
     lxml-6.1.3/libs/libxslt-1.1.45.tar.xz
-fetch https://zlib.net/zlib-1.3.2.tar.gz \
+fetch https://zlib.net/fossils/zlib-1.3.2.tar.gz \
     bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16 \
     lxml-6.1.3/libs/zlib-1.3.2.tar.gz
 fetch https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.18.tar.gz \
