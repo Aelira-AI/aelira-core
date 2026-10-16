@@ -1459,6 +1459,20 @@ jobs:
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
+      - name: Verify real faster-whisper download and offline load through huggingface-hub
+        run: |
+          hf_cache="$(mktemp -d)"
+          empty_cache="$(mktemp -d)"
+          chmod 777 "$hf_cache" "$empty_cache"
+          docker run --rm --env HF_HOME=/hf --volume "$hf_cache:/hf" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_whisper_transcription.py download --cache-dir /hf/hub
+          docker run --rm --network none --env HF_HOME=/hf --volume "$hf_cache:/hf" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_whisper_transcription.py offline --cache-dir /hf/hub
+          docker run --rm --network none --env HF_HOME=/hf --volume "$empty_cache:/hf" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_whisper_transcription.py offline-refused --cache-dir /hf/hub
       - name: Enforce 0.75-CPU worker isolation under representative saturation
         if: matrix.platform == 'linux/amd64'
         run: python3 scripts/verify_worker_cpu_isolation.py --image aelira-worker-isolation:test

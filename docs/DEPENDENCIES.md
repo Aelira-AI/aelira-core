@@ -34,6 +34,19 @@ regressions, and require the security, full-test, AMD64 and ARM64 CI jobs to pas
 before merging. Installing only the changed package or passing lint does not
 verify compatibility of the pinned sets.
 
+### Hugging Face Hub 2.x
+
+`huggingface_hub` 2.x downloads the faster-whisper speech model and replaces
+`httpx` with `httpx2` for its own traffic. That adds `httpx2` and `httpcore2`
+(both pinned to the same release) and `truststore`, which `httpx2` uses for
+system certificate verification. The application's own outbound HTTP still uses
+`httpx`. `tokenizers` 0.23.3 is the first release that accepts Hub 3, and
+`tokenizers` 0.23.2 required `huggingface-hub<2.0`; keep the two moving
+together. `scripts/smoke_whisper_transcription.py` downloads the small `tiny.en`
+model through the installed Hub and transcribes synthesized speech, then repeats
+the load with `HF_HUB_OFFLINE=1` and no network; CI runs it in the built API
+image on both architectures.
+
 ### Web framework and API
 
 | Dependency | Role |
@@ -202,7 +215,7 @@ the resolver's latest-version choice.
 | ocrmypdf | `pi_heif`, `deprecation`, `packaging`, `pathvalidate`, `pypdfium2`, `rich`, `typer`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
 | ocrmypdf / pikepdf PDF/A support | `fpdf2`, `uharfbuzz`, `fonttools`, `jsonschema`, `jsonschema-specifications`, `referencing`, `rpds-py`, `attrs` |
 | reportlab (PDF reports) | `freetype-py`, `pycairo`, `rlPyCairo`, `tinycss2`, `webencodings` |
-| faster-whisper / onnxruntime | `huggingface_hub`, `tokenizers`, `hf-xet`, `fsspec`, `filelock`, `tqdm`, `flatbuffers`, `sympy`, `mpmath` |
+| faster-whisper / onnxruntime | `huggingface_hub`, `tokenizers`, `hf-xet`, `httpx2`, `httpcore2`, `truststore`, `fsspec`, `filelock`, `tqdm`, `flatbuffers`, `sympy`, `mpmath` |
 | locust (load tests) | `Flask`, `flask-cors`, `Flask-Login`, `Werkzeug`, `Jinja2`, `itsdangerous`, `blinker`, `gevent`, `geventhttpclient`, `zope.event`, `zope.interface`, `msgpack`, `pyzmq`, `ConfigArgParse`, `bidict`, `python-engineio`, `python-socketio`, `simple-websocket`, `websocket-client`, `wsproto` |
 | pytest / black | `iniconfig`, `pluggy`, `coverage`, `pytokens`, `pathspec`, `mypy_extensions` |
 | beautifulsoup4 / openpyxl / python-pptx / playwright | `soupsieve`, `et_xmlfile`, `XlsxWriter`, `pyee` |
