@@ -31,7 +31,7 @@ fetch https://files.pythonhosted.org/packages/ed/76/7b4383014be0fcc6c1c0e2429284
     psycopg2_binary-2.9.13.tar.gz
 tar -xzf psycopg2_binary-2.9.13.tar.gz
 
-cd psycopg2_binary-2.9.13
+cd psycopg2-binary-2.9.13
 # No debug information and mapped source paths keep the output reproducible.
 CFLAGS="-O2 -fPIC -g0 -ffile-prefix-map=$work=." \
     python -m pip wheel --no-deps --no-build-isolation --no-cache-dir \
