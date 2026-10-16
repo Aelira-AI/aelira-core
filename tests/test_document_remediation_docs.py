@@ -256,13 +256,17 @@ def test_authorization_header_inline_code_is_well_formed():
     assert "Authentication uses `Authorization: Bearer" not in hub
 
 
-def test_office_output_does_not_claim_artifacts_with_manual_or_failed_work():
+def test_office_output_describes_working_artifact_gate():
     office = _section(_text(DOCS / "office.md"), "## Output and review").lower()
-    assert (
-        "managed artifact for review and may also report manual or failed" not in office
-    )
-    assert "zero manual" in office
-    assert "zero failed" in office
+    assert "managed working artifact" in office
+    assert "at least one fix" in office
+    assert "saved output file" in office
+    assert "passed verification" in office
+    assert "remaining manual or failed findings" in office
+    assert "stay unresolved and listed" in office
+    assert "approval of the artifact is a separate review step" in office
+    assert "zero manual" not in office
+    assert "zero failed" not in office
 
 
 def test_pdf_docs_describe_merged_ocr_and_immutable_original_boundaries():

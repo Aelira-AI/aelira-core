@@ -72,7 +72,7 @@ Do not send a legacy Office format under a renamed extension; upload validation 
 
 ## Output and review
 
-A scan produces stored JSON findings; it does not modify the upload. `POST /education/remediate/{scan_id}` creates an output in the same OOXML format for supported fixes. A managed artifact is published only after successful remediation with at least one fix, zero manual issues, zero failed issues, an output file, and passed verification. A response that reports manual or failed work does not publish that managed artifact.
+A scan produces stored JSON findings; it does not modify the upload. `POST /education/remediate/{scan_id}` creates an output in the same OOXML format for supported fixes. A managed working artifact is retained only after successful remediation that applies at least one fix, with a saved output file and passed verification. Remaining manual or failed findings do not block this; they stay unresolved and listed, and the working file is not a conformance claim. Approval of the artifact is a separate review step.
 
 Open the output in the target Office application. Check layout and styles, navigation panes/reading order, tables and formulas, links, charts, speaker notes, animations/media, embedded objects, pivots/conditional formatting, and generated language. Test with assistive technology before approval. OOXML serialization is not byte-preserving and can normalize unsupported package parts.
 
