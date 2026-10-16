@@ -791,7 +791,12 @@ Rules:
     def _generate_alt_text_with_ai(
         self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
-        """Generate alt text using AI."""
+        """Generate alt text for a DOCX image from its own pixels using AI vision.
+
+        Returns None when the image bytes cannot be read or vision analysis does
+        not succeed. A description is never generated from the surrounding
+        text, so the issue stays open for human review instead.
+        """
         # Get image context
         para_index = issue.metadata.get("paragraph_index", 0)
 
@@ -852,20 +857,14 @@ Generate only the alt text, nothing else:"""
                             if result.get("success") and result.get("content"):
                                 return result["content"].strip().strip("\"'")[:125]
                 except Exception as e:
-                    logger.warning(f"DOCX vision AI failed, falling back to text: {e}")
-
-            if hasattr(client, "generate_text_sync"):
-                result = client.generate_text_sync(
-                    prompt=prompt,
-                    max_tokens=200,
-                    temperature=0.3,
-                )
-                if result.get("success") and result.get("content"):
-                    alt_text = result["content"].strip().strip("\"'")
-                    return alt_text[:125] if alt_text else None
+                    logger.warning(
+                        f"DOCX vision AI failed, leaving for human review: {e}"
+                    )
         except Exception as e:
             logger.error(f"AI alt text generation failed: {e}")
 
+        # Fail closed: without the image's pixels there is nothing to verify a
+        # description against, so route the issue to human review.
         return None
 
     def _generate_link_text_with_ai(

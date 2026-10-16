@@ -5081,11 +5081,16 @@ class PdfRemediator(BaseRemediator):
     def _generate_alt_text_with_ai(
         self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
-        """Generate alt text for a PDF image using AI (vision first, text fallback)."""
+        """Generate alt text for a PDF image from its own pixels using AI vision.
+
+        Returns None when the image bytes cannot be extracted or vision analysis
+        does not succeed. A description is never generated from the surrounding
+        page text, so the issue stays open for human review instead.
+        """
         page_num = issue.metadata.get("page_number", 1)
         image_xref = issue.metadata.get("image_xref")
 
-        # Try vision AI first if we have an image xref and a fitz document
+        # Vision on the extracted image bytes is the only permitted source
         if image_xref is not None and document is not None and hasattr(self, "_pdf"):
             try:
                 img_info = self._pdf.extract_image(image_xref)
@@ -5109,41 +5114,9 @@ class PdfRemediator(BaseRemediator):
                         if alt_text:
                             return alt_text[:125]
             except Exception as e:
-                logger.warning(f"Vision AI alt text failed, falling back to text: {e}")
-
-        # Fall back to text-only generation using page context
-        context_text = ""
-        if document and page_num <= len(document):
-            page = document[page_num - 1]
-            context_text = page.get_text("text")[:500]
-
-        prompt = f"""Generate concise, descriptive alt text for an image in a PDF document.
-
-Page context:
-{context_text if context_text else "No context available"}
-
-Image location: Page {page_num}
-
-Requirements:
-- Be concise (under 125 characters)
-- Describe the image's content and purpose
-- Don't start with "Image of" or "Picture of"
-- Focus on what's important for understanding the document
-
-Generate only the alt text, nothing else:"""
-
-        try:
-            if hasattr(client, "generate_text_sync"):
-                result = client.generate_text_sync(
-                    prompt=prompt,
-                    max_tokens=200,
-                    temperature=0.3,
+                logger.warning(
+                    f"Vision AI alt text failed, leaving for human review: {e}"
                 )
-                if result.get("success") and result.get("content"):
-                    alt_text = result["content"].strip().strip("\"'")
-                    return alt_text[:125] if alt_text else None
-        except Exception as e:
-            logger.error(f"AI alt text generation failed: {e}")
 
         # Fail closed: never emit placeholder alt text counted as a fix.
         # Returning None routes this issue to the human review queue (WCAG 1.1.1).

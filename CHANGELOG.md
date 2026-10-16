@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).
+
 ## [0.9.12] - 2026-10-15
 
 See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits and publication requirements.
