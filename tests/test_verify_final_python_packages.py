@@ -436,6 +436,8 @@ def test_final_package_verifier_rejects_packages_the_image_must_not_ship(
     )
 
     assert f"venv: {package} is 1.0.0; expected absent" in errors
+
+
 PSYCOPG2_VERSION = required_psycopg2_version()
 SYSTEM_LDD = """\
 \tlinux-vdso.so.1 (0x0000e5e5c3a2d000)

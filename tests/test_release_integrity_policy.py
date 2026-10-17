@@ -192,12 +192,16 @@ def test_api_image_does_not_ship_pi_heif() -> None:
     # unused.
     assert "pi_heif" not in requirements and "pi-heif" not in requirements
     assert "pillow_heif" not in requirements and "pillow-heif" not in requirements
-    assert '"pi-heif": None' in (
-        ROOT / "scripts" / "verify_final_python_packages.py"
-    ).read_text()
-    assert "pi_heif" not in (ROOT / "docs" / "DEPENDENCIES.md").read_text().split(
-        "### Transitive dependencies", 1
-    )[1]
+    assert (
+        '"pi-heif": None'
+        in (ROOT / "scripts" / "verify_final_python_packages.py").read_text()
+    )
+    assert (
+        "pi_heif"
+        not in (ROOT / "docs" / "DEPENDENCIES.md")
+        .read_text()
+        .split("### Transitive dependencies", 1)[1]
+    )
 
 
 def test_docker_ci_proves_the_image_libraries_and_ocr_in_the_built_image() -> None:
@@ -213,6 +217,8 @@ def test_docker_ci_proves_the_image_libraries_and_ocr_in_the_built_image() -> No
     # asserts the libtiff version and the absence of pillow.libs.
     assert "/app/scripts/verify_final_python_packages.py venv" in workflow
     assert "/app/scripts/verify_final_python_packages.py venv" in publish
+
+
 def test_api_image_builds_psycopg2_from_the_hash_verified_source_archive() -> None:
     script = (ROOT / "docker" / "build-psycopg2-wheel.sh").read_text()
     frozen_inputs = (

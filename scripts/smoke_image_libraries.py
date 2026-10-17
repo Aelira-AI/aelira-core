@@ -28,15 +28,25 @@ REQUIRED_FEATURES = (
     "littlecms2",
     "xcb",
 )
-TIFF_COMPRESSIONS = ("raw", "tiff_lzw", "tiff_adobe_deflate", "tiff_jpeg", "zstd", "lzma")
+TIFF_COMPRESSIONS = (
+    "raw",
+    "tiff_lzw",
+    "tiff_adobe_deflate",
+    "tiff_jpeg",
+    "zstd",
+    "lzma",
+)
 
 
 def _sample() -> Image.Image:
     """Return a deterministic image with enough structure to expose codec damage."""
     image = Image.new("RGB", (96, 64))
     image.putdata(
-        [((x * 5) % 256, (y * 7) % 256, ((x + y) * 3) % 256)
-         for y in range(64) for x in range(96)]
+        [
+            ((x * 5) % 256, (y * 7) % 256, ((x + y) * 3) % 256)
+            for y in range(64)
+            for x in range(96)
+        ]
     )
     return image
 
@@ -50,7 +60,9 @@ def _roundtrip(image: Image.Image, fmt: str, tolerance: int, **options: object) 
         assert decoded.size == image.size, (fmt, options, decoded.size)
         difference = max(
             abs(a - b)
-            for left, right in zip(image.convert("RGB").getdata(), decoded.convert("RGB").getdata())
+            for left, right in zip(
+                image.convert("RGB").getdata(), decoded.convert("RGB").getdata()
+            )
             for a, b in zip(left, right)
         )
     assert difference <= tolerance, (fmt, options, difference)
@@ -80,7 +92,11 @@ def check_multipage_tiff() -> None:
     pages = [_sample(), _sample().transpose(Image.Transpose.ROTATE_180)]
     buffer = io.BytesIO()
     pages[0].save(
-        buffer, "TIFF", save_all=True, append_images=pages[1:], compression="tiff_adobe_deflate"
+        buffer,
+        "TIFF",
+        save_all=True,
+        append_images=pages[1:],
+        compression="tiff_adobe_deflate",
     )
     buffer.seek(0)
     with Image.open(buffer) as decoded:
@@ -107,7 +123,9 @@ def check_text_and_colour() -> Image.Image:
     font = ImageFont.load_default(size=72)
     assert isinstance(font, ImageFont.FreeTypeFont), "FreeType font unavailable"
     page = Image.new("L", (1700, 160), 255)
-    ImageDraw.Draw(page).text((20, 30), "Accessible documents for everyone", font=font, fill=0)
+    ImageDraw.Draw(page).text(
+        (20, 30), "Accessible documents for everyone", font=font, fill=0
+    )
     assert page.getextrema() == (0, 255), "text was not rendered"
 
     srgb = ImageCms.createProfile("sRGB")
