@@ -1462,6 +1462,7 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
+          docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
       - name: Verify real faster-whisper download and offline load through huggingface-hub
         run: |
