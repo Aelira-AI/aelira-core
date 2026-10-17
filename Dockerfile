@@ -64,9 +64,10 @@ FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6
 
 ARG SOURCE_DATE_EPOCH=0
 
-# The global repair and both final-image checks read the reviewed runtime pin.
+# The global repair and the final-image checks read the reviewed runtime pin.
 COPY requirements.txt /app/requirements.txt
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
+COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
 
 # Install runtime dependencies + Playwright system dependencies + LaTeXML stack.
 # TeX format dumps are content-nondeterministic even with a fixed epoch, so
@@ -103,7 +104,6 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     # LaTeX/MathML conversion stack (Higher Ed STEM support)
     # Full accessible PDF pipeline: LaTeXML + accessibility packages
     latexml \
-    libxml2-utils \
     libxslt1.1 \
     imagemagick \
     ghostscript \
@@ -117,6 +117,13 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     texlive-lang-german \
     pandoc \
     && update-language \
+    # xdg-utils is a hard Depends of texlive-base, so apt cannot remove it
+    # without removing TeX. Its only callers are interactive (texdoc, LuaTeX
+    # os.openurl, ImageMagick's browse delegate) and none runs in a server, so
+    # remove the package itself with dpkg. apt will report that one unmet
+    # dependency; the final image never runs apt, and
+    # scripts/verify_final_os_packages.py pins the exact residue.
+    && dpkg --purge --force-depends xdg-utils \
     && rm -rf /var/lib/apt/lists/* /var/cache/fontconfig/* /var/log/apt/* \
     && rm -f /etc/machine-id /var/lib/dbus/machine-id \
         /var/cache/ldconfig/aux-cache /var/lib/texmf/ls-R \
@@ -137,7 +144,8 @@ COPY --from=pa11y-node /opt/pa11y-runtime/node_modules /opt/pa11y-runtime/node_m
 RUN ln -s /opt/pa11y-runtime/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
-    /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv
+    /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv && \
+    /usr/local/bin/python /app/scripts/verify_final_os_packages.py
 
 # Set working directory
 WORKDIR /app

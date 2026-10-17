@@ -1,6 +1,7 @@
 import React, { MouseEvent } from 'react';
 import { X } from 'lucide-react';
 import { FolderTree } from './FolderTree';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 // ============================================================================
 // Types
@@ -29,6 +30,8 @@ export function FolderSelectionModal({
   onClose,
   onSave,
 }: FolderSelectionModalProps): React.ReactElement | null {
+  const dialogRef = useFocusTrap<HTMLDivElement>(isOpen, { onEscape: onClose });
+
   if (!isOpen) return null;
 
   const handleBackdropClick = (e: MouseEvent<HTMLDivElement>): void => {
@@ -44,6 +47,7 @@ export function FolderSelectionModal({
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
       onClick={handleBackdropClick}

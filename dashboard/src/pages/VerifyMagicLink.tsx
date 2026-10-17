@@ -122,11 +122,11 @@ export function VerifyMagicLink(): React.ReactElement {
           )}
 
           {status === 'verifying' && (
-            <>
-              <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: 'var(--accent)' }} />
+            <div role="status">
+              <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: 'var(--accent)' }} aria-hidden="true" />
               <h1 className="text-xl font-bold text-primary mb-2">Verifying...</h1>
               <p className="text-secondary">Please wait while we sign you in.</p>
-            </>
+            </div>
           )}
 
           {status === 'success' && (
@@ -141,7 +141,7 @@ export function VerifyMagicLink(): React.ReactElement {
             <>
               <XCircle className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--content-error)' }} />
               <h1 className="text-xl font-bold text-primary mb-2">Verification Failed</h1>
-              <p className="text-secondary mb-6">{error}</p>
+              <p className="text-secondary mb-6" role="alert">{error}</p>
               <Link
                 to="/login"
                 className="btn-primary inline-block"

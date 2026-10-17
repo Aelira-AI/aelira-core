@@ -15,6 +15,7 @@ import {
   Download,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
+import { sanitizeOriginalHtml } from '../utils/originalHtmlPreview';
 import { createPatch } from 'diff';
 import { html as diff2html } from 'diff2html';
 import 'diff2html/bundles/css/diff2html.min.css';
@@ -314,11 +315,11 @@ export function CanvasContentDiffPage(): React.ReactElement {
   // ========================================================================
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)]">
       {/* ================================================================
           Top Header Bar
           ================================================================ */}
-      <div className="flex items-center justify-between px-6 py-3 shrink-0 bg-[var(--surface-secondary)] border-b border-[var(--border-primary)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 shrink-0 bg-[var(--surface-secondary)] border-b border-[var(--border-primary)]">
         {/* Left: Back + title */}
         <div className="flex items-center gap-3 min-w-0">
           <button
@@ -338,7 +339,7 @@ export function CanvasContentDiffPage(): React.ReactElement {
         </div>
 
         {/* Right: Navigation + View toggle */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Item navigation */}
           {items.length > 1 && (
             <div className="flex items-center gap-1 mr-2">
@@ -366,13 +367,13 @@ export function CanvasContentDiffPage(): React.ReactElement {
 
           {/* View mode toggle */}
           <div
-            className="flex rounded-lg overflow-hidden border border-[var(--border-primary)]"
-            role="tablist"
+            className="flex rounded-lg overflow-hidden border border-[var(--border-control)]"
+            role="group"
             aria-label="View mode"
           >
             <button
-              role="tab"
-              aria-selected={viewMode === 'preview'}
+              type="button"
+              aria-pressed={viewMode === 'preview'}
               onClick={() => setViewMode('preview')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors ${
                 viewMode === 'preview'
@@ -384,8 +385,8 @@ export function CanvasContentDiffPage(): React.ReactElement {
               Preview
             </button>
             <button
-              role="tab"
-              aria-selected={viewMode === 'diff'}
+              type="button"
+              aria-pressed={viewMode === 'diff'}
               onClick={() => setViewMode('diff')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors border-l border-[var(--border-primary)] ${
                 viewMode === 'diff'
@@ -432,9 +433,9 @@ export function CanvasContentDiffPage(): React.ReactElement {
       {/* ================================================================
           Main Content Area
           ================================================================ */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-col lg:flex-row flex-1 min-h-0">
         {/* Left: Preview / Diff pane */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-[24rem] lg:min-h-0 overflow-hidden">
           {!hasHtmlContent ? (
             /* ------ No HTML content to preview (e.g. a scanned Canvas
                file — a real document, not an HTML fragment) ------ */
@@ -452,15 +453,18 @@ export function CanvasContentDiffPage(): React.ReactElement {
             </div>
           ) : viewMode === 'preview' ? (
             /* ------ Side-by-side rendered preview ------ */
-            <div className="flex flex-1 min-h-0">
+            <div className="flex flex-col md:flex-row flex-1 min-h-0">
               {/* Original */}
-              <div className="flex-1 flex flex-col min-w-0 border-r border-[var(--border-primary)]">
+              <div className="flex-1 flex flex-col min-w-0 border-b md:border-b-0 md:border-r border-[var(--border-primary)]">
                 <div className="px-4 py-2 text-sm font-medium shrink-0 bg-[var(--surface-tertiary)] text-[var(--content-secondary)] border-b border-[var(--border-primary)]">
                   Original
                 </div>
                 <div
-                  className="flex-1 overflow-y-auto p-4 prose prose-sm max-w-none bg-[var(--surface-primary)] text-[var(--content-primary)]"
-                  dangerouslySetInnerHTML={sanitizedHtml(diff.original_html)}
+                  role="region"
+                  aria-label="Original content"
+                  tabIndex={0}
+                  className="flex-1 overflow-y-auto p-4 prose prose-sm max-w-none bg-[var(--surface-primary)] text-[var(--content-primary)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
+                  dangerouslySetInnerHTML={{ __html: sanitizeOriginalHtml(diff.original_html) }}
                 />
               </div>
 
@@ -470,14 +474,17 @@ export function CanvasContentDiffPage(): React.ReactElement {
                   Remediated
                 </div>
                 <div
-                  className="flex-1 overflow-y-auto p-4 prose prose-sm max-w-none bg-[var(--surface-primary)] text-[var(--content-primary)]"
+                  role="region"
+                  aria-label="Remediated content"
+                  tabIndex={0}
+                  className="flex-1 overflow-y-auto p-4 prose prose-sm max-w-none bg-[var(--surface-primary)] text-[var(--content-primary)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
                   dangerouslySetInnerHTML={sanitizedHtml(diff.remediated_html)}
                 />
               </div>
             </div>
           ) : (
             /* ------ Raw HTML diff view (pre-sanitized in useMemo) ------ */
-            <div className="flex-1 overflow-y-auto bg-[var(--surface-primary)]">
+            <div role="region" aria-label="HTML diff" tabIndex={0} className="flex-1 overflow-y-auto bg-[var(--surface-primary)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]">
               {/* sanitizedDiffHtml is already run through DOMPurify.sanitize() */}
               <div
                 className="diff2html-wrapper"
@@ -488,13 +495,13 @@ export function CanvasContentDiffPage(): React.ReactElement {
         </div>
 
         {/* Right: Issues Panel */}
-        <div className="w-80 shrink-0 flex flex-col overflow-hidden border-l border-[var(--border-primary)] bg-[var(--surface-secondary)]">
-          <div className="flex-1 overflow-y-auto">
+        <div className="w-full lg:w-80 lg:shrink-0 flex flex-col overflow-hidden border-t lg:border-t-0 lg:border-l border-[var(--border-primary)] bg-[var(--surface-secondary)]">
+          <div role="region" aria-label="Scan findings" tabIndex={0} className="flex-1 overflow-y-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]">
             {/* Aggregate counts — real, but aggregate only. No per-issue
                 fixed/remaining attribution is tracked anywhere for Canvas
                 content, so this is deliberately NOT split into two lists
                 the way it used to be (that split was fabricated). */}
-            <div className="p-4 border-b border-[var(--border-primary)] flex items-center gap-4">
+            <div className="p-4 border-b border-[var(--border-primary)] flex flex-wrap items-center gap-x-4 gap-y-2">
               <div className="flex items-center gap-1.5">
                 <CheckCircle2
                   className="w-4 h-4 shrink-0 text-[var(--content-success)]"
