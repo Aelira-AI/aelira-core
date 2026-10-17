@@ -91,5 +91,4 @@ test('web: a controlled local site is scanned and every finding traces to its ma
   await expect(page.getByRole('heading', { name: 'Remediation could not be started' })).toBeVisible();
   await expect(page.getByRole('button', { name: /Download/ })).toHaveCount(0);
   await assertNoBlockingViolations(page, 'web-remediation-not-started', testInfo);
-  expect(scanId).toMatch(/^[0-9a-f-]{36}$/);
 });

@@ -9,6 +9,8 @@ This is the inventory prerequisite for [#375](https://github.com/Aelira-AI/aelir
 | Web | Environment-gated scanner component cases using generated local file URLs | Controlled local HTTP site, sourced findings, proposed changes, review and rendered-result validation through the application |
 | Media | Processor and caption-format tests with mocked transcription and ffmpeg/ffprobe | Synthetic clip through real transcription/captions, supported review and actual downloadable output; explicit unsupported audio-description results |
 
+The [browser user-journey suite](user-journey-suite.md) adds real-stack browser evidence for all four pillars: documents, web and media run on every pull request and push to main, and the Canvas journey runs wherever its credentials are available. The table above names what that suite does not cover. Inventory entries at the `browser_real_stack` level may name no mocks and must be bound to a CI step; the report still says `journey_verification: not_evaluated`.
+
 Test filenames containing `e2e` are not evidence classifications. A simulated browser service and a separately tested backend cannot be combined into an inferred full user journey. Unit, component integration, API integration, simulated browser and manual procedure entries retain their own boundaries.
 
 ## Executable inventory check
