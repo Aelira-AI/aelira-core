@@ -11,6 +11,7 @@ SQLAlchemy engine) over a verified TLS connection to a synthetic PostgreSQL 16.
 from __future__ import annotations
 
 import hashlib
+import importlib.machinery
 import importlib.metadata
 import io
 import json
@@ -18,12 +19,13 @@ import os
 import platform
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 if __package__:
-    from .verify_final_python_packages import psycopg2_record_receipt
+    from . import verify_final_python_packages as package_verifier
 else:
-    from verify_final_python_packages import psycopg2_record_receipt
+    import verify_final_python_packages as package_verifier
 
 SYSTEM_LIBRARY_PREFIX = "/usr/lib/"
 REQUIRED_LIBRARIES = ("libpq.so", "libssl.so", "libcrypto.so")
@@ -40,8 +42,26 @@ def mapped_libraries(maps_path: Path = Path("/proc/self/maps")) -> dict[str, str
         path = os.path.realpath(fields[5])
         name = Path(fields[5]).name
         if ".so" in name or ".so" in Path(path).name:
+            if name in libraries and libraries[name] != path:
+                raise RuntimeError(f"ambiguous mapped library name: {name}")
             libraries[name] = path
     return libraries
+
+
+def trusted_interpreter_extensions() -> set[str]:
+    """Identify only imported native modules from this interpreter's stdlib."""
+    extension_root = Path(sysconfig.get_config_var("DESTSHARED")).resolve(strict=True)
+    trusted: set[str] = set()
+    for module in tuple(sys.modules.values()):
+        filename = getattr(module, "__file__", None)
+        if not isinstance(filename, str) or not filename.endswith(
+            tuple(importlib.machinery.EXTENSION_SUFFIXES)
+        ):
+            continue
+        path = Path(filename).resolve(strict=True)
+        if path.is_relative_to(extension_root):
+            trusted.add(str(path))
+    return trusted
 
 
 def check_loaded_libraries(libraries: dict[str, str]) -> dict[str, str]:
@@ -90,7 +110,10 @@ def require_tls_refusal(connect: object, reason: str, args: dict[str, object]) -
 
 
 def database_library_paths(
-    extension: Path, baseline: dict[str, str], observed: dict[str, str]
+    extension: Path,
+    baseline: dict[str, str],
+    observed: dict[str, str],
+    interpreter_extensions: set[str],
 ) -> dict[str, str]:
     """Join the extension's ELF closure to actual maps and post-connect loads."""
     linkage = subprocess.run(
@@ -109,15 +132,24 @@ def database_library_paths(
     if not static:
         raise RuntimeError("psycopg2 ELF closure is empty")
     mapped = set(observed.values())
+    extension_path = str(extension.resolve(strict=True))
+    if extension_path not in mapped:
+        raise RuntimeError("imported psycopg2 extension is absent from process maps")
     missing = static - mapped
     if missing:
         raise RuntimeError(
             f"ELF dependencies absent from process maps: {sorted(missing)}"
         )
     newly_mapped = mapped - set(baseline.values())
-    selected = static | {
-        path for path in newly_mapped if path.startswith(SYSTEM_LIBRARY_PREFIX)
-    }
+    selected = set(static)
+    for path in newly_mapped:
+        if path in static:
+            continue
+        if path == extension_path or path in interpreter_extensions:
+            continue
+        if not path.startswith(SYSTEM_LIBRARY_PREFIX):
+            raise RuntimeError(f"unexplained off-prefix database mapping: {path}")
+        selected.add(path)
     return {name: path for name, path in observed.items() if path in selected}
 
 
@@ -349,12 +381,7 @@ def main() -> int:
     module = Path(psycopg2.__file__).resolve()
     observed = mapped_libraries()
     check_loaded_libraries(observed)
-    loaded = database_library_paths(
-        Path(psycopg2._psycopg.__file__), baseline, direct_connection_maps
-    )
-    for name, path in check_loaded_libraries(observed).items():
-        loaded[name] = path
-    installed = psycopg2_record_receipt()
+    installed = package_verifier.psycopg2_record_receipt()
     if installed["extension_path"] != str(
         Path(psycopg2._psycopg.__file__).resolve(strict=True)
     ):
@@ -364,11 +391,23 @@ def main() -> int:
     ).hexdigest()
     if installed["extension_sha256"] != extension_sha256:
         raise RuntimeError("installed RECORD and loaded extension bytes differ")
+    loaded = database_library_paths(
+        Path(installed["extension_path"]),
+        baseline,
+        direct_connection_maps,
+        trusted_interpreter_extensions(),
+    )
+    for name, path in check_loaded_libraries(observed).items():
+        loaded[name] = path
     report = {
         "psycopg2": psycopg2.__version__,
         "module": str(module),
         "extension_sha256": extension_sha256,
         "installed_record": installed,
+        "probe_runtime_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "helper_runtime_sha256": hashlib.sha256(
+            Path(package_verifier.__file__).read_bytes()
+        ).hexdigest(),
         "image_id": os.environ["AELIRA_RUNTIME_IMAGE_ID"],
         "architecture": architecture,
         "loaded_libraries": library_receipt(loaded),

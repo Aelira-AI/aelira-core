@@ -14,6 +14,7 @@ from scripts.smoke_psycopg2_runtime import (
     library_receipt,
     mapped_libraries,
     require_tls_refusal,
+    trusted_interpreter_extensions,
 )
 import scripts.smoke_psycopg2_runtime as runtime
 
@@ -73,6 +74,8 @@ def test_database_closure_includes_static_and_connection_loaded_libraries(
 ) -> None:
     static = tmp_path / "libpq.so.5"
     static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
     dynamic = tmp_path / "libldap.so.2"
     dynamic.write_bytes(b"ldap")
     monkeypatch.setattr(
@@ -83,8 +86,15 @@ def test_database_closure_includes_static_and_connection_loaded_libraries(
         ),
     )
     monkeypatch.setattr(runtime, "SYSTEM_LIBRARY_PREFIX", str(tmp_path) + "/")
-    observed = {"libpq.so.5": str(static), "libldap.so.2": str(dynamic)}
-    assert database_library_paths(static, {}, observed) == observed
+    observed = {
+        "_psycopg.so": str(extension),
+        "libpq.so.5": str(static),
+        "libldap.so.2": str(dynamic),
+    }
+    assert database_library_paths(extension, {}, observed, set()) == {
+        "libpq.so.5": str(static),
+        "libldap.so.2": str(dynamic),
+    }
 
 
 def test_database_closure_rejects_an_unmapped_dependency(
@@ -92,6 +102,8 @@ def test_database_closure_rejects_an_unmapped_dependency(
 ) -> None:
     static = tmp_path / "libpq.so.5"
     static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
     monkeypatch.setattr(
         runtime.subprocess,
         "run",
@@ -100,7 +112,7 @@ def test_database_closure_rejects_an_unmapped_dependency(
         ),
     )
     with pytest.raises(RuntimeError, match="absent from process maps"):
-        database_library_paths(static, {}, {})
+        database_library_paths(extension, {}, {"_psycopg.so": str(extension)}, set())
 
 
 def test_database_closure_excludes_preexisting_unrelated_library(
@@ -108,6 +120,8 @@ def test_database_closure_excludes_preexisting_unrelated_library(
 ) -> None:
     static = tmp_path / "libpq.so.5"
     static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
     unrelated = tmp_path / "libunrelated.so.1"
     unrelated.write_bytes(b"other")
     monkeypatch.setattr(
@@ -118,10 +132,68 @@ def test_database_closure_excludes_preexisting_unrelated_library(
         ),
     )
     monkeypatch.setattr(runtime, "SYSTEM_LIBRARY_PREFIX", str(tmp_path) + "/")
-    observed = {"libpq.so.5": str(static), "libunrelated.so.1": str(unrelated)}
+    observed = {
+        "_psycopg.so": str(extension),
+        "libpq.so.5": str(static),
+        "libunrelated.so.1": str(unrelated),
+    }
     assert database_library_paths(
-        static, {"libunrelated.so.1": str(unrelated)}, observed
+        extension, {"libunrelated.so.1": str(unrelated)}, observed, set()
     ) == {"libpq.so.5": str(static)}
+
+
+def test_database_closure_rejects_new_unexplained_off_prefix_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    unexpected = tmp_path / "private.so"
+    unexpected.write_bytes(b"untrusted")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="unexplained off-prefix"):
+        database_library_paths(
+            extension,
+            {},
+            {
+                "_psycopg.so": str(extension),
+                "libpq.so.5": str(static),
+                "private.so": str(unexpected),
+            },
+            set(),
+        )
+
+
+def test_only_actual_stdlib_extension_module_is_trusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "lib-dynload" / "_decimal.so"
+    extension.parent.mkdir()
+    extension.write_bytes(b"stdlib")
+    unrelated = tmp_path / "third-party" / "other.so"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"other")
+    monkeypatch.setattr(
+        runtime.sysconfig, "get_config_var", lambda _: str(extension.parent)
+    )
+    monkeypatch.setitem(
+        runtime.sys.modules, "fixture_stdlib", SimpleNamespace(__file__=str(extension))
+    )
+    monkeypatch.setitem(
+        runtime.sys.modules,
+        "fixture_third_party",
+        SimpleNamespace(__file__=str(unrelated)),
+    )
+    trusted = trusted_interpreter_extensions()
+    assert str(extension) in trusted
+    assert str(unrelated) not in trusted
 
 
 def test_database_library_receipt_rejects_off_prefix() -> None:

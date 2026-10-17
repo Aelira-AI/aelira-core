@@ -541,9 +541,13 @@ def psycopg2_record_receipt(root: Path | None = None) -> dict[str, object]:
     ]
     if installed.count("psycopg2-binary") != 1 or "psycopg2" in installed:
         raise ValueError("ambiguous psycopg2 distribution metadata")
-    record = distribution.read_text("RECORD")
-    if not record:
+    record_bytes = (metadata_path / "RECORD").read_bytes()
+    if not record_bytes:
         raise ValueError("missing or empty RECORD")
+    try:
+        record = record_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("RECORD is not UTF-8") from exc
     verified: dict[str, str] = {}
     unhashed: list[str] = []
     for row in csv.reader(record.splitlines(), strict=True):
@@ -597,7 +601,7 @@ def psycopg2_record_receipt(root: Path | None = None) -> dict[str, object]:
         "package": "psycopg2-binary",
         "version": distribution.version,
         "record_hashes_verified": len(verified),
-        "record_sha256": hashlib.sha256(record.encode()).hexdigest(),
+        "record_sha256": hashlib.sha256(record_bytes).hexdigest(),
         "extension_path": str(extensions[0].resolve(strict=True)),
         "extension_sha256": verified[str(extensions[0].relative_to(site))],
     }

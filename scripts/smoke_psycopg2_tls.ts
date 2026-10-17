@@ -5,6 +5,7 @@ import { randomBytes, randomUUID, createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,19 +13,33 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const image = process.argv[4] ?? "aelira-worker-isolation:test";
 const postgresImage = "postgres:16";
 const output = resolve(process.argv[2] ?? "test-results/psycopg2-runtime");
 const expectedArch = process.argv[3] ?? "";
 const probeSource = process.argv[5] ? resolve(process.argv[5]) : "";
+const probeFile = probeSource || resolve("scripts/smoke_psycopg2_runtime.py");
+const helperFile = probeSource
+  ? join(dirname(probeSource), "verify_final_python_packages.py")
+  : resolve("scripts/verify_final_python_packages.py");
 if (!["amd64", "arm64"].includes(expectedArch)) {
   throw new Error("expected amd64 or arm64 as the second argument");
 }
 if (image !== "aelira-worker-isolation:test" && !probeSource) {
   throw new Error("an alternate image requires a read-only probe source mount");
 }
+if (probeSource && basename(probeSource) !== "smoke_psycopg2_runtime.py") {
+  throw new Error("the read-only probe must retain its reviewed filename");
+}
+if (!existsSync(probeFile) || !existsSync(helperFile)) {
+  throw new Error("the psycopg2 probe and verifier must both exist");
+}
+const fileHash = (path: string): string =>
+  createHash("sha256").update(readFileSync(path)).digest("hex");
+const probeHash = fileHash(probeFile);
+const helperHash = fileHash(helperFile);
 mkdirSync(dirname(output), { recursive: true });
 try {
   mkdirSync(output);
@@ -128,6 +143,7 @@ function removeOwnedContainer(name: string, role: "database" | "client"): void {
     expectedBinds.set("/run/certs/unrelated.crt", join(client, "unrelated.crt"));
     if (probeSource) {
       expectedBinds.set("/app/scripts/smoke_psycopg2_runtime.py", probeSource);
+      expectedBinds.set("/app/scripts/verify_final_python_packages.py", helperFile);
     }
   }
   const seenBinds = new Set<string>();
@@ -284,6 +300,9 @@ async function main(): Promise<void> {
       "--label", label, "--network", network,
       "--read-only", "--tmpfs", "/tmp:rw,nosuid,mode=1777",
       ...(probeSource ? ["--mount", `type=bind,src=${probeSource},dst=/app/scripts/smoke_psycopg2_runtime.py,readonly`] : []),
+      ...(probeSource
+        ? ["--mount", `type=bind,src=${helperFile},dst=/app/scripts/verify_final_python_packages.py,readonly`]
+        : []),
       "--mount", `type=bind,src=${join(client, "password")},dst=/run/secrets/pg_password,readonly`,
       "--mount", `type=bind,src=${join(client, "trusted.crt")},dst=/run/certs/trusted.crt,readonly`,
       "--mount", `type=bind,src=${join(client, "unrelated.crt")},dst=/run/certs/unrelated.crt,readonly`,
@@ -300,10 +319,15 @@ async function main(): Promise<void> {
       "/app/scripts/smoke_psycopg2_runtime.py",
     );
     const receipt = JSON.parse(result) as Record<string, unknown>;
+    if (
+      receipt.probe_runtime_sha256 !== probeHash ||
+      receipt.helper_runtime_sha256 !== helperHash
+    ) {
+      throw new Error("running psycopg2 probe or verifier differs from reviewed source");
+    }
     receipt.evidence_scope = evidenceScope;
-    receipt.probe_source_sha256 = createHash("sha256")
-      .update(readFileSync(probeSource || "scripts/smoke_psycopg2_runtime.py"))
-      .digest("hex");
+    receipt.probe_source_sha256 = probeHash;
+    receipt.helper_source_sha256 = helperHash;
     receipt.postgres_image_id = postgresId;
     receipt.tls_server_cert_sha256 = createHash("sha256")
       .update(readFileSync(cert))

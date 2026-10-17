@@ -593,13 +593,15 @@ def _installed_psycopg2_fixture(
 def test_installed_psycopg2_record_covers_native_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extension, _ = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    extension, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
     receipt = psycopg2_record_receipt(tmp_path)
     assert receipt["record_hashes_verified"] == 3
     assert (
         receipt["extension_sha256"]
         == hashlib.sha256(extension.read_bytes()).hexdigest()
     )
+    assert b"\r\n" in record.read_bytes()
+    assert receipt["record_sha256"] == hashlib.sha256(record.read_bytes()).hexdigest()
 
 
 def test_installed_psycopg2_record_rejects_mutated_native_bytes(
