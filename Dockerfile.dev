@@ -40,6 +40,7 @@ COPY --from=python-expat-modules /tmp/python-expat-modules/ /usr/local/lib/pytho
 RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 FROM python-expat-base AS runtime
+ARG SOURCE_DATE_EPOCH=0
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 
 # Install system dependencies + LaTeXML stack
@@ -112,7 +113,8 @@ COPY requirements.txt requirements-dev.txt ./
 COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
 COPY docker/build-opencv-wheel.sh /tmp/build-opencv-wheel.sh
 COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
-RUN pip install --no-cache-dir "pip==26.2.1" "setuptools==84.0.0" "Cython==3.2.9" && \
+RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
+    pip install --no-cache-dir "pip==26.2.1" "setuptools==84.0.0" "Cython==3.2.9" && \
     sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel && \
     pip install --no-cache-dir --no-deps /tmp/pyav-wheel/av-18.1.0-*.whl && \
     rm -rf /tmp/pyav-wheel /tmp/build-pyav-wheel.sh && \
