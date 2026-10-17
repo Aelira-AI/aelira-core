@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An isolated upgrade and restoration rehearsal automates the documented backup procedure, verifies persisted scan outcomes and artifact hashes, and records exact image manifests and platform identities in a validated receipt. It uses fresh local test resources and preserves the remaining publication, platform and prerelease checks as separate release gates ([#663](https://github.com/Aelira-AI/aelira-core/issues/663)).
+
 ### Changed
 
 - Hugging Face Hub is updated to 2.2.0 and Tokenizers to 0.23.3, which accepts Hub 2 and later. Hub 2 adds `httpx2`, `httpcore2` and `truststore` to the pinned runtime set. A real faster-whisper `tiny.en` download, transcription and `HF_HUB_OFFLINE=1` cached load now run in the built API image on both architectures ([#560](https://github.com/Aelira-AI/aelira-core/issues/560)).
