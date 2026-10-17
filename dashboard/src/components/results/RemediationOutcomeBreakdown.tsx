@@ -5,7 +5,24 @@ import { issueDescription, findingDisplayText, outcomeExplanation, outcomePresen
 import type { RemediationIssueRow } from "../../utils/remediationIssueOutcomes";
 
 export function AggregateResults({ job, rows }: { job: RemediationJobStatus; rows?: RemediationIssueRow[] }): React.ReactElement | null {
-  const values = [
+  const acceptedOrderOutcomes = job.issue_outcomes?.length && job.issue_outcomes.every(
+    outcome => outcome.source_index_scope === 'accepted_pptx_order'
+  ) ? job.issue_outcomes : null;
+  const values = (acceptedOrderOutcomes ? [
+    { label: 'Slide orders applied', value: job.fixed_count, color: 'text-[var(--feature-success-content)]' },
+    { label: 'Slide orders needing human review', value: acceptedOrderOutcomes.every(
+      outcome => outcome.status !== 'fixed' || typeof outcome.needs_review === 'boolean'
+    ) ? acceptedOrderOutcomes.filter(
+      outcome => outcome.status === 'fixed' && outcome.needs_review === true
+    ).length : null, color: 'text-[var(--feature-warning-content)]' },
+    { label: 'Order requests not applied', value: job.remaining_count, color: 'text-[var(--feature-warning-content)]' },
+    { label: 'Accepted slide order requests', value: job.total_issues, color: 'text-primary' },
+    { label: 'Order requests needing manual work', value: job.manual_count && job.manual_count > 0 ? job.manual_count : null, color: 'text-[var(--feature-warning-content)]' },
+    { label: 'Order requests failed', value: job.failed_count && job.failed_count > 0 ? job.failed_count : null, color: 'text-[var(--feature-danger-content)]' },
+    { label: 'Order requests skipped', value: job.skipped_count && job.skipped_count > 0 ? job.skipped_count : null, color: 'text-[var(--content-secondary)]' },
+    { label: 'Order changes withheld', value: job.withheld_count && job.withheld_count > 0 ? job.withheld_count : null, color: 'text-[var(--content-secondary)]' },
+    { label: 'Order outcomes not reported', value: job.outcome_unreported_count && job.outcome_unreported_count > 0 ? job.outcome_unreported_count : null, color: 'text-[var(--content-secondary)]' },
+  ] : [
     { label: 'Changes applied', value: job.fixed_count, color: 'text-[var(--feature-success-content)]' },
     { label: 'Human review changes', value: rows?.filter(row => outcomeGroup(row) === 'review').length, color: 'text-[var(--feature-warning-content)]' },
     { label: 'Manual work remaining', value: job.manual_count, color: 'text-[var(--feature-warning-content)]' },
@@ -15,7 +32,7 @@ export function AggregateResults({ job, rows }: { job: RemediationJobStatus; row
     { label: 'Skipped', value: job.skipped_count, color: 'text-[var(--content-secondary)]' },
     { label: 'Withheld changes', value: job.withheld_count, color: 'text-[var(--content-secondary)]' },
     { label: 'Outcome not reported', value: job.outcome_unreported_count, color: 'text-[var(--content-secondary)]' },
-  ].filter((item): item is { label: string; value: number; color: string } =>
+  ]).filter((item): item is { label: string; value: number; color: string } =>
     typeof item.value === 'number' && Number.isFinite(item.value)
   );
 

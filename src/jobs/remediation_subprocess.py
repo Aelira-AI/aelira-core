@@ -254,9 +254,11 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     )
     authoritative = isinstance(lms_binding, dict)
     approved_fixes_only = bool(options.get("approved_fixes_only", False))
+    reviewed_pptx = options.get("pptx_reviewed_reading_order")
     use_ai = (
         bool(options.get("use_ai", True))
         and not approved_fixes_only
+        and reviewed_pptx is None
         and recovery is None
     )
     if not authoritative and use_ai:
@@ -270,7 +272,7 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     config = RemediationConfig(
         use_ai=(use_ai if not authoritative else ai_client is not None)
         and not approved_fixes_only,
-        use_supplied_fixes=approved_fixes_only,
+        use_supplied_fixes=approved_fixes_only or reviewed_pptx is not None,
         allow_legacy_nested_ai=False,
         fix_alt_text=approved_fixes_only
         or (not authoritative or alt_text_client is not None),
@@ -289,6 +291,32 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     config.include_original_in_zip = bool(options.get("include_original_in_zip", True))
     scan_type = str(request.get("scan_type", "")).upper()
     issues = _safe_issues(request.get("issues"))
+    if reviewed_pptx is not None:
+        if scan_type not in {"POWERPOINT", "PPTX"} or not isinstance(
+            reviewed_pptx, dict
+        ):
+            raise RemediationSubprocessError("invalid_job_payload")
+        raw_orders = reviewed_pptx.get("accepted_shape_ids_by_slide")
+        if not isinstance(raw_orders, dict) or any(
+            not isinstance(key, str) or not key.isdecimal() or str(int(key)) != key
+            for key in raw_orders
+        ):
+            raise RemediationSubprocessError("invalid_job_payload")
+        from src.education.remediation.pptx_reading_order import (
+            UnsupportedReadingOrder,
+            reviewed_order_issues,
+        )
+
+        try:
+            expected_issues = reviewed_order_issues(
+                source,
+                reviewed_pptx.get("source_sha256"),
+                {int(key): value for key, value in raw_orders.items()},
+            )
+        except (UnsupportedReadingOrder, ValueError, TypeError, OSError) as exc:
+            raise RemediationSubprocessError("invalid_job_payload") from exc
+        if issues != expected_issues:
+            raise RemediationSubprocessError("invalid_job_payload")
     office_type = {
         "WORD": "word",
         "DOCX": "word",

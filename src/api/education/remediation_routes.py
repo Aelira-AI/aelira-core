@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from urllib.parse import quote
@@ -93,6 +94,14 @@ _PUBLIC_PROGRESS_MESSAGES = {
     CloudJobStatus.COMPLETED.value: "Completed",
     CloudJobStatus.FAILED.value: "Failed",
 }
+
+
+class PptxReadingOrderRequest(BaseModel):
+    """An explicit reviewer decision bound to one scanned upload."""
+
+    source_sha256: str
+    accepted_shape_ids_by_slide: Dict[int, List[int]]
+    reviewer_accepted: bool
 
 
 @contextmanager
@@ -1843,6 +1852,58 @@ async def enqueue_remediate_scan(
     job = _enqueue_scan_remediation(
         db, scan=scan, principal=principal, options=canonical_options
     )
+    return await _respond_for_enqueued_job(
+        job,
+        scan_id=scan_id,
+        department_id=principal.department_id,
+        respond_async=_prefer_respond_async(request),
+    )
+
+
+@router.post("/powerpoint/reading-order/{scan_id}")
+async def remediate_reviewed_pptx_order(
+    scan_id: str,
+    request: Request,
+    decision: PptxReadingOrderRequest,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Queue a local PPTX order repair from a source-bound reviewer decision."""
+    scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    authorized = authorize_scan_access(db, scan, principal)
+    _require_editable_source(scan)
+    if scan.scan_type != ScanType.POWERPOINT or scan.result is None:
+        raise HTTPException(
+            status_code=400, detail="A completed PowerPoint scan is required"
+        )
+    if _resolve_bound_scan_cloud_file(db, scan, principal, authorized) is not None:
+        raise HTTPException(status_code=400, detail="Local PowerPoint uploads only")
+    if decision.reviewer_accepted is not True:
+        raise HTTPException(status_code=400, detail="Reviewer acceptance is required")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", decision.source_sha256)
+        or decision.source_sha256 != scan.file_hash
+    ):
+        raise HTTPException(status_code=409, detail="PowerPoint source has changed")
+    orders = decision.accepted_shape_ids_by_slide
+    if not 1 <= len(orders) <= 64 or any(
+        type(index) is not int
+        or type(ids) is not list
+        or not 1 <= len(ids) <= 128
+        or any(type(shape_id) is not int or shape_id <= 0 for shape_id in ids)
+        for index, ids in orders.items()
+    ):
+        raise HTTPException(status_code=400, detail="Invalid complete slide orders")
+    options = _canonical_remediation_options(
+        None, use_ai=False, generate_alt_text=False
+    )
+    options["pptx_reviewed_reading_order"] = {
+        "source_sha256": decision.source_sha256,
+        "accepted_shape_ids_by_slide": orders,
+    }
+    job = _enqueue_scan_remediation(db, scan=scan, principal=principal, options=options)
     return await _respond_for_enqueued_job(
         job,
         scan_id=scan_id,

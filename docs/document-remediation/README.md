@@ -16,7 +16,7 @@ Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or 
 |---|---|---|---|
 | `.pdf` | Stored issue list, score, detected structure, and an HTML representation | `.pdf` | Broad processor tests plus a fixture-backed scan → remediate → re-scan integration test. This is the strongest document-format evidence, but complex semantics remain review work. |
 | `.docx` | Stored categorized issues, score, structure counts, and HTML representation | `.docx` | Processor and edge-case tests cover Word structures; remediator and route wiring are tested. There is no claim of PDF-level end-to-end parity. |
-| `.pptx` | Stored slide issues, score, and slide structure summary | `.pptx` | Scanner has fixture-backed end-to-end tests plus animation/media tests. A bounded direct-library path persists an explicitly accepted reading order; the scan/API flow does not yet accept reviewer orders. |
+| `.pptx` | Stored slide issues, score, and slide structure summary with read-only shape-order evidence | `.pptx` | Scanner has fixture-backed end-to-end tests plus animation/media tests. A bounded local-upload API and direct-library path persist explicitly accepted reading orders; PowerPoint/AT behavior still needs human verification. |
 | `.xlsx` | Stored worksheet issues, score, and workbook structure summary | `.xlsx` | Focused integration tests cover pivot tables and conditional formatting; remediator and route wiring are tested. There is no full-workbook end-to-end parity claim. |
 | `.tex` | Source issues plus equation conversion results, MathML/ARIA data, score, and HTML | `.tex` by default; optional `.html` and `.pdf` | Source remediation and conversion branches are tested. The large processor E2E module is opt-in, and PDF quality depends on the converter available at runtime. |
 
@@ -30,7 +30,7 @@ Scanning reports evidence; remediation changes only categories that a format rem
 |---|---|---|
 | PDF | Text/OCR state, metadata and language, tag/structure conditions, headings/lists/tables, reading order, images/alt text, links, forms, bookmarks, and generated HTML | Language/title metadata, bookmarks, selected structure/heading/list/table tags, and alt text where the structure tree and issue metadata permit a safe target |
 | DOCX | Headings, images/alt text, tables, fake lists, link text, language, title, font size, SmartArt, and embedded objects | Image alt text, heading styles, fake-list formatting, first-row table headers, link text, run language, and title |
-| PPTX | Image alt text, text contrast, slide titles, optional image-of-text OCR, animations, and embedded media | Eligible image alt text, text color, and missing slide titles. Direct-library callers may supply a source-bound complete shape-ID order for a bounded slide repair; unreviewed suggestions remain manual. |
+| PPTX | Image alt text, text contrast, slide titles, optional image-of-text OCR, animations, embedded media, and read-only current shape-order evidence | Eligible image alt text, text color, and missing slide titles. A local-upload reviewer or direct-library caller may supply a source-bound complete shape-ID order for a bounded slide repair; unreviewed suggestions remain manual. |
 | XLSX | Sheet names, table/header structure, charts/images, merged cells, color-only cues, navigation/named ranges, pivot tables, and conditional formatting | Sheet names, table/header formatting, a missing chart title, text indicators for recognized colors, and frozen panes |
 | LaTeX | Metadata/language, figures and captions, tables, equation labels/MathML/ARIA, color-only emphasis and possible contrast, links, and list structure | TeX source for supported language, figure, heading, table, title, equation/ARIA, color, and link cases; requested conversions are a separate post-remediation step |
 
@@ -133,7 +133,7 @@ Only the PDF direct-library path has a maintained runnable example: [`examples/s
 
 - Aelira does not decide whether generated alt text, a heading hierarchy, a table header, a chart description, or a reading order conveys the author's intended meaning.
 - It does not claim all-format parity. Scanner findings can outnumber safe mutations, and focused test depth differs by format.
-- PPTX scan/API reading-order findings are not structurally auto-repaired; the direct-library path requires an explicitly accepted order and leaves PowerPoint/assistive-technology confirmation to a person. XLSX chart remediation may add a chart title; it should not be described as guaranteed chart alt text.
+- PPTX reading order is never inferred from the scan. The local-upload reviewer endpoint and direct-library path require an explicitly accepted order and leave PowerPoint/assistive-technology confirmation to a person. XLSX chart remediation may add a chart title; it should not be described as guaranteed chart alt text.
 - Office serialization can affect macros and uncommon package parts; only `.docx`, `.pptx`, and `.xlsx` are accepted by their document scan routes, not legacy `.doc`, `.ppt`, or `.xls` files.
 - OCR can misread scans. PDF tag repair cannot infer every semantic relationship in a complex layout.
 - LaTeX HTML and PDF are separate conversion paths. LuaLaTeX/tagpdf, LaTeXML/Playwright, and pdflatex fallbacks have different accessibility properties.

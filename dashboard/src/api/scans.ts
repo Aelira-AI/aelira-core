@@ -173,7 +173,7 @@ export interface RemediationScoreMeasurement {
 
 export interface RecordedRemediationOutcome {
   source_index: number;
-  source_index_scope: 'original_scan' | 'approved_subset';
+  source_index_scope: 'original_scan' | 'approved_subset' | 'accepted_pptx_order';
   issue_id?: string | null;
   original_source_index?: number;
   status: 'fixed' | 'withheld' | 'manual' | 'failed' | 'unreported';
