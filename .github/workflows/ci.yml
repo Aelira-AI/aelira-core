@@ -1591,6 +1591,48 @@ jobs:
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
+      - name: Verify PyAV decodes and resamples the transcription WAV
+        run: |
+          docker run --rm --network none \
+            --volume "$PWD/tests/test_multimedia_decode_acceptance.py:/tmp/test_multimedia_decode_acceptance.py:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test -c '
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+            from runpy import run_path
+            with TemporaryDirectory() as directory:
+                run_path("/tmp/test_multimedia_decode_acceptance.py")["test_pyav_decodes_and_resamples_audio_for_transcription"](Path(directory))
+            print("PyAV WAV decode and 8 kHz to 16 kHz resample verified")
+          '
+      - name: Prove the native gate rejects the published PyAV wheel
+        run: |
+          wheel_dir="$(mktemp -d)"
+          docker run --rm --volume "$wheel_dir:/wheel" \
+            --entrypoint /usr/local/bin/python \
+            python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 \
+            -m pip download --index-url https://pypi.org/simple \
+            --no-deps --only-binary=:all: --dest /wheel 'av==18.1.0'
+          mkdir "$wheel_dir/unpacked"
+          unzip -q "$wheel_dir"/av-18.1.0-*.whl -d "$wheel_dir/unpacked"
+          chmod a+rx "$wheel_dir"
+          chmod -R a+rX "$wheel_dir/unpacked"
+          docker run --rm --network none \
+            --volume "$wheel_dir/unpacked:/tmp/published-av:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test -c '
+            from pathlib import Path
+            from scripts.verify_final_python_packages import PYAV_LIBRARIES, validate_pyav_native
+            errors = validate_pyav_native(
+                purelib=Path("/tmp/published-av"),
+                version=lambda _name: "18.1.0",
+                library_versions=PYAV_LIBRARIES,
+            )
+            assert any("bundled av library directory" in error for error in errors), errors
+            assert any(
+                "expected /opt/ffmpeg9/lib/" in error
+                or "unexpected FFmpeg library" in error
+                for error in errors
+            ), errors
+            print("published PyAV wheel rejected by native binding gate")
+          '
       - name: Verify real faster-whisper download and offline load through huggingface-hub
         run: |
           hf_cache="$(mktemp -d)"

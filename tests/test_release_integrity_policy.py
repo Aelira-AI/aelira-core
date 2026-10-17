@@ -187,6 +187,30 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     assert not re.search(r"^\s+libtiff\S* \\$", api, re.MULTILINE)
 
 
+def test_api_and_quickstart_build_pyav_from_verified_sources() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    dev = (ROOT / "Dockerfile.dev").read_text()
+    script = (ROOT / "docker" / "build-pyav-wheel.sh").read_text()
+
+    for dockerfile in (api, dev):
+        source = "sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel"
+        assert source in dockerfile
+        assert dockerfile.index(source) < dockerfile.index(
+            "pip install --no-cache-dir -r requirements"
+        )
+        assert "/tmp/pyav-wheel/av-18.1.0-*.whl" in dockerfile
+        assert '"Cython==3.2.9"' in dockerfile
+        assert "LD_LIBRARY_PATH" not in dockerfile
+
+    assert "COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib" in api
+    assert "sha256sum --check --strict" in script
+    assert "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" in script
+    assert "47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28" in script
+    assert "--enable-shared --disable-static" in script
+    assert "--disable-autodetect" in script
+    assert "-Wl,--disable-new-dtags,-rpath,$prefix/lib" in script
+
+
 def test_api_image_does_not_ship_pi_heif() -> None:
     requirements = (ROOT / "requirements.txt").read_text().lower()
 

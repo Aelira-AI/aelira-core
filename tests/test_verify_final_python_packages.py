@@ -7,12 +7,15 @@ from pathlib import Path
 import pytest
 
 from scripts.verify_final_python_packages import (
+    PYAV_LIBRARIES,
     required_msgpack_version,
     required_piper_version,
+    required_pyav_version,
     required_psycopg2_version,
     required_urllib3_version,
     validate,
     validate_pillow,
+    validate_pyav_native,
     validate_psycopg2_native,
 )
 
@@ -421,7 +424,7 @@ def test_final_package_verifier_requires_each_codec_and_text_feature(
     assert f"venv: Pillow feature {feature} is unavailable" in errors
 
 
-@pytest.mark.parametrize("package", ["pi-heif", "pybind11"])
+@pytest.mark.parametrize("package", ["pi-heif", "pybind11", "Cython"])
 def test_final_package_verifier_rejects_packages_the_image_must_not_ship(
     tmp_path: Path, package: str
 ) -> None:
@@ -608,3 +611,91 @@ def test_dockerfile_builds_psycopg2_from_source_before_requirements() -> None:
     assert f"psycopg2_binary-{PSYCOPG2_VERSION}-*.whl" in dependency_install
     script = (root / "docker" / "build-psycopg2-wheel.sh").read_text()
     assert f"psycopg2_binary-{PSYCOPG2_VERSION}.tar.gz" in script
+
+
+PYAV_VERSION = required_pyav_version()
+
+
+def _pyav_tree(root: Path) -> Path:
+    package = root / "av"
+    package.mkdir()
+    (package / "_core.cpython-314-aarch64-linux-gnu.so").write_bytes(b"")
+    return root
+
+
+def _pyav_ldd(path_prefix: str = "/opt/ffmpeg9/lib") -> str:
+    return "\n".join(
+        f"{stem}.so.{numbers[0]} => {path_prefix}/{stem}.so.{numbers[0]} (0x1234)"
+        for stem, numbers in PYAV_LIBRARIES.items()
+    )
+
+
+def _validate_pyav(root: Path, ldd_output: str | None = None, **overrides):
+    options = {
+        "version": _versions({"av": PYAV_VERSION}),
+        "package_not_found": MissingPackage,
+        "purelib": root,
+        "ldd": lambda _extension: ldd_output or _pyav_ldd(),
+        "realpath": lambda path: path,
+        "library_versions": PYAV_LIBRARIES,
+    }
+    options.update(overrides)
+    return validate_pyav_native(**options)
+
+
+def test_pyav_verifier_accepts_all_seven_source_linked_libraries(
+    tmp_path: Path,
+) -> None:
+    assert _validate_pyav(_pyav_tree(tmp_path)) == []
+
+
+def test_pyav_verifier_rejects_published_wheel_private_libraries(
+    tmp_path: Path,
+) -> None:
+    root = _pyav_tree(tmp_path)
+    (root / "av.libs").mkdir()
+    errors = _validate_pyav(root, _pyav_ldd(str(root / "av.libs")))
+    assert any("bundled av library directory" in error for error in errors)
+    assert any("expected /opt/ffmpeg9/lib/" in error for error in errors)
+
+
+@pytest.mark.parametrize("path", ["/usr/lib/aarch64-linux-gnu", "/tmp/ffmpeg"])
+def test_pyav_verifier_rejects_wrong_library_prefix(tmp_path: Path, path: str) -> None:
+    errors = _validate_pyav(_pyav_tree(tmp_path), _pyav_ldd(path))
+    assert (
+        len([error for error in errors if "expected /opt/ffmpeg9/lib/" in error]) >= 7
+    )
+
+
+def test_pyav_verifier_rejects_missing_or_old_ffmpeg_library(tmp_path: Path) -> None:
+    root = _pyav_tree(tmp_path)
+    good = _pyav_ldd()
+    old = good.replace("libavcodec.so.63", "libavcodec.so.61")
+    errors = _validate_pyav(root, old)
+    assert any("expected libavcodec.so.63" in error for error in errors)
+    assert any("does not resolve libavcodec" in error for error in errors)
+
+
+def test_pyav_verifier_rejects_tls_and_wrong_native_version(tmp_path: Path) -> None:
+    root = _pyav_tree(tmp_path)
+    linked = (
+        _pyav_ldd()
+        + "\nlibssl-deadbeef.so.3 => /tmp/av.libs/libssl-deadbeef.so.3 (0x1234)"
+    )
+    versions = {**PYAV_LIBRARIES, "libavcodec": (61, 1, 102)}
+    errors = _validate_pyav(root, linked, library_versions=versions)
+    assert any("loads TLS library libssl-deadbeef.so.3" in error for error in errors)
+    assert any("reports libavcodec (61, 1, 102)" in error for error in errors)
+
+
+def test_dockerfile_builds_pyav_before_installing_requirements() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile").read_text()
+    builder = dockerfile.split("AS builder", 1)[1].split("AS pa11y-node", 1)[0]
+    source = "sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel"
+    assert source in builder
+    assert builder.index(source) < builder.index(
+        "pip install --no-cache-dir -r requirements.txt"
+    )
+    assert f"/tmp/pyav-wheel/av-{PYAV_VERSION}-*.whl" in builder
+    assert "COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib" in dockerfile
