@@ -226,16 +226,19 @@ the resolver's latest-version choice.
 
 ### Libraries built from source
 
-The published `lxml`, `Pillow`, `av`, and `opencv-python` wheels bundle native libraries that Debian
-and the vulnerability scanner do not see, and that lag upstream security
-releases. The API image therefore builds all four from their pinned source
-releases in the builder stage, then installs the resulting wheels before the
-locked requirements, which are then already satisfied.
+The published `lxml`, `Pillow`, `psycopg2-binary`, `av`, and `opencv-python`
+wheels bundle native libraries that Debian and the vulnerability scanner do
+not see, and that lag upstream security releases. Both the production API and
+quickstart images build the five exact distributions from their pinned source
+releases, then install the resulting wheels before the locked requirements,
+which are then already satisfied. The quickstart keeps pip for developer use;
+its source builds and temporary build tools finish in the same image layer.
 
 | Package | Build script | What it links |
 |---|---|---|
 | `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
 | `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm with FriBidi and HarfBuzz, LittleCMS, zlib and XCB from Debian packages |
+| `psycopg2-binary` 2.9.13 | `docker/build-psycopg2-wheel.sh` | Debian `libpq` and its system TLS libraries, with no wheel-private `psycopg2_binary.libs` |
 | `av` 18.1.0 | `docker/build-pyav-wheel.sh` | FFmpeg 9.0.2 shared libraries under `/opt/ffmpeg9/lib`, built from a hash-verified official release archive; no wheel-private `av.libs` or TLS libraries |
 | `opencv-python` 5.0.0.93 | `docker/build-opencv-wheel.sh` | The same FFmpeg 9.0.2 libraries and Debian `libdav1d7` 1.5.1-1 for CPU AV1 decoding; no `opencv_python.libs` or optional OpenCV image-codec backends |
 
@@ -272,8 +275,8 @@ separate Debian media path.
 The OpenCV wheel retains the exact `opencv-python` distribution identity that
 PySceneDetect 0.7.2 requires. Its compiled scope is scene video capture and
 processing; OpenCV's optional JPEG, PNG, TIFF, WebP, JPEG 2000, GIF, AVIF and
-other optional image-codec backends are disabled even when the production
-builder has `libavif-dev` for Pillow. OpenCV's built-in BMP codec remains
+other optional image-codec backends are disabled even when the production and
+quickstart builders have `libavif-dev` for Pillow. OpenCV's built-in BMP codec remains
 registered. The unused Protobuf and Flatbuffers backends are disabled.
 With the production builder's image-development packages present, OpenCV
 links Debian `libz.so.1` (zlib 1.3.1) rather than its in-tree zlib. Its
@@ -294,6 +297,10 @@ Pillow's libtiff to be at least 4.7.2, the required codec and text-shaping
 features to be present, no
 `pillow.libs` directory and no `pi_heif`, `pybind11` or `Cython`
 distribution.
+The quickstart runs the same native binding and image-feature checks through
+`scripts/verify_final_python_packages.py quickstart`, with its retained pinned
+pip checked separately. Its CI image smoke also exercises PyAV WAV resampling,
+Pillow's formats and text shaping, and real OCR.
 The published wheel reports `zlib_ng` as its zlib implementation; this build
 uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
 

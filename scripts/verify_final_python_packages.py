@@ -25,6 +25,14 @@ EXPECTED = {
         "pybind11": None,
         "Cython": None,
     },
+    # The developer image keeps pip for its supported interactive workflow.
+    "quickstart": {
+        "setuptools": "84.0.0",
+        "pip": "26.2.1",
+        "pi-heif": None,
+        "pybind11": None,
+        "Cython": None,
+    },
 }
 # Pillow is built from source against libtiff 4.7.2 (docker/build-pillow-wheel.sh)
 # and must keep the wheel's codec and text-shaping capabilities.
@@ -111,7 +119,7 @@ def validate(
         expected["msgpack"] = required_msgpack_version(requirements)
     except (OSError, ValueError) as exc:
         errors.append(f"{scope}: unable to determine required msgpack version: {exc}")
-    if scope == "venv":
+    if scope in {"venv", "quickstart"}:
         try:
             expected["urllib3"] = required_urllib3_version(requirements)
         except (OSError, ValueError) as exc:
@@ -665,7 +673,7 @@ def main() -> int:
         return 0
     errors = [] if args.scope == "expat" else validate(args.scope)
     errors.extend(validate_expat_native())
-    if args.scope == "venv":
+    if args.scope in {"venv", "quickstart"}:
         errors.extend(validate_pillow())
         errors.extend(validate_psycopg2_native())
         errors.extend(validate_pyav_native())

@@ -70,6 +70,44 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
     )
 
 
+def test_final_package_verifier_accepts_quickstart_with_pip(tmp_path: Path) -> None:
+    assert (
+        validate(
+            "quickstart",
+            version=_versions(
+                {
+                    "msgpack": MSGPACK_VERSION,
+                    "setuptools": "84.0.0",
+                    "pip": "26.2.1",
+                    "piper-tts": PIPER_VERSION,
+                    "urllib3": URLLIB3_VERSION,
+                }
+            ),
+            package_not_found=MissingPackage,
+            purelib=tmp_path,
+        )
+        == []
+    )
+
+
+def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> None:
+    errors = validate(
+        "quickstart",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "pip": "26.2.0",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert "quickstart: pip is 26.2.0; expected 26.2.1" in errors
+
+
 @pytest.mark.parametrize(
     ("scope", "installed", "expected_error"),
     [
@@ -613,6 +651,31 @@ def test_dockerfile_builds_psycopg2_from_source_before_requirements() -> None:
     assert f"psycopg2_binary-{PSYCOPG2_VERSION}-*.whl" in dependency_install
     script = (root / "docker" / "build-psycopg2-wheel.sh").read_text()
     assert f"psycopg2_binary-{PSYCOPG2_VERSION}.tar.gz" in script
+
+
+def test_quickstart_builds_all_native_pins_before_dev_requirements() -> None:
+    source = (Path(__file__).resolve().parents[1] / "Dockerfile.dev").read_text()
+    builds = (
+        "sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel",
+        "sh /tmp/build-pillow-wheel.sh /tmp/pillow-wheel",
+        "sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel",
+        "sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel",
+        "sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel",
+        "pip install --no-cache-dir -r requirements-dev.txt",
+    )
+    assert list(map(source.index, builds)) == sorted(map(source.index, builds))
+    for wheel in (
+        "lxml-6.1.3-*.whl",
+        "pillow-12.3.0-*.whl",
+        "psycopg2_binary-2.9.13-*.whl",
+        "av-18.1.0-*.whl",
+        "opencv_python-5.0.0.93-*.whl",
+    ):
+        assert source.index(wheel) < source.index(builds[-1])
+    assert "libpq-dev" in source
+    assert "libavif-dev" in source
+    assert "libraqm-dev" in source
+    assert "libtiff-dev" not in source
 
 
 PYAV_VERSION = required_pyav_version()
