@@ -8,6 +8,7 @@ import pytest
 
 from scripts.verify_final_python_packages import (
     PYAV_LIBRARIES,
+    QUICKSTART_PIP_VENDOR,
     required_opencv_version,
     required_msgpack_version,
     required_piper_version,
@@ -38,6 +39,17 @@ def _versions(installed: dict[str, str]):
             raise MissingPackage(package) from exc
 
     return version
+
+
+def _installed_pip_vendor(root: Path) -> Path:
+    (root / "pip-26.2.1.dist-info").mkdir()
+    vendor = root / "pip" / "_vendor"
+    urllib3 = vendor / "urllib3"
+    urllib3.mkdir(parents=True)
+    (vendor / "vendor.txt").write_text("\n".join(QUICKSTART_PIP_VENDOR) + "\n")
+    (urllib3 / "__init__.py").write_text("from ._version import __version__\n")
+    (urllib3 / "_version.py").write_text("__version__ = version = '2.7.0'\n")
+    return vendor
 
 
 def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
@@ -71,6 +83,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
 
 
 def test_final_package_verifier_accepts_quickstart_with_pip(tmp_path: Path) -> None:
+    _installed_pip_vendor(tmp_path)
     assert (
         validate(
             "quickstart",
@@ -91,6 +104,7 @@ def test_final_package_verifier_accepts_quickstart_with_pip(tmp_path: Path) -> N
 
 
 def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> None:
+    _installed_pip_vendor(tmp_path)
     errors = validate(
         "quickstart",
         version=_versions(
@@ -106,6 +120,52 @@ def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> 
         purelib=tmp_path,
     )
     assert "quickstart: pip is 26.2.0; expected 26.2.1" in errors
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("missing_manifest", "unable to read pip vendor manifest"),
+        ("old_manifest", "pip vendor manifest differs from pip 26.2.1"),
+        ("extra_vendor", "pip vendor manifest differs from pip 26.2.1"),
+        ("old_code", "pip-vendored urllib3 is not 2.7.0"),
+        ("missing_code", "unable to read pip-vendored urllib3"),
+    ],
+)
+def test_quickstart_refuses_unreviewed_pip_vendor_tree(
+    tmp_path: Path, change: str, expected: str
+) -> None:
+    vendor = _installed_pip_vendor(tmp_path)
+    manifest = vendor / "vendor.txt"
+    code = vendor / "urllib3" / "_version.py"
+    if change == "missing_manifest":
+        manifest.unlink()
+    elif change == "old_manifest":
+        manifest.write_text(
+            manifest.read_text().replace("urllib3==2.7.0", "urllib3==2.6.3")
+        )
+    elif change == "extra_vendor":
+        manifest.write_text(manifest.read_text() + "unreviewed==1.0.0\n")
+    elif change == "old_code":
+        code.write_text("__version__ = version = '2.6.3'\n")
+    elif change == "missing_code":
+        code.unlink()
+
+    errors = validate(
+        "quickstart",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "pip": "26.2.1",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert any(expected in error for error in errors)
 
 
 @pytest.mark.parametrize(
@@ -205,15 +265,49 @@ def test_final_package_verifier_rejects_stale_metadata_names(
     assert any("forbidden stale metadata present" in error for error in errors)
 
 
-def test_final_package_verifier_rejects_pip_vendor_tree(tmp_path: Path) -> None:
-    (tmp_path / "pip" / "_vendor" / "urllib3").mkdir(parents=True)
+@pytest.mark.parametrize("scope", ["global", "venv"])
+def test_final_package_verifier_rejects_pip_vendor_tree(
+    tmp_path: Path, scope: str
+) -> None:
+    _installed_pip_vendor(tmp_path)
+    installed = {"msgpack": MSGPACK_VERSION}
+    if scope == "venv":
+        installed.update(
+            {
+                "setuptools": "84.0.0",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+            }
+        )
     errors = validate(
-        "global",
-        version=_versions({"msgpack": MSGPACK_VERSION}),
+        scope,
+        version=_versions(installed),
         package_not_found=MissingPackage,
         purelib=tmp_path,
     )
     assert any("pip-vendored urllib3 remains" in error for error in errors)
+
+
+def test_quickstart_keeps_top_level_urllib3_guards(tmp_path: Path) -> None:
+    _installed_pip_vendor(tmp_path)
+    (tmp_path / "urllib3-2.7.0.dist-info").mkdir()
+    errors = validate(
+        "quickstart",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "pip": "26.2.1",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": "2.7.0",
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert "quickstart: urllib3 is 2.7.0; expected 2.8.0" in errors
+    assert any("forbidden stale metadata present" in error for error in errors)
+    assert not any("pip vendor manifest" in error for error in errors)
 
 
 def test_final_package_verifier_follows_canonical_urllib3_pin(tmp_path: Path) -> None:

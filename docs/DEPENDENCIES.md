@@ -301,8 +301,20 @@ The quickstart runs the same native binding and image-feature checks through
 `scripts/verify_final_python_packages.py quickstart`, with its retained pinned
 pip checked separately. Its CI image smoke also exercises PyAV WAV resampling,
 Pillow's formats and text shaping, and real OCR.
-The published wheel reports `zlib_ng` as its zlib implementation; this build
-uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
+The published Pillow wheel reports `zlib_ng` as its zlib implementation; this
+build uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
+
+The developer image keeps pip 26.2.1 as an installer. Its published wheel
+(SHA-256 `71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e`)
+vendors CacheControl 0.14.4, distlib 0.4.2, distro 1.9.0, msgpack 1.1.2,
+packaging 26.2, platformdirs 4.10.0, pyproject-hooks 1.2.0, requests 2.34.2,
+certifi 2026.6.17, idna 3.18, urllib3 2.7.0, rich 14.2.0, pygments 2.20.0,
+resolvelib 1.2.1, setuptools 70.3.0, tomli 2.4.1, tomli-w 1.2.0 and
+truststore 0.10.4. The quickstart verifier requires this exact vendor manifest
+and urllib3 code version; production still requires pip and its vendor tree to
+be absent. The separately installed application urllib3 remains pinned to
+2.8.0. This native-library change does not resolve findings in pip's bundled
+pure-Python dependencies; broader dependency work remains open under #578.
 
 ### Transitive dependencies, grouped by what pulls them in
 

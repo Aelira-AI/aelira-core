@@ -58,6 +58,29 @@ FORBIDDEN_METADATA = {
     "setuptools": "70.3.0",
     "urllib3": "2.7.0",
 }
+# pip 26.2.1 is retained only in quickstart. This is the exact vendor.txt
+# inventory of its published wheel, including pip's private urllib3 2.7.0.
+# It does not satisfy the application's separate urllib3 2.8.0 pin.
+QUICKSTART_PIP_VENDOR = (
+    "CacheControl==0.14.4",
+    "distlib==0.4.2",
+    "distro==1.9.0",
+    "msgpack==1.1.2",
+    "packaging==26.2",
+    "platformdirs==4.10.0",
+    "pyproject-hooks==1.2.0",
+    "requests==2.34.2",
+    "certifi==2026.6.17",
+    "idna==3.18",
+    "urllib3==2.7.0",
+    "rich==14.2.0",
+    "pygments==2.20.0",
+    "resolvelib==1.2.1",
+    "setuptools==70.3.0",
+    "tomli==2.4.1",
+    "tomli-w==1.2.0",
+    "truststore==0.10.4",
+)
 REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements.txt"
 
 
@@ -163,7 +186,33 @@ def validate(
             )
 
     vendored_urllib3 = metadata_root / "pip" / "_vendor" / "urllib3"
-    if vendored_urllib3.exists():
+    if scope == "quickstart":
+        vendor_manifest = metadata_root / "pip" / "_vendor" / "vendor.txt"
+        try:
+            inventory = tuple(
+                line.strip() for line in vendor_manifest.read_text().splitlines()
+            )
+        except OSError as exc:
+            errors.append(f"quickstart: unable to read pip vendor manifest: {exc}")
+        else:
+            if inventory != QUICKSTART_PIP_VENDOR:
+                errors.append("quickstart: pip vendor manifest differs from pip 26.2.1")
+
+        vendor_version = vendored_urllib3 / "_version.py"
+        try:
+            version_source = vendor_version.read_text()
+        except OSError as exc:
+            errors.append(f"quickstart: unable to read pip-vendored urllib3: {exc}")
+        else:
+            match = re.search(
+                r"(?m)^__version__\s*=\s*version\s*=\s*['\"]([^'\"]+)['\"]",
+                version_source,
+            )
+            if not (vendored_urllib3 / "__init__.py").is_file() or (
+                match is None or match.group(1) != "2.7.0"
+            ):
+                errors.append("quickstart: pip-vendored urllib3 is not 2.7.0")
+    elif vendored_urllib3.exists():
         errors.append(f"{scope}: pip-vendored urllib3 remains at {vendored_urllib3}")
 
     return errors
