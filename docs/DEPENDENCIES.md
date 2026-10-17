@@ -213,14 +213,17 @@ locked requirements, which are then already satisfied.
 | Package | Build script | What it links |
 |---|---|---|
 | `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
-| `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, LittleCMS, zlib and XCB from Debian packages |
+| `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm with FriBidi and HarfBuzz, LittleCMS, zlib and XCB from Debian packages |
 
 Raising either pin means changing the requirement, the build script's version
 and digests, and the policy test together. `pi_heif` is intentionally absent:
 `ocrmypdf` does not depend on it and nothing in the application imports it. The
 final image check (`scripts/verify_final_python_packages.py venv`) requires
-Pillow's libtiff to be at least 4.7.2, every wheel feature to be present, no
+Pillow's libtiff to be at least 4.7.2, the required codec and text-shaping
+features to be present, no
 `pillow.libs` directory and no `pi_heif` or `pybind11` distribution.
+The published wheel reports `zlib_ng` as its zlib implementation; this build
+uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
 
 ### Transitive dependencies, grouped by what pulls them in
 

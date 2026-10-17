@@ -4,9 +4,10 @@
 # The published Pillow wheels bundle libtiff 4.7.1 in a private library
 # directory. This builds the same Pillow release from its source archive with
 # libtiff 4.7.2 linked statically into Pillow's own extension module, and the
-# remaining image libraries (JPEG, JPEG 2000, WebP, AVIF, FreeType, LittleCMS,
-# zlib, XCB) taken from the system packages, which receive Debian security
-# updates. Every source archive is verified against a pinned SHA-256 before it
+# remaining image libraries (JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm,
+# FriBidi, HarfBuzz, LittleCMS, zlib, XCB) taken from the system packages,
+# which receive Debian security updates. Every source archive is verified
+# against a pinned SHA-256 before it
 # is used; the builder never downloads unverified files.
 set -eu
 
@@ -75,14 +76,14 @@ cd pillow-12.3.0
 # Pillow looks in TIFF_ROOT first, finds only the static library there and
 # links it into _imaging. The static archive needs the libraries it was built
 # against, which are listed explicitly and kept even if not referenced first.
-# Every feature the published wheel had is required, so a missing development
-# package fails the build instead of silently dropping the feature. Raqm and
-# libimagequant were not in the wheel and stay disabled.
+# Every required feature of the published wheel is enabled, so a missing
+# development package fails the build instead of silently dropping it.
+# libimagequant was not in the wheel and stays disabled.
 CFLAGS="-O2 -fPIC -g0 -ffile-prefix-map=$work=." \
 LDFLAGS="-Wl,--no-as-needed -llzma -lzstd" \
 TIFF_ROOT="$prefix" \
     python -m pip wheel --no-deps --no-build-isolation --wheel-dir "$out" \
         -C zlib=enable -C jpeg=enable -C tiff=enable -C freetype=enable \
         -C lcms=enable -C webp=enable -C jpeg2000=enable -C xcb=enable \
-        -C avif=enable -C raqm=disable -C imagequant=disable \
+        -C avif=enable -C raqm=enable -C imagequant=disable \
         .

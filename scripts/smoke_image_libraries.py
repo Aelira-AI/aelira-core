@@ -27,6 +27,7 @@ from PIL import (
 
 EXPECTED_LIBTIFF = "4.7.2"
 REQUIRED_FEATURES = (
+    "pil",
     "jpg",
     "jpg_2000",
     "zlib",
@@ -34,6 +35,10 @@ REQUIRED_FEATURES = (
     "webp",
     "avif",
     "freetype2",
+    "raqm",
+    "fribidi",
+    "harfbuzz",
+    "libjpeg_turbo",
     "littlecms2",
     "xcb",
 )
@@ -130,6 +135,16 @@ def check_malformed_input_is_refused() -> None:
 
 
 def check_text_and_colour() -> Image.Image:
+    # Pillow's bundled default font selects BASIC even when Raqm is present.
+    # Reopen the same font with Raqm to exercise direction-aware shaping.
+    default_font = ImageFont.load_default(size=24)
+    default_font.path.seek(0)
+    shaping_font = ImageFont.truetype(
+        default_font.path, size=24, layout_engine=ImageFont.Layout.RAQM
+    )
+    assert shaping_font.getlength("abc", direction="rtl") > 0
+    assert shaping_font.getmask("abc", direction="rtl").getbbox() is not None
+
     font = ImageFont.load_default(size=72)
     assert isinstance(font, ImageFont.FreeTypeFont), "FreeType font unavailable"
     page = Image.new("L", (1700, 160), 255)
@@ -180,7 +195,10 @@ def main() -> None:
         pass
     else:
         raise AssertionError("pi_heif must not be installed")
-    print(f"image libraries verified: libtiff {libtiff}; OCR text: {text!r}")
+    print(
+        f"image libraries verified: libtiff {libtiff}, "
+        f"raqm {features.version('raqm')}; OCR text: {text!r}"
+    )
 
 
 if __name__ == "__main__":

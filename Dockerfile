@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     zlib1g-dev \
     libfreetype-dev \
+    libraqm-dev \
     liblcms2-dev \
     libwebp-dev \
     libopenjp2-7-dev \
@@ -126,6 +127,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     # Shared libraries the source-built Pillow links at run time
     libjpeg62-turbo \
     libfreetype6 \
+    libraqm0 \
     liblcms2-2 \
     libwebp7 \
     libwebpdemux2 \

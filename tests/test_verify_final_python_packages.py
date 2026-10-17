@@ -393,6 +393,7 @@ def test_final_package_verifier_rejects_a_shared_libtiff_dependency(
 @pytest.mark.parametrize(
     "feature",
     [
+        "pil",
         "jpg",
         "jpg_2000",
         "zlib",
@@ -400,11 +401,15 @@ def test_final_package_verifier_rejects_a_shared_libtiff_dependency(
         "webp",
         "avif",
         "freetype2",
+        "raqm",
+        "fribidi",
+        "harfbuzz",
+        "libjpeg_turbo",
         "littlecms2",
         "xcb",
     ],
 )
-def test_final_package_verifier_requires_every_wheel_feature(
+def test_final_package_verifier_requires_each_codec_and_text_feature(
     tmp_path: Path, feature: str
 ) -> None:
     _pillow_tree(tmp_path)

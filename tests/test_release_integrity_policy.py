@@ -134,7 +134,7 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     assert script.count("curl ") == 1
 
     # libtiff is linked statically from that build, never from the system, and
-    # every feature of the published wheel is required to be present.
+    # the published wheel's codec and text-shaping features are required.
     assert "--disable-shared --enable-static" in script
     assert 'TIFF_ROOT="$prefix"' in script
     assert "/usr/include/tiff.h" in script
@@ -143,6 +143,7 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
         "jpeg",
         "tiff",
         "freetype",
+        "raqm",
         "lcms",
         "webp",
         "jpeg2000",
@@ -162,6 +163,7 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     for package in (
         "libjpeg62-turbo",
         "libfreetype6",
+        "libraqm0",
         "liblcms2-2",
         "libwebp7",
         "libwebpdemux2",
@@ -174,6 +176,7 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     for package in (
         "libjpeg-dev",
         "libfreetype-dev",
+        "libraqm-dev",
         "liblcms2-dev",
         "libwebp-dev",
         "libopenjp2-7-dev",

@@ -21,9 +21,10 @@ EXPECTED = {
     "venv": {"setuptools": "84.0.0", "pip": None, "pi-heif": None, "pybind11": None},
 }
 # Pillow is built from source against libtiff 4.7.2 (docker/build-pillow-wheel.sh)
-# and must keep every feature its published wheel had.
+# and must keep the wheel's codec and text-shaping capabilities.
 PILLOW_LIBTIFF = (4, 7, 2)
 PILLOW_FEATURES = (
+    "pil",
     "jpg",
     "jpg_2000",
     "zlib",
@@ -31,6 +32,10 @@ PILLOW_FEATURES = (
     "webp",
     "avif",
     "freetype2",
+    "raqm",
+    "fribidi",
+    "harfbuzz",
+    "libjpeg_turbo",
     "littlecms2",
     "xcb",
 )
