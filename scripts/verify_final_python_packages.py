@@ -10,11 +10,28 @@ import sys
 import sysconfig
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 EXPECTED = {
     "global": {"setuptools": None, "pip": None, "urllib3": None},
-    "venv": {"setuptools": "84.0.0", "pip": None},
+    # pi-heif bundles libheif and libde265 and nothing in the image uses it.
+    # pybind11 is only a build requirement of the source-built Pillow.
+    "venv": {"setuptools": "84.0.0", "pip": None, "pi-heif": None, "pybind11": None},
 }
+# Pillow is built from source against libtiff 4.7.2 (docker/build-pillow-wheel.sh)
+# and must keep every feature its published wheel had.
+PILLOW_LIBTIFF = (4, 7, 2)
+PILLOW_FEATURES = (
+    "jpg",
+    "jpg_2000",
+    "zlib",
+    "libtiff",
+    "webp",
+    "avif",
+    "freetype2",
+    "littlecms2",
+    "xcb",
+)
 FORBIDDEN_METADATA = {
     "msgpack": "1.1.2",
     "setuptools": "70.3.0",
@@ -119,6 +136,48 @@ def validate(
     return errors
 
 
+def validate_pillow(
+    *,
+    features: Any | None = None,
+    purelib: Path | None = None,
+) -> list[str]:
+    """Return every violation of the source-built Pillow contract."""
+    if features is None:
+        from PIL import features as pillow_features
+
+        features = pillow_features
+    errors: list[str] = []
+    root = purelib or Path(sysconfig.get_paths()["purelib"])
+
+    if (root / "pillow.libs").exists():
+        errors.append(f"venv: wheel-private library directory remains at {root}")
+
+    reported = features.version("libtiff")
+    try:
+        libtiff = tuple(int(part) for part in str(reported).split("."))
+    except ValueError:
+        libtiff = ()
+    if libtiff < PILLOW_LIBTIFF:
+        required = ".".join(map(str, PILLOW_LIBTIFF))
+        errors.append(
+            f"venv: Pillow libtiff is {reported}; expected at least {required}"
+        )
+
+    for name in PILLOW_FEATURES:
+        if not features.check(name):
+            errors.append(f"venv: Pillow feature {name} is unavailable")
+
+    # The TIFF library must be linked statically into the extension. A dynamic
+    # dependency would load whichever libtiff the system provides instead.
+    extensions = sorted((root / "PIL").glob("_imaging.*.so"))
+    if not extensions:
+        errors.append(f"venv: Pillow core extension not found under {root / 'PIL'}")
+    for extension in extensions:
+        if b"libtiff.so" in extension.read_bytes():
+            errors.append(f"venv: {extension.name} links a shared libtiff")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scope", choices=[*sorted(EXPECTED), "msgpack-pin"])
@@ -134,6 +193,8 @@ def main() -> int:
             return 1
         return 0
     errors = validate(args.scope)
+    if args.scope == "venv":
+        errors.extend(validate_pillow())
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

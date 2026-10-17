@@ -202,6 +202,26 @@ the resolver's latest-version choice.
 | `email-validator` | Backs pydantic's `EmailStr` validation |
 | `psutil` | Process/resource introspection (also required by locust) |
 
+### Libraries built from source
+
+The published `lxml` and `Pillow` wheels bundle native libraries that Debian
+and the vulnerability scanner do not see, and that lag upstream security
+releases. The API image therefore builds both from their pinned source
+releases in the builder stage, then installs the resulting wheels before the
+locked requirements, which are then already satisfied.
+
+| Package | Build script | What it links |
+|---|---|---|
+| `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
+| `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, LittleCMS, zlib and XCB from Debian packages |
+
+Raising either pin means changing the requirement, the build script's version
+and digests, and the policy test together. `pi_heif` is intentionally absent:
+`ocrmypdf` does not depend on it and nothing in the application imports it. The
+final image check (`scripts/verify_final_python_packages.py venv`) requires
+Pillow's libtiff to be at least 4.7.2, every wheel feature to be present, no
+`pillow.libs` directory and no `pi_heif` or `pybind11` distribution.
+
 ### Transitive dependencies, grouped by what pulls them in
 
 | Pulled in by | Pins |
@@ -212,7 +232,7 @@ the resolver's latest-version choice.
 | Google API client | `google-api-core`, `google-auth`, `google-auth-httplib2`, `googleapis-common-protos`, `proto-plus`, `protobuf`, `httplib2`, `uritemplate`, `pyasn1`, `pyasn1_modules`, `rsa`, `cachetools`, `pyparsing` |
 | cryptography / bcrypt | `cffi`, `pycparser` |
 | oletools (malware screening) | `olefile`, `pcodedmp`, `colorclass`, `easygui`, `chardet`, `encutils` |
-| ocrmypdf | `pi_heif`, `deprecation`, `packaging`, `pathvalidate`, `pypdfium2`, `rich`, `typer`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
+| ocrmypdf | `deprecation`, `packaging`, `pathvalidate`, `pypdfium2`, `rich`, `typer`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
 | ocrmypdf / pikepdf PDF/A support | `fpdf2`, `uharfbuzz`, `fonttools`, `jsonschema`, `jsonschema-specifications`, `referencing`, `rpds-py`, `attrs` |
 | reportlab (PDF reports) | `freetype-py`, `pycairo`, `rlPyCairo`, `tinycss2`, `webencodings` |
 | faster-whisper / onnxruntime | `huggingface_hub`, `tokenizers`, `hf-xet`, `httpx2`, `httpcore2`, `truststore`, `fsspec`, `filelock`, `tqdm`, `flatbuffers`, `sympy`, `mpmath` |

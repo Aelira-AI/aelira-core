@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Hugging Face Hub is updated to 2.2.0 and Tokenizers to 0.23.3, which accepts Hub 2 and later. Hub 2 adds `httpx2`, `httpcore2` and `truststore` to the pinned runtime set. A real faster-whisper `tiny.en` download, transcription and `HF_HUB_OFFLINE=1` cached load now run in the built API image on both architectures ([#560](https://github.com/Aelira-AI/aelira-core/issues/560)).
 
+### Security
+
+- The API image builds Pillow 12.3.0 from its source release with libtiff 4.7.2 built from a hash-verified source archive and linked statically, replacing the libtiff 4.7.1 copy bundled in the published wheels, which carries CVE-2026-36849. JPEG, JPEG 2000, PNG, WebP, AVIF, TIFF, FreeType and LittleCMS support is unchanged, and those libraries now come from Debian packages that receive security updates instead of private wheel copies. The build and the final image check the libtiff version and the absence of the wheel-private library directory ([#644](https://github.com/Aelira-AI/aelira-core/issues/644), part of [#583](https://github.com/Aelira-AI/aelira-core/issues/583)).
+- `pi_heif` is no longer installed. ocrmypdf 17 does not depend on it, and its optional HEIF support loads a different package that is not installed, so the bundled libheif 1.23.0 and libde265 1.1.0 copies were never used. OCR of a PDF is exercised in the built image on both architectures ([#644](https://github.com/Aelira-AI/aelira-core/issues/644), part of [#583](https://github.com/Aelira-AI/aelira-core/issues/583)).
+
 ### Fixed
 
 - The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).

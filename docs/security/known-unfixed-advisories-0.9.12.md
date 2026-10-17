@@ -34,7 +34,14 @@ handled directly:
 - Pillow 12.3.0 bundles libtiff 4.7.1, which is assumed affected by
   CVE-2026-36849 (denial of service through a large SamplesPerPixel tag) and
   is reachable through uploaded TIFF images. No Pillow release with a fixed
-  libtiff is available yet.
+  libtiff is available yet. API images built after 0.9.12 build Pillow from
+  source with libtiff 4.7.2, which contains the fix, and the image build
+  checks the libtiff version Pillow reports.
+- `pi_heif` 1.4.0 bundles libheif 1.23.0 and libde265 1.1.0, which are behind
+  upstream security releases. ocrmypdf 17 does not depend on `pi_heif` and
+  loads HEIF support only from a different, uninstalled package, and nothing
+  in the application imports it. API images built after 0.9.12 do not install
+  `pi_heif`.
 
 ## Affected
 
