@@ -232,6 +232,111 @@ def run_ldd(extension: Path) -> str:
     ).stdout
 
 
+EXPAT_DEBIAN_VERSION = "2.9.0-1~deb13u1"
+EXPAT_REPORTED_VERSION = "expat_2.9.0"
+
+
+def validate_expat_native(
+    *,
+    ldd: Callable[[Path], str] = run_ldd,
+    realpath: Callable[[str], str] = os.path.realpath,
+) -> list[str]:
+    """Prove the matching CPython extension pair uses Debian's shared Expat."""
+    errors: list[str] = []
+    suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    if not isinstance(suffix, str) or not suffix.startswith(".cpython-314-"):
+        return [f"expat: unexpected CPython extension suffix {suffix!r}"]
+    module_dir = Path("/usr/local/lib/python3.14/lib-dynload")
+    expected_paths = {
+        "pyexpat": module_dir / f"pyexpat{suffix}",
+        "_elementtree": module_dir / f"_elementtree{suffix}",
+    }
+    for name, path in expected_paths.items():
+        matches = sorted(module_dir.glob(f"{name}*.so"))
+        if matches != [path]:
+            errors.append(
+                f"expat: expected only {path}; found "
+                + ", ".join(str(item) for item in matches)
+            )
+    if errors:
+        return errors
+
+    try:
+        import _elementtree
+        import pyexpat
+        from xml.dom import minidom
+        from xml.etree import ElementTree
+        from xml.sax import make_parser
+    except (ImportError, OSError) as exc:
+        return [f"expat: unable to import matching parser modules: {exc}"]
+
+    for name, module in (("pyexpat", pyexpat), ("_elementtree", _elementtree)):
+        if Path(module.__file__).resolve() != expected_paths[name]:
+            errors.append(f"expat: {name} loaded from {module.__file__}")
+    if pyexpat.EXPAT_VERSION != EXPAT_REPORTED_VERSION:
+        errors.append(
+            f"expat: loaded {pyexpat.EXPAT_VERSION}; expected {EXPAT_REPORTED_VERSION}"
+        )
+    if ElementTree.Element is not _elementtree.Element:
+        errors.append("expat: ElementTree is not using the matching C extension")
+    try:
+        if ElementTree.fromstring("<root><item>ok</item></root>")[0].text != "ok":
+            errors.append("expat: ElementTree normal XML result is wrong")
+        if minidom.parseString("<root/>").documentElement.tagName != "root":
+            errors.append("expat: minidom normal XML result is wrong")
+        make_parser()
+    except (ImportError, OSError, ValueError, pyexpat.ExpatError) as exc:
+        errors.append(f"expat: normal XML consumer failed: {exc}")
+
+    try:
+        installed = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Version}", "libexpat1"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        errors.append(f"expat: unable to query Debian libexpat1: {exc}")
+    else:
+        if installed != EXPAT_DEBIAN_VERSION:
+            errors.append(
+                f"expat: Debian libexpat1 is {installed}; "
+                f"expected {EXPAT_DEBIAN_VERSION}"
+            )
+
+    try:
+        libraries = _resolved_libraries(ldd(expected_paths["pyexpat"]))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        errors.append(f"expat: unable to inspect pyexpat loader paths: {exc}")
+    else:
+        resolved = libraries.get("libexpat.so.1")
+        if resolved is None:
+            errors.append("expat: pyexpat does not link libexpat.so.1")
+        elif not re.fullmatch(
+            r"/usr/lib/[^/]+-linux-gnu/libexpat\.so\.1\.13\.0",
+            realpath(resolved),
+        ):
+            errors.append(
+                f"expat: libexpat.so.1 resolves to {resolved}; "
+                "expected Debian's libexpat.so.1.13.0"
+            )
+    if not list(Path("/usr/lib").glob("*-linux-gnu/libexpatw.so.1.13.0")):
+        errors.append("expat: Debian's wide Expat shared library is absent")
+    try:
+        cache = subprocess.run(
+            ["ldconfig", "-p"], check=True, capture_output=True, text=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        errors.append(f"expat: unable to inspect loader cache: {exc}")
+    else:
+        if not re.search(
+            r"libpython3\.14\.so\.1\.0 .* => /usr/local/lib/libpython3\.14\.so\.1\.0",
+            cache,
+        ):
+            errors.append("expat: official libpython is absent from loader cache")
+    return errors
+
+
 PYAV_PREFIX = "/opt/ffmpeg9/lib/"
 PYAV_LIBRARIES = {
     "libavutil": (61, 1, 102),
@@ -413,7 +518,7 @@ def validate_psycopg2_native(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("scope", choices=[*sorted(EXPECTED), "msgpack-pin"])
+    parser.add_argument("scope", choices=[*sorted(EXPECTED), "expat", "msgpack-pin"])
     args = parser.parse_args()
     if args.scope == "msgpack-pin":
         try:
@@ -425,7 +530,8 @@ def main() -> int:
             )
             return 1
         return 0
-    errors = validate(args.scope)
+    errors = [] if args.scope == "expat" else validate(args.scope)
+    errors.extend(validate_expat_native())
     if args.scope == "venv":
         errors.extend(validate_pillow())
         errors.extend(validate_psycopg2_native())

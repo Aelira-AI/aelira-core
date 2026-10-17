@@ -181,6 +181,28 @@ Installed by the Docker images / quickstart, or by you when running bare:
 | Pandoc | Document format conversion |
 | FFmpeg | Audio/video decoding for captioning |
 
+### CPython Expat in API images
+
+Production and quickstart images keep the pinned official CPython 3.14.8
+interpreter, ABI, headers, configuration, and unrelated `/usr/local` files.
+Their fresh Debian Trixie runtime installs `libexpat1=2.9.0-1~deb13u1`.
+Only `pyexpat` and its matching `_elementtree` C-API consumer are rebuilt
+from the [official CPython 3.14.8 source
+archive](https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz)
+(SHA-256 `c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73`)
+with CPython's supported `--with-system-expat` configure option. The source
+archive's `LICENSE` covers CPython; Debian ships Expat's copyright and
+license record at `/usr/share/doc/libexpat1/copyright`.
+
+The old bundled modules are removed before the official tree is copied into
+the Debian-rooted runtime. `scripts/verify_final_python_packages.py` checks
+the imported pair, normal XML consumers, Debian package version, loader path,
+and libpython cache; `scripts/verify_python_expat_layers.ts` checks every
+exported image layer. Both gates run for final images in CI. The exact Debian
+package pin fails the build or final check if the mutable archive supersedes
+this version; a saved Debian package or snapshot is needed for long-term
+replay of all apt inputs.
+
 ## The rest of the dependency inventories
 
 Every package resolved in the supported runtime and contributor environments is
