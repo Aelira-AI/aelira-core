@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { PageError } from '../components/ui/PageError';
+import { Link, useParams } from 'react-router-dom';
 import { Calendar, FileText, Loader, Download } from 'lucide-react';
 import { trackEvent } from '../utils/analytics';
 import { ComplianceScore } from '../components/results/ComplianceScore';
@@ -153,13 +154,11 @@ export function ScanDetail(): React.ReactElement {
 
   if (error) {
     return (
-      <div className="p-8">
-        <div className="max-w-6xl mx-auto">
-          <div className="bg-[var(--surface-error-subtle)] border border-[var(--content-error)] rounded-lg p-4 text-[var(--content-error)]" role="alert">
-            Error: {error}
-          </div>
-        </div>
-      </div>
+      <PageError
+        title="Scan details"
+        message={`This scan could not be loaded. ${error}`}
+        secondaryAction={<Link to="/history" className="btn-secondary">Back to scan history</Link>}
+      />
     );
   }
 
@@ -273,19 +272,26 @@ export function ScanDetail(): React.ReactElement {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center space-x-3">
                 <Loader className="w-6 h-6 animate-spin text-[var(--feature-info-content)]" />
-                <span className="text-lg font-semibold text-primary">
+                <span className="text-lg font-semibold text-primary" role="status">
                   Scanning in progress...
                 </span>
               </div>
               <span className="text-lg font-bold text-[var(--feature-info-content)]">{progress}%</span>
             </div>
-            <div className="w-full bg-[var(--surface-tertiary)] rounded-full h-3 mb-2">
+            <div
+              className="w-full bg-[var(--surface-tertiary)] rounded-full h-3 mb-2"
+              role="progressbar"
+              aria-label="Scan progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progress}
+            >
               <div
                 className="bg-[var(--feature-info-content)] h-3 rounded-full transition-all duration-500"
                 style={{ width: `${progress}%` }}
               ></div>
             </div>
-            <p className="text-sm text-[var(--feature-info-content)] mt-2">{progressMessage}</p>
+            <p className="text-sm text-[var(--feature-info-content)] mt-2" role="status">{progressMessage}</p>
           </div>
         )}
 
@@ -307,7 +313,7 @@ export function ScanDetail(): React.ReactElement {
         )}
 
         {/* Issue Summary */}
-        {scan.compliance_score != null && <div className="grid grid-cols-4 gap-4 mb-6">
+        {scan.compliance_score != null && <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
           <div className="card border-2 border-[var(--feature-danger-content)] bg-[var(--feature-danger-surface)]">
             <div className="text-sm font-medium text-secondary mb-1">Critical</div>
             <div className="text-3xl font-bold text-[var(--feature-danger-content)]">{issuesBySeverity.critical}</div>

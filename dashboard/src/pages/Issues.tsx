@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, ChangeEvent } from 'react';
+import { PageError } from '../components/ui/PageError';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
 import { batchRemediationReceiptIsConfirmed } from '../utils/batchRemediationReceipt';
@@ -219,7 +220,6 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
         onClick={onToggle}
         className="w-full flex items-center justify-between p-4 hover:bg-[var(--surface-secondary)] transition-colors text-left"
         aria-expanded={isExpanded}
-        aria-label={`${issue.description}, ${severityConfig.label} severity, click to ${isExpanded ? 'collapse' : 'expand'} details`}
       >
         <div className="flex items-center gap-3">
           <div className={`p-2 rounded-lg ${severityConfig.bg}`}>
@@ -731,16 +731,7 @@ export function Issues(): React.ReactElement {
 
   if (error) {
     return (
-      <div className="p-8">
-        <div className="max-w-7xl mx-auto">
-          <div
-            className="rounded-lg p-4 bg-[var(--feature-danger-surface)] border border-[var(--feature-danger-content)] text-[var(--feature-danger-content)]"
-            role="alert"
-          >
-            Error: {error}
-          </div>
-        </div>
-      </div>
+      <PageError title="Issue Management" message={`Issues could not be loaded. ${error}`} />
     );
   }
 
@@ -753,7 +744,6 @@ export function Issues(): React.ReactElement {
             onClick={handleBulkRemediate}
             className="btn-primary flex items-center gap-2"
             disabled={startingBatch || batchScanIds.length > 0 || eligibleScanIds.length === 0}
-            aria-label="Queue remediation jobs for eligible documents in the filtered findings"
             aria-describedby="issue-queue-eligibility"
           >
             <Wrench className="w-4 h-4" aria-hidden="true" />

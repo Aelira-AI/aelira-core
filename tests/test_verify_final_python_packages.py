@@ -9,9 +9,11 @@ import pytest
 from scripts.verify_final_python_packages import (
     required_msgpack_version,
     required_piper_version,
+    required_psycopg2_version,
     required_urllib3_version,
     validate,
     validate_pillow,
+    validate_psycopg2_native,
 )
 
 PIPER_VERSION = required_piper_version()
@@ -434,3 +436,168 @@ def test_final_package_verifier_rejects_packages_the_image_must_not_ship(
     )
 
     assert f"venv: {package} is 1.0.0; expected absent" in errors
+PSYCOPG2_VERSION = required_psycopg2_version()
+SYSTEM_LDD = """\
+\tlinux-vdso.so.1 (0x0000e5e5c3a2d000)
+\tlibpq.so.5 => /lib/aarch64-linux-gnu/libpq.so.5 (0x0000e5e5c2f10000)
+\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e5e5c2d60000)
+\tlibssl.so.3 => /lib/aarch64-linux-gnu/libssl.so.3 (0x0000e5e5c2c20000)
+\tlibcrypto.so.3 => /lib/aarch64-linux-gnu/libcrypto.so.3 (0x0000e5e5c2800000)
+\t/lib/ld-linux-aarch64.so.1 (0x0000e5e5c3a00000)
+"""
+
+
+def _usr_lib_realpath(path: str) -> str:
+    """Model Debian's usrmerge, where /lib is a link to /usr/lib."""
+    return path.replace("/lib/", "/usr/lib/", 1) if path.startswith("/lib/") else path
+
+
+def _psycopg2_tree(root: Path) -> Path:
+    package = root / "psycopg2"
+    package.mkdir()
+    (package / "_psycopg.cpython-314-aarch64-linux-gnu.so").write_bytes(b"")
+    return root
+
+
+def _validate_psycopg2(root: Path, ldd_output: str = SYSTEM_LDD, **overrides):
+    options = {
+        "version": _versions({"psycopg2-binary": PSYCOPG2_VERSION}),
+        "package_not_found": MissingPackage,
+        "purelib": root,
+        "ldd": lambda _extension: ldd_output,
+        "realpath": _usr_lib_realpath,
+    }
+    options.update(overrides)
+    return validate_psycopg2_native(**options)
+
+
+def test_psycopg2_verifier_accepts_a_system_linked_extension(tmp_path: Path) -> None:
+    assert _validate_psycopg2(_psycopg2_tree(tmp_path)) == []
+
+
+@pytest.mark.parametrize("installed", [None, "2.9.12"])
+def test_psycopg2_verifier_requires_the_reviewed_distribution(
+    tmp_path: Path, installed: str | None
+) -> None:
+    versions = {} if installed is None else {"psycopg2-binary": installed}
+    errors = _validate_psycopg2(_psycopg2_tree(tmp_path), version=_versions(versions))
+    assert errors == [
+        f"venv: psycopg2-binary is {installed or 'absent'}; "
+        f"expected {PSYCOPG2_VERSION}"
+    ]
+
+
+@pytest.mark.parametrize(
+    "directory", ["psycopg2_binary.libs", "psycopg2/.libs", "psycopg2.libs"]
+)
+def test_psycopg2_verifier_rejects_every_bundled_library_directory(
+    tmp_path: Path, directory: str
+) -> None:
+    root = _psycopg2_tree(tmp_path)
+    (root / directory).mkdir(parents=True, exist_ok=True)
+    errors = _validate_psycopg2(root)
+    assert len(errors) == 1
+    assert "bundled psycopg2 library directory present" in errors[0]
+    assert directory in errors[0]
+
+
+def _ldd_line(library: str) -> str:
+    return next(
+        line for line in SYSTEM_LDD.splitlines() if line.strip().startswith(library)
+    )
+
+
+@pytest.mark.parametrize("library", ["libpq", "libssl", "libcrypto"])
+def test_psycopg2_verifier_rejects_a_library_outside_usr_lib(
+    tmp_path: Path, library: str
+) -> None:
+    original = _ldd_line(f"{library}.so")
+    bundled = (
+        f"\t{library}.so.9 => /opt/venv/lib/python3.14/site-packages/"
+        f"psycopg2_binary.libs/{library}-abc123.so.9 (0x0000e5e5c2f10000)"
+    )
+    errors = _validate_psycopg2(
+        _psycopg2_tree(tmp_path), SYSTEM_LDD.replace(original, bundled)
+    )
+    assert any(
+        f"resolves {library}.so.9" in error and "under /usr/lib" in error
+        for error in errors
+    )
+
+
+@pytest.mark.parametrize("library", ["libpq", "libssl", "libcrypto"])
+def test_psycopg2_verifier_rejects_unresolved_or_missing_libraries(
+    tmp_path: Path, library: str
+) -> None:
+    original = _ldd_line(f"{library}.so")
+    missing = SYSTEM_LDD.replace(original + "\n", "")
+    unresolved = SYSTEM_LDD.replace(original, f"\t{original.split()[0]} => not found")
+    root = _psycopg2_tree(tmp_path)
+    for output in (missing, unresolved):
+        errors = _validate_psycopg2(root, output)
+        assert f"venv: psycopg2 does not resolve {library} through ldd" in errors
+
+
+def test_psycopg2_verifier_requires_one_extension_module(tmp_path: Path) -> None:
+    (tmp_path / "psycopg2").mkdir()
+    errors = _validate_psycopg2(tmp_path)
+    assert len(errors) == 1
+    assert "expected exactly one psycopg2 extension module" in errors[0]
+
+
+def test_psycopg2_verifier_follows_the_canonical_pin(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("psycopg2-binary==2.9.14 # reviewed pin\n")
+    site = tmp_path / "site"
+    site.mkdir()
+    root = _psycopg2_tree(site)
+    assert (
+        _validate_psycopg2(
+            root,
+            requirements=requirements,
+            version=_versions({"psycopg2-binary": "2.9.14"}),
+        )
+        == []
+    )
+    assert any(
+        f"psycopg2-binary is {PSYCOPG2_VERSION}; expected 2.9.14" in error
+        for error in _validate_psycopg2(root, requirements=requirements)
+    )
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "",
+        "psycopg2-binary>=2.9\n",
+        "psycopg2-binary==2.9.13\npsycopg2-binary==2.9.12\n",
+    ],
+)
+def test_psycopg2_verifier_rejects_an_ambiguous_requirement(
+    tmp_path: Path, contents: str
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text(contents)
+    site = tmp_path / "site"
+    site.mkdir()
+    errors = _validate_psycopg2(_psycopg2_tree(site), requirements=requirements)
+    assert len(errors) == 1
+    assert "exactly one exact psycopg2-binary pin" in errors[0]
+
+
+def test_dockerfile_builds_psycopg2_from_source_before_requirements() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dependency_install = (
+        (root / "Dockerfile").read_text().split("# Pa11y needs Node", 1)[0]
+    )
+    source_build = "sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel"
+    requirements_install = "pip install --no-cache-dir -r requirements.txt"
+    assert source_build in dependency_install
+    assert dependency_install.index(source_build) < dependency_install.index(
+        requirements_install
+    )
+    # The pre-installed source build must be the exact reviewed pin, or the
+    # requirements install would silently fetch the bundled-library wheel.
+    assert f"psycopg2_binary-{PSYCOPG2_VERSION}-*.whl" in dependency_install
+    script = (root / "docker" / "build-psycopg2-wheel.sh").read_text()
+    assert f"psycopg2_binary-{PSYCOPG2_VERSION}.tar.gz" in script

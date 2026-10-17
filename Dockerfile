@@ -38,13 +38,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy requirements and install Python dependencies. lxml is built first from
 # its pinned source release against hash-verified libxml2 2.15.4 and libxslt
 # 1.1.45; the published wheels bundle an older, affected libxml2. Pillow is
-# built next from its pinned source release with libtiff 4.7.2 linked
-# statically and the other image libraries taken from Debian; the published
-# wheels bundle libtiff 4.7.1 and a private copy of every image library. The
-# pinned requirements are then already satisfied by these builds.
+# built against hash-verified libtiff 4.7.2, and psycopg2-binary is built
+# against Debian's libpq. Their pinned requirements are then satisfied.
 COPY requirements.txt .
 COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
 COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh
+COPY docker/build-psycopg2-wheel.sh /tmp/build-psycopg2-wheel.sh
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
     python -m pip uninstall --yes setuptools && \
@@ -57,6 +56,9 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --no-deps /tmp/pillow-wheel/pillow-12.3.0-*.whl && \
     rm -rf /tmp/pillow-wheel /tmp/build-pillow-wheel.sh && \
     python -m pip uninstall --yes pybind11 && \
+    sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel && \
+    pip install --no-cache-dir --no-deps /tmp/psycopg2-wheel/psycopg2_binary-2.9.13-*.whl && \
+    rm -rf /tmp/psycopg2-wheel /tmp/build-psycopg2-wheel.sh && \
     pip install --no-cache-dir -r requirements.txt && \
     python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
     python -c "from PIL import features; v = features.version('libtiff'); assert v == '4.7.2', v" && \
@@ -80,9 +82,10 @@ FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6
 
 ARG SOURCE_DATE_EPOCH=0
 
-# The global repair and both final-image checks read the reviewed runtime pin.
+# The global repair and the final-image checks read the reviewed runtime pin.
 COPY requirements.txt /app/requirements.txt
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
+COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
 
 # Install runtime dependencies + Playwright system dependencies + LaTeXML stack.
 # TeX format dumps are content-nondeterministic even with a fixed epoch, so
@@ -119,7 +122,6 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     # LaTeX/MathML conversion stack (Higher Ed STEM support)
     # Full accessible PDF pipeline: LaTeXML + accessibility packages
     latexml \
-    libxml2-utils \
     libxslt1.1 \
     # Shared libraries the source-built Pillow links at run time
     libjpeg62-turbo \
@@ -145,6 +147,13 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     texlive-lang-german \
     pandoc \
     && update-language \
+    # xdg-utils is a hard Depends of texlive-base, so apt cannot remove it
+    # without removing TeX. Its only callers are interactive (texdoc, LuaTeX
+    # os.openurl, ImageMagick's browse delegate) and none runs in a server, so
+    # remove the package itself with dpkg. apt will report that one unmet
+    # dependency; the final image never runs apt, and
+    # scripts/verify_final_os_packages.py pins the exact residue.
+    && dpkg --purge --force-depends xdg-utils \
     && rm -rf /var/lib/apt/lists/* /var/cache/fontconfig/* /var/log/apt/* \
     && rm -f /etc/machine-id /var/lib/dbus/machine-id \
         /var/cache/ldconfig/aux-cache /var/lib/texmf/ls-R \
@@ -165,7 +174,8 @@ COPY --from=pa11y-node /opt/pa11y-runtime/node_modules /opt/pa11y-runtime/node_m
 RUN ln -s /opt/pa11y-runtime/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
-    /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv
+    /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv && \
+    /usr/local/bin/python /app/scripts/verify_final_os_packages.py
 
 # Set working directory
 WORKDIR /app

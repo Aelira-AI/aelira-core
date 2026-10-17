@@ -48,13 +48,13 @@ handled directly:
 | Advisory | Packages | Assessment |
 | --- | --- | --- |
 | CVE-2026-36849 | libtiff6 | libtiff may decode TIFF graphics referenced by submitted LaTeX documents. Denial of service only; Debian will not fix it in this release. |
-| CVE-2026-74860 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86138 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86139 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86140 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86142 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86143 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86144 | libxml2, libxml2-utils | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-74860 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-86138 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-86139 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-86140 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-86142 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-86143 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-86144 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
 | CVE-2026-86420 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists. |
 | CVE-2026-86421 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists. |
 
@@ -62,7 +62,6 @@ handled directly:
 
 | Advisory | Packages | Justification | Assessment |
 | --- | --- | --- | --- |
-| CVE-2022-4055 | xdg-utils | `vulnerable_code_not_in_execute_path` | xdg-utils mailto handling with Thunderbird. The image has no mail client and the application never runs xdg-open. |
 | CVE-2025-69720 | libncursesw6, libtinfo6, ncurses-base, ncurses-bin | `vulnerable_code_not_in_execute_path` | ncurses infocmp tool. The application never runs infocmp. |
 | CVE-2026-12064 | curl, libcurl3t64-gnutls, libcurl4t64 | `vulnerable_code_not_in_execute_path` | curl SFTP/SCP host verification. The image uses curl only for a local HTTP readiness check; the application never uses SFTP or SCP. |
 | CVE-2026-15308 | libpython3.13-minimal, libpython3.13-stdlib, python3.13, python3.13-minimal | `vulnerable_code_not_in_execute_path` | Distribution Python 3.13 is installed as a package dependency only. The application runs its own Python 3.14 and virtual environment, which precede it on PATH. |
@@ -87,7 +86,7 @@ handled directly:
 | CVE-2026-66040 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PNG decoding in FFmpeg. Media inputs are restricted to the supported codec allowlist, which excludes PNG; FFmpeg only writes PNG frames. |
 | CVE-2026-66041 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS. |
 | CVE-2026-66046 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
-| CVE-2026-6653 | libxml2, libxml2-utils | `vulnerable_code_cannot_be_controlled_by_adversary` | libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4. |
+| CVE-2026-6653 | libxml2 | `vulnerable_code_cannot_be_controlled_by_adversary` | libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4. |
 | CVE-2026-67215 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON JSON Patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-67216 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON object comparison. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-70628 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | WTV demuxer and DVB subtitle parsing. Media inputs are restricted to the supported container and codec allowlists, which exclude both. |

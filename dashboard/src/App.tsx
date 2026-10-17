@@ -8,6 +8,7 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
+import { RouteAnnouncer } from './components/layout/RouteAnnouncer';
 import { Login } from './pages/Login';
 import { VerifyMagicLink } from './pages/VerifyMagicLink';
 import { AcceptInvitation } from './pages/AcceptInvitation';
@@ -85,6 +86,7 @@ function App(): React.ReactElement {
         <AuthProvider>
           <ToastProvider>
             <BrowserRouter>
+            <RouteAnnouncer />
             <ErrorBoundary scope="Application">
             <Routes>
               <Route path="/login" element={<Login />} />

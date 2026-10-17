@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AlertTriangle, Mail, Loader2, X } from 'lucide-react';
 import { useToast } from '../context/toast-context';
 import { accountApi } from '../api/account';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface AccountDeletionModalProps {
   isOpen: boolean;
@@ -34,6 +35,12 @@ function AccountDeletionModalContent({
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const { showToast } = useToast();
   const codeInputRef = useRef<HTMLInputElement>(null);
+  const confirmInputRef = useRef<HTMLInputElement>(null);
+  const hasLeftWarning = useRef(false);
+  const dialogRef = useFocusTrap<HTMLDivElement>(true, {
+    onEscape: onClose,
+    initialFocus: '#account-deletion-confirm',
+  });
 
   // Countdown timer for code expiry
   useEffect(() => {
@@ -56,6 +63,11 @@ function AccountDeletionModalContent({
 
   // Focus code input when step changes
   useEffect(() => {
+    if (step === 'warning' && hasLeftWarning.current) {
+      // Returning from the code step: the focused Back button was removed.
+      confirmInputRef.current?.focus();
+    }
+    if (step === 'code') hasLeftWarning.current = true;
     if (step === 'code' && codeInputRef.current) {
       codeInputRef.current.focus();
     }
@@ -135,12 +147,13 @@ function AccountDeletionModalContent({
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
       onClick={handleBackdropClick}
       role="dialog"
       aria-modal="true"
-      aria-label="Delete account"
+      aria-labelledby="account-deletion-title"
     >
       <div
         className="w-full max-w-md rounded-xl shadow-xl"
@@ -156,7 +169,7 @@ function AccountDeletionModalContent({
               className="w-5 h-5"
               style={{ color: 'var(--content-error)' }}
             />
-            <h2 className="text-lg font-semibold text-primary">
+            <h2 id="account-deletion-title" className="text-lg font-semibold text-primary">
               Delete Account
             </h2>
           </div>
@@ -196,10 +209,12 @@ function AccountDeletionModalContent({
               </ul>
             </div>
 
-            <label className="block text-sm text-secondary mb-2">
+            <label htmlFor="account-deletion-confirm" className="block text-sm text-secondary mb-2">
               Type <strong>DELETE</strong> to continue:
             </label>
             <input
+              id="account-deletion-confirm"
+              ref={confirmInputRef}
               type="text"
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
@@ -209,10 +224,11 @@ function AccountDeletionModalContent({
               spellCheck={false}
             />
 
-            <label className="block text-sm text-secondary mb-2">
+            <label htmlFor="account-deletion-reason" className="block text-sm text-secondary mb-2">
               Reason for leaving (optional):
             </label>
             <textarea
+              id="account-deletion-reason"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Help us improve..."
@@ -290,6 +306,7 @@ function AccountDeletionModalContent({
 
             <input
               ref={codeInputRef}
+              aria-label="6-digit confirmation code"
               type="text"
               value={code}
               onChange={(e) => {
