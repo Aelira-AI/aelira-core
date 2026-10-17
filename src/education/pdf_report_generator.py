@@ -104,6 +104,25 @@ ISSUE_TYPE_DISPLAY_NAMES = {
 SEIZURE_RISK_ISSUE_TYPES = {"red_flash", "flashing_content", "animation_flash"}
 
 
+_SEVERITY_LEVELS = frozenset(
+    {"critical", "serious", "high", "moderate", "medium", "minor", "low"}
+)
+
+
+def issue_severity(issue: Dict[str, Any]) -> str:
+    """Return a finding's severity level, or "" when it records none.
+
+    Website findings carry the level in ``impact``. Media findings use
+    ``severity`` and keep prose about who is affected in ``impact``, so a field
+    only counts when it holds a recognised level.
+    """
+    for key in ("impact", "severity"):
+        value = str(issue.get(key) or "").strip().lower()
+        if value in _SEVERITY_LEVELS:
+            return value
+    return ""
+
+
 class AccessibilityPDFReportGenerator:
     """Generate PDF reports for accessibility scan results"""
 
@@ -118,7 +137,7 @@ class AccessibilityPDFReportGenerator:
             severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
 
             for issue in issues:
-                impact = (issue.get("impact") or issue.get("severity") or "").lower()
+                impact = issue_severity(issue)
                 if impact == "critical":
                     severity_counts["critical"] += 1
                 elif impact in ["high", "serious"]:
@@ -269,7 +288,7 @@ class AccessibilityPDFReportGenerator:
         # Count issues by severity (support both "impact" from website scans
         # and "severity" from document scanners like DOCX/PPTX/XLSX)
         def _get_severity(i: dict) -> str:
-            return (i.get("impact") or i.get("severity") or "minor").lower()
+            return issue_severity(i) or "minor"
 
         if isinstance(severity_totals, dict):
             critical = severity_totals.get("critical", 0)
