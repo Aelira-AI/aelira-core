@@ -50,7 +50,10 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
-from ..education.current_compliance import public_cloud_file_scores
+from ..education.current_compliance import (
+    public_cloud_file_scores,
+    public_scan_job_results,
+)
 from ..integrations.cloud_base import (
     CloudFileInfo,
     CloudIntegrationError,
@@ -1008,13 +1011,15 @@ def _enqueue_google_scan(
     )
 
 
-def _google_job_response(job: CloudJobQueue) -> JobStatusResponse:
+def _google_job_response(
+    job: CloudJobQueue, result_data: Optional[Dict[str, Any]]
+) -> JobStatusResponse:
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
         progress=job.progress,
         progress_message=job.progress_message,
-        result_data=job.result_data,
+        result_data=result_data,
         error_message=job.error_message,
         created_at=job.created_at,
         completed_at=job.completed_at,
@@ -1247,7 +1252,7 @@ async def get_job_status(
         )
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        return _google_job_response(job)
+        return _google_job_response(job, public_scan_job_results(db, [job])[job.id])
 
 
 @router.get("/jobs", response_model=List[JobStatusResponse])
@@ -1268,7 +1273,8 @@ async def list_jobs(
         if status:
             query = query.filter(CloudJobQueue.status == status)
         jobs = query.order_by(CloudJobQueue.created_at.desc()).limit(limit).all()
-        return [_google_job_response(job) for job in jobs]
+        results = public_scan_job_results(db, jobs)
+        return [_google_job_response(job, results[job.id]) for job in jobs]
 
 
 # ==================== Account Management ====================

@@ -240,6 +240,57 @@ def public_cloud_file_scores(
     return scores
 
 
+def public_scan_job_results(
+    db: Session, jobs: Sequence[CloudJobQueue]
+) -> dict[str, dict[str, Any] | None]:
+    """Mask cached scan-job scores using linked, department-owned scan evidence."""
+    scored_jobs = [
+        job
+        for job in jobs
+        if _enum_value(job.job_type) == "scan"
+        and isinstance(job.result_data, dict)
+        and "compliance_score" in job.result_data
+    ]
+    scored_ids = {job.id for job in scored_jobs}
+    scan_ids = {
+        job.result_data.get("scan_id")
+        for job in scored_jobs
+        if isinstance(job.result_data.get("scan_id"), str)
+    }
+    scans = db.query(Scan).filter(Scan.id.in_(scan_ids)).all() if scan_ids else []
+    scans_by_id = {scan.id: scan for scan in scans}
+    results = (
+        db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
+        if scan_ids
+        else []
+    )
+    results_by_scan = {result.scan_id: result for result in results}
+
+    public: dict[str, dict[str, Any] | None] = {}
+    for job in jobs:
+        blob = job.result_data
+        if not isinstance(blob, dict):
+            public[job.id] = blob
+            continue
+        safe = dict(blob)
+        if job.id in scored_ids:
+            scan_id = blob.get("scan_id")
+            scan = scans_by_id.get(scan_id) if isinstance(scan_id, str) else None
+            result = results_by_scan.get(getattr(scan, "id", None))
+            owns_scan = (
+                scan is not None
+                and scan.department_id == job.department_id
+                and (job.cloud_file_id is None or scan.document_id == job.cloud_file_id)
+            )
+            safe["compliance_score"] = (
+                public_compliance_score(scan, result)
+                if owns_scan and _is_verified(scan, result)
+                else None
+            )
+        public[job.id] = safe
+    return public
+
+
 @dataclass(frozen=True)
 class CurrentDocumentState:
     identity: str

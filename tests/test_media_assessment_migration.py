@@ -48,7 +48,19 @@ def test_nullable_score_upgrade_and_guarded_downgrade_preserve_rows(monkeypatch)
                 )
                 connection.execute(
                     text(
+                        "CREATE TABLE compliance_snapshots (id text PRIMARY KEY, "
+                        "avg_compliance_score double precision DEFAULT 0, total_issues integer NOT NULL)"
+                    )
+                )
+                connection.execute(
+                    text(
                         "INSERT INTO scan_results (id, compliance_score) VALUES ('legacy', 84)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO compliance_snapshots "
+                        "(id, avg_compliance_score, total_issues) VALUES ('legacy', 100, 3)"
                     )
                 )
                 monkeypatch.setattr(
@@ -63,10 +75,39 @@ def test_nullable_score_upgrade_and_guarded_downgrade_preserve_rows(monkeypatch)
                     )
                 }
                 assert columns["compliance_score"]["nullable"]
+                snapshot_columns = {
+                    column["name"]: column
+                    for column in inspect(connection).get_columns(
+                        "compliance_snapshots", schema=schema
+                    )
+                }
+                assert snapshot_columns["metric_provenance"]["nullable"]
+                assert snapshot_columns["avg_compliance_score"]["nullable"]
+                assert snapshot_columns["avg_compliance_score"]["default"] is None
+                assert connection.execute(
+                    text(
+                        "SELECT avg_compliance_score, metric_provenance, total_issues "
+                        "FROM compliance_snapshots WHERE id = 'legacy'"
+                    )
+                ).one() == (100.0, None, 3)
                 connection.execute(
                     text(
                         "INSERT INTO scan_results (id, compliance_score) VALUES ('partial', NULL)"
                     )
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO compliance_snapshots (id, metric_provenance, total_issues) "
+                        "VALUES ('fresh', 'current_document_stock_v1', 2)"
+                    )
+                )
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT avg_compliance_score FROM compliance_snapshots WHERE id = 'fresh'"
+                        )
+                    ).scalar_one()
+                    is None
                 )
 
                 savepoint = connection.begin_nested()
@@ -80,6 +121,27 @@ def test_nullable_score_upgrade_and_guarded_downgrade_preserve_rows(monkeypatch)
                 connection.execute(
                     text("DELETE FROM scan_results WHERE id = 'partial'")
                 )
+                savepoint = connection.begin_nested()
+                with pytest.raises(DBAPIError, match="reconciliation"):
+                    migration.downgrade()
+                savepoint.rollback()
+                assert connection.execute(
+                    text(
+                        "SELECT avg_compliance_score, metric_provenance, total_issues "
+                        "FROM compliance_snapshots ORDER BY id"
+                    )
+                ).all() == [
+                    (None, "current_document_stock_v1", 2),
+                    (100.0, None, 3),
+                ]
+
+                # Only an explicit external reconciliation may remove provenance.
+                connection.execute(
+                    text(
+                        "UPDATE compliance_snapshots SET metric_provenance = NULL "
+                        "WHERE id = 'fresh'"
+                    )
+                )
                 migration.downgrade()
                 columns = {
                     column["name"]: column
@@ -88,6 +150,18 @@ def test_nullable_score_upgrade_and_guarded_downgrade_preserve_rows(monkeypatch)
                     )
                 }
                 assert not columns["compliance_score"]["nullable"]
+                assert "metric_provenance" not in {
+                    column["name"]
+                    for column in inspect(connection).get_columns(
+                        "compliance_snapshots", schema=schema
+                    )
+                }
+                assert connection.execute(
+                    text(
+                        "SELECT id, avg_compliance_score, total_issues "
+                        "FROM compliance_snapshots ORDER BY id"
+                    )
+                ).all() == [("fresh", None, 2), ("legacy", 100.0, 3)]
                 assert (
                     connection.execute(
                         text(

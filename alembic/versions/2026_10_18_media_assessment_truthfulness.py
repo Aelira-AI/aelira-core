@@ -13,6 +13,17 @@ def upgrade() -> None:
     op.alter_column(
         "scan_results", "compliance_score", existing_type=sa.Float(), nullable=True
     )
+    op.alter_column(
+        "compliance_snapshots",
+        "avg_compliance_score",
+        existing_type=sa.Float(),
+        nullable=True,
+        server_default=None,
+    )
+    op.add_column(
+        "compliance_snapshots",
+        sa.Column("metric_provenance", sa.String(64), nullable=True),
+    )
 
 
 def downgrade() -> None:
@@ -23,6 +34,12 @@ def downgrade() -> None:
         "THEN RAISE EXCEPTION 'Unassessed scan scores require reconciliation before downgrade'; "
         "END IF; END $$;"
     )
+    op.execute(
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM compliance_snapshots WHERE metric_provenance IS NOT NULL) "
+        "THEN RAISE EXCEPTION 'Versioned compliance snapshots require reconciliation before downgrade'; "
+        "END IF; END $$;"
+    )
+    op.drop_column("compliance_snapshots", "metric_provenance")
     op.alter_column(
         "scan_results", "compliance_score", existing_type=sa.Float(), nullable=False
     )

@@ -22,6 +22,7 @@ from src.education.current_compliance import (
     _provider_scan_ids,
     public_cloud_file_score,
     public_cloud_file_scores,
+    public_scan_job_results,
     public_compliance_score,
     project_current_documents,
 )
@@ -241,6 +242,140 @@ def test_canvas_course_status_keeps_partial_scans_without_score_credit():
     assert response.average_compliance == 80
     assert response.files[0].compliance_score is None
     assert response.files[0].issues_count == 1
+
+
+def test_faculty_leaderboard_excludes_legacy_video_and_preserves_measured_zero():
+    users = [
+        SimpleNamespace(id=user_id, name=user_id, email=f"{user_id}@example.test")
+        for user_id in ("video", "zero", "perfect")
+    ]
+    scans = [
+        _scan("video-scan", file_hash="a" * 64),
+        _scan("zero-scan", file_hash="b" * 64),
+        _scan("perfect-scan", file_hash="c" * 64),
+    ]
+    scans[0].scan_type = ScanType.VIDEO
+    results = [
+        _result("video-scan", 100, 1),
+        _result("zero-scan", 0, 1),
+        _result("perfect-scan", 100, 0),
+    ]
+    results[0].structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    scan_iter = iter(scans)
+    result_iter = iter(results)
+    db = MagicMock()
+
+    def query(model):
+        response = MagicMock()
+        if model is User:
+            response.filter.return_value.filter.return_value.all.return_value = users
+        elif model is Scan:
+            response.filter.return_value.filter.return_value.all.return_value = [
+                next(scan_iter)
+            ]
+        else:
+            response.filter.return_value.all.return_value = [next(result_iter)]
+        return response
+
+    db.query.side_effect = query
+    leaderboard = ComplianceDashboard.get_faculty_leaderboard(db, "dept-a")
+    assert [entry.user_id for entry in leaderboard] == ["perfect", "zero", "video"]
+    assert [entry.avg_compliance_score for entry in leaderboard] == [100, 0, None]
+    assert [entry.rank for entry in leaderboard] == [1, 2, None]
+    assert leaderboard[0].badge == "🏆 Accessibility Champion"
+    assert leaderboard[2].badge == "🚀 Getting Started"
+    assert all(entry.total_issues_fixed is None for entry in leaderboard)
+
+
+def test_cached_scan_jobs_mask_legacy_media_without_mutating_stored_blobs():
+    scans = [
+        _scan("legacy-video"),
+        _scan("pdf-zero"),
+        _scan("pdf-perfect"),
+        _scan("new-video"),
+        _scan("foreign"),
+    ]
+    for scan in scans:
+        scan.document_id = f"cf-{scan.id}"
+    scans[0].scan_type = ScanType.VIDEO
+    scans[3].scan_type = ScanType.VIDEO
+    scans[4].department_id = "foreign-dept"
+    results = [
+        _result("legacy-video", 100, 0),
+        _result("pdf-zero", 0, 1),
+        _result("pdf-perfect", 100, 0),
+        _result("new-video", None, 1),
+        _result("foreign", 88, 1),
+    ]
+    results[0].structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    results[3].structure = {
+        "media_type": "video",
+        "flashing_assessment": {
+            "state": "unassessed",
+            "reason": "detector_unavailable",
+            "version": "unassessed-v1",
+        },
+    }
+    jobs = [
+        SimpleNamespace(
+            id=scan_id,
+            job_type="scan",
+            department_id="dept-a",
+            cloud_file_id=f"cf-{scan_id}",
+            result_data={
+                "scan_id": scan_id,
+                "compliance_score": cached,
+                "issues_found": 1,
+                "success": True,
+            },
+        )
+        for scan_id, cached in (
+            ("legacy-video", 100),
+            ("pdf-zero", 100),
+            ("pdf-perfect", 0),
+            ("new-video", None),
+            ("foreign", 88),
+            ("missing", 90),
+        )
+    ]
+    jobs.append(
+        SimpleNamespace(
+            id="remediation",
+            job_type="remediate",
+            department_id="dept-a",
+            cloud_file_id=None,
+            result_data={"compliance_score": 75, "success": True},
+        )
+    )
+    db = MagicMock()
+
+    def query(model):
+        response = MagicMock()
+        response.filter.return_value.all.return_value = (
+            scans if model is Scan else results
+        )
+        return response
+
+    db.query.side_effect = query
+    public = public_scan_job_results(db, jobs)
+    assert [public[job.id]["compliance_score"] for job in jobs] == [
+        None,
+        0,
+        100,
+        None,
+        None,
+        None,
+        75,
+    ]
+    assert public["legacy-video"]["issues_found"] == 1
+    assert jobs[0].result_data["compliance_score"] == 100
+    assert db.query.call_count == 2
 
 
 def test_duplicate_uploads_and_rescans_use_one_latest_verified_state():

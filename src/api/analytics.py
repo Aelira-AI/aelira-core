@@ -218,7 +218,8 @@ async def get_historical_trend(
     """
     Get historical compliance trend data from snapshots.
 
-    Falls back to computing from scans if no snapshots exist.
+    Only current-document stock snapshots with explicit provenance contribute
+    scores; older unversioned snapshots remain history without score credit.
 
     Args:
         days: Number of days to look back (7-365)

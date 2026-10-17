@@ -52,7 +52,10 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
-from ..education.current_compliance import public_cloud_file_scores
+from ..education.current_compliance import (
+    public_cloud_file_scores,
+    public_scan_job_results,
+)
 
 # Alias for test compatibility
 get_db = get_db_dependency
@@ -1154,7 +1157,7 @@ async def get_job_status(
         status=job.status,
         progress=job.progress,
         progress_message=job.progress_message,
-        result_data=job.result_data,
+        result_data=public_scan_job_results(db, [job])[job.id],
         error_message=job.error_message,
         created_at=job.created_at,
         completed_at=job.completed_at,
@@ -1181,6 +1184,7 @@ async def list_jobs(
         query = query.filter(CloudJobQueue.status == status)
 
     jobs = query.order_by(CloudJobQueue.created_at.desc()).limit(limit).all()
+    results = public_scan_job_results(db, jobs)
 
     return [
         JobStatusResponse(
@@ -1188,7 +1192,7 @@ async def list_jobs(
             status=job.status,
             progress=job.progress,
             progress_message=job.progress_message,
-            result_data=job.result_data,
+            result_data=results[job.id],
             error_message=job.error_message,
             created_at=job.created_at,
             completed_at=job.completed_at,

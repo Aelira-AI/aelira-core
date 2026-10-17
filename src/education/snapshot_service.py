@@ -24,16 +24,14 @@ import uuid
 
 from ..db.models import (
     Department,
-    Scan,
-    ScanResult,
-    ScanStatus,
     ComplianceSnapshot,
 )
 from .compliance_dashboard import ComplianceDashboard
-from .current_compliance import public_compliance_score
 from .deadline_config import DeadlineService
 
 logger = logging.getLogger(__name__)
+
+CURRENT_STOCK_PROVENANCE = "current_document_stock_v1"
 
 
 @dataclass
@@ -123,6 +121,7 @@ class SnapshotService:
 
         # Update snapshot values
         snapshot.avg_compliance_score = stats.avg_compliance_score
+        snapshot.metric_provenance = CURRENT_STOCK_PROVENANCE
         snapshot.min_compliance_score = stats.min_compliance_score
         snapshot.max_compliance_score = stats.max_compliance_score
         snapshot.total_scans = stats.total_scans
@@ -178,11 +177,10 @@ class SnapshotService:
         db: Session, department_id: str, days: int = 30
     ) -> List[TrendPoint]:
         """
-        Recompute historical trend from source scans with current score rules.
+        Read only snapshots captured from verified current document stock.
 
-        Stored snapshots have no score-provenance version; older rows can
-        include legacy video scores. Keep them as history, but never use their
-        cached aggregates to make a current public claim.
+        Historical rows without explicit provenance remain stored, but their
+        aggregates may include legacy video scores and cannot be trusted.
 
         Args:
             db: Database session
@@ -194,98 +192,32 @@ class SnapshotService:
         """
         logger.info("Getting department historical trend")
 
-        return SnapshotService._compute_trend_from_scans(db, department_id, days)
-
-    @staticmethod
-    def _compute_trend_from_scans(
-        db: Session, department_id: str, days: int
-    ) -> List[TrendPoint]:
-        """
-        Compute trend data directly from scans table.
-
-        Used as fallback when no snapshots exist.
-        """
-        from collections import defaultdict
-
         cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-        # Get all scans in period
-        scans = (
-            db.query(Scan)
+        snapshots = (
+            db.query(ComplianceSnapshot)
             .filter(
                 and_(
-                    Scan.department_id == department_id,
-                    Scan.created_at >= cutoff_date,
-                    Scan.status == ScanStatus.COMPLETED,
+                    ComplianceSnapshot.department_id == department_id,
+                    ComplianceSnapshot.snapshot_date >= cutoff_date,
+                    ComplianceSnapshot.metric_provenance == CURRENT_STOCK_PROVENANCE,
                 )
             )
+            .order_by(ComplianceSnapshot.snapshot_date.asc())
             .all()
         )
-
-        if not scans:
-            return []
-
-        # Get results
-        scan_ids = [s.id for s in scans]
-        results = db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
-        results_by_scan = {r.scan_id: r for r in results}
-
-        # Group by date
-        data_by_date = defaultdict(
-            lambda: {
-                "scores": [],
-                "issues": 0,
-                "compliant": 0,
-                "needs_work": 0,
-                "critical": 0,
-            }
-        )
-
-        for scan in scans:
-            date_key = scan.created_at.date().isoformat()
-            data_by_date[date_key]
-            result = results_by_scan.get(scan.id)
-            score = public_compliance_score(scan, result)
-
-            if score is not None:
-                data_by_date[date_key]["scores"].append(score)
-                data_by_date[date_key]["issues"] += (
-                    result.critical_issues
-                    + result.high_issues
-                    + result.medium_issues
-                    + result.low_issues
-                )
-
-                if score >= 90:
-                    data_by_date[date_key]["compliant"] += 1
-                elif score >= 70:
-                    data_by_date[date_key]["needs_work"] += 1
-                else:
-                    data_by_date[date_key]["critical"] += 1
-
-        # Convert to TrendPoints
-        trend_points = []
-        for date_str in sorted(data_by_date.keys()):
-            data = data_by_date[date_str]
-            avg_score = (
-                sum(data["scores"]) / len(data["scores"]) if data["scores"] else None
+        return [
+            TrendPoint(
+                date=snapshot.snapshot_date.date().isoformat(),
+                avg_compliance_score=snapshot.avg_compliance_score,
+                scan_count=snapshot.total_scans,
+                total_issues=snapshot.total_issues,
+                files_compliant=snapshot.files_compliant,
+                files_needs_work=snapshot.files_needs_work,
+                files_critical=snapshot.files_critical,
             )
-
-            trend_points.append(
-                TrendPoint(
-                    date=date_str,
-                    avg_compliance_score=(
-                        round(avg_score, 2) if avg_score is not None else None
-                    ),
-                    scan_count=len(data["scores"]),
-                    total_issues=data["issues"],
-                    files_compliant=data["compliant"],
-                    files_needs_work=data["needs_work"],
-                    files_critical=data["critical"],
-                )
-            )
-
-        return trend_points
+            for snapshot in snapshots
+            if snapshot.metric_provenance == CURRENT_STOCK_PROVENANCE
+        ]
 
     @staticmethod
     def analyze_trend(

@@ -197,11 +197,11 @@ class FacultyLeaderboard:
     user_email: str
 
     total_scans: int
-    avg_compliance_score: float
+    avg_compliance_score: Optional[float]
     total_files: int
-    total_issues_fixed: int
+    total_issues_fixed: Optional[int]
 
-    rank: int  # 1 = highest compliance
+    rank: Optional[int]  # Only assessed faculty receive a compliance rank
     badge: str  # "Accessibility Champion", "Making Progress", etc.
 
 
@@ -621,10 +621,10 @@ class ComplianceDashboard:
                         user_name=user.name or "Unknown",
                         user_email=user.email,
                         total_scans=0,
-                        avg_compliance_score=0.0,
+                        avg_compliance_score=None,
                         total_files=0,
                         total_issues_fixed=0,
-                        rank=0,
+                        rank=None,
                         badge="Not Started",
                     )
                 )
@@ -637,27 +637,31 @@ class ComplianceDashboard:
             )
 
             # Calculate avg compliance
-            scores = [r.compliance_score for r in results]
-            avg_score = sum(scores) / len(scores) if scores else 0
+            results_by_scan = {result.scan_id: result for result in results}
+            scores = [
+                score
+                for scan in scans
+                if (
+                    score := public_compliance_score(scan, results_by_scan.get(scan.id))
+                )
+                is not None
+            ]
+            avg_score = sum(scores) / len(scores) if scores else None
 
             # Count unique files
             unique_files = len(set(s.file_hash for s in scans if s.file_hash))
 
-            # Count issues (rough estimate of "fixed" issues)
-            # We assume high compliance = many issues fixed
-            total_issues_fixed = sum(
-                r.critical_issues + r.high_issues + r.medium_issues + r.low_issues
-                for r in results
-            )
+            # A source finding or high score does not establish a completed fix.
+            total_issues_fixed = None
 
             # Assign badge
-            if avg_score >= 95:
+            if avg_score is not None and avg_score >= 95:
                 badge = "🏆 Accessibility Champion"
-            elif avg_score >= 90:
+            elif avg_score is not None and avg_score >= 90:
                 badge = "⭐ Highly Compliant"
-            elif avg_score >= 80:
+            elif avg_score is not None and avg_score >= 80:
                 badge = "✅ Making Great Progress"
-            elif avg_score >= 70:
+            elif avg_score is not None and avg_score >= 70:
                 badge = "📈 Improving"
             elif len(scans) > 0:
                 badge = "🚀 Getting Started"
@@ -670,20 +674,29 @@ class ComplianceDashboard:
                     user_name=user.name or "Unknown",
                     user_email=user.email,
                     total_scans=len(scans),
-                    avg_compliance_score=round(avg_score, 2),
+                    avg_compliance_score=(
+                        round(avg_score, 2) if avg_score is not None else None
+                    ),
                     total_files=unique_files,
                     total_issues_fixed=total_issues_fixed,
-                    rank=0,  # Will be assigned after sorting
+                    rank=None,  # Assigned only for assessed scores
                     badge=badge,
                 )
             )
 
         # Sort by avg compliance score (highest first)
-        leaderboard.sort(key=lambda x: (-x.avg_compliance_score, -x.total_scans))
+        leaderboard.sort(
+            key=lambda x: (
+                x.avg_compliance_score is None,
+                -(x.avg_compliance_score if x.avg_compliance_score is not None else 0),
+                -x.total_scans,
+            )
+        )
 
         # Assign ranks
         for i, entry in enumerate(leaderboard[:limit], start=1):
-            entry.rank = i
+            if entry.avg_compliance_score is not None:
+                entry.rank = i
 
         return leaderboard[:limit]
 

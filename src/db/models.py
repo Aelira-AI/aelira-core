@@ -678,7 +678,9 @@ class ScanResult(Base):
     scan_id = Column(String(36), ForeignKey("scans.id"), unique=True, nullable=False)
 
     # Compliance scoring
-    compliance_score = Column(Float, nullable=True)  # Unknown when assessment is incomplete
+    compliance_score = Column(
+        Float, nullable=True
+    )  # Unknown when assessment is incomplete
     wcag_level = Column(String(10), default="AA")  # AA or AAA
 
     # Issue counts by severity (legacy - kept for backward compatibility)
@@ -780,7 +782,8 @@ class ComplianceSnapshot(Base):
     snapshot_date = Column(DateTime, nullable=False)  # Date of the snapshot
 
     # Compliance metrics
-    avg_compliance_score = Column(Float, default=0.0)
+    avg_compliance_score = Column(Float, nullable=True)
+    metric_provenance = Column(String(64), nullable=True)
     min_compliance_score = Column(Float, nullable=True)
     max_compliance_score = Column(Float, nullable=True)
 
@@ -1081,8 +1084,7 @@ class VisualAnalysis(Base):
             name="ck_visual_analyses_parent_digest",
         ),
         CheckConstraint(
-            "source_sha256 IS NULL OR "
-            f"({_lower_hex_64_constraint('source_sha256')})",
+            f"source_sha256 IS NULL OR ({_lower_hex_64_constraint('source_sha256')})",
             name="ck_visual_analyses_source_digest",
         ),
         CheckConstraint(

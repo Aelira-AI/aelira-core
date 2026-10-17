@@ -19,9 +19,11 @@ from src.db.models import (
     UserRole,
 )
 from src.education.compliance_dashboard import ComplianceDashboard
+from src.education.current_compliance import project_current_documents
 from src.education.compliance_predictor import predict_compliance
 from src.education.deadline_config import DeadlineService
 from src.education.snapshot_service import SnapshotService, TrendPoint
+from src.education.snapshot_service import CURRENT_STOCK_PROVENANCE
 
 DEPARTMENT_ID = "department-without-verified-documents"
 
@@ -131,59 +133,59 @@ def test_snapshot_and_trend_keep_unverified_score_null(monkeypatch):
     snapshot = SnapshotService.capture_daily_snapshot(db, DEPARTMENT_ID)
 
     assert snapshot.avg_compliance_score is None
+    assert snapshot.metric_provenance == CURRENT_STOCK_PROVENANCE
 
     trend_db = MagicMock()
-    legacy_scan = SimpleNamespace(
-        id="legacy-video", created_at=datetime.utcnow(), scan_type=ScanType.VIDEO
-    )
-    legacy_result = SimpleNamespace(
-        scan_id="legacy-video",
-        compliance_score=100,
-        structure={"media_type": "video", "flashing_analysis": {"severity": "safe"}},
+    legacy = SimpleNamespace(
+        snapshot_date=datetime.utcnow(),
+        avg_compliance_score=100,
+        metric_provenance=None,
+        total_scans=1,
+        total_issues=0,
+        files_compliant=1,
+        files_needs_work=0,
+        files_critical=0,
     )
 
     def query(model):
-        if model is ComplianceSnapshot:
-            raise AssertionError("legacy cached snapshot must not be used")
+        if model is not ComplianceSnapshot:
+            raise AssertionError("trend must not substitute scan-attempt cohorts")
         result = MagicMock()
-        result.filter.return_value.all.return_value = (
-            [legacy_scan] if model is Scan else [legacy_result]
-        )
+        result.filter.return_value.order_by.return_value.all.return_value = [
+            legacy,
+            snapshot,
+        ]
         return result
 
     trend_db.query.side_effect = query
     trend = SnapshotService.get_historical_trend(trend_db, DEPARTMENT_ID)
+    assert len(trend) == 1
     assert trend[0].avg_compliance_score is None
-    assert trend[0].scan_count == 0
+    assert trend[0].scan_count == snapshot.total_scans
 
 
 def test_legacy_cached_video_score_cannot_drive_trend_analysis_or_projection():
     now = datetime.utcnow()
-    scans = [
+    snapshots = [
         SimpleNamespace(
-            id="legacy-video",
-            created_at=now - timedelta(days=8),
-            scan_type=ScanType.VIDEO,
-        ),
-        SimpleNamespace(id="measured-pdf", created_at=now, scan_type=ScanType.PDF),
-    ]
-    results = [
-        SimpleNamespace(
-            scan_id="legacy-video",
-            compliance_score=100,
-            structure={
-                "media_type": "video",
-                "flashing_analysis": {"severity": "safe"},
-            },
+            snapshot_date=now - timedelta(days=8),
+            avg_compliance_score=100,
+            metric_provenance=None,
+            total_scans=1,
+            total_issues=0,
+            files_compliant=1,
+            files_needs_work=0,
+            files_critical=0,
         ),
         SimpleNamespace(
-            scan_id="measured-pdf",
-            compliance_score=80,
-            structure=None,
-            critical_issues=0,
-            high_issues=0,
-            medium_issues=0,
-            low_issues=1,
+            snapshot_date=now,
+            avg_compliance_score=80,
+            metric_provenance=CURRENT_STOCK_PROVENANCE,
+            total_scans=2,
+            total_issues=1,
+            files_compliant=0,
+            files_needs_work=1,
+            files_critical=0,
         ),
     ]
     department = SimpleNamespace(
@@ -195,19 +197,17 @@ def test_legacy_cached_video_score_cannot_drive_trend_analysis_or_projection():
     db = MagicMock()
 
     def query(model):
-        if model is ComplianceSnapshot:
-            raise AssertionError("unversioned cached snapshots must not be read")
+        if model is Scan or model is ScanResult:
+            raise AssertionError("daily scan cohorts cannot replace stock snapshots")
         response = MagicMock()
-        response.filter.return_value.all.return_value = (
-            scans if model is Scan else results
-        )
+        response.filter.return_value.order_by.return_value.all.return_value = snapshots
         response.filter.return_value.first.return_value = department
         return response
 
     db.query.side_effect = query
     trend = SnapshotService.get_historical_trend(db, DEPARTMENT_ID, days=14)
-    assert [point.avg_compliance_score for point in trend] == [None, 80]
-    assert [point.files_compliant for point in trend] == [0, 0]
+    assert [point.avg_compliance_score for point in trend] == [80]
+    assert [point.files_compliant for point in trend] == [0]
     analysis = SnapshotService.analyze_trend(
         db, DEPARTMENT_ID, current_period_days=7, comparison_period_days=7
     )
@@ -217,6 +217,84 @@ def test_legacy_cached_video_score_cannot_drive_trend_analysis_or_projection():
     assert analysis.trend_direction == "insufficient_data"
     projection = SnapshotService.get_deadline_projection(db, DEPARTMENT_ID)
     assert projection["projection_available"] is False
+
+
+def test_fresh_snapshot_tracks_current_stock_not_today_upload_cohort(monkeypatch):
+    now = datetime.utcnow()
+    scans = [
+        SimpleNamespace(
+            id=scan_id,
+            department_id=DEPARTMENT_ID,
+            file_hash=hash_char * 64,
+            file_name=f"{scan_id}.pdf",
+            scan_type=scan_type,
+            status=ScanStatus.COMPLETED,
+            created_at=created_at,
+            document_source="standalone_upload",
+            document_id=None,
+        )
+        for scan_id, hash_char, scan_type, created_at in (
+            ("old-pdf", "a", ScanType.PDF, now - timedelta(days=1)),
+            ("new-pdf", "b", ScanType.PDF, now),
+            ("video", "c", ScanType.VIDEO, now),
+        )
+    ]
+    results = [
+        SimpleNamespace(
+            scan_id=scan_id,
+            compliance_score=score,
+            structure=structure,
+            critical_issues=0,
+            high_issues=0,
+            medium_issues=0,
+            low_issues=0,
+        )
+        for scan_id, score, structure in (
+            ("old-pdf", 0, None),
+            ("new-pdf", 100, None),
+            (
+                "video",
+                None,
+                {
+                    "media_type": "video",
+                    "flashing_assessment": {
+                        "state": "unassessed",
+                        "reason": "detector_unavailable",
+                        "version": "unassessed-v1",
+                    },
+                },
+            ),
+        )
+    ]
+    stock = project_current_documents(scans, results, [])
+    assert stock.average_compliance_score == 50
+    stats = _stats_without_verified_documents()
+    stats.avg_compliance_score = stock.average_compliance_score
+    stats.min_compliance_score = 0
+    stats.max_compliance_score = 100
+    stats.total_scans = 3
+    stats.total_files_scanned = 2
+    stats.files_compliant = 1
+    stats.files_critical = 1
+    monkeypatch.setattr(
+        ComplianceDashboard,
+        "get_department_compliance",
+        lambda _db, _department_id: stats,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    snapshot = SnapshotService.capture_daily_snapshot(db, DEPARTMENT_ID)
+    assert snapshot.avg_compliance_score == 50
+    assert snapshot.metric_provenance == CURRENT_STOCK_PROVENANCE
+    assert snapshot.files_compliant == 1
+    assert snapshot.files_critical == 1
+
+    trend_db = MagicMock()
+    trend_db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+        snapshot
+    ]
+    trend = SnapshotService.get_historical_trend(trend_db, DEPARTMENT_ID)
+    assert [point.avg_compliance_score for point in trend] == [50]
 
 
 def test_trend_analysis_and_projection_require_verified_scores(monkeypatch):
