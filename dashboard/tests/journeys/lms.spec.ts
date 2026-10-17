@@ -191,13 +191,6 @@ test('the teacher launches from the course, then scans, remediates, approves and
   await page.waitForURL((url) => !url.pathname.startsWith('/login'));
   await page.goto(`${canvas}/courses/${courseId}`);
   await page.getByRole('link', { name: 'Accessibility Scanner (CI)' }).click();
-  // Record what Canvas sent to the tool's login endpoint, minus the one-time hints.
-  page.context().on('request', (request) => {
-    if (!request.url().endsWith('/lti/login')) return;
-    const form = new URLSearchParams(request.postData() ?? '');
-    const sent = Object.fromEntries(['iss', 'client_id', 'lti_deployment_id', 'target_link_uri'].map((key) => [key, form.get(key)]));
-    console.log(`LTI login request from Canvas: ${JSON.stringify(sent)}`);
-  });
   // Canvas will not frame a plain-HTTP tool and offers a new window instead, which is
   // also the first-party context a locally run tool needs.
   const popup = page.waitForEvent('popup');
