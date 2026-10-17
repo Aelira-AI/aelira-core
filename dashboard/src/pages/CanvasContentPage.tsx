@@ -914,7 +914,6 @@ export default function CanvasContentPage(): React.ReactElement {
                 <Search className="w-3.5 h-3.5 text-[var(--content-tertiary)]" />
                 <input
                   type="text"
-                  aria-label="Search items"
                   placeholder="Search items..."
                   aria-label="Search content items"
                   value={searchQuery}
