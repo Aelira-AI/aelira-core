@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, stat, open, rm, cp } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, stat, open, rm, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -30,7 +30,7 @@ async function mutateJson(path: string, edit: (value: any) => void) {
   edit(value);
   await json(path, value);
 }
-async function makeArchive(root: string, name: string, options: { missingLayer?: boolean; wrongConfig?: boolean; wrongPlatform?: boolean; oversizedIndex?: boolean } = {}) {
+async function makeArchive(root: string, name: string, options: { missingLayer?: boolean; wrongConfig?: boolean; wrongPlatform?: boolean; oversizedIndex?: boolean; directoryEntries?: 'both' | 'sha256-only' | 'none'; unrelatedBlob?: boolean } = {}) {
   const source = join(root, `${name}-source`);
   const blobs = join(source, 'blobs', 'sha256');
   await mkdir(blobs, { recursive: true });
@@ -55,8 +55,12 @@ async function makeArchive(root: string, name: string, options: { missingLayer?:
   await writeFile(join(blobs, sha(config)), config);
   await writeFile(join(blobs, sha(manifest)), manifest);
   if (!options.missingLayer) await writeFile(join(blobs, sha(layer)), layer);
+  if (options.unrelatedBlob) await writeFile(join(blobs, sha('unrelated')), 'unrelated');
   const archive = join(root, `${name}.oci.tar`);
-  success(command('tar', ['--format=ustar', '-cf', archive, '-C', source, 'blobs', 'index.json', 'oci-layout']));
+  const blobEntries = options.directoryEntries === 'none'
+    ? (await readdir(blobs)).map((entry) => `blobs/sha256/${entry}`)
+    : [options.directoryEntries === 'sha256-only' ? 'blobs/sha256' : 'blobs'];
+  success(command('tar', ['--format=ustar', '-cf', archive, '-C', source, ...blobEntries, 'index.json', 'oci-layout']));
   return { archive, layer };
 }
 type Fixture = Awaited<ReturnType<typeof makeFixture>>;
@@ -139,6 +143,21 @@ test('refuses corrupt and missing OCI blobs and unsafe tar entries', async () =>
     tar.write(sum.toString(8).padStart(6, '0') + '\0 ', headerAt + 148, 'ascii');
     await writeFile(unsafePath, tar);
     refused(cliRun(['inspect', '--archive', unsafePath, '--platform', 'linux/arm64']));
+  });
+});
+
+test('accepts omitted optional tar directories but refuses every unreferenced blob', async () => {
+  await withFixture(async (f) => {
+    const withoutDirectories = await makeArchive(f.dir, 'without-directories', { directoryEntries: 'none' });
+    const names = command('tar', ['-tf', withoutDirectories.archive]).stdout.split('\n');
+    expect(names).not.toContain('blobs/');
+    expect(names).not.toContain('blobs/sha256/');
+    success(cliRun(['inspect', '--archive', withoutDirectories.archive, '--platform', 'linux/arm64']));
+    const unrelated = await makeArchive(f.dir, 'unrelated-blob', { directoryEntries: 'sha256-only', unrelatedBlob: true });
+    const otherNames = command('tar', ['-tf', unrelated.archive]).stdout.split('\n');
+    expect(otherNames).not.toContain('blobs/');
+    expect(otherNames).toContain('blobs/sha256/');
+    refused(cliRun(['inspect', '--archive', unrelated.archive, '--platform', 'linux/arm64']));
   });
 });
 

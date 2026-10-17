@@ -1628,7 +1628,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       - name: Verify candidate bundle refusal controls
-        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts
+        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts
       - name: Load the reproducible API candidate for runtime checks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
         run: |
@@ -1854,20 +1854,16 @@ jobs:
           docker load --input "$RUNNER_TEMP/candidate-native/dashboard.oci.tar"
           owner=$(cat /proc/sys/kernel/random/uuid)
           network_name="aelira-candidate-$owner"
-          cleanup() {
-            local resource label
-            while IFS= read -r resource; do
-              [ -n "$resource" ] || continue
-              label=$(docker container inspect --format '{{index .Config.Labels "aelira.candidate.owner"}}' "$resource") || continue
-              if [ "$label" = "$owner" ]; then docker rm --force --volumes "$resource"; fi
-            done < <(docker container ls --all --quiet --filter "label=aelira.candidate.owner=$owner")
-            while IFS= read -r resource; do
-              [ -n "$resource" ] || continue
-              label=$(docker network inspect --format '{{index .Labels "aelira.candidate.owner"}}' "$resource") || continue
-              if [ "$label" = "$owner" ]; then docker network rm "$resource"; fi
-            done < <(docker network ls --quiet --filter "label=aelira.candidate.owner=$owner")
+          finish() {
+            local original=$?
+            trap - EXIT
+            if ! bash scripts/cleanup_candidate_smoke.sh "$owner"; then
+              echo '::error::Retained-candidate smoke cleanup failed' >&2
+              if [ "$original" -eq 0 ]; then original=1; fi
+            fi
+            exit "$original"
           }
-          trap cleanup EXIT
+          trap finish EXIT
           docker network create --label "aelira.candidate.owner=$owner" "$network_name"
           api_cid=$(docker create --label "aelira.candidate.owner=$owner" \
             --name "aelira-candidate-api-$owner" --network "$network_name" --network-alias api \

@@ -106,7 +106,10 @@ async function readArchive(path: string) {
     insist(layout.imageLayoutVersion === '1.0.0', 'Unsupported OCI layout');
     const index = parseJson(entries.get('index.json')!.bytes!, 'index.json');
     insist(index.schemaVersion === 2 && Array.isArray(index.manifests) && index.manifests.length === 1, 'Expected one OCI index manifest');
-    const referenced = new Set(['oci-layout', 'index.json', 'blobs/', 'blobs/sha256/']);
+    const referenced = new Set(['oci-layout', 'index.json']);
+    for (const directory of ['blobs/', 'blobs/sha256/']) {
+      if (entries.has(directory)) referenced.add(directory);
+    }
     async function blob(descriptor: any, label: string): Promise<Buffer> {
       insist(digestPattern.test(descriptor?.digest) && Number.isSafeInteger(descriptor?.size), `Invalid ${label} descriptor`);
       const name = `blobs/sha256/${descriptor.digest.slice(7)}`;
@@ -129,7 +132,7 @@ async function readArchive(path: string) {
       insist(entry && entry.size === layer.size && entry.hash === layer.digest.slice(7), `Missing or corrupt layer ${layer.digest}`);
       referenced.add(name);
     }
-    insist(entries.size === referenced.size, 'OCI archive contains unreferenced entries');
+    for (const name of entries.keys()) insist(referenced.has(name), `Unreferenced OCI archive entry: ${name}`);
     return { archive_sha256: whole.digest('hex'), archive_bytes: archiveSize,
       platform_manifest_digest: manifestDescriptor.digest, config_digest: manifest.config.digest,
       platform: `linux/${config.architecture}`, os: config.os,
