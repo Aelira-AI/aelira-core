@@ -338,12 +338,13 @@ export function FolderTree({ provider, onClose, onSave }: FolderTreeProps): Reac
         }}
       >
         {loading ? (
-          <div className="flex items-center justify-center h-32">
+          <div className="flex items-center justify-center h-32" role="status" aria-label="Loading folders">
             <Loader2
               className="w-6 h-6 animate-spin"
               style={{ color: 'var(--accent)' }}
-              aria-label="Loading folders"
+              aria-hidden="true"
             />
+            <span className="sr-only">Loading folders...</span>
           </div>
         ) : rootFolders.length === 0 ? (
           <div className="text-center py-8" style={{ color: 'var(--content-secondary)' }}>

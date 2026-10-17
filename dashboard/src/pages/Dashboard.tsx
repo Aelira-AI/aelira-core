@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { PageError } from '../components/ui/PageError';
 import { useNavigate } from 'react-router-dom';
 import {
   FileText, TrendingUp, Loader, Upload, Eye, Download, Wrench,
@@ -258,16 +259,7 @@ export function Dashboard(): React.ReactElement {
 
   if (error) {
     return (
-      <div className="p-4 sm:p-7">
-        <div className="max-w-[1240px] mx-auto">
-          <div
-            className="rounded-[11px] p-4 border bg-[var(--surface-error-subtle)] border-[var(--content-error)] text-[var(--content-error)]"
-            role="alert"
-          >
-            Error: {error}
-          </div>
-        </div>
-      </div>
+      <PageError title="Dashboard" message={`Dashboard data could not be loaded. ${error}`} />
     );
   }
 

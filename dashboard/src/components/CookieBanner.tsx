@@ -1,4 +1,5 @@
-import React, { useState, useEffect, ChangeEvent } from 'react';
+import React, { useState, useEffect, useRef, ChangeEvent } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { Cookie, X, Settings, Check } from 'lucide-react';
 
 // ============================================================================
@@ -94,6 +95,23 @@ export function CookieBanner(): React.ReactElement | null {
     analytics: false,
   });
 
+  const preferencesButtonRef = useRef<HTMLButtonElement>(null);
+  const preferencesWereOpen = useRef(false);
+  const preferencesRef = useFocusTrap<HTMLDivElement>(showBanner && showPreferences, {
+    onEscape: () => setShowPreferences(false),
+  });
+
+  // The Preferences button is replaced by the dialog while it is open, so the
+  // trap cannot return focus to it. Put focus back on the rebuilt button.
+  useEffect(() => {
+    if (showPreferences) {
+      preferencesWereOpen.current = true;
+    } else if (preferencesWereOpen.current) {
+      preferencesWereOpen.current = false;
+      preferencesButtonRef.current?.focus();
+    }
+  }, [showPreferences, showBanner]);
+
   useEffect(() => {
     const consent = getConsent();
     if (!consent) {
@@ -157,6 +175,7 @@ export function CookieBanner(): React.ReactElement | null {
       {/* Cookie Preferences Modal */}
       {showPreferences && (
         <div
+          ref={preferencesRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby="cookie-preferences-title"
@@ -315,6 +334,7 @@ export function CookieBanner(): React.ReactElement | null {
 
               <div className="flex flex-wrap gap-2 sm:flex-nowrap">
                 <button
+                  ref={preferencesButtonRef}
                   onClick={() => setShowPreferences(true)}
                   className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg transition-colors"
                   style={{

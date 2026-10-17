@@ -95,7 +95,7 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
   if (totalIssues === 0) {
     return (
       <div className="card">
-        <h3 className="text-lg font-semibold text-primary mb-4">Issues by Severity</h3>
+        <h2 className="text-lg font-semibold text-primary mb-4">Issues by Severity</h2>
         <div className="text-center py-8 text-secondary">
           <p>No issues detected by this scan.</p>
           <p className="mt-2 text-sm">An automated scan does not establish accessibility conformance. Manual review is still required.</p>
@@ -138,7 +138,7 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-primary">Issues by Severity</h3>
+        <h2 className="text-lg font-semibold text-primary">Issues by Severity</h2>
         <div className="flex space-x-2" role="group" aria-label="Chart type">
           <button
             onClick={() => setChartType('bar')}
@@ -223,7 +223,7 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
 
       {/* Screen reader data summary */}
       <div className="sr-only">
-        <h4>Issues by Severity Summary</h4>
+        <h3>Issues by Severity Summary</h3>
         <ul>
           {barData.map((item) => (
             <li key={item.name}>
