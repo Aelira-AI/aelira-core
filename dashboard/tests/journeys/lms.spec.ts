@@ -3,6 +3,7 @@ import { test, expect, type Browser, type BrowserContext, type Page, type TestIn
 import { assertNoBlockingViolations } from './support/a11y';
 import { apiGet, scanIdFromUrl, type RemediationJob } from './support/scans';
 import { apiUrl, dismissCookieBanner, sha256 } from './support/stack';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 /**
  * Canvas LMS journey against the Canvas test instance, using a course copy,
@@ -69,7 +70,9 @@ test('the administrator registers the Canvas tool as a self-hoster does', async 
     data: {
       platform: 'canvas',
       platform_name: 'Canvas journey course',
-      issuer: 'https://canvas.instructure.com',
+      // A self-hosted Canvas names itself as the issuer, and the tool derives its
+      // authorization and token endpoints from the same address.
+      issuer: canvas,
       client_id: ltiClientId,
       deployment_id: ltiDeploymentId,
       auth_login_url: `${canvas}/api/lti/authorize_redirect`,
@@ -159,7 +162,8 @@ async function deleteCanvasFile(context: BrowserContext, id: number) {
 }
 
 const accessibleCopy = (name: string) => name.replace(/(\.[^.]+)$/, '_accessible$1');
-let snapshot: { name: string; size: number; updated_at: string }[] = [];
+// Kept on disk: Playwright starts a fresh worker after a failed step.
+const snapshotPath = 'journey-results/canvas-course-snapshot.json';
 const describe = (files: CanvasFile[]) =>
   files
     .map((f) => ({ name: f.display_name, size: f.size, updated_at: f.updated_at }))
@@ -173,7 +177,8 @@ test('the course copy is in a known state before anything is written', async ({ 
   }
   const files = await courseFiles(context);
   expect(files.map((f) => f.display_name)).toEqual(expect.arrayContaining([pdfName, docxName]));
-  snapshot = describe(files);
+  await mkdir('journey-results', { recursive: true });
+  await writeFile(snapshotPath, JSON.stringify(describe(files)));
 });
 
 test('the teacher launches the tool from the course and lands in the course scope', async ({ page }, testInfo) => {
@@ -184,6 +189,15 @@ test('the teacher launches the tool from the course and lands in the course scop
   await page.getByRole('link', { name: 'Accessibility Scanner (CI)' }).click();
   // Canvas will not frame a plain-HTTP tool and offers a new window instead, which is
   // also the first-party context a locally run tool needs.
+  // Record what Canvas sent to the tool's login endpoint, minus the one-time hints.
+  page.context().on('request', (request) => {
+    if (!request.url().endsWith('/lti/login')) return;
+    const form = new URLSearchParams(request.postData() ?? '');
+    const sent = Object.fromEntries(
+      ['iss', 'client_id', 'lti_deployment_id', 'target_link_uri'].map((key) => [key, form.get(key)]),
+    );
+    console.log(`LTI login request from Canvas: ${JSON.stringify(sent)}`);
+  });
   const popup = page.waitForEvent('popup');
   await page.getByRole('button', { name: /Load Accessibility Scanner \(CI\) in a new window/ }).click();
   const tool = await popup;
@@ -253,7 +267,7 @@ test('the course copy is back to its starting state', async ({ browser }) => {
   for (const file of await courseFiles(context)) {
     if (/_accessible\.[^.]+$/.test(file.display_name)) await deleteCanvasFile(context, file.id);
   }
-  expect(describe(await courseFiles(context))).toEqual(snapshot);
+  expect(describe(await courseFiles(context))).toEqual(JSON.parse(await readFile(snapshotPath, 'utf8')));
 });
 
 test.afterAll(async () => {

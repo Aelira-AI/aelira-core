@@ -149,7 +149,7 @@ runs:
           printf '%s' "$CANVAS_LTI_PRIVATE_KEY" > "$RUNNER_TEMP/lti-private.pem"
           openssl pkey -in "$RUNNER_TEMP/lti-private.pem" -pubout -out "$RUNNER_TEMP/lti-public.pem"
           {
-            echo "CANVAS_ISSUER=https://canvas.instructure.com"
+            echo "CANVAS_ISSUER=$CANVAS_URL"
             echo "CANVAS_CLIENT_ID=$CANVAS_LTI_CLIENT_ID"
             echo "CANVAS_DEPLOYMENT_ID=$CANVAS_LTI_DEPLOYMENT_ID"
             echo "CANVAS_LTI_PRIVATE_KEY_PATH=$RUNNER_TEMP/lti-private.pem"
