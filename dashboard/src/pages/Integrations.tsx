@@ -117,7 +117,7 @@ function BlackboardIcon(): React.ReactElement {
 function MoodleIcon(): React.ReactElement {
   return (
     <div className="w-10 h-10 rounded-full bg-[#F98012] flex items-center justify-center">
-      <span className="text-white font-bold text-lg">M</span>
+      <span className="text-[#1A1A1A] font-bold text-lg">M</span>
     </div>
   );
 }
@@ -125,7 +125,7 @@ function MoodleIcon(): React.ReactElement {
 function BrightspaceIcon(): React.ReactElement {
   return (
     <div className="w-10 h-10 rounded bg-[#FF6F00] flex items-center justify-center">
-      <span className="text-white font-bold text-sm">D2L</span>
+      <span className="text-[#1A1A1A] font-bold text-sm">D2L</span>
     </div>
   );
 }
