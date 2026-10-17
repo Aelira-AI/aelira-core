@@ -47,8 +47,6 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         storageState: 'journey-results/.auth/admin.json',
-        // The tool is framed by Canvas, a different site: allow its cookies.
-        launchOptions: { args: ['--disable-features=ThirdPartyStoragePartitioning,TrackingProtection3pcd,BlockThirdPartyCookies'] },
       },
     },
   ],

@@ -26,7 +26,7 @@ const haveCredentials = [canvas, courseId, ltiClientId, ltiDeploymentId, teacher
 const pdfName = 'ENG101-Syllabus-Fall2025.pdf';
 const docxName = 'ENG101-Essay2-Rhetorical-Analysis.docx';
 
-test.describe.configure({ mode: 'serial' });
+// The steps share state and run in file order; a failure must not hide the steps after it.
 
 test.beforeAll(() => {
   if (!haveCredentials && required) {
@@ -182,11 +182,18 @@ test('the teacher launches the tool from the course and lands in the course scop
   await page.waitForURL((url) => !url.pathname.startsWith('/login'));
   await page.goto(`${canvas}/courses/${courseId}`);
   await page.getByRole('link', { name: 'Accessibility Scanner (CI)' }).click();
-  const tool = page.frameLocator('iframe#tool_content');
+  // Canvas will not frame a plain-HTTP tool and offers a new window instead, which is
+  // also the first-party context a locally run tool needs.
+  const popup = page.waitForEvent('popup');
+  await page.getByRole('button', { name: /Load Accessibility Scanner \(CI\) in a new window/ }).click();
+  const tool = await popup;
+  await tool.waitForURL((url) => url.origin === 'http://localhost:15373', { timeout: 90_000 });
+  await snap(tool, testInfo, 'lti-launched');
   await expect(tool.getByText(/CI Journeys/).first()).toBeVisible({ timeout: 90_000 });
-  await snap(page, testInfo, 'lti-launched');
   await expect(tool.getByText(pdfName).first()).toBeVisible();
   await expect(tool.getByText(docxName).first()).toBeVisible();
+  await assertNoBlockingViolations(tool, 'lti-course-view', testInfo);
+  await tool.close();
 });
 
 async function scanRemediateApproveWriteBack(page: Page, testInfo: TestInfo, fileName: string, context: BrowserContext) {
