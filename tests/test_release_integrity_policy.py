@@ -338,12 +338,15 @@ def test_api_images_replace_only_the_matching_python_expat_extensions() -> None:
             in dockerfile
         )
 
-    assert "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73" in build_script
+    assert (
+        "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73"
+        in build_script
+    )
     assert "sha256sum --check --strict" in build_script
     assert "--with-system-expat" in build_script
-    assert "make -j2 \"Modules/pyexpat" in build_script
-    assert "\"Modules/_elementtree" in build_script
-    assert "EXPAT_REPORTED_VERSION = \"expat_2.9.0\"" in verifier
+    assert 'make -j2 "Modules/pyexpat' in build_script
+    assert '"Modules/_elementtree' in build_script
+    assert 'EXPAT_REPORTED_VERSION = "expat_2.9.0"' in verifier
     assert "libexpat.so.1" in verifier
     assert '"docker", ["save", "--output", archive, image]' in layer_gate
     assert 'found.has("pyexpat")' in layer_gate
