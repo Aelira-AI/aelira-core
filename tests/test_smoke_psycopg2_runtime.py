@@ -69,6 +69,42 @@ def test_mapped_libraries_reads_resolved_shared_objects(tmp_path: Path) -> None:
     }
 
 
+def test_mapped_libraries_retains_distinct_extensions_with_same_basename(
+    tmp_path: Path,
+) -> None:
+    maps = tmp_path / "maps"
+    basename = "_util_cy.cpython-314-aarch64-linux-gnu.so"
+    first = f"/opt/venv/lib/python3.14/site-packages/sqlalchemy/util/{basename}"
+    second = f"/opt/venv/lib/python3.14/site-packages/sqlalchemy/engine/{basename}"
+    maps.write_text(
+        f"7f00-7f10 r-xp 00000000 08:01 12 {first}\n"
+        f"7f10-7f20 r-xp 00000000 08:01 13 {second}\n"
+        f"7f20-7f30 r--p 00000000 08:01 12 {first}\n"
+    )
+    assert mapped_libraries(maps) == {
+        f"{basename} [{first}]": first,
+        f"{basename} [{second}]": second,
+    }
+
+
+def test_duplicate_tls_basename_keeps_private_copy_for_rejection(
+    tmp_path: Path,
+) -> None:
+    maps = tmp_path / "maps"
+    system_ssl = "/usr/lib/x86_64-linux-gnu/libssl.so.3"
+    private_ssl = "/opt/venv/lib/private/libssl.so.3"
+    maps.write_text(
+        f"7f00-7f10 r-xp 00000000 08:01 12 {system_ssl}\n"
+        f"7f10-7f20 r-xp 00000000 08:01 13 {private_ssl}\n"
+        "7f20-7f30 r-xp 00000000 08:01 14 /usr/lib/libpq.so.5\n"
+        "7f30-7f40 r-xp 00000000 08:01 15 /usr/lib/libcrypto.so.3\n"
+    )
+    libraries = mapped_libraries(maps)
+    assert {system_ssl, private_ssl} <= set(libraries.values())
+    with pytest.raises(RuntimeError, match="not /usr/lib/"):
+        check_loaded_libraries(libraries)
+
+
 def test_database_closure_includes_static_and_connection_loaded_libraries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

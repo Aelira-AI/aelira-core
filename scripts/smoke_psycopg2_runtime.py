@@ -33,8 +33,8 @@ UNICODE_TEXT = "café 日本語 \U0001f9ea Aelira"
 
 
 def mapped_libraries(maps_path: Path = Path("/proc/self/maps")) -> dict[str, str]:
-    """Return the resolved file behind every mapped shared library."""
-    libraries: dict[str, str] = {}
+    """Return every distinct mapped library, qualifying repeated basenames."""
+    by_name: dict[str, set[str]] = {}
     for line in maps_path.read_text().splitlines():
         fields = line.split(None, 5)
         if len(fields) < 6 or not fields[5].startswith("/"):
@@ -42,10 +42,12 @@ def mapped_libraries(maps_path: Path = Path("/proc/self/maps")) -> dict[str, str
         path = os.path.realpath(fields[5])
         name = Path(fields[5]).name
         if ".so" in name or ".so" in Path(path).name:
-            if name in libraries and libraries[name] != path:
-                raise RuntimeError(f"ambiguous mapped library name: {name}")
-            libraries[name] = path
-    return libraries
+            by_name.setdefault(name, set()).add(path)
+    return {
+        name if len(paths) == 1 else f"{name} [{path}]": path
+        for name, paths in sorted(by_name.items())
+        for path in sorted(paths)
+    }
 
 
 def trusted_interpreter_extensions() -> set[str]:
@@ -391,14 +393,20 @@ def main() -> int:
     ).hexdigest()
     if installed["extension_sha256"] != extension_sha256:
         raise RuntimeError("installed RECORD and loaded extension bytes differ")
-    loaded = database_library_paths(
+    direct_closure = database_library_paths(
         Path(installed["extension_path"]),
         baseline,
         direct_connection_maps,
         trusted_interpreter_extensions(),
     )
-    for name, path in check_loaded_libraries(observed).items():
-        loaded[name] = path
+    selected_paths = set(direct_closure.values()) | set(
+        check_loaded_libraries(observed).values()
+    )
+    if selected_paths - set(observed.values()):
+        raise RuntimeError(
+            "database library closure changed after the direct connection"
+        )
+    loaded = {name: path for name, path in observed.items() if path in selected_paths}
     report = {
         "psycopg2": psycopg2.__version__,
         "module": str(module),
