@@ -61,7 +61,7 @@ from ..db.models import (
     ScanResult,
 )
 from ..education.canvas_content_scanner import CanvasContentScanner
-from ..education.current_compliance import public_cloud_file_score
+from ..education.current_compliance import public_cloud_file_scores
 from ..education.canvas_score_verification import (
     count_nodes_by_rule,
     current_canvas_verification,
@@ -655,15 +655,12 @@ async def get_course_content_status(
             issue_counts[sr.scan_id] = total
 
     by_type: List[ContentTypeStatus] = []
+    public_scores = public_cloud_file_scores(db, cloud_files)
     all_scores: List[float] = []
 
     for ct, files in type_map.items():
         scanned = [f for f in files if f.last_scan_id is not None]
-        scores = [
-            score
-            for f in scanned
-            if (score := public_cloud_file_score(db, f)) is not None
-        ]
+        scores = [score for f in scanned if (score := public_scores[f.id]) is not None]
         type_issues = sum(issue_counts.get(f.last_scan_id, 0) for f in scanned)
         avg = round(sum(scores) / len(scores), 1) if scores else None
         all_scores.extend(scores)
@@ -687,7 +684,7 @@ async def get_course_content_status(
             provider_parent_id=cf.provider_parent_id,
             content_type=cf.content_source,
             title=cf.file_name,
-            compliance_score=public_cloud_file_score(db, cf),
+            compliance_score=public_scores[cf.id],
             issue_count=issue_counts.get(cf.last_scan_id, 0) if cf.last_scan_id else 0,
             writeback_status=cf.writeback_status,
             has_remediated_version=cf.has_remediated_version or False,
@@ -822,6 +819,7 @@ async def get_course_overview(
             logger.warning("Could not get Canvas client for course name lookup")
 
     course_items = []
+    public_scores = public_cloud_file_scores(db, cloud_files)
     total_items = 0
     total_scanned = 0
     total_issues = 0
@@ -834,11 +832,7 @@ async def get_course_overview(
             issue_counts.get(f.last_scan_id, 0) for f in files if f.last_scan_id
         )
         written = sum(1 for f in files if f.writeback_status == "written_back")
-        scores = [
-            score
-            for f in files
-            if (score := public_cloud_file_score(db, f)) is not None
-        ]
+        scores = [score for f in files if (score := public_scores[f.id]) is not None]
         avg = sum(scores) / len(scores) if scores else None
 
         # Determine status

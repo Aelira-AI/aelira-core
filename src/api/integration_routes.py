@@ -31,7 +31,7 @@ from ..db.models import (
 )
 from ..api.auth_routes import get_current_api_key
 from ..services.job_enqueue_service import enqueue_cloud_job
-from ..education.current_compliance import public_cloud_file_score
+from ..education.current_compliance import public_cloud_file_scores
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +298,7 @@ async def get_cloud_files(
 
     # Order by most recently discovered first
     files = query.order_by(CloudFile.discovered_at.desc()).all()
+    scores = public_cloud_file_scores(db, files)
 
     # Format response
     return {
@@ -313,7 +314,7 @@ async def get_cloud_files(
                 "last_scanned_at": (
                     f.last_scanned_at.isoformat() if f.last_scanned_at else None
                 ),
-                "last_compliance_score": public_cloud_file_score(db, f),
+                "last_compliance_score": scores[f.id],
                 "needs_rescan": f.needs_rescan,
                 "has_remediated_version": f.has_remediated_version,
                 "remediation_origin": f.remediation_origin,

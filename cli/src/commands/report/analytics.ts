@@ -143,13 +143,26 @@ static flags = {
     this.log('  📈 Historical Trend:')
     this.log(`  - Data Points: ${trend.length}`)
 
-    const firstScore = trend[0]?.avg_compliance_score || 0
-    const lastScore = trend.at(-1)?.avg_compliance_score || 0
+    const assessed = trend.filter((point) =>
+      typeof point?.avg_compliance_score === 'number' &&
+      Number.isFinite(point.avg_compliance_score) &&
+      point.avg_compliance_score >= 0 && point.avg_compliance_score <= 100
+    )
+    if (assessed.length === 0) {
+      this.log('  - Score: Unassessed\n')
+      return
+    }
+
+    const firstScore = assessed[0].avg_compliance_score as number
+    const lastScore = assessed.at(-1).avg_compliance_score as number
+    this.log(`  - First Assessed Score: ${firstScore.toFixed(1)}/100`)
+    this.log(`  - Latest Assessed Score: ${lastScore.toFixed(1)}/100`)
+    if (assessed.length < 2) {
+      this.log('  - Change: Unavailable (one assessed point)\n')
+      return
+    }
     const change = lastScore - firstScore
     const arrow = change >= 0 ? '↑' : '↓'
-
-    this.log(`  - First Score: ${firstScore.toFixed(1)}/100`)
-    this.log(`  - Current Score: ${lastScore.toFixed(1)}/100`)
     this.log(`  - Change: ${arrow} ${Math.abs(change).toFixed(1)} points\n`)
   }
 

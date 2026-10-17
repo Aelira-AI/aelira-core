@@ -178,9 +178,11 @@ class SnapshotService:
         db: Session, department_id: str, days: int = 30
     ) -> List[TrendPoint]:
         """
-        Get historical trend data from snapshots.
+        Recompute historical trend from source scans with current score rules.
 
-        Falls back to computing from scans if no snapshots exist.
+        Stored snapshots have no score-provenance version; older rows can
+        include legacy video scores. Keep them as history, but never use their
+        cached aggregates to make a current public claim.
 
         Args:
             db: Database session
@@ -192,38 +194,6 @@ class SnapshotService:
         """
         logger.info("Getting department historical trend")
 
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-        # Try to get from snapshots first
-        snapshots = (
-            db.query(ComplianceSnapshot)
-            .filter(
-                and_(
-                    ComplianceSnapshot.department_id == department_id,
-                    ComplianceSnapshot.snapshot_date >= cutoff_date,
-                )
-            )
-            .order_by(ComplianceSnapshot.snapshot_date.asc())
-            .all()
-        )
-
-        if snapshots:
-            logger.info(f"Found {len(snapshots)} snapshots")
-            return [
-                TrendPoint(
-                    date=s.snapshot_date.date().isoformat(),
-                    avg_compliance_score=s.avg_compliance_score,
-                    scan_count=s.total_scans,
-                    total_issues=s.total_issues,
-                    files_compliant=s.files_compliant,
-                    files_needs_work=s.files_needs_work,
-                    files_critical=s.files_critical,
-                )
-                for s in snapshots
-            ]
-
-        # Fallback: Compute from scans (slower but works without snapshots)
-        logger.info("No snapshots found, computing from scans")
         return SnapshotService._compute_trend_from_scans(db, department_id, days)
 
     @staticmethod
@@ -338,43 +308,34 @@ class SnapshotService:
         """
         now = datetime.utcnow()
 
-        # Get current period data
         current_start = now - timedelta(days=current_period_days)
-        current_snapshots = (
-            db.query(ComplianceSnapshot)
-            .filter(
-                and_(
-                    ComplianceSnapshot.department_id == department_id,
-                    ComplianceSnapshot.snapshot_date >= current_start,
-                )
-            )
-            .all()
-        )
-
-        # Get previous period data
         previous_start = current_start - timedelta(days=comparison_period_days)
-        previous_snapshots = (
-            db.query(ComplianceSnapshot)
-            .filter(
-                and_(
-                    ComplianceSnapshot.department_id == department_id,
-                    ComplianceSnapshot.snapshot_date >= previous_start,
-                    ComplianceSnapshot.snapshot_date < current_start,
-                )
-            )
-            .all()
+        points = SnapshotService.get_historical_trend(
+            db, department_id, current_period_days + comparison_period_days
         )
+        current_points = [
+            point
+            for point in points
+            if date.fromisoformat(point.date) >= current_start.date()
+        ]
+        previous_points = [
+            point
+            for point in points
+            if previous_start.date()
+            <= date.fromisoformat(point.date)
+            < current_start.date()
+        ]
 
         # Calculate averages
         current_scores = [
-            s.avg_compliance_score
-            for s in current_snapshots
-            if s.avg_compliance_score is not None
+            point.avg_compliance_score
+            for point in current_points
+            if point.avg_compliance_score is not None
         ]
         previous_scores = [
-            s.avg_compliance_score
-            for s in previous_snapshots
-            if s.avg_compliance_score is not None
+            point.avg_compliance_score
+            for point in previous_points
+            if point.avg_compliance_score is not None
         ]
 
         current_avg = (
@@ -384,8 +345,8 @@ class SnapshotService:
             sum(previous_scores) / len(previous_scores) if previous_scores else None
         )
 
-        current_issues = sum(s.total_issues for s in current_snapshots)
-        previous_issues = sum(s.total_issues for s in previous_snapshots)
+        current_issues = sum(point.total_issues for point in current_points)
+        previous_issues = sum(point.total_issues for point in previous_points)
 
         # Calculate changes
         score_change = (

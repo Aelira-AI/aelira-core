@@ -1154,6 +1154,44 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
     assert saved_result.issues == model.issues
     assert saved_result.structure["flashing_assessment"]["state"] == "unassessed"
 
+    unknown_model = model.model_copy(
+        update={
+            "media_type": "unknown",
+            "issues": [],
+            "flashing_analysis": FlashingContentResult(reason="analysis_failed"),
+        }
+    )
+    processor.process_media.return_value = unknown_model
+    unknown_file = SimpleNamespace(**cloud_file.__dict__)
+    unknown_file.id = "unknown-1"
+    with (
+        patch(
+            "src.education.multimedia_processor.MultimediaProcessor",
+            return_value=processor,
+        ),
+        patch("src.jobs.email_alert_job.trigger_scan_alerts", new=AsyncMock()),
+    ):
+        unknown_result = await CloudScanJob(
+            credential, unknown_file, MagicMock()
+        )._scan_file("/tmp/video.mp4", db)
+    assert unknown_result["success"] is True
+    assert unknown_file.last_compliance_score is None
+    unknown_saved = [
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "ScanResult"
+    ][-1]
+    assert unknown_saved.structure["media_type"] == "unknown"
+    assert unknown_saved.structure["flashing_assessment"]["reason"] == "analysis_failed"
+
+    from src.jobs.cloud_scan_job import _normalize_processor_result
+
+    fabricated_unknown = _normalize_processor_result(
+        {"media_type": "unknown", "compliance_score": 80, "issues": []}
+    )
+    assert fabricated_unknown["success"] is False
+    assert fabricated_unknown["compliance_score"] is None
+
     failed_file = SimpleNamespace(**cloud_file.__dict__)
     failed_file.id = "failed-1"
     failed_file.last_scan_id = "older"

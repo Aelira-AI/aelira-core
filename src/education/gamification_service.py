@@ -81,7 +81,7 @@ class FacultyStats:
 
     # Core metrics
     total_scans: int
-    avg_compliance_score: float
+    avg_compliance_score: Optional[float]
     total_files: int
     total_issues_fixed: int
 
@@ -94,17 +94,17 @@ class FacultyStats:
     progress_to_next: float  # 0-1
 
     # Rankings
-    all_time_rank: int
-    monthly_rank: int
-    improvement_rank: int
+    all_time_rank: Optional[int]
+    monthly_rank: Optional[int]
+    improvement_rank: Optional[int]
 
     # Streaks
     current_streak: int
     longest_streak: int
 
     # Improvement
-    score_change_30d: float
-    score_change_7d: float
+    score_change_30d: Optional[float]
+    score_change_7d: Optional[float]
 
 
 # Badge definitions
@@ -360,7 +360,9 @@ class GamificationService:
                     total_issues_fixed += len(result.issues) if result.issues else 0
 
         avg_score = (
-            sum(compliance_scores) / len(compliance_scores) if compliance_scores else 0
+            sum(compliance_scores) / len(compliance_scores)
+            if compliance_scores
+            else None
         )
 
         # Calculate badges earned
@@ -405,7 +407,7 @@ class GamificationService:
             user_name=user.name or "Unknown",
             user_email=user.email,
             total_scans=total_scans,
-            avg_compliance_score=round(avg_score, 2),
+            avg_compliance_score=round(avg_score, 2) if avg_score is not None else None,
             total_files=total_files,
             total_issues_fixed=total_issues_fixed,
             total_points=total_points,
@@ -430,7 +432,7 @@ class GamificationService:
         total_scans: int,
         total_files: int,
         total_issues_fixed: int,
-        avg_score: float,
+        avg_score: Optional[float],
         scans: list,
     ) -> List[Badge]:
         """Calculate which badges a user has earned."""
@@ -457,7 +459,7 @@ class GamificationService:
             badges.append(BADGE_DEFINITIONS[BadgeType.FIXES_100])
 
         # Compliance achievements
-        if avg_score >= 90:
+        if avg_score is not None and avg_score >= 90:
             badges.append(BADGE_DEFINITIONS[BadgeType.COMPLIANCE_CHAMPION])
 
         # Check for perfect scores and compliant files
@@ -478,11 +480,11 @@ class GamificationService:
 
         # Improvement badges
         improvement = self._calculate_improvement(scans, 30)
-        if improvement >= 5:
+        if improvement is not None and improvement >= 5:
             badges.append(BADGE_DEFINITIONS[BadgeType.IMPROVEMENT_5])
-        if improvement >= 10:
+        if improvement is not None and improvement >= 10:
             badges.append(BADGE_DEFINITIONS[BadgeType.IMPROVEMENT_10])
-        if improvement >= 20:
+        if improvement is not None and improvement >= 20:
             badges.append(BADGE_DEFINITIONS[BadgeType.IMPROVEMENT_20])
 
         # Streak badges
@@ -514,7 +516,7 @@ class GamificationService:
         total_scans: int,
         total_files: int,
         total_issues_fixed: int,
-        avg_score: float,
+        avg_score: Optional[float],
     ) -> tuple:
         """Find the next badge the user is closest to earning."""
         earned_types = {b.badge_type for b in earned}
@@ -534,12 +536,18 @@ class GamificationService:
             return BADGE_DEFINITIONS[BadgeType.FIXES_50], total_issues_fixed / 50
 
         # Check compliance badges
-        if BadgeType.COMPLIANCE_CHAMPION not in earned_types and avg_score < 90:
+        if (
+            avg_score is not None
+            and BadgeType.COMPLIANCE_CHAMPION not in earned_types
+            and avg_score < 90
+        ):
             return BADGE_DEFINITIONS[BadgeType.COMPLIANCE_CHAMPION], avg_score / 90
 
         return None, 0
 
-    def _get_rank(self, user_id: str, department_id: str, rank_type: str) -> int:
+    def _get_rank(
+        self, user_id: str, department_id: str, rank_type: str
+    ) -> Optional[int]:
         """Get user's rank in a specific leaderboard."""
         from ..db.models import Scan, ScanResult, User
 
@@ -565,19 +573,22 @@ class GamificationService:
             else:
                 scans = self.db.query(Scan).filter(Scan.user_id == f.id).all()
 
-            scores = []
-            for scan in scans:
-                result = (
-                    self.db.query(ScanResult)
-                    .filter(ScanResult.scan_id == scan.id)
-                    .first()
-                )
-                score = public_compliance_score(scan, result)
-                if score is not None:
-                    scores.append(score)
-
-            avg = sum(scores) / len(scores) if scores else 0
-            faculty_scores.append((f.id, avg))
+            if rank_type == "improvement":
+                metric = self._calculate_improvement(scans, 30)
+            else:
+                scores = []
+                for scan in scans:
+                    result = (
+                        self.db.query(ScanResult)
+                        .filter(ScanResult.scan_id == scan.id)
+                        .first()
+                    )
+                    score = public_compliance_score(scan, result)
+                    if score is not None:
+                        scores.append(score)
+                metric = sum(scores) / len(scores) if scores else None
+            if metric is not None:
+                faculty_scores.append((f.id, metric))
 
         # Sort by score
         faculty_scores.sort(key=lambda x: -x[1])
@@ -587,7 +598,7 @@ class GamificationService:
             if fid == user_id:
                 return i
 
-        return len(faculty_scores) + 1
+        return None
 
     def _calculate_streaks(self, scans: list) -> tuple:
         """Calculate current and longest scan streaks."""
@@ -627,10 +638,10 @@ class GamificationService:
 
         return current_streak, longest_streak
 
-    def _calculate_improvement(self, scans: list, days: int) -> float:
+    def _calculate_improvement(self, scans: list, days: int) -> Optional[float]:
         """Calculate score improvement over a period."""
         if not scans:
-            return 0
+            return None
 
         from ..db.models import ScanResult
 
@@ -653,8 +664,10 @@ class GamificationService:
                 else:
                     new_scores.append(score)
 
-        old_avg = sum(old_scores) / len(old_scores) if old_scores else 0
-        new_avg = sum(new_scores) / len(new_scores) if new_scores else 0
+        if not old_scores or not new_scores:
+            return None
+        old_avg = sum(old_scores) / len(old_scores)
+        new_avg = sum(new_scores) / len(new_scores)
 
         return round(new_avg - old_avg, 2)
 
@@ -696,19 +709,45 @@ class GamificationService:
 
         # Sort based on leaderboard type
         if leaderboard_type == "monthly":
-            leaderboard.sort(key=lambda x: (-x["score_change_7d"], -x["total_scans"]))
+            leaderboard.sort(
+                key=lambda x: (
+                    x["score_change_7d"] is None,
+                    -(x["score_change_7d"] if x["score_change_7d"] is not None else 0),
+                    -x["total_scans"],
+                )
+            )
         elif leaderboard_type == "improvement":
-            leaderboard.sort(key=lambda x: -x["score_change_7d"])
+            leaderboard.sort(
+                key=lambda x: (
+                    x["score_change_7d"] is None,
+                    -(x["score_change_7d"] if x["score_change_7d"] is not None else 0),
+                )
+            )
         elif leaderboard_type == "points":
             leaderboard.sort(key=lambda x: -x["total_points"])
         else:  # all_time
             leaderboard.sort(
-                key=lambda x: (-x["avg_compliance_score"], -x["total_scans"])
+                key=lambda x: (
+                    x["avg_compliance_score"] is None,
+                    -(
+                        x["avg_compliance_score"]
+                        if x["avg_compliance_score"] is not None
+                        else 0
+                    ),
+                    -x["total_scans"],
+                )
             )
 
         # Add ranks
         for i, entry in enumerate(leaderboard[:limit], start=1):
-            entry["rank"] = i
+            metric = (
+                entry["score_change_7d"]
+                if leaderboard_type in {"monthly", "improvement"}
+                else entry["avg_compliance_score"]
+            )
+            entry["rank"] = (
+                i if leaderboard_type == "points" or metric is not None else None
+            )
 
         return leaderboard[:limit]
 

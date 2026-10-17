@@ -50,7 +50,7 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
-from ..education.current_compliance import public_cloud_file_score
+from ..education.current_compliance import public_cloud_file_scores
 from ..integrations.cloud_base import (
     CloudFileInfo,
     CloudIntegrationError,
@@ -1046,6 +1046,7 @@ async def list_drive_files(
                 folder_id=folder_id, page_token=page_token, page_size=page_size
             )
         files = [_track_google_file(db, credential, info) for info in file_infos]
+        scores = public_cloud_file_scores(db, files)
         credential.last_sync_at = datetime.now(timezone.utc)
         db.commit()
         return GoogleFileListResponse(
@@ -1059,7 +1060,7 @@ async def list_drive_files(
                     file_size_bytes=file.file_size_bytes,
                     web_view_link=file.web_view_link,
                     last_scanned_at=file.last_scanned_at,
-                    last_compliance_score=public_cloud_file_score(db, file),
+                    last_compliance_score=scores[file.id],
                     needs_rescan=file.needs_rescan,
                 )
                 for file in files

@@ -3,16 +3,25 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import UUID
 
-from src.db.models import Department, Scan, ScanStatus, ScanType, User
+from src.db.models import (
+    CloudFile,
+    Department,
+    Scan,
+    ScanResult,
+    ScanStatus,
+    ScanType,
+    User,
+)
 from src.db.scan_service import ScanService
 from src.api.user_management import get_department_stats as get_admin_department_stats
 from src.education.compliance_dashboard import ComplianceDashboard
 from src.education.current_compliance import (
     _provider_scan_ids,
     public_cloud_file_score,
+    public_cloud_file_scores,
     public_compliance_score,
     project_current_documents,
 )
@@ -117,13 +126,14 @@ def test_cached_provider_score_cannot_restore_legacy_video_credit():
 
     def query(model):
         matches = MagicMock()
-        matches.filter.return_value.first.return_value = (
+        matches.filter.return_value.all.return_value = [
             legacy if model is Scan else result
-        )
+        ]
         return matches
 
     db.query.side_effect = query
     cloud_file = SimpleNamespace(
+        id="file-1",
         last_scan_id="legacy",
         last_compliance_score=100,
         file_type="file",
@@ -148,6 +158,89 @@ def test_cached_provider_score_cannot_restore_legacy_video_credit():
     cloud_file.file_type = "mp3"
     cloud_file.mime_type = "audio/mpeg"
     assert public_cloud_file_score(db, cloud_file) == 80
+
+
+def test_provider_scores_use_bounded_provenance_queries():
+    db = MagicMock()
+    legacy = _scan("legacy")
+    legacy.scan_type = ScanType.VIDEO
+    stale = _result("legacy", 100, 0)
+    stale.structure = {"media_type": "video", "flashing_analysis": {"severity": "safe"}}
+
+    def query(model):
+        matches = MagicMock()
+        matches.filter.return_value.all.return_value = (
+            [legacy] if model is Scan else [stale]
+        )
+        return matches
+
+    db.query.side_effect = query
+    files = [
+        SimpleNamespace(
+            id=f"file-{index}",
+            last_scan_id="legacy" if index == 0 else None,
+            last_compliance_score=100,
+            file_type="mp4" if index == 0 else "pdf",
+            mime_type="video/mp4" if index == 0 else "application/pdf",
+        )
+        for index in range(100)
+    ]
+    scores = public_cloud_file_scores(db, files)
+    assert scores["file-0"] is None
+    assert scores["file-99"] == 100
+    assert db.query.call_count == 2
+
+
+def test_canvas_course_status_keeps_partial_scans_without_score_credit():
+    from src.api.canvas_scan_routes import get_course_scan_status
+
+    video = _scan("video")
+    video.scan_type = ScanType.VIDEO
+    pdf = _scan("pdf")
+    legacy_result = _result("video", 100, 1)
+    legacy_result.structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    legacy_result.suggestions = {}
+    pdf_result = _result("pdf", 80, 2)
+    pdf_result.suggestions = {}
+    files = [
+        SimpleNamespace(
+            provider_file_id=str(index),
+            file_name=f"file-{index}",
+            file_type=file_type,
+            last_scan_id=scan_id,
+            has_remediated_version=False,
+            remediation_origin=None,
+        )
+        for index, file_type, scan_id in [(1, "mp4", "video"), (2, "pdf", "pdf")]
+    ]
+    queries = {}
+    for model, values in (
+        (CloudFile, files),
+        (Scan, [video, pdf]),
+        (ScanResult, [legacy_result, pdf_result]),
+    ):
+        query = MagicMock()
+        query.filter.return_value.all.return_value = values
+        query.filter.return_value.first.side_effect = values
+        queries[model] = query
+    db = MagicMock()
+    db.query.side_effect = lambda model: queries[model]
+    with patch("src.api.canvas_scan_routes.require_lti_course_access"):
+        response = asyncio.run(
+            get_course_scan_status(
+                "course-1",
+                file_ids="1,2",
+                db=db,
+                principal=SimpleNamespace(department_id="dept-a"),
+            )
+        )
+    assert response.scanned_files == 2
+    assert response.average_compliance == 80
+    assert response.files[0].compliance_score is None
+    assert response.files[0].issues_count == 1
 
 
 def test_duplicate_uploads_and_rescans_use_one_latest_verified_state():

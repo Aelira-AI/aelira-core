@@ -19,6 +19,7 @@ import tempfile
 import os
 import re
 import logging
+import math
 from datetime import timedelta
 
 # Import speaker diarization module
@@ -108,7 +109,7 @@ class MultimediaProcessingResult(BaseModel):
 
     file_path: str
     file_name: str
-    media_type: str  # "video" or "audio"
+    media_type: str  # "video", "audio", or "unknown" when probing fails
     duration: float  # Seconds
     has_captions: bool
     transcription: Optional[List[TranscriptionSegment]] = None
@@ -290,11 +291,17 @@ class MultimediaProcessor:
 
         # 4. Record unavailable flashing assessment (video only) - WCAG 2.3.1
         flashing_analysis = None
-        if media_type == "video":
+        if media_type != "audio":
             # The former first-30-seconds/frame-type heuristic did not measure
             # luminance and could not establish whole-video WCAG 2.3.1 safety.
             flashing_analysis = FlashingContentResult(
-                reason="detector_unavailable" if detect_flashing else "disabled"
+                reason=(
+                    "analysis_failed"
+                    if media_type == "unknown"
+                    else "detector_unavailable"
+                    if detect_flashing
+                    else "disabled"
+                )
             )
 
         # 5. Generate AI audio descriptions (video only) - WCAG 1.2.3, 1.2.5
@@ -443,29 +450,45 @@ class MultimediaProcessor:
                 local_media_command(cmd), capture_output=True, text=True, timeout=30
             )
 
-            # Parse output
-            output = result.stdout
+            if result.returncode != 0 or not isinstance(result.stdout, str):
+                return "unknown", 0.0
+
+            stream_types: set[str] = set()
             duration = 0.0
-            has_video = "codec_type=video" in output
+            for line in result.stdout.splitlines():
+                if not line:
+                    continue
+                key, separator, value = line.partition("=")
+                if not separator:
+                    return "unknown", 0.0
+                if key == "codec_type" and value in {
+                    "audio",
+                    "video",
+                    "subtitle",
+                    "data",
+                    "attachment",
+                }:
+                    stream_types.add(value)
+                elif key == "duration":
+                    try:
+                        parsed = float(value)
+                    except ValueError:
+                        return "unknown", 0.0
+                    if not math.isfinite(parsed) or parsed < 0:
+                        return "unknown", 0.0
+                    duration = parsed
+                else:
+                    return "unknown", 0.0
 
-            # Extract duration
-            duration_match = re.search(r"duration=([\d.]+)", output)
-            if duration_match:
-                duration = float(duration_match.group(1))
+            if "video" in stream_types:
+                return "video", duration
+            if stream_types == {"audio"}:
+                return "audio", duration
+            return "unknown", duration
 
-            # Determine media type
-            media_type = "video" if has_video else "audio"
-
-            return media_type, duration
-
-        except Exception as e:
-            print(f"[MultimediaProcessor] Failed to get media info: {e}")
-            # Fallback: guess from extension
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext in [".mp4", ".avi", ".mov", ".mkv", ".webm"]:
-                return "video", 0.0
-            else:
-                return "audio", 0.0
+        except Exception as exc:
+            logger.warning("Media probe unavailable (%s)", type(exc).__name__)
+            return "unknown", 0.0
 
     def _check_existing_captions(self, video_path: str) -> bool:
         """
@@ -1235,7 +1258,7 @@ class MultimediaProcessor:
 
         # WCAG 1.2.1: Audio-only and Video-only (Prerecorded) - Level A
         # WCAG 1.2.2: Captions (Prerecorded) - Level A
-        if not has_captions:
+        if media_type != "unknown" and not has_captions:
             issues.append(
                 {
                     "severity": "critical",
@@ -1274,7 +1297,7 @@ class MultimediaProcessor:
 
         # Findings above are source observations. Flashing is unassessed, so a
         # video cannot receive an overall accessibility score.
-        if media_type == "video":
+        if media_type != "audio":
             return None, issues
 
         # Audio-only media has no flashing criterion.

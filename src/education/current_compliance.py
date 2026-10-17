@@ -165,49 +165,79 @@ def public_compliance_score(scan: Any | None, result: Any | None) -> float | Non
 
 def public_cloud_file_score(db: Session, cloud_file: CloudFile) -> float | None:
     """Keep cached provider scores from reviving unassessed media results."""
-    cached = cloud_file.last_compliance_score
-    if not isinstance(cached, Real) or isinstance(cached, bool):
-        return None
-    if not isfinite(cached) or cached < 0 or cached > 100:
-        return None
+    return public_cloud_file_scores(db, [cloud_file])[cloud_file.id]
 
-    scan = (
-        db.query(Scan).filter(Scan.id == cloud_file.last_scan_id).first()
-        if cloud_file.last_scan_id
-        else None
+
+def public_cloud_file_scores(
+    db: Session, cloud_files: Sequence[CloudFile]
+) -> dict[str, float | None]:
+    """Resolve provider scores in bounded queries, with media provenance checked."""
+    scan_ids = {file.last_scan_id for file in cloud_files if file.last_scan_id}
+    scans = db.query(Scan).filter(Scan.id.in_(scan_ids)).all() if scan_ids else []
+    scans_by_id = {scan.id: scan for scan in scans}
+    media_scan_ids = {
+        scan.id
+        for scan in scans
+        if _enum_value(scan.scan_type)
+        in {ScanType.VIDEO.value.lower(), ScanType.MULTIMEDIA.value.lower()}
+    }
+    results = (
+        db.query(ScanResult).filter(ScanResult.scan_id.in_(media_scan_ids)).all()
+        if media_scan_ids
+        else []
     )
-    if scan is not None and _enum_value(scan.scan_type) in {
-        ScanType.VIDEO.value.lower(),
-        ScanType.MULTIMEDIA.value.lower(),
-    }:
-        result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
-        return public_compliance_score(scan, result)
+    results_by_scan = {result.scan_id: result for result in results}
 
-    file_type = str(getattr(cloud_file, "file_type", None) or "").lower()
-    mime_type = str(getattr(cloud_file, "mime_type", None) or "").lower()
-    if scan is None and file_type in {"", "file", "unknown"}:
-        return None
-    if file_type in {
-        "mp4",
-        "mov",
-        "avi",
-        "mkv",
-        "webm",
-        "m4v",
-        "wmv",
-        "mp3",
-        "wav",
-        "m4a",
-        "aac",
-        "ogg",
-        "flac",
-        "video",
-        "audio",
-        "multimedia",
-    } or mime_type.startswith(("video/", "audio/")):
-        # A cached score alone does not establish a media assessment.
-        return None
-    return float(cached)
+    scores: dict[str, float | None] = {}
+    for cloud_file in cloud_files:
+        cached = cloud_file.last_compliance_score
+        if (
+            not isinstance(cached, Real)
+            or isinstance(cached, bool)
+            or not isfinite(cached)
+            or cached < 0
+            or cached > 100
+        ):
+            scores[cloud_file.id] = None
+            continue
+
+        scan = scans_by_id.get(cloud_file.last_scan_id)
+        if scan is not None and scan.id in media_scan_ids:
+            scores[cloud_file.id] = public_compliance_score(
+                scan, results_by_scan.get(scan.id)
+            )
+            continue
+
+        file_type = str(getattr(cloud_file, "file_type", None) or "").lower()
+        mime_type = str(getattr(cloud_file, "mime_type", None) or "").lower()
+        if (
+            (scan is None and file_type in {"", "file", "unknown"})
+            or file_type
+            in {
+                "mp4",
+                "mov",
+                "avi",
+                "mkv",
+                "webm",
+                "m4v",
+                "wmv",
+                "mp3",
+                "wav",
+                "m4a",
+                "aac",
+                "ogg",
+                "flac",
+                "video",
+                "audio",
+                "multimedia",
+            }
+            or mime_type.startswith(("video/", "audio/"))
+        ):
+            # A cached score alone does not establish a media assessment.
+            scores[cloud_file.id] = None
+        else:
+            scores[cloud_file.id] = float(cached)
+    return scores
 
 
 @dataclass(frozen=True)

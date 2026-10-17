@@ -99,6 +99,49 @@ class TestMultimediaProcessor:
         assert media_type == "audio"
         assert duration == 60.0
 
+    @pytest.mark.parametrize(
+        "returncode,stdout",
+        [
+            (1, ""),
+            (0, ""),
+            (0, "duration=bad\ncodec_type=audio"),
+            (0, "duration=10.0"),
+            (0, "codec_type=invalid\nduration=10.0"),
+        ],
+    )
+    @pytest.mark.parametrize("file_path", ["lecture.mp4", "lecture.mp3"])
+    def test_probe_failure_never_claims_audio_only(
+        self, processor, mock_subprocess, returncode, stdout, file_path
+    ):
+        mock_subprocess.return_value.returncode = returncode
+        mock_subprocess.return_value.stdout = stdout
+        result = processor.process_media(
+            file_path,
+            generate_captions=False,
+            generate_audio_descriptions=False,
+            detect_flashing=False,
+        )
+        assert result.media_type == "unknown"
+        assert result.compliance_score is None
+        assert result.flashing_analysis.state == "unassessed"
+        assert result.flashing_analysis.reason == "analysis_failed"
+        assert result.issues == []
+
+    def test_missing_probe_dependency_is_bounded_and_unassessed(
+        self, processor, mock_subprocess, caplog
+    ):
+        mock_subprocess.side_effect = FileNotFoundError("/private/probe")
+        result = processor.process_media(
+            "lecture.mp3",
+            generate_captions=False,
+            generate_audio_descriptions=False,
+            detect_flashing=True,
+        )
+        assert result.media_type == "unknown"
+        assert result.compliance_score is None
+        assert result.flashing_analysis.reason == "analysis_failed"
+        assert "/private/probe" not in caplog.text
+
     def test_process_media_audio_only(
         self, processor, mock_whisper_model, mock_subprocess
     ):
@@ -135,7 +178,7 @@ class TestMultimediaProcessor:
             mock_res = MagicMock()
             mock_res.returncode = 0
 
-            if "ffprobe" in cmd and "codec_type" in cmd:
+            if "ffprobe" in cmd and any("codec_type" in part for part in cmd):
                 mock_res.stdout = "duration=15.0\ncodec_type=video"
             elif "ffmpeg" in cmd:
                 # Audio extraction

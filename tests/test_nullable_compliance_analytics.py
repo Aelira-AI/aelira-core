@@ -10,7 +10,14 @@ from openpyxl import load_workbook
 
 from src.api import analytics
 from src.auth.dependencies import AuthenticatedPrincipal
-from src.db.models import Scan, ScanResult, ScanStatus, ScanType, UserRole
+from src.db.models import (
+    ComplianceSnapshot,
+    Scan,
+    ScanResult,
+    ScanStatus,
+    ScanType,
+    UserRole,
+)
 from src.education.compliance_dashboard import ComplianceDashboard
 from src.education.compliance_predictor import predict_compliance
 from src.education.deadline_config import DeadlineService
@@ -126,22 +133,101 @@ def test_snapshot_and_trend_keep_unverified_score_null(monkeypatch):
     assert snapshot.avg_compliance_score is None
 
     trend_db = MagicMock()
-    trend_db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
-        snapshot
-    ]
+    legacy_scan = SimpleNamespace(
+        id="legacy-video", created_at=datetime.utcnow(), scan_type=ScanType.VIDEO
+    )
+    legacy_result = SimpleNamespace(
+        scan_id="legacy-video",
+        compliance_score=100,
+        structure={"media_type": "video", "flashing_analysis": {"severity": "safe"}},
+    )
+
+    def query(model):
+        if model is ComplianceSnapshot:
+            raise AssertionError("legacy cached snapshot must not be used")
+        result = MagicMock()
+        result.filter.return_value.all.return_value = (
+            [legacy_scan] if model is Scan else [legacy_result]
+        )
+        return result
+
+    trend_db.query.side_effect = query
     trend = SnapshotService.get_historical_trend(trend_db, DEPARTMENT_ID)
     assert trend[0].avg_compliance_score is None
+    assert trend[0].scan_count == 0
+
+
+def test_legacy_cached_video_score_cannot_drive_trend_analysis_or_projection():
+    now = datetime.utcnow()
+    scans = [
+        SimpleNamespace(
+            id="legacy-video",
+            created_at=now - timedelta(days=8),
+            scan_type=ScanType.VIDEO,
+        ),
+        SimpleNamespace(id="measured-pdf", created_at=now, scan_type=ScanType.PDF),
+    ]
+    results = [
+        SimpleNamespace(
+            scan_id="legacy-video",
+            compliance_score=100,
+            structure={
+                "media_type": "video",
+                "flashing_analysis": {"severity": "safe"},
+            },
+        ),
+        SimpleNamespace(
+            scan_id="measured-pdf",
+            compliance_score=80,
+            structure=None,
+            critical_issues=0,
+            high_issues=0,
+            medium_issues=0,
+            low_issues=1,
+        ),
+    ]
+    department = SimpleNamespace(
+        country_code="US",
+        regulatory_framework="US_ADA_TITLE_II",
+        title_ii_entity_class="large",
+        custom_deadline=None,
+    )
+    db = MagicMock()
+
+    def query(model):
+        if model is ComplianceSnapshot:
+            raise AssertionError("unversioned cached snapshots must not be read")
+        response = MagicMock()
+        response.filter.return_value.all.return_value = (
+            scans if model is Scan else results
+        )
+        response.filter.return_value.first.return_value = department
+        return response
+
+    db.query.side_effect = query
+    trend = SnapshotService.get_historical_trend(db, DEPARTMENT_ID, days=14)
+    assert [point.avg_compliance_score for point in trend] == [None, 80]
+    assert [point.files_compliant for point in trend] == [0, 0]
+    analysis = SnapshotService.analyze_trend(
+        db, DEPARTMENT_ID, current_period_days=7, comparison_period_days=7
+    )
+    assert analysis.current_avg_score == 80
+    assert analysis.previous_avg_score is None
+    assert analysis.score_change is None
+    assert analysis.trend_direction == "insufficient_data"
+    projection = SnapshotService.get_deadline_projection(db, DEPARTMENT_ID)
+    assert projection["projection_available"] is False
 
 
 def test_trend_analysis_and_projection_require_verified_scores(monkeypatch):
-    snapshots = [
-        SimpleNamespace(avg_compliance_score=None, total_issues=0) for _ in range(14)
-    ]
     db = MagicMock()
-    db.query.return_value.filter.return_value.all.side_effect = [
-        snapshots[:7],
-        snapshots[7:],
-    ]
+    monkeypatch.setattr(
+        SnapshotService,
+        "get_historical_trend",
+        lambda _db, _department_id, days: [
+            _unverified_trend_point(day) for day in range(14)
+        ],
+    )
 
     analysis = SnapshotService.analyze_trend(db, DEPARTMENT_ID)
 
@@ -190,14 +276,14 @@ def test_future_dated_profile_stays_unknown_without_verified_scores(monkeypatch)
         DEPARTMENT_ID, "Accessibility", "Example University", department
     )
 
-    snapshots = [
-        SimpleNamespace(avg_compliance_score=None, total_issues=0) for _ in range(14)
-    ]
     db = MagicMock()
-    db.query.return_value.filter.return_value.all.side_effect = [
-        snapshots[:7],
-        snapshots[7:],
-    ]
+    monkeypatch.setattr(
+        SnapshotService,
+        "get_historical_trend",
+        lambda _db, _department_id, days: [
+            _unverified_trend_point(day) for day in range(14)
+        ],
+    )
     db.query.return_value.filter.return_value.first.return_value = department
     analysis = SnapshotService.analyze_trend(db, DEPARTMENT_ID)
 

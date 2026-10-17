@@ -118,7 +118,7 @@ const SCAN_TYPES: ScanType[] = [
   {
     id: 'video',
     name: 'Videos',
-    description: 'Captions + audio descriptions + seizure safety',
+    description: 'Caption and audio-description checks; flashing safety unassessed',
     icon: Video,
     iconColor: '#9333EA',
     bgColor: 'rgba(147, 51, 234, 0.1)',

@@ -80,13 +80,13 @@ def _normalize_processor_result(result: Any) -> Dict[str, Any]:
     if isinstance(compliance_score, Real) and not isinstance(compliance_score, bool):
         numeric_score = cast(Any, compliance_score)
         valid_score = (
-            normalized.get("media_type") != "video"
+            normalized.get("media_type") not in {"video", "unknown"}
             and 0 <= numeric_score <= 100
             and math.isfinite(numeric_score)
         )
     assessment = normalized.get("flashing_analysis")
-    valid_partial_video = (
-        normalized.get("media_type") == "video"
+    valid_partial_media = (
+        normalized.get("media_type") in {"video", "unknown"}
         and compliance_score is None
         and isinstance(normalized.get("issues"), list)
         and isinstance(assessment, dict)
@@ -106,7 +106,7 @@ def _normalize_processor_result(result: Any) -> Dict[str, Any]:
             )
         )
     )
-    valid_result = valid_score or valid_partial_video
+    valid_result = valid_score or valid_partial_media
     success_is_explicit = "success" in normalized
     explicit_success = normalized.get("success")
     if success_is_explicit and type(explicit_success) is bool:
@@ -116,7 +116,7 @@ def _normalize_processor_result(result: Any) -> Dict[str, Any]:
     else:
         success = not normalized.get("error") and valid_result
     normalized["success"] = success
-    if valid_partial_video:
+    if valid_partial_media:
         normalized["flashing_analysis"] = {
             "state": "unassessed",
             "reason": assessment["reason"],
@@ -799,11 +799,11 @@ class CloudScanJob:
                         "media_type": result.get("media_type"),
                         "flashing_assessment": (
                             result.get("flashing_analysis")
-                            if result.get("media_type") == "video"
+                            if result.get("media_type") in {"video", "unknown"}
                             else {"state": "not_applicable", "version": "unassessed-v1"}
                         ),
                     }
-                    if result.get("media_type") in {"video", "audio"}
+                    if result.get("media_type") in {"video", "audio", "unknown"}
                     else None
                 ),
             )
