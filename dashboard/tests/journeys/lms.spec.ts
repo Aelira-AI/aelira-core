@@ -1,8 +1,8 @@
 /* global process */
-import { test, expect, type Page, type TestInfo } from '@playwright/test';
+import { test, expect, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { assertNoBlockingViolations } from './support/a11y';
-import { apiGet, scanIdFromUrl } from './support/scans';
-import { apiUrl, dismissCookieBanner } from './support/stack';
+import { apiGet, scanIdFromUrl, type RemediationJob } from './support/scans';
+import { apiUrl, dismissCookieBanner, sha256 } from './support/stack';
 
 /**
  * Canvas LMS journey against the Canvas test instance, using a course copy,
@@ -112,11 +112,74 @@ test('the administrator connects Canvas through the dashboard and the teacher co
   const status = await apiGet<{ connected: boolean; canvas_instance_url: string }>(page.request, '/canvas/status');
   expect(status.connected).toBe(true);
   expect(status.canvas_instance_url).toBe(canvas);
+  // The teacher's token reaches the one course the teacher is enrolled in, and no other.
+  const courses = await apiGet<{ id: number | string }[]>(page.request, '/canvas/courses');
+  expect(courses.map((c) => String(c.id))).toEqual([courseId]);
+});
+
+
+interface CanvasFile {
+  id: number;
+  display_name: string;
+  size: number;
+  updated_at: string;
+  url: string;
+}
+
+/** One Canvas login shared by the steps that read or tidy the course. */
+let teacherSession: BrowserContext | undefined;
+async function canvasSession(browser: Browser): Promise<BrowserContext> {
+  if (teacherSession) return teacherSession;
+  teacherSession = await browser.newContext();
+  const page = await teacherSession.newPage();
+  await page.goto(`${canvas}/login/canvas`);
+  await signInToCanvas(page);
+  await page.waitForURL((url) => !url.pathname.startsWith('/login'));
+  await page.close();
+  return teacherSession;
+}
+
+async function canvasJson<T>(context: BrowserContext, path: string): Promise<T> {
+  const response = await context.request.get(`${canvas}${path}`, { headers: { Accept: 'application/json' } });
+  expect(response.ok(), `Canvas ${path} answered ${response.status()}`).toBe(true);
+  return JSON.parse((await response.text()).replace(/^while\(1\);/, '')) as T;
+}
+
+async function courseFiles(context: BrowserContext): Promise<CanvasFile[]> {
+  return canvasJson<CanvasFile[]>(context, `/api/v1/courses/${courseId}/files?per_page=100`);
+}
+
+async function deleteCanvasFile(context: BrowserContext, id: number) {
+  const cookies = await context.cookies(canvas);
+  const csrf = decodeURIComponent(cookies.find((c) => c.name === '_csrf_token')?.value ?? '');
+  const response = await context.request.delete(`${canvas}/api/v1/files/${id}`, {
+    headers: { 'X-CSRF-Token': csrf, Accept: 'application/json' },
+  });
+  expect(response.ok(), `deleting Canvas file ${id} answered ${response.status()}`).toBe(true);
+}
+
+const accessibleCopy = (name: string) => name.replace(/(\.[^.]+)$/, '_accessible$1');
+let snapshot: { name: string; size: number; updated_at: string }[] = [];
+const describe = (files: CanvasFile[]) =>
+  files
+    .map((f) => ({ name: f.display_name, size: f.size, updated_at: f.updated_at }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+test('the course copy is in a known state before anything is written', async ({ browser }) => {
+  const context = await canvasSession(browser);
+  // A run that was interrupted may have left remediated copies behind; remove them first.
+  for (const file of await courseFiles(context)) {
+    if (/_accessible\.[^.]+$/.test(file.display_name)) await deleteCanvasFile(context, file.id);
+  }
+  const files = await courseFiles(context);
+  expect(files.map((f) => f.display_name)).toEqual(expect.arrayContaining([pdfName, docxName]));
+  snapshot = describe(files);
 });
 
 test('the teacher launches the tool from the course and lands in the course scope', async ({ page }, testInfo) => {
-  await page.goto(`${canvas}/courses/${courseId}`);
+  await page.goto(`${canvas}/login/canvas`);
   if (/\/login/.test(new URL(page.url()).pathname)) await signInToCanvas(page);
+  await page.waitForURL((url) => !url.pathname.startsWith('/login'));
   await page.goto(`${canvas}/courses/${courseId}`);
   await page.getByRole('link', { name: 'Accessibility Scanner (CI)' }).click();
   const tool = page.frameLocator('iframe#tool_content');
@@ -124,5 +187,76 @@ test('the teacher launches the tool from the course and lands in the course scop
   await snap(page, testInfo, 'lti-launched');
   await expect(tool.getByText(pdfName).first()).toBeVisible();
   await expect(tool.getByText(docxName).first()).toBeVisible();
-  expect(scanIdFromUrl).toBeDefined();
+});
+
+async function scanRemediateApproveWriteBack(page: Page, testInfo: TestInfo, fileName: string, context: BrowserContext) {
+  await page.goto('/integrations/canvas');
+  await dismissCookieBanner(page);
+  await page.getByRole('button', { name: /CI Journeys/ }).click();
+  const row = page.getByRole('row', { name: new RegExp(fileName.replace(/\./g, '\\.')) });
+  await expect(row).toBeVisible({ timeout: 60_000 });
+  await assertNoBlockingViolations(page, `canvas-courses-${fileName}`, testInfo);
+  await row.getByRole('button', { name: 'Scan', exact: true }).click();
+  await expect(row.getByRole('button', { name: 'View Results' })).toBeVisible({ timeout: 180_000 });
+  await row.getByRole('button', { name: 'View Results' }).click();
+  await expect(page.getByRole('heading', { name: fileName })).toBeVisible();
+  const scanId = scanIdFromUrl(page.url());
+  await assertNoBlockingViolations(page, `canvas-scan-${fileName}`, testInfo);
+
+  await page.goto(`/remediate/${scanId}`);
+  await page.getByRole('button', { name: 'Start Remediation' }).click();
+  const download = page.getByRole('button', { name: 'Download improved working file' });
+  await expect(download).toBeVisible({ timeout: 240_000 });
+  await assertNoBlockingViolations(page, `canvas-remediated-${fileName}`, testInfo);
+  const job = await apiGet<RemediationJob>(page.request, `/education/scans/${scanId}/remediation/latest`);
+  expect(job.status).toBe('completed');
+  expect(job.download_available).toBe(true);
+
+  await page.getByRole('link', { name: 'Review changes' }).click();
+  await page.getByRole('button', { name: /^Approve all \d+ pending fixes/ }).click();
+  await page.getByLabel(/I have reviewed this working file/).check();
+  await page.getByRole('button', { name: 'Approve this file for publication' }).click();
+  await expect(page.getByText(/· Approved for publication/)).toBeVisible();
+  await assertNoBlockingViolations(page, `canvas-review-approved-${fileName}`, testInfo);
+  await page.getByRole('button', { name: 'Write back approved file' }).click();
+  await expect(page.getByText(/Write-back is queued/)).toBeVisible();
+
+  // Canvas now holds a remediated copy beside the original, and its bytes are the approved artifact.
+  const written = accessibleCopy(fileName);
+  let copy: CanvasFile | undefined;
+  await expect
+    .poll(async () => (copy = (await courseFiles(context)).find((f) => f.display_name === written)), {
+      message: `${written} never appeared in the course`,
+      timeout: 180_000,
+    })
+    .toBeDefined();
+  const bytes = await (await context.request.get((copy as CanvasFile).url)).body();
+  expect(sha256(bytes), 'Canvas holds the approved bytes').toBe(job.score_measurement?.output_sha256);
+  await snap(page, testInfo, `written-${fileName}`);
+}
+
+for (const fileName of [pdfName, docxName]) {
+  test(`${fileName}: scan, remediate, approve and write back to Canvas`, async ({ page, browser }, testInfo) => {
+    await scanRemediateApproveWriteBack(page, testInfo, fileName, await canvasSession(browser));
+  });
+}
+
+test('the course copy is back to its starting state', async ({ browser }) => {
+  const context = await canvasSession(browser);
+  for (const file of await courseFiles(context)) {
+    if (/_accessible\.[^.]+$/.test(file.display_name)) await deleteCanvasFile(context, file.id);
+  }
+  expect(describe(await courseFiles(context))).toEqual(snapshot);
+});
+
+test.afterAll(async () => {
+  // Leave nothing behind even when a step failed part-way.
+  if (!teacherSession) return;
+  try {
+    for (const file of await courseFiles(teacherSession)) {
+      if (/_accessible\.[^.]+$/.test(file.display_name)) await deleteCanvasFile(teacherSession, file.id);
+    }
+  } finally {
+    await teacherSession.close();
+  }
 });

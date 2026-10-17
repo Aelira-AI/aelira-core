@@ -10,6 +10,7 @@ import { dismissCookieBanner, sha256 } from './support/stack';
 
 const fixtures = resolve(import.meta.dirname, '../../../tests/fixtures');
 const downloads = resolve(import.meta.dirname, '../../journey-results/downloads');
+const journeyFixtures = resolve(import.meta.dirname, '../../../tests/journeys/fixtures');
 
 interface Upload {
   scanId: string;
@@ -216,6 +217,42 @@ test.describe('document journeys', () => {
     const afterApproval = await apiGet<RemediationJob>(page.request, `/education/scans/${upload.scanId}/remediation/latest`);
     expect(afterApproval.artifact_id).toBe(job.artifact_id);
     expect(afterApproval.score_measurement).toEqual(job.score_measurement);
+  });
+
+  test('a delivered DOCX still leaves its picture for human review, with no description written', async ({ page }, testInfo) => {
+    const source = `${journeyFixtures}/picture-without-alt.docx`;
+    const upload = await scanThroughTheUi(page, testInfo, {
+      card: /^Word Documents/,
+      file: source,
+      name: 'picture-without-alt.docx',
+      keyboard: false,
+    });
+    const scanned = await findingsShownInReport(page, testInfo, upload.scanId, 'picture-without-alt.docx');
+    expect(scanned.issues.map(issueText)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Image 1 is missing alternative text/), expect.stringMatching(/missing a title/)]),
+    );
+    const ai = await apiGet<{ primary_provider: string | null }>(page.request, '/api/ai/health');
+    expect(ai.primary_provider, 'no vision model is configured').toBeNull();
+
+    await remediateInTheUi(page, testInfo, upload.scanId, false);
+    const saved = await downloadWorkingFile(page, 'remediated-picture-without-alt.docx', false);
+    const job = await assertOutputMatchesRecord(page, upload.scanId, await readFile(source), saved.bytes, scanned);
+    expect(job.fixed_count, 'only the title could be fixed').toBe(1);
+    expect(job.manual_count, 'the picture is left to a person').toBe(1);
+    expect(job.remaining_count).toBe(1);
+    await expect(page.getByRole('heading', { name: /Manual work remaining \(1\)/ })).toBeVisible();
+    await expect(page.getByText('Image 1 is missing alternative text')).toBeVisible();
+    await assertNoBlockingViolations(page, 'remediation-partial-picture-without-alt.docx', testInfo);
+
+    // The saved package: the title was added, and the picture still has no description at all.
+    expect(await officePart(saved.path, 'docProps/core.xml')).toMatch(/<dc:title>[^<]+<\/dc:title>/);
+    const pictureTags = (await officePart(saved.path, 'word/document.xml')).match(/<wp:docPr\b[^>]*>/g) ?? [];
+    expect(pictureTags).toHaveLength(1);
+    expect(pictureTags[0], 'no alternative text may be written without seeing the picture').not.toMatch(/\b(descr|title)="[^"]/);
+
+    // A second scan of the saved bytes agrees: the picture is still reported.
+    const rescan = await rescanSavedFile(page, testInfo, /^Word Documents/, saved.path);
+    expect(rescan.issues.map(issueText)).toEqual([expect.stringMatching(/Image 1 is missing alternative text/)]);
   });
 
   test('an image the product cannot describe is left for human review, never invented', async ({ page }, testInfo) => {
