@@ -889,6 +889,7 @@ export default function CanvasContentPage(): React.ReactElement {
                 <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-[var(--surface-tertiary)] border border-[var(--border-primary)]">
                   <Filter className="w-3.5 h-3.5 text-[var(--content-secondary)]" />
                   <select
+                    aria-label="Filter by content type"
                     value={filterType}
                     onChange={(e) => setFilterType(e.target.value)}
                     className="bg-transparent outline-none text-sm cursor-pointer appearance-none pr-4 text-[var(--content-primary)]"
@@ -908,6 +909,7 @@ export default function CanvasContentPage(): React.ReactElement {
                 <Search className="w-3.5 h-3.5 text-[var(--content-tertiary)]" />
                 <input
                   type="text"
+                  aria-label="Search items"
                   placeholder="Search items..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
