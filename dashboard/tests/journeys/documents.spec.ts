@@ -200,9 +200,10 @@ test.describe('document journeys', () => {
 
     // Review, approve, reload: the decisions come back from storage, and the file is unchanged.
     await page.goto(`/review/${upload.scanId}`);
-    await expect(page.getByRole('button', { name: /^Approve all \d+ pending fixes/ })).toBeVisible();
+    const approvePending = page.getByRole('button', { name: /^Approve All \(2\) pending fixes$/ });
+    await expect(approvePending).toBeVisible();
     await assertNoBlockingViolations(page, 'review-pending', testInfo);
-    await page.getByRole('button', { name: /^Approve all \d+ pending fixes/ }).click();
+    await approvePending.click();
     await expect(page.getByRole('button', { name: 'Reviewed (2)' })).toBeVisible();
     await page.reload();
     await expect(page.getByRole('button', { name: 'Reviewed (2)' })).toBeVisible();
