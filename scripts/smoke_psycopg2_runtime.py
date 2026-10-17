@@ -11,6 +11,7 @@ SQLAlchemy engine) over a verified TLS connection to a synthetic PostgreSQL 16.
 from __future__ import annotations
 
 import hashlib
+import importlib.machinery
 import importlib.metadata
 import io
 import json
@@ -18,7 +19,13 @@ import os
 import platform
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
+
+if __package__:
+    from . import verify_final_python_packages as package_verifier
+else:
+    import verify_final_python_packages as package_verifier
 
 SYSTEM_LIBRARY_PREFIX = "/usr/lib/"
 REQUIRED_LIBRARIES = ("libpq.so", "libssl.so", "libcrypto.so")
@@ -26,8 +33,8 @@ UNICODE_TEXT = "café 日本語 \U0001f9ea Aelira"
 
 
 def mapped_libraries(maps_path: Path = Path("/proc/self/maps")) -> dict[str, str]:
-    """Return the resolved file behind every mapped shared library."""
-    libraries: dict[str, str] = {}
+    """Return every distinct mapped library, qualifying repeated basenames."""
+    by_name: dict[str, set[str]] = {}
     for line in maps_path.read_text().splitlines():
         fields = line.split(None, 5)
         if len(fields) < 6 or not fields[5].startswith("/"):
@@ -35,8 +42,28 @@ def mapped_libraries(maps_path: Path = Path("/proc/self/maps")) -> dict[str, str
         path = os.path.realpath(fields[5])
         name = Path(fields[5]).name
         if ".so" in name or ".so" in Path(path).name:
-            libraries[name] = path
-    return libraries
+            by_name.setdefault(name, set()).add(path)
+    return {
+        name if len(paths) == 1 else f"{name} [{path}]": path
+        for name, paths in sorted(by_name.items())
+        for path in sorted(paths)
+    }
+
+
+def trusted_interpreter_extensions() -> set[str]:
+    """Identify only imported native modules from this interpreter's stdlib."""
+    extension_root = Path(sysconfig.get_config_var("DESTSHARED")).resolve(strict=True)
+    trusted: set[str] = set()
+    for module in tuple(sys.modules.values()):
+        filename = getattr(module, "__file__", None)
+        if not isinstance(filename, str) or not filename.endswith(
+            tuple(importlib.machinery.EXTENSION_SUFFIXES)
+        ):
+            continue
+        path = Path(filename).resolve(strict=True)
+        if path.is_relative_to(extension_root):
+            trusted.add(str(path))
+    return trusted
 
 
 def check_loaded_libraries(libraries: dict[str, str]) -> dict[str, str]:
@@ -84,40 +111,128 @@ def require_tls_refusal(connect: object, reason: str, args: dict[str, object]) -
     raise RuntimeError(f"{reason} peer was accepted")
 
 
+def database_library_paths(
+    extension: Path,
+    baseline: dict[str, str],
+    observed: dict[str, str],
+    interpreter_extensions: set[str],
+) -> dict[str, str]:
+    """Join the extension's ELF closure to actual maps and post-connect loads."""
+    linkage = subprocess.run(
+        ["ldd", str(extension)], capture_output=True, text=True, check=True, timeout=10
+    ).stdout
+    if "not found" in linkage:
+        raise RuntimeError("unresolved psycopg2 ELF dependency")
+    static: set[str] = set()
+    for line in linkage.splitlines():
+        fields = line.strip().split()
+        if not fields:
+            continue
+        target = fields[2] if len(fields) >= 3 and fields[1] == "=>" else fields[0]
+        if target.startswith("/"):
+            static.add(str(Path(target).resolve(strict=True)))
+    if not static:
+        raise RuntimeError("psycopg2 ELF closure is empty")
+    mapped = set(observed.values())
+    extension_path = str(extension.resolve(strict=True))
+    if extension_path not in mapped:
+        raise RuntimeError("imported psycopg2 extension is absent from process maps")
+    missing = static - mapped
+    if missing:
+        raise RuntimeError(
+            f"ELF dependencies absent from process maps: {sorted(missing)}"
+        )
+    newly_mapped = mapped - set(baseline.values())
+    selected = set(static)
+    for path in newly_mapped:
+        if path in static:
+            continue
+        if path == extension_path or path in interpreter_extensions:
+            continue
+        if not path.startswith(SYSTEM_LIBRARY_PREFIX):
+            raise RuntimeError(f"unexplained off-prefix database mapping: {path}")
+        selected.add(path)
+    return {name: path for name, path in observed.items() if path in selected}
+
+
 def library_receipt(libraries: dict[str, str]) -> dict[str, dict[str, str]]:
-    """Hash mapped files and record their installed Debian owners."""
+    """Hash the mapped database closure and record binary and source packages."""
     receipt: dict[str, dict[str, str]] = {}
     for name, path in libraries.items():
+        if not path.startswith(SYSTEM_LIBRARY_PREFIX):
+            raise RuntimeError(
+                f"database library outside {SYSTEM_LIBRARY_PREFIX}: {name}"
+            )
+        resolved = str(Path(path).resolve(strict=True))
+        if not resolved.startswith(SYSTEM_LIBRARY_PREFIX):
+            raise RuntimeError(
+                f"database library outside {SYSTEM_LIBRARY_PREFIX}: {name}"
+            )
         owner = subprocess.run(
-            ["dpkg-query", "--search", path],
+            ["dpkg-query", "--search", resolved],
             capture_output=True,
             text=True,
             check=True,
+            timeout=10,
         ).stdout.strip()
-        package = owner.split(": ", 1)[0]
-        if package.split(":", 1)[0] not in {"libpq5", "libssl3t64"}:
-            raise RuntimeError(f"unexpected owner of {name}: {package}")
-        version = subprocess.run(
-            ["dpkg-query", "--show", "--showformat=${Version}", package],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        if not version:
-            raise RuntimeError(f"missing package version for {name}")
+        owners = {
+            package
+            for line in owner.splitlines()
+            if ": " in line
+            for package, owned_path in [line.split(": ", 1)]
+            if owned_path == resolved
+        }
+        if len(owners) != 1:
+            raise RuntimeError(f"missing or ambiguous Debian owner of {name}")
+        package = owners.pop()
+        identity = (
+            subprocess.run(
+                [
+                    "dpkg-query",
+                    "--show",
+                    "--showformat=${binary:Package}\t${Version}\t${source:Package}\t${source:Version}",
+                    package,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+            .stdout.strip()
+            .split("\t")
+        )
+        if len(identity) != 4 or not all(identity):
+            raise RuntimeError(f"incomplete Debian package identity for {name}")
+        binary, version, source, source_version = identity
+        if binary != package:
+            raise RuntimeError(
+                f"Debian owner differs from installed package for {name}"
+            )
+        if name.startswith("libpq.so") and binary.split(":", 1)[0] != "libpq5":
+            raise RuntimeError(f"unexpected libpq owner: {binary}")
+        if (
+            name.startswith(("libssl.so", "libcrypto.so"))
+            and binary.split(":", 1)[0] != "libssl3t64"
+        ):
+            raise RuntimeError(f"unexpected TLS library owner: {binary}")
         receipt[name] = {
-            "path": path,
-            "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+            "path": resolved,
+            "sha256": hashlib.sha256(Path(resolved).read_bytes()).hexdigest(),
             "package": package,
             "package_version": version,
+            "source_package": source,
+            "source_version": source_version,
         }
+    if not receipt:
+        raise RuntimeError("database library closure is empty")
     return receipt
 
 
-def exercise_database(args: dict[str, object]) -> dict[str, object]:
+def exercise_database(
+    args: dict[str, object],
+) -> tuple[dict[str, object], dict[str, str]]:
     import psycopg2
     import psycopg2.extras
-    from sqlalchemy import create_engine, text
 
     document = {"title": UNICODE_TEXT, "tags": ["a11y", "wcag"], "score": 3.5}
     with psycopg2.connect(**args) as connection:
@@ -175,6 +290,10 @@ def exercise_database(args: dict[str, object]) -> dict[str, object]:
         connection.rollback()
         libpq_version = psycopg2.__libpq_version__
 
+    # Capture after libpq/TLS work, before importing SQLAlchemy's own modules.
+    direct_connection_maps = mapped_libraries()
+    from sqlalchemy import create_engine, text
+
     engine = create_engine(
         "postgresql+psycopg2://",
         creator=lambda: psycopg2.connect(**args),
@@ -206,7 +325,7 @@ def exercise_database(args: dict[str, object]) -> dict[str, object]:
             "copy-in-out",
             "sqlalchemy-pool",
         ],
-    }
+    }, direct_connection_maps
 
 
 def main() -> int:
@@ -224,6 +343,7 @@ def main() -> int:
     if any(not os.environ.get(key) for key in required):
         print("missing psycopg2 TLS smoke configuration", file=sys.stderr)
         return 2
+    baseline = mapped_libraries()
     import psycopg2
     import psycopg2._psycopg
 
@@ -248,7 +368,7 @@ def main() -> int:
     if not args["password"]:
         raise RuntimeError("empty synthetic database password")
 
-    positive = exercise_database(args)
+    positive, direct_connection_maps = exercise_database(args)
     refusals = {
         "wrong_host": require_tls_refusal(
             psycopg2.connect, "wrong-host", {**args, "host": "wrong.invalid"}
@@ -261,12 +381,43 @@ def main() -> int:
     }
 
     module = Path(psycopg2.__file__).resolve()
-    loaded = check_loaded_libraries(mapped_libraries())
+    observed = mapped_libraries()
+    check_loaded_libraries(observed)
+    installed = package_verifier.psycopg2_record_receipt()
+    if installed["extension_path"] != str(
+        Path(psycopg2._psycopg.__file__).resolve(strict=True)
+    ):
+        raise RuntimeError("installed RECORD extension differs from imported extension")
+    extension_sha256 = hashlib.sha256(
+        Path(psycopg2._psycopg.__file__).read_bytes()
+    ).hexdigest()
+    if installed["extension_sha256"] != extension_sha256:
+        raise RuntimeError("installed RECORD and loaded extension bytes differ")
+    direct_closure = database_library_paths(
+        Path(installed["extension_path"]),
+        baseline,
+        direct_connection_maps,
+        trusted_interpreter_extensions(),
+    )
+    selected_paths = set(direct_closure.values()) | set(
+        check_loaded_libraries(observed).values()
+    )
+    if selected_paths - set(observed.values()):
+        raise RuntimeError(
+            "database library closure changed after the direct connection"
+        )
+    loaded = {name: path for name, path in observed.items() if path in selected_paths}
     report = {
         "psycopg2": psycopg2.__version__,
         "module": str(module),
-        "extension_sha256": hashlib.sha256(
-            Path(psycopg2._psycopg.__file__).read_bytes()
+        "extension_sha256": extension_sha256,
+        "installed_record": installed,
+        "probe_runtime_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "helper_runtime_sha256": hashlib.sha256(
+            Path(package_verifier.__file__).read_bytes()
+        ).hexdigest(),
+        "requirements_runtime_sha256": hashlib.sha256(
+            package_verifier.REQUIREMENTS.read_bytes()
         ).hexdigest(),
         "image_id": os.environ["AELIRA_RUNTIME_IMAGE_ID"],
         "architecture": architecture,
