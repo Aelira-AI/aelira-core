@@ -8,7 +8,9 @@ import pytest
 
 from scripts.smoke_psycopg2_runtime import (
     check_loaded_libraries,
+    classify_tls_refusal,
     mapped_libraries,
+    require_tls_refusal,
 )
 
 SYSTEM = {
@@ -60,3 +62,52 @@ def test_mapped_libraries_reads_resolved_shared_objects(tmp_path: Path) -> None:
         "libpq.so.5.17": "/usr/lib/x86_64-linux-gnu/libpq.so.5.17",
         "libssl.so.3": "/usr/lib/x86_64-linux-gnu/libssl.so.3",
     }
+
+
+@pytest.mark.parametrize(
+    ("control", "detail"),
+    [
+        ("wrong-host", 'server certificate does not match host name "wrong.invalid"'),
+        ("untrusted-ca", "SSL error: certificate verify failed"),
+    ],
+)
+def test_certificate_refusals_have_expected_reason(control: str, detail: str) -> None:
+    assert classify_tls_refusal(control, RuntimeError(detail)) == control
+
+
+@pytest.mark.parametrize(
+    ("control", "detail"),
+    [
+        ("wrong-host", "could not translate host name wrong.invalid"),
+        ("wrong-host", "connection timed out"),
+        ("wrong-host", "certificate verify failed"),
+        ("untrusted-ca", "connection refused"),
+        ("untrusted-ca", "server certificate does not match host name"),
+    ],
+)
+def test_other_failures_cannot_pass_as_certificate_refusals(
+    control: str, detail: str
+) -> None:
+    with pytest.raises(RuntimeError, match="certificate"):
+        classify_tls_refusal(control, RuntimeError(detail))
+
+
+def test_refusal_failure_does_not_expose_connection_detail() -> None:
+    private_detail = "connection timed out password=synthetic-secret"
+    with pytest.raises(RuntimeError) as failure:
+        classify_tls_refusal("wrong-host", RuntimeError(private_detail))
+    assert "synthetic-secret" not in str(failure.value)
+    assert failure.value.__cause__ is None
+
+
+def test_accepted_negative_peer_fails_and_is_closed() -> None:
+    class AcceptedPeer:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    peer = AcceptedPeer()
+    with pytest.raises(RuntimeError, match="peer was accepted"):
+        require_tls_refusal(lambda **_args: peer, "wrong-host", {})
+    assert peer.closed
