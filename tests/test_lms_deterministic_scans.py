@@ -466,6 +466,121 @@ async def test_cloud_lms_scan_explicitly_disables_processor_ai_options(
     assert result["issues_found"] == 1
 
 
+@pytest.mark.parametrize(
+    ("file_type", "processor_path", "method_name"),
+    [
+        ("pdf", "src.education.pdf_processor.PDFProcessor", "process_pdf"),
+        ("docx", "src.education.docx_processor.DocxProcessor", "process_docx"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cloud_document_scan_records_exact_downloaded_source_hash(
+    tmp_path, file_type, processor_path, method_name
+):
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    source = tmp_path / f"source.{file_type}"
+    source.write_bytes(f"synthetic {file_type} source".encode())
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    credential = SimpleNamespace(department_id="department-1")
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        file_type=file_type,
+        file_name=source.name,
+        file_size_bytes=source.stat().st_size,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    processor = MagicMock()
+    getattr(processor, method_name).return_value = {
+        "success": True,
+        "issues": [],
+        "compliance_score": 100.0,
+    }
+    with (
+        patch(processor_path, return_value=processor),
+        patch("src.jobs.email_alert_job.trigger_scan_alerts", new=AsyncMock()),
+    ):
+        result = await CloudScanJob(credential, cloud_file, MagicMock())._scan_file(
+            str(source), db, source_sha256=digest
+        )
+
+    scan = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "Scan"
+    )
+    assert result["success"] is True
+    assert scan.status == "COMPLETED"
+    assert scan.file_hash == digest
+
+
+@pytest.mark.asyncio
+async def test_cloud_scan_refuses_source_changed_by_processor(tmp_path):
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"synthetic original")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    credential = SimpleNamespace(department_id="department-1")
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        file_type="pdf",
+        file_name=source.name,
+        file_size_bytes=source.stat().st_size,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    processor = MagicMock()
+
+    def mutate_source(_path):
+        source.write_bytes(b"changed source")
+        return {"success": True, "issues": [], "compliance_score": 100.0}
+
+    processor.process_pdf.side_effect = mutate_source
+    with patch("src.education.pdf_processor.PDFProcessor", return_value=processor):
+        result = await CloudScanJob(credential, cloud_file, MagicMock())._scan_file(
+            str(source), db, source_sha256=digest
+        )
+
+    scan = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "Scan"
+    )
+    assert result["success"] is False
+    assert scan.status == "FAILED"
+    assert scan.error_message == "SOURCE_CHANGED_DURING_SCAN"
+    assert scan.file_hash is None
+
+
+@pytest.mark.asyncio
+async def test_cloud_scan_passes_downloaded_bytes_hash_to_persistence(tmp_path):
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    credential = SimpleNamespace(provider="canvas", department_id="department-1")
+    cloud_file = SimpleNamespace(file_name="source.pdf")
+    job = CloudScanJob(credential, cloud_file, MagicMock())
+    source = b"synthetic Canvas course file"
+
+    async def download(_token, path):
+        Path(path).write_bytes(source)
+        return {"success": True, "local_path": path}
+
+    with (
+        patch.object(
+            job, "_refresh_token_if_needed", new=AsyncMock(return_value="token")
+        ),
+        patch.object(job, "_download_canvas", side_effect=download),
+        patch.object(
+            job, "_scan_file", new=AsyncMock(return_value={"success": True})
+        ) as scan,
+    ):
+        assert (await job.run(MagicMock()))["success"] is True
+
+    assert scan.await_args.kwargs["source_sha256"] == hashlib.sha256(source).hexdigest()
+
+
 @pytest.mark.asyncio
 async def test_lms_image_scan_emits_manual_review_finding_without_ai_provider_calls():
     from src.jobs.cloud_scan_job import CloudScanJob

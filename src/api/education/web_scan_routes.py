@@ -97,6 +97,53 @@ class SitemapScanRequest(BaseModel):
 # ==================== Web Scanning Endpoint ====================
 
 
+def _review_queue_row(
+    scan_id: str,
+    *,
+    issue_id: str,
+    category: str,
+    severity: str,
+    description: str,
+    location: str,
+    original_content: str,
+    fixed_content: str,
+    ai_generated: bool,
+    confidence: float,
+    wcag_criteria: str,
+):
+    """Build one review-queue row with its stable occurrence key and digest."""
+    from ...education.remediation.base import FixedIssue
+    from ...services.scan_fix_service import build_scan_fix
+
+    return build_scan_fix(
+        scan_id,
+        FixedIssue(
+            issue_id=issue_id,
+            category=category,
+            severity=severity,
+            description=description,
+            location=location,
+            original_content=original_content,
+            fixed_content=fixed_content,
+            fix_method="ai" if ai_generated else "heuristic",
+            confidence=confidence,
+            needs_review=True,
+            wcag_criteria=wcag_criteria,
+        ),
+    )
+
+
+def _add_review_queue_rows(db, rows) -> int:
+    """Add rows, skipping a repeat of the same issue at the same location."""
+    seen = set()
+    for row in rows:
+        if row.occurrence_key in seen:
+            continue
+        seen.add(row.occurrence_key)
+        db.add(row)
+    return len(seen)
+
+
 @router.post("/web/scan", response_model=dict)
 async def scan_website(
     request: WebScanRequest,
@@ -491,7 +538,7 @@ def process_web_scan_background(
         capture_screenshots: Capture screenshots of issues
     """
     from ...db.database import SessionLocal
-    from ...db.models import ScanResult, ScanFix, ScanStatus
+    from ...db.models import ScanResult, ScanStatus
     from datetime import datetime
 
     # Create new DB session for this thread
@@ -774,7 +821,6 @@ def process_web_scan_background(
         db.commit()
 
         # ---- Persist ScanFix records for the review queue ----
-        import uuid as _uuid
         from ...education.remediation.category_mapper import (
             wcag_criterion_to_category,
             impact_to_severity,
@@ -788,37 +834,42 @@ def process_web_scan_background(
                 f"capping at {MAX_SCANFIX_ISSUES} for review queue"
             )
 
-        for issue_dict in all_issues[:MAX_SCANFIX_ISSUES]:
-            criterion = issue_dict.get("criterion", "")
-            impact = issue_dict.get("impact", "moderate")
-            code_fix = issue_dict.get("generated_code_fix")
-            human_fix = issue_dict.get("fix")
-            selector = issue_dict.get("selector", "")
-            page_url = issue_dict.get("page_url", "")
-
-            db.add(
-                ScanFix(
-                    id=str(_uuid.uuid4()),
-                    scan_id=scan.id,
-                    issue_id=f"web-{criterion}-{_stable_hash(issue_dict.get('description', ''))}",
-                    category=wcag_criterion_to_category(criterion),
-                    severity=impact_to_severity(impact),
+        persisted_web = _add_review_queue_rows(
+            db,
+            (
+                _review_queue_row(
+                    scan.id,
+                    issue_id=(
+                        f"web-{issue_dict.get('criterion', '')}-"
+                        f"{_stable_hash(issue_dict.get('description', ''))}"
+                    ),
+                    category=wcag_criterion_to_category(
+                        issue_dict.get("criterion", "")
+                    ),
+                    severity=impact_to_severity(issue_dict.get("impact", "moderate")),
                     description=issue_dict.get("description", ""),
-                    location=f"{page_url} | {selector}" if selector else page_url,
+                    location=(
+                        f"{issue_dict.get('page_url', '')} | {issue_dict.get('selector', '')}"
+                        if issue_dict.get("selector", "")
+                        else issue_dict.get("page_url", "")
+                    ),
                     original_content=issue_dict.get("element", ""),
-                    fixed_content=code_fix or human_fix or "",
-                    fix_method="ai" if code_fix else "heuristic",
-                    model_used="gemini" if code_fix else None,
-                    confidence=impact_to_confidence(impact),
-                    needs_review=True,
-                    review_status="pending",
-                    wcag_criteria=criterion,
-                    page_number=None,
+                    fixed_content=(
+                        issue_dict.get("generated_code_fix")
+                        or issue_dict.get("fix")
+                        or ""
+                    ),
+                    ai_generated=bool(issue_dict.get("generated_code_fix")),
+                    confidence=impact_to_confidence(
+                        issue_dict.get("impact", "moderate")
+                    ),
+                    wcag_criteria=issue_dict.get("criterion", ""),
                 )
-            )
+                for issue_dict in all_issues[:MAX_SCANFIX_ISSUES]
+            ),
+        )
 
         db.commit()
-        persisted_web = min(total_web_issues, MAX_SCANFIX_ISSUES)
         logger.info(
             f"Web scan {scan_id}: persisted {persisted_web}/{total_web_issues} ScanFix records"
         )
@@ -1346,7 +1397,7 @@ def process_code_background(
 ):
     """Background task to process code file asynchronously - TRUE REAL-TIME PROGRESS!"""
     from ...db.database import SessionLocal
-    from ...db.models import Scan, ScanStatus, ScanResult, ScanFix
+    from ...db.models import Scan, ScanStatus, ScanResult
     from sqlalchemy.sql import func
     import hashlib
 
@@ -1462,7 +1513,6 @@ def process_code_background(
         db.commit()
 
         # ---- Persist ScanFix records for the review queue ----
-        import uuid as _uuid
         from ...education.remediation.category_mapper import (
             code_rule_to_category,
             impact_to_severity,
@@ -1476,6 +1526,7 @@ def process_code_background(
                 f"capping at {MAX_SCANFIX_ISSUES} for review queue"
             )
 
+        code_rows = []
         for issue_dict in (
             issue.dict() for issue in result.issues[:MAX_SCANFIX_ISSUES]
         ):
@@ -1487,10 +1538,9 @@ def process_code_background(
             file_path = issue_dict.get("file_path", "")
             line_num = issue_dict.get("line_number")
 
-            db.add(
-                ScanFix(
-                    id=str(_uuid.uuid4()),
-                    scan_id=scan.id,
+            code_rows.append(
+                _review_queue_row(
+                    scan.id,
                     issue_id=f"code-{rule}-{_stable_hash(issue_dict.get('description', ''))}",
                     category=code_rule_to_category(scanner_cat, rule),
                     severity=impact_to_severity(severity_raw),
@@ -1498,18 +1548,14 @@ def process_code_background(
                     location=f"{file_path}:{line_num}" if line_num else file_path,
                     original_content=issue_dict.get("code_snippet", ""),
                     fixed_content=ai_fix or human_fix or "",
-                    fix_method="ai" if ai_fix else "heuristic",
-                    model_used="gemini" if ai_fix else None,
+                    ai_generated=bool(ai_fix),
                     confidence=impact_to_confidence(severity_raw),
-                    needs_review=True,
-                    review_status="pending",
                     wcag_criteria=issue_dict.get("wcag_criterion", ""),
-                    page_number=None,
                 )
             )
+        persisted = _add_review_queue_rows(db, code_rows)
 
         db.commit()
-        persisted = min(total_issues, MAX_SCANFIX_ISSUES)
         logger.info(
             f"Code scan {scan_id}: persisted {persisted}/{total_issues} ScanFix records"
         )

@@ -291,7 +291,9 @@ export default function CanvasContentPage(): React.ReactElement {
     setScanning(true);
     try {
       const result = await scanCourseContent({ course_id: courseId });
-      if (result.total_items === 0) {
+      // The scan runs as a queued job and the response counts no items yet, so a
+      // zero total only means "nothing to scan" when no job was queued either.
+      if (result.total_items === 0 && !result.job_id && !(result.jobs_queued > 0)) {
         toast.info(
           'No pages, assignments, announcements, quizzes, discussions, or files found in this course.',
           'Nothing to Scan'
@@ -300,7 +302,9 @@ export default function CanvasContentPage(): React.ReactElement {
         return;
       }
       toast.info(
-        `Scanning ${result.total_items} items (${result.skipped} skipped, already scanned).`,
+        result.total_items > 0
+          ? `Scanning ${result.total_items} items (${result.skipped} skipped, already scanned).`
+          : 'Scanning course content. Results appear here as the scan finishes.',
         'Scan Started'
       );
       // Start polling for progress

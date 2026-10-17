@@ -62,6 +62,8 @@ def test_real_inventory_reports_boundaries_without_execution():
         "wrong-command",
         "manual-ci",
         "simulated-without-mocks",
+        "real-stack-with-mocks",
+        "real-stack-without-ci",
         "promoted-status",
         "bad-revision",
     ],
@@ -100,12 +102,37 @@ def test_invalid_inventory_fails_closed(damage):
         evidence["level"] = "manual"
     elif damage == "simulated-without-mocks":
         evidence["level"] = "browser_simulated"
+    elif damage == "real-stack-with-mocks":
+        evidence["level"] = "browser_real_stack"
+        evidence["mocked"] = ["a mocked boundary"]
+    elif damage == "real-stack-without-ci":
+        evidence["level"] = "browser_real_stack"
+        evidence["ci"] = None
     elif damage == "promoted-status":
         evidence["status"] = "passed"
     else:
         revision = "main"
     with pytest.raises(InvalidMatrix):
         build_report(ROOT, value, revision)
+
+
+def test_real_stack_browser_evidence_is_inventoried_but_never_certified():
+    report = build_report(ROOT, matrix(), REVISION)
+    real = [
+        evidence
+        for journey in report["journeys"]
+        for evidence in journey["evidence"]
+        if evidence["level"] == "browser_real_stack"
+    ]
+    assert {e["id"] for e in real} == {
+        "document-browser-journey",
+        "web-browser-journey",
+        "media-browser-journey",
+        "canvas-browser-journey",
+    }
+    assert report["journey_verification"] == "not_evaluated"
+    assert all(e["mocked"] == [] and e["ci"] for e in real)
+    assert all(e["execution"] == "not_run_by_inventory" for e in real)
 
 
 def test_duplicate_json_keys_are_rejected(tmp_path):

@@ -8,9 +8,11 @@ durable worker and Mailpit. It uses synthetic documents and an administrator
 created through the public magic-link flow. Transport, findings and artifact
 storage are not mocked.
 
-This is API integration coverage. The separate browser walkthrough below is
-required to verify dashboard interaction; this gate alone does not establish
-a full browser journey or accessibility conformance.
+This is API integration coverage. The [browser user-journey suite](user-journey-suite.md)
+drives the dashboard against the same kind of stack for a PDF, a DOCX and an
+image-heavy deck; the manual walkthrough below remains the procedure for flows
+that suite does not cover. Neither this gate nor that suite establishes
+accessibility conformance.
 
 ## Executable coverage
 

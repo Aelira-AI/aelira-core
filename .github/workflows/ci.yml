@@ -37,6 +37,8 @@ jobs:
       - document-stack
       - dashboard
       - e2e-release
+      - user-journeys
+      - user-journeys-lms
       - cli
       - quickstart
       - docker
@@ -46,10 +48,18 @@ jobs:
       - name: Require every CI job to pass
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
+          # Canvas credentials are unavailable to fork and Dependabot pull requests.
+          # The Canvas journey is then skipped, never passed, and says so below.
+          LMS_JOURNEY_RUNS: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'true' || 'false' }}
         run: |
-          printf '%s\n' "$JOB_RESULTS" | jq -e '
-            length == 19 and all(.[]; .result == "success")
+          printf '%s\n' "$JOB_RESULTS" | jq -e --arg lms "$LMS_JOURNEY_RUNS" '
+            length == 21 and all(to_entries[];
+              .value.result == "success"
+              or (.key == "user-journeys-lms" and .value.result == "skipped" and $lms == "false"))
           '
+          if [ "$LMS_JOURNEY_RUNS" = false ]; then
+            echo "::notice title=Canvas LMS journey::NOT RUN: Canvas credentials unavailable on fork and Dependabot pull requests. The other journeys ran."
+          fi
 
   expat-native-acceptance:
     name: Native Expat acceptance (${{ matrix.arch }})
@@ -1374,6 +1384,121 @@ jobs:
         env:
           VITE_API_URL: http://localhost:8000
         run: ./node_modules/.bin/playwright test tests/a11y-audit.spec.ts --project=chromium --workers=2
+
+  user-journeys:
+    name: Browser user journeys (documents, web, media)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start the real stack
+        uses: ./.github/actions/journey-stack
+      - name: Run the journeys through the dashboard
+        working-directory: dashboard
+        env:
+          CI: 'true'
+        run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=journeys
+      - name: Summarise accessibility results
+        if: always()
+        run: python scripts/journeys/summarise_axe.py dashboard/journey-results/axe-summary.jsonl >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain traces, screenshots and service logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: user-journeys-failure
+          path: |
+            dashboard/journey-results/artifacts/
+            ${{ runner.temp }}/journey-api.log
+            ${{ runner.temp }}/journey-worker.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  user-journeys-lms:
+    name: Canvas LMS user journey
+    # Skipped, not passed, when the credentials cannot be exposed to the run.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Every run writes to the same synthetic Canvas course; hold the lock for
+    # the whole job so setup, journey writeback, and cleanup cannot overlap.
+    concurrency:
+      group: canvas-lms-synthetic-course
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require every Canvas credential
+        env:
+          AELIRA_JOURNEY_CANVAS_URL: ${{ secrets.AELIRA_JOURNEY_CANVAS_URL }}
+          AELIRA_JOURNEY_CANVAS_COURSE_ID: ${{ secrets.AELIRA_JOURNEY_CANVAS_COURSE_ID }}
+          AELIRA_JOURNEY_LTI_CLIENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_CLIENT_ID }}
+          AELIRA_JOURNEY_LTI_DEPLOYMENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
+          AELIRA_JOURNEY_LTI_PRIVATE_KEY: ${{ secrets.AELIRA_JOURNEY_LTI_PRIVATE_KEY }}
+          AELIRA_JOURNEY_OAUTH_CLIENT_ID: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_ID }}
+          AELIRA_JOURNEY_OAUTH_CLIENT_SECRET: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_SECRET }}
+          AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
+          AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
+        run: |
+          missing=0
+          for name in CANVAS_URL CANVAS_COURSE_ID LTI_CLIENT_ID LTI_DEPLOYMENT_ID LTI_PRIVATE_KEY \
+                      OAUTH_CLIENT_ID OAUTH_CLIENT_SECRET CANVAS_TEACHER_LOGIN CANVAS_TEACHER_PASSWORD; do
+            full="AELIRA_JOURNEY_$name"
+            [ -n "${!full}" ] || { echo "::error::$full is empty"; missing=1; }
+          done
+          exit "$missing"
+      - name: Start the real stack with the Canvas tool configured
+        uses: ./.github/actions/journey-stack
+        with:
+          canvas-url: ${{ secrets.AELIRA_JOURNEY_CANVAS_URL }}
+          canvas-lti-client-id: ${{ secrets.AELIRA_JOURNEY_LTI_CLIENT_ID }}
+          canvas-lti-deployment-id: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
+          canvas-lti-private-key: ${{ secrets.AELIRA_JOURNEY_LTI_PRIVATE_KEY }}
+          canvas-oauth-client-id: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_ID }}
+          canvas-oauth-client-secret: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_SECRET }}
+      - name: Run the Canvas journey through the dashboard
+        working-directory: dashboard
+        env:
+          CI: 'true'
+          JOURNEY_LMS_REQUIRED: 'true'
+          JOURNEY_CANVAS_URL: ${{ secrets.AELIRA_JOURNEY_CANVAS_URL }}
+          JOURNEY_CANVAS_COURSE_ID: ${{ secrets.AELIRA_JOURNEY_CANVAS_COURSE_ID }}
+          JOURNEY_LTI_CLIENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_CLIENT_ID }}
+          JOURNEY_LTI_DEPLOYMENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
+          JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
+          JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
+        run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=lms
+      - name: Show the scan lines of the worker log for a failed run
+        if: failure()
+        run: |
+          grep -E 'ERROR|WARNING|Traceback|Error|canvas|Canvas|scan' "$RUNNER_TEMP/journey-worker.log" \
+            | sed -E 's/\?[^ "]*//g' | tail -60 || true
+      - name: Show database errors for a failed run
+        # Only the error and detail lines; statements can carry course content.
+        if: failure()
+        run: docker logs journeys-postgres 2>&1 | grep -E 'ERROR:|DETAIL:' | tail -20 || true
+      - name: Show the LTI and Canvas lines of the API log for a failed run
+        # Job logs of a public repository are public: query strings and tokens are dropped.
+        if: failure()
+        run: |
+          grep -E 'LTI|lti|Canvas|canvas' "$RUNNER_TEMP/journey-api.log" \
+            | sed -E 's/\?[^ "]*//g; s/(token|code|state|login_hint|lti_message_hint)=[^& "]*/\1=<redacted>/g' \
+            | tail -60 || true
+      - name: Remove the tool key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/lti-private.pem" "$RUNNER_TEMP/lti-public.pem" "$RUNNER_TEMP/journey.env"
+      - name: Summarise accessibility results
+        if: always()
+        run: python scripts/journeys/summarise_axe.py dashboard/journey-results/axe-summary.jsonl >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain traces and screenshots of a failed run
+        # Canvas pages and service logs can name course content, and the browser
+        # trace records page URLs: keep only screenshots here.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: user-journeys-lms-failure
+          path: dashboard/journey-results/artifacts/**/*.png
+          if-no-files-found: warn
+          retention-days: 7
 
   cli:
     runs-on: ubuntu-latest

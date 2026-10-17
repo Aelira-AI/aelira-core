@@ -197,6 +197,32 @@ def humanize_fix_description(technical_message: str) -> str:
     return technical_message
 
 
+_AXE_SUCCESS_CRITERION_TAG = re.compile(r"wcag(\d)(\d)(\d{1,2})")
+# scan_fixes.wcag_criteria is a 20 character column.
+_MAX_CRITERION_LENGTH = 20
+
+
+def axe_criterion_from_tags(tags: Optional[List[str]]) -> str:
+    """Name the WCAG success criterion an axe violation belongs to.
+
+    axe lists its category tag first (for example ``cat.text-alternatives``),
+    which is not a criterion and can be longer than the column that stores it.
+    Prefer the success-criterion tag (``wcag111`` is 1.1.1), then the
+    best-practice marker, then the first tag that fits.
+    """
+    tags = [tag for tag in (tags or []) if isinstance(tag, str)]
+    for tag in tags:
+        match = _AXE_SUCCESS_CRITERION_TAG.fullmatch(tag)
+        if match:
+            return ".".join(match.groups())
+    if "best-practice" in tags:
+        return "best-practice"
+    for tag in tags:
+        if tag and len(tag) <= _MAX_CRITERION_LENGTH:
+            return tag
+    return "unknown"
+
+
 class WebPageIssue(BaseModel):
     """Single accessibility issue found on a web page"""
 
@@ -1457,11 +1483,7 @@ class WebScanner:
                 issue = WebPageIssue(
                     impact=violation.get("impact", "minor"),
                     rule_id=violation_id,
-                    criterion=(
-                        violation.get("tags", [""])[0]
-                        if violation.get("tags")
-                        else "unknown"
-                    ),
+                    criterion=axe_criterion_from_tags(violation.get("tags")),
                     description=contextual_description,
                     help_url=violation.get("helpUrl", ""),
                     element=element_html,
