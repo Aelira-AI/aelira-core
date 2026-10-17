@@ -1345,7 +1345,7 @@ jobs:
   e2e-release:
     name: Deterministic Chromium release smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: dashboard
@@ -1368,6 +1368,10 @@ jobs:
         env:
           VITE_API_URL: http://localhost:8000
         run: ./node_modules/.bin/playwright test tests/dashboard-polish.spec.ts tests/auth-continuation.spec.ts --project=chromium
+      - name: Run dashboard route accessibility regression
+        env:
+          VITE_API_URL: http://localhost:8000
+        run: ./node_modules/.bin/playwright test tests/a11y-audit.spec.ts --project=chromium --workers=2
 
   cli:
     runs-on: ubuntu-latest

@@ -197,21 +197,28 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
         {isScanning && (
           <div className="mt-4 p-4 bg-[var(--surface-accent-subtle)] border border-[var(--border-accent)] rounded-lg">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-[var(--content-accent)]">
+              <span className="text-sm font-medium text-[var(--content-accent)]" role="status">
                 Scanning...
               </span>
               <span className="text-sm font-semibold text-[var(--content-accent)]">
                 {progress}%
               </span>
             </div>
-            <div className="w-full bg-[var(--surface-tertiary)] rounded-full h-2.5 mb-2">
+            <div
+              className="w-full bg-[var(--surface-tertiary)] rounded-full h-2.5 mb-2"
+              role="progressbar"
+              aria-label="Website scan progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progress}
+            >
               <div
                 className="bg-[var(--interactive-primary-bg)] h-2.5 rounded-full transition-all duration-300"
                 style={{ width: `${progress}%` }}
               ></div>
             </div>
             {progressMessage && (
-              <div className="text-xs text-[var(--content-accent)]">{progressMessage}</div>
+              <div className="text-xs text-[var(--content-accent)]" role="status">{progressMessage}</div>
             )}
           </div>
         )}
@@ -306,8 +313,9 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-primary mb-1">Crawl Depth</label>
+            <label htmlFor="website-crawl-depth" className="block text-sm font-medium text-primary mb-1">Crawl Depth</label>
             <select
+              id="website-crawl-depth"
               value={options.max_depth}
               onChange={handleSelectChange('max_depth')}
               className="input"
@@ -320,8 +328,9 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-primary mb-1">Max Pages</label>
+            <label htmlFor="website-max-pages" className="block text-sm font-medium text-primary mb-1">Max Pages</label>
             <select
+              id="website-max-pages"
               value={options.max_pages}
               onChange={handleSelectChange('max_pages')}
               className="input"

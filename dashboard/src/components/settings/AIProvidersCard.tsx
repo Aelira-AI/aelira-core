@@ -292,8 +292,8 @@ function ProviderSettingsCard({
       </div>
       <div className="px-6 py-4 space-y-4">
         {loadingProviders ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin text-tertiary" />
+          <div className="flex items-center justify-center py-8" role="status">
+            <Loader2 className="w-6 h-6 animate-spin text-tertiary" aria-hidden="true" />
             <span className="ml-2 text-tertiary">Loading providers...</span>
           </div>
         ) : providerLoadError || !providerStateReady ? (

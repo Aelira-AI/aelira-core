@@ -82,7 +82,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
   if (chartData.length === 0) {
     return (
       <div className="card">
-        <h3 className="text-lg font-semibold text-primary mb-4">Top WCAG Criteria Issues</h3>
+        <h2 className="text-lg font-semibold text-primary mb-4">Top WCAG Criteria Issues</h2>
         <div className="text-center py-8 text-secondary">No WCAG success criteria were recorded for these findings.</div>
       </div>
     );
@@ -128,7 +128,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
 
   return (
     <div className="card">
-      <h3 className="text-lg font-semibold text-primary mb-4">Top WCAG Criteria Issues</h3>
+      <h2 className="text-lg font-semibold text-primary mb-4">Top WCAG Criteria Issues</h2>
       <p className="text-sm text-secondary mb-4">
         Recorded WCAG success criteria (showing top 10). Other standards and unspecified criteria are excluded.
       </p>
@@ -165,7 +165,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
 
       {/* Screen reader data summary */}
       <div className="sr-only">
-        <h4>WCAG Criteria Violations Summary</h4>
+        <h3>WCAG Criteria Violations Summary</h3>
         <ul>
           {chartData.map((item) => (
             <li key={item.criterion}>
@@ -178,7 +178,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
 
       {/* Top Violations Summary */}
       <div className="mt-4 pt-4 border-t border-[var(--border-primary)]">
-        <h4 className="text-sm font-medium text-primary mb-2">Most Common Violations:</h4>
+        <h3 className="text-sm font-medium text-primary mb-2">Most Common Violations:</h3>
         <div className="space-y-2">
           {chartData.slice(0, 3).map((item) => (
             <div key={item.criterion} className="flex items-center justify-between text-sm">

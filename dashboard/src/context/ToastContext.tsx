@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, ReactNode } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect, ReactNode, KeyboardEvent } from 'react';
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info, LucideIcon } from 'lucide-react';
 import { ToastContext } from './toast-context';
 import type { Toast, ToastType, ToastOptions, ToastContextType } from './toast-context';
@@ -68,8 +68,10 @@ function ToastComponent({ id, type, title, message, onClose }: ToastComponentPro
         backgroundColor: config.bgColor,
         borderLeft: `4px solid ${config.borderColor}`,
       }}
-      role="alert"
-      aria-live="polite"
+      // Errors interrupt (role="alert"); everything else is announced politely
+      // by the persistent status region this toast is rendered inside.
+      role={type === 'error' ? 'alert' : undefined}
+      data-toast-id={id}
     >
       <Icon
         className="w-5 h-5 flex-shrink-0 mt-0.5"
@@ -98,11 +100,56 @@ function ToastComponent({ id, type, title, message, onClose }: ToastComponentPro
   );
 }
 
+interface ToastTimer {
+  timeout: ReturnType<typeof setTimeout> | null;
+  remaining: number;
+  startedAt: number;
+}
+
 export function ToastProvider({ children }: ToastProviderProps): React.ReactElement {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const timers = useRef<Map<number, ToastTimer>>(new Map());
+  const paused = useRef(false);
 
   const removeToast = useCallback((id: number): void => {
+    const timer = timers.current.get(id);
+    if (timer?.timeout) clearTimeout(timer.timeout);
+    timers.current.delete(id);
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
+
+  const startTimer = useCallback((id: number, timer: ToastTimer): void => {
+    timer.startedAt = Date.now();
+    timer.timeout = setTimeout(() => removeToast(id), timer.remaining);
+  }, [removeToast]);
+
+  // WCAG 2.2.1: a notification must not disappear while someone is reading it
+  // or reaching for its close button. Hover and keyboard focus pause every
+  // countdown; leaving resumes it with the time that was left.
+  const pauseTimers = useCallback((): void => {
+    if (paused.current) return;
+    paused.current = true;
+    timers.current.forEach((timer) => {
+      if (timer.timeout) clearTimeout(timer.timeout);
+      timer.timeout = null;
+      timer.remaining = Math.max(timer.remaining - (Date.now() - timer.startedAt), 2000);
+    });
+  }, []);
+
+  const resumeTimers = useCallback((): void => {
+    if (!paused.current) return;
+    paused.current = false;
+    timers.current.forEach((timer, id) => startTimer(id, timer));
+  }, [startTimer]);
+
+  useEffect(() => {
+    const active = timers.current;
+    return () => {
+      active.forEach((timer) => {
+        if (timer.timeout) clearTimeout(timer.timeout);
+      });
+      active.clear();
+    };
   }, []);
 
   const addToast = useCallback(
@@ -113,15 +160,24 @@ export function ToastProvider({ children }: ToastProviderProps): React.ReactElem
 
       // Auto-remove after duration
       if (duration > 0) {
-        setTimeout(() => {
-          removeToast(id);
-        }, duration);
+        const timer: ToastTimer = { timeout: null, remaining: duration, startedAt: Date.now() };
+        timers.current.set(id, timer);
+        if (!paused.current) startTimer(id, timer);
       }
 
       return id;
     },
-    [removeToast]
+    [startTimer]
   );
+
+  const handleRegionKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Escape') return;
+    const toastElement = (event.target as HTMLElement).closest<HTMLElement>('[data-toast-id]');
+    if (toastElement) {
+      event.preventDefault();
+      removeToast(Number(toastElement.dataset.toastId));
+    }
+  };
 
   // Convenience methods — memoised so consumers get a stable reference
   // (prevents re-render loops when showToast appears in useEffect deps)
@@ -145,17 +201,41 @@ export function ToastProvider({ children }: ToastProviderProps): React.ReactElem
         className="fixed bottom-4 right-4 z-50 flex flex-col gap-2"
         role="region"
         aria-label="Notifications"
+        onMouseEnter={pauseTimers}
+        onMouseLeave={resumeTimers}
+        onFocus={pauseTimers}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) resumeTimers();
+        }}
+        onKeyDown={handleRegionKeyDown}
       >
-        {toasts.map((t) => (
-          <ToastComponent
-            key={t.id}
-            id={t.id}
-            type={t.type}
-            title={t.title}
-            message={t.message}
-            onClose={removeToast}
-          />
-        ))}
+        {/* Persistent polite live region: present before any toast is added so
+            screen readers announce the insertions. Errors announce themselves
+            through their own role="alert". */}
+        <div role="status" aria-live="polite" className="flex flex-col gap-2">
+          {toasts.filter((t) => t.type !== 'error').map((t) => (
+            <ToastComponent
+              key={t.id}
+              id={t.id}
+              type={t.type}
+              title={t.title}
+              message={t.message}
+              onClose={removeToast}
+            />
+          ))}
+        </div>
+        <div className="flex flex-col gap-2">
+          {toasts.filter((t) => t.type === 'error').map((t) => (
+            <ToastComponent
+              key={t.id}
+              id={t.id}
+              type={t.type}
+              title={t.title}
+              message={t.message}
+              onClose={removeToast}
+            />
+          ))}
+        </div>
       </div>
 
       {/* Animation styles */}
@@ -172,6 +252,11 @@ export function ToastProvider({ children }: ToastProviderProps): React.ReactElem
         }
         .animate-slide-in {
           animation: slide-in 0.3s ease-out forwards;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .animate-slide-in {
+            animation: none;
+          }
         }
       `}</style>
     </ToastContext.Provider>
