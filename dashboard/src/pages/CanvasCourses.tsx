@@ -847,7 +847,7 @@ export function CanvasCourses(): React.ReactElement {
                     {/* Course header (clickable) */}
                     <button
                       onClick={() => toggleCourse(course.id)}
-                      className="w-full text-left px-6 py-4 flex items-center justify-between transition-colors hover:opacity-90"
+                      className="w-full text-left px-6 py-4 flex items-center justify-between transition-shadow hover:shadow-md"
                       style={{ backgroundColor: 'var(--surface-secondary)' }}
                     >
                       <div className="flex items-center gap-4">
