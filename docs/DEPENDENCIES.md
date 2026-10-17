@@ -204,9 +204,9 @@ the resolver's latest-version choice.
 
 ### Libraries built from source
 
-The published `lxml` and `Pillow` wheels bundle native libraries that Debian
+The published `lxml`, `Pillow`, and `av` wheels bundle native libraries that Debian
 and the vulnerability scanner do not see, and that lag upstream security
-releases. The API image therefore builds both from their pinned source
+releases. The API image therefore builds all three from their pinned source
 releases in the builder stage, then installs the resulting wheels before the
 locked requirements, which are then already satisfied.
 
@@ -214,14 +214,37 @@ locked requirements, which are then already satisfied.
 |---|---|---|
 | `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
 | `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm with FriBidi and HarfBuzz, LittleCMS, zlib and XCB from Debian packages |
+| `av` 18.1.0 | `docker/build-pyav-wheel.sh` | FFmpeg 9.0.2 shared libraries from a separate `/opt/ffmpeg9/lib` prefix, built from a hash-verified official release archive; no wheel-private `av.libs` or TLS libraries |
 
-Raising either pin means changing the requirement, the build script's version
-and digests, and the policy test together. `pi_heif` is intentionally absent:
+The [PyAV source archive](https://pypi.org/project/av/18.1.0/#files) has SHA-256
+`47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28`.
+The [official FFmpeg archive](https://ffmpeg.org/download.html) has SHA-256
+`8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`;
+its official release signature was verified against FFmpeg release signer
+`FCF986EA15E6E293A5644F10B4322F04D67658D8`. The build pins Cython
+3.2.9 and the existing setuptools 84.0.0, disables build isolation, and checks
+both archive hashes before unpacking. The final image carries the FFmpeg and
+PyAV license texts with the seven required shared libraries. PyAV's extension
+modules and the FFmpeg siblings use an embedded RPATH to that prefix.
+The final-image verifier checks the installed PyAV version, native FFmpeg
+version tuples, every resolved FFmpeg SONAME and path, and the absence of
+`av.libs` and linked TLS libraries.
+
+This FFmpeg build disables autodetected optional components, including
+TLS/HTTPS and external codecs. Its supported application role is decoding the
+local PCM WAV that `multimedia_processor.py` generates for
+`faster-whisper==1.2.1`. The system `ffmpeg` CLI and OpenCV keep their own
+separate media paths and libraries; this PyAV build does not establish feature
+parity or resolve advisories on those other copies.
+
+Raising any source-built pin means changing the requirement, the build script's
+version and digests, and the policy test together. `pi_heif` is intentionally absent:
 `ocrmypdf` does not depend on it and nothing in the application imports it. The
 final image check (`scripts/verify_final_python_packages.py venv`) requires
 Pillow's libtiff to be at least 4.7.2, the required codec and text-shaping
 features to be present, no
-`pillow.libs` directory and no `pi_heif` or `pybind11` distribution.
+`pillow.libs` directory and no `pi_heif`, `pybind11` or `Cython`
+distribution.
 The published wheel reports `zlib_ng` as its zlib implementation; this build
 uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
 

@@ -8,15 +8,17 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
     rm -rf /root/.npm
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS runtime
 
 # Install system dependencies + LaTeXML stack
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
+    nasm \
     pkg-config \
     libcairo2-dev \
     curl \
+    xz-utils \
     git \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -69,7 +71,13 @@ WORKDIR /app
 COPY requirements.txt requirements-dev.txt ./
 
 # Install the pinned runtime and development dependency sets
-RUN pip install --no-cache-dir -r requirements-dev.txt
+COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
+RUN pip install --no-cache-dir "pip==26.2.1" "setuptools==84.0.0" "Cython==3.2.9" && \
+    sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel && \
+    pip install --no-cache-dir --no-deps /tmp/pyav-wheel/av-18.1.0-*.whl && \
+    rm -rf /tmp/pyav-wheel /tmp/build-pyav-wheel.sh && \
+    pip uninstall --yes Cython && \
+    pip install --no-cache-dir -r requirements-dev.txt
 
 # Download Piper voice model for TTS
 COPY scripts/download_piper_voice.py scripts/download_piper_voice.py

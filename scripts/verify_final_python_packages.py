@@ -15,10 +15,16 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED = {
-    "global": {"setuptools": None, "pip": None, "urllib3": None},
+    "global": {"setuptools": None, "pip": None, "urllib3": None, "av": None},
     # pi-heif bundles libheif and libde265 and nothing in the image uses it.
     # pybind11 is only a build requirement of the source-built Pillow.
-    "venv": {"setuptools": "84.0.0", "pip": None, "pi-heif": None, "pybind11": None},
+    "venv": {
+        "setuptools": "84.0.0",
+        "pip": None,
+        "pi-heif": None,
+        "pybind11": None,
+        "Cython": None,
+    },
 }
 # Pillow is built from source against libtiff 4.7.2 (docker/build-pillow-wheel.sh)
 # and must keep the wheel's codec and text-shaping capabilities.
@@ -68,6 +74,10 @@ def required_pinned_version(package: str, requirements: Path = REQUIREMENTS) -> 
 
 def required_psycopg2_version(requirements: Path = REQUIREMENTS) -> str:
     return required_pinned_version("psycopg2-binary", requirements)
+
+
+def required_pyav_version(requirements: Path = REQUIREMENTS) -> str:
+    return required_pinned_version("av", requirements)
 
 
 def required_piper_version(requirements: Path = REQUIREMENTS) -> str:
@@ -206,12 +216,130 @@ def _resolved_libraries(ldd_output: str) -> dict[str, str]:
 
 
 def run_ldd(extension: Path) -> str:
+    # Prove the embedded loader paths without help from container-wide
+    # overrides. The same clean environment is used for both native gates.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD"}
+    }
     return subprocess.run(
         ["ldd", str(extension)],
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     ).stdout
+
+
+PYAV_PREFIX = "/opt/ffmpeg9/lib/"
+PYAV_LIBRARIES = {
+    "libavutil": (61, 1, 102),
+    "libavcodec": (63, 1, 102),
+    "libavformat": (63, 1, 102),
+    "libavdevice": (63, 1, 102),
+    "libavfilter": (12, 1, 102),
+    "libswscale": (10, 1, 102),
+    "libswresample": (7, 1, 102),
+}
+PYAV_TLS_LIBRARIES = ("libssl", "libcrypto", "libgnutls", "libmbedtls", "libtls")
+
+
+def validate_pyav_native(
+    *,
+    version: Callable[[str], str] = importlib.metadata.version,
+    package_not_found: type[Exception] = importlib.metadata.PackageNotFoundError,
+    purelib: Path | None = None,
+    requirements: Path = REQUIREMENTS,
+    ldd: Callable[[Path], str] = run_ldd,
+    realpath: Callable[[str], str] = os.path.realpath,
+    library_versions: dict[str, tuple[int, int, int]] | None = None,
+) -> list[str]:
+    """Check the installed PyAV bindings and every resolved FFmpeg library.
+
+    ``ldd`` walks the native dependency closure, including FFmpeg siblings.
+    The expected path and SONAME prevent an old wheel's private copies or
+    Debian's separate FFmpeg libraries from satisfying the version check.
+    """
+    errors: list[str] = []
+    try:
+        expected = required_pyav_version(requirements)
+    except (OSError, ValueError) as exc:
+        return [f"venv: unable to determine required av version: {exc}"]
+    try:
+        installed = version("av")
+    except package_not_found:
+        installed = None
+    if installed != expected:
+        errors.append(f"venv: av is {installed or 'absent'}; expected {expected}")
+
+    root = purelib or Path(sysconfig.get_paths()["purelib"])
+    private = sorted(
+        str(path)
+        for pattern in ("av.libs", "av/.libs", "av*/*.libs")
+        for path in root.glob(pattern)
+    )
+    if private:
+        errors.append(
+            f"venv: bundled av library directory present: {', '.join(private)}"
+        )
+    extensions = sorted((root / "av").rglob("*.so"))
+    if not extensions:
+        errors.append(f"venv: no PyAV extension modules under {root / 'av'}")
+        return errors
+
+    found: set[str] = set()
+    for extension in extensions:
+        try:
+            libraries = _resolved_libraries(ldd(extension))
+        except (OSError, subprocess.CalledProcessError) as exc:
+            errors.append(f"venv: unable to inspect {extension.name} with ldd: {exc}")
+            continue
+        for name, path in libraries.items():
+            stem = name.split(".so", 1)[0]
+            if stem in PYAV_LIBRARIES:
+                expected_name = f"{stem}.so.{PYAV_LIBRARIES[stem][0]}"
+                if name != expected_name:
+                    errors.append(
+                        f"venv: {extension.name} resolves {name}; expected {expected_name}"
+                    )
+                elif not path.startswith("/") or not realpath(path).startswith(
+                    PYAV_PREFIX
+                ):
+                    errors.append(
+                        f"venv: {extension.name} resolves {name} to {path}; "
+                        f"expected {PYAV_PREFIX}"
+                    )
+                else:
+                    found.add(stem)
+            elif stem.startswith(("libav", "libsw")):
+                errors.append(f"venv: unexpected FFmpeg library {name} at {path}")
+            if stem.startswith(PYAV_TLS_LIBRARIES):
+                errors.append(
+                    f"venv: {extension.name} loads TLS library {name} at {path}"
+                )
+    for stem in PYAV_LIBRARIES.keys() - found:
+        errors.append(f"venv: PyAV does not resolve {stem} from {PYAV_PREFIX}")
+
+    if library_versions is None:
+        try:
+            import av
+
+            library_versions = av.library_versions
+            if av.__version__ != expected:
+                errors.append(
+                    f"venv: imported av is {av.__version__}; expected {expected}"
+                )
+        except (ImportError, OSError) as exc:
+            errors.append(f"venv: unable to import PyAV native bindings: {exc}")
+            return errors
+    for stem, expected_version in PYAV_LIBRARIES.items():
+        if library_versions.get(stem) != expected_version:
+            errors.append(
+                f"venv: PyAV reports {stem} {library_versions.get(stem)}; "
+                f"expected {expected_version}"
+            )
+    return sorted(set(errors))
 
 
 def validate_psycopg2_native(
@@ -301,6 +429,7 @@ def main() -> int:
     if args.scope == "venv":
         errors.extend(validate_pillow())
         errors.extend(validate_psycopg2_native())
+        errors.extend(validate_pyav_native())
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     make \
+    nasm \
     libpq-dev \
     libcairo2-dev \
     pkg-config \
@@ -45,8 +46,9 @@ COPY requirements.txt .
 COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
 COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh
 COPY docker/build-psycopg2-wheel.sh /tmp/build-psycopg2-wheel.sh
+COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
-    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "pip==26.2.1" && \
     python -m pip uninstall --yes setuptools && \
     pip install --no-cache-dir "setuptools==84.0.0" && \
     sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
@@ -60,9 +62,15 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel && \
     pip install --no-cache-dir --no-deps /tmp/psycopg2-wheel/psycopg2_binary-2.9.13-*.whl && \
     rm -rf /tmp/psycopg2-wheel /tmp/build-psycopg2-wheel.sh && \
+    pip install --no-cache-dir "Cython==3.2.9" && \
+    sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel && \
+    pip install --no-cache-dir --no-deps /tmp/pyav-wheel/av-18.1.0-*.whl && \
+    rm -rf /tmp/pyav-wheel /tmp/build-pyav-wheel.sh && \
+    python -m pip uninstall --yes Cython && \
     pip install --no-cache-dir -r requirements.txt && \
     python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
     python -c "from PIL import features; v = features.version('libtiff'); assert v == '4.7.2', v" && \
+    python -c "import av; assert av.__version__ == '18.1.0'; assert av.library_versions['libavcodec'] == (63, 1, 102)" && \
     test ! -e "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pillow.libs" && \
     python -m pip uninstall --yes pip
 
@@ -168,6 +176,8 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib
+COPY --from=builder /opt/ffmpeg9/licenses /opt/ffmpeg9/licenses
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy the locked Pa11y runtime without Debian's npm toolchain.
