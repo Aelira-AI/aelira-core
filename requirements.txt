@@ -97,7 +97,7 @@ pycairo==1.29.2
 pycparser==3.11
 pydantic==2.14.1
 pydantic-settings==2.15.0
-pydantic_core==2.46.5
+pydantic_core==2.50.1
 pyee==13.0.0
 Pygments==2.21.0
 PyJWT==2.15.1
