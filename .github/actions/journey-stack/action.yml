@@ -1,0 +1,180 @@
+name: Journey stack
+description: >-
+  Start the real Aelira stack for the browser journey suite: PostgreSQL, Redis,
+  a mail catcher, the API, the durable worker, the built dashboard's runtime
+  dependencies and a static site on its own address. No secrets are read here.
+inputs:
+  canvas-url:
+    description: Canvas origin the API may talk to. Empty disables the Canvas settings.
+    required: false
+    default: ''
+  canvas-lti-client-id:
+    required: false
+    default: ''
+  canvas-lti-deployment-id:
+    required: false
+    default: ''
+  canvas-lti-private-key:
+    description: PEM written to a mode 0600 file for the run and removed afterwards.
+    required: false
+    default: ''
+  canvas-oauth-client-id:
+    required: false
+    default: ''
+  canvas-oauth-client-secret:
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.14'
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: dashboard/package-lock.json
+    - name: Install system packages
+      shell: bash
+      run: |
+        sudo apt-get -o Acquire::Retries=2 update
+        sudo apt-get -o Acquire::Retries=2 install -y libcairo2-dev pkg-config \
+          tesseract-ocr tesseract-ocr-eng unpaper ghostscript poppler-utils unzip zip ffmpeg
+    - name: Install Python dependencies
+      shell: bash
+      run: pip install -r requirements-dev.txt
+    - name: Install the scanner browser and pinned Pa11y
+      shell: bash
+      run: |
+        python -m playwright install --with-deps chromium
+        chromium="$(python -c 'from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            print(p.chromium.executable_path)')"
+        mkdir -p "$RUNNER_TEMP/pa11y"
+        npm install --prefix "$RUNNER_TEMP/pa11y" --no-audit --no-fund pa11y@9.0.1 html_codesniffer@2.5.1
+        printf '%s\n' "$RUNNER_TEMP/pa11y/node_modules/.bin" >> "$GITHUB_PATH"
+        python - "$chromium" <<'PY' > "$RUNNER_TEMP/pa11y.json"
+        import json, sys
+        print(json.dumps({"chromeLaunchConfig": {"executablePath": sys.argv[1], "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]}}))
+        PY
+    - name: Restore the speech model
+      id: whisper-cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/aelira-journeys/hf
+        key: faster-whisper-base-v1
+    - name: Fetch the speech model on a cache miss
+      if: steps.whisper-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        export HF_HOME="$HOME/.cache/aelira-journeys/hf"
+        python -c "from faster_whisper.utils import download_model; print(download_model('base'))"
+    - name: Start PostgreSQL, Redis and the mail catcher
+      shell: bash
+      run: |
+        docker run -d --name journeys-postgres -p 5432:5432 -e POSTGRES_USER=aelira -e POSTGRES_PASSWORD=aelira -e POSTGRES_DB=journeys \
+          --health-cmd 'pg_isready -U aelira -d journeys' --health-interval 2s --health-retries 30 pgvector/pgvector:0.8.1-pg16
+        docker run -d --name journeys-redis -p 6379:6379 \
+          --health-cmd 'redis-cli ping' --health-interval 2s --health-retries 30 redis:7.4-alpine
+        docker run -d --name journeys-mail -p 1025:1025 -p 18325:8025 axllent/mailpit:latest
+        for name in journeys-postgres journeys-redis; do
+          for attempt in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$name")" = healthy ] && break
+            sleep 1
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$name")" = healthy ]
+        done
+    - name: Serve the static fixture site on its own address
+      shell: bash
+      run: |
+        # The product refuses to scan private and loopback targets. This address is
+        # routable-looking, bound only to this runner's loopback device, and the
+        # fixture directory is the only thing served.
+        sudo ip addr add 11.99.0.10/32 dev lo
+        nohup python -m http.server 8080 --bind 11.99.0.10 --directory tests/journeys/site \
+          > "$RUNNER_TEMP/fixture-site.log" 2>&1 &
+        for attempt in $(seq 1 20); do
+          curl -fsS http://11.99.0.10:8080/ >/dev/null && exit 0
+          sleep 0.5
+        done
+        exit 1
+    - name: Start the API and the durable worker
+      shell: bash
+      env:
+        CANVAS_URL: ${{ inputs.canvas-url }}
+        CANVAS_LTI_CLIENT_ID: ${{ inputs.canvas-lti-client-id }}
+        CANVAS_LTI_DEPLOYMENT_ID: ${{ inputs.canvas-lti-deployment-id }}
+        CANVAS_LTI_PRIVATE_KEY: ${{ inputs.canvas-lti-private-key }}
+        CANVAS_OAUTH_ID: ${{ inputs.canvas-oauth-client-id }}
+        CANVAS_OAUTH_SECRET: ${{ inputs.canvas-oauth-client-secret }}
+      run: |
+        set -euo pipefail
+        umask 077
+        {
+          echo "ENV=production"
+          echo "DEBUG=false"
+          echo "ALLOW_MOCK_AUTH=false"
+          echo "DATABASE_URL=postgresql://aelira:aelira@localhost:5432/journeys"
+          echo "REDIS_URL=redis://localhost:6379/0"
+          echo "JWT_SECRET=$(openssl rand -hex 48)"
+          echo "TOKEN_ENCRYPTION_KEY=$(openssl rand -base64 32)"
+          echo "SESSION_REPLAY_ENCRYPTION_KEY=$(openssl rand -base64 32)"
+          echo "LLM_PROVIDER=none"
+          echo "LLM_FALLBACK_PROVIDER=none"
+          echo "EMBEDDING_PROVIDER=none"
+          echo "OPEN_SIGNUP=false"
+          echo "DEFAULT_DEPARTMENT_TIER=department"
+          echo "PUBLIC_API_URL=http://localhost:18300"
+          echo "PUBLIC_DASHBOARD_URL=http://localhost:15373"
+          echo "PUBLIC_WEBSITE_URL=http://localhost:15373"
+          echo "MAGIC_LINK_BASE_URL=http://localhost:15373"
+          echo "DASHBOARD_URL=http://localhost:15373"
+          echo "CORS_ORIGINS=http://localhost:15373"
+          echo "SESSION_COOKIE_SECURE=false"
+          echo "CSRF_COOKIE_SECURE=false"
+          echo "SMTP_HOST=localhost"
+          echo "SMTP_PORT=1025"
+          echo "SMTP_USER="
+          echo "SMTP_PASSWORD="
+          echo "FROM_EMAIL=noreply@example.org"
+          echo "MARKETING_EMAIL_ENABLED=false"
+          echo "REMEDIATION_ARTIFACT_DIR=$RUNNER_TEMP/journey-artifacts"
+          echo "AELIRA_REMEDIATION_DIR=$RUNNER_TEMP/journey-artifacts"
+          echo "HF_HOME=$HOME/.cache/aelira-journeys/hf"
+          echo "HF_HUB_OFFLINE=1"
+          echo "PA11Y_CONFIG_PATH=$RUNNER_TEMP/pa11y.json"
+        } > "$RUNNER_TEMP/journey.env"
+        if [ -n "$CANVAS_URL" ]; then
+          printf '%s' "$CANVAS_LTI_PRIVATE_KEY" > "$RUNNER_TEMP/lti-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/lti-private.pem" -pubout -out "$RUNNER_TEMP/lti-public.pem"
+          {
+            echo "CANVAS_ISSUER=https://canvas.instructure.com"
+            echo "CANVAS_CLIENT_ID=$CANVAS_LTI_CLIENT_ID"
+            echo "CANVAS_DEPLOYMENT_ID=$CANVAS_LTI_DEPLOYMENT_ID"
+            echo "CANVAS_LTI_PRIVATE_KEY_PATH=$RUNNER_TEMP/lti-private.pem"
+            echo "CANVAS_LTI_PUBLIC_KEY_PATH=$RUNNER_TEMP/lti-public.pem"
+            echo "CANVAS_OAUTH_CLIENT_ID=$CANVAS_OAUTH_ID"
+            echo "CANVAS_OAUTH_CLIENT_SECRET=$CANVAS_OAUTH_SECRET"
+            echo "CANVAS_OAUTH_REDIRECT_URI=http://localhost:18300/canvas/oauth/callback"
+            echo "CANVAS_OAUTH_ALLOWED_ORIGINS=$CANVAS_URL"
+          } >> "$RUNNER_TEMP/journey.env"
+        fi
+        mkdir -p "$RUNNER_TEMP/journey-artifacts"
+        set -a; . "$RUNNER_TEMP/journey.env"; set +a
+        alembic upgrade head
+        nohup uvicorn src.api.main:app --host 127.0.0.1 --port 18300 --no-proxy-headers \
+          > "$RUNNER_TEMP/journey-api.log" 2>&1 &
+        nohup python -m src.jobs.worker > "$RUNNER_TEMP/journey-worker.log" 2>&1 &
+        for attempt in $(seq 1 90); do
+          curl -fsS http://localhost:18300/ready >/dev/null && exit 0
+          sleep 1
+        done
+        echo "The API never became ready" >&2
+        exit 1
+    - name: Install dashboard dependencies and the test browser
+      shell: bash
+      working-directory: dashboard
+      run: |
+        npm ci
+        npx playwright install --with-deps chromium

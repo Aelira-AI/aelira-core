@@ -14,6 +14,7 @@ LEVELS = {
     "component_integration",
     "api_integration",
     "browser_simulated",
+    "browser_real_stack",
     "manual",
 }
 PILLARS = {"document", "canvas", "web", "media"}
@@ -158,6 +159,11 @@ def build_report(root, matrix, revision):
             require(
                 evidence["level"] != "browser_simulated" or evidence["mocked"],
                 "simulated browser evidence must name its mocks",
+            )
+            require(
+                evidence["level"] != "browser_real_stack"
+                or (not evidence["mocked"] and evidence["ci"] is not None),
+                "real-stack browser evidence cannot name mocks and needs a CI binding",
             )
             require(
                 evidence["level"] != "manual" or evidence["ci"] is None,
