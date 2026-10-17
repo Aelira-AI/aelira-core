@@ -91,7 +91,7 @@ export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath:
         : 'Complete the pending decisions first. Rebuilding applies accepted edits and leaves rejected changes out of a new working file, which must pass its saved-file checks.'}</p>
     </div>}
     {artifact ? <>
-      <p className="mt-3 text-sm text-primary">{artifact.filename} · {artifact.review_status === 'approved' ? 'Approved for publication' : artifact.review_status === 'rejected' ? 'Rejected for publication' : 'Publication approval pending'}</p>
+      <p className="mt-3 text-sm text-primary">{artifact.filename} · SHA-256 {artifact.sha256.slice(0, 12)}… · {artifact.review_status === 'approved' ? 'Approved for publication' : artifact.review_status === 'rejected' ? 'Rejected for publication' : 'Publication approval pending'}</p>
       <div className="mt-3 flex flex-wrap gap-3">
         <Button variant="secondary" size="sm" onClick={() => void download()} disabled={busy || editing}>Download improved working file</Button>
         <Link className="btn-secondary text-sm" to={resultPath}>{suppliedResultPath ? 'View scan findings' : 'View remaining findings'}</Link>

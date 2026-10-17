@@ -427,6 +427,15 @@ export function CanvasContentDiffPage(): React.ReactElement {
               Approval unavailable: {artifact.approval_blockers.join(', ')}
             </p>
           )}
+          {diff.content_type === 'file' && currentIndex >= 0 && items[currentIndex]?.scan_id && (
+            <Button
+              variant="secondary"
+              onClick={() => navigate(`/review/${encodeURIComponent(items[currentIndex].scan_id!)}?cloud_file_id=${encodeURIComponent(cloudFileId!)}`)}
+              className="mt-3"
+            >
+              Review document fixes and working file
+            </Button>
+          )}
         </section>
       )}
 
@@ -446,9 +455,9 @@ export function CanvasContentDiffPage(): React.ReactElement {
               </p>
               <p className="text-sm max-w-md text-[var(--content-secondary)]">
                 This is a scanned file, not an HTML page — there's no
-                original/remediated HTML to diff here. Use Approve or
-                Reject below based on the scan results, or review the file
-                directly in Canvas.
+                original/remediated HTML to diff here. Review the proposed
+                document fixes and download the working file before deciding
+                whether to approve it for publication.
               </p>
             </div>
           ) : viewMode === 'preview' ? (

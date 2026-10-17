@@ -244,15 +244,31 @@ test('the teacher launches from the course, then scans, remediates, approves and
       const panel = tool.getByRole('region', { name: 'Managed remediation artifact' });
       await expect(panel).toBeVisible({ timeout: 60_000 });
       await assertNoBlockingViolations(tool, `lti-review-${name}`, testInfo);
-      const shown = (await panel.innerText()).match(/SHA-256 ([a-f0-9]{12})/)?.[1];
+      await tool.getByRole('button', { name: 'Review document fixes and working file' }).click();
+      await expect(tool.getByRole('heading', { name })).toBeVisible();
+      const reviewFixes = tool.getByRole('group', { name: 'Review fixes' });
+      await expect(reviewFixes).toBeVisible();
+      expect((await reviewFixes.innerText()).trim(), 'the teacher can inspect the recorded fixes').not.toBe('');
+      const approvePending = tool.getByRole('button', { name: /Approve All \(\d+\) pending fixes/ });
+      if (await approvePending.count()) {
+        await approvePending.click();
+        await expect(approvePending).toHaveCount(0, { timeout: 60_000 });
+      }
+      const workingFile = tool.getByRole('region', { name: 'Working file and publication approval' });
+      const confirmation = workingFile.getByRole('checkbox', {
+        name: 'I have reviewed this working file, its changes and the remaining findings.',
+      });
+      await expect(confirmation).toBeEnabled({ timeout: 60_000 });
+      const shown = (await workingFile.innerText()).match(/SHA-256 ([a-f0-9]{12})/)?.[1];
       expect(shown, 'the review shows the artifact digest').toBeTruthy();
       const pending = tool.waitForEvent('download');
-      await panel.getByRole('button', { name: 'Download' }).click();
+      await workingFile.getByRole('button', { name: 'Download improved working file' }).click();
       const bytes = await readFile(await (await pending).path());
       expect(sha256(bytes).startsWith(shown as string), 'the downloaded bytes are the artifact the review shows').toBe(true);
       approved[name] = { sha256: sha256(bytes) };
-      await tool.getByRole('button', { name: 'Approve remediation' }).click();
-      await expect(tool.getByText('Managed artifact approved').first()).toBeVisible({ timeout: 60_000 });
+      await confirmation.check();
+      await workingFile.getByRole('button', { name: 'Approve this file for publication' }).click();
+      await expect(workingFile.getByText('Approved for publication')).toBeVisible({ timeout: 60_000 });
     });
   }
 
