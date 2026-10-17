@@ -718,7 +718,13 @@ def _opencv_ldd(path_prefix: str = "/opt/ffmpeg9/lib") -> str:
         [
             *(
                 f"{stem}.so.{PYAV_LIBRARIES[stem][0]} => {path_prefix}/{stem}.so.{PYAV_LIBRARIES[stem][0]} (0x1234)"
-                for stem in ("libavcodec", "libavformat", "libavutil", "libswscale")
+                for stem in (
+                    "libavcodec",
+                    "libavformat",
+                    "libavutil",
+                    "libswscale",
+                    "libswresample",
+                )
             ),
             "libdav1d.so.7 => /usr/lib/aarch64-linux-gnu/libdav1d.so.7 (0x1234)",
         ]
@@ -759,8 +765,51 @@ def test_opencv_verifier_rejects_missing_cpu_av1_and_tiff(tmp_path: Path):
         build_information="FFMPEG: YES\nTIFF: build (4.7.1)\n",
     )
     assert any("lacks Debian libdav1d.so.7" in error for error in errors)
-    assert any("built-in TIFF" in error for error in errors)
+    assert any("optional TIFF image backend" in error for error in errors)
     assert any("loads TLS library" in error for error in errors)
+
+
+def test_opencv_verifier_rejects_versioned_image_libraries(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        _opencv_ldd()
+        + "\nlibpng16.so.16 => /usr/lib/aarch64-linux-gnu/libpng16.so.16 (0x1234)"
+        + "\nlibavif.so.16 => /usr/lib/aarch64-linux-gnu/libavif.so.16 (0x1234)",
+    )
+    assert any("disabled image codec libpng16.so.16" in error for error in errors)
+    assert any("disabled image codec libavif.so.16" in error for error in errors)
+
+
+def test_opencv_verifier_rejects_nonprefix_indirect_ffmpeg(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        _opencv_ldd().replace(
+            "/opt/ffmpeg9/lib/libswresample.so.7",
+            "/usr/lib/aarch64-linux-gnu/libswresample.so.7",
+        ),
+    )
+    assert any(
+        "libswresample.so.7" in error and "expected /opt/ffmpeg9/lib/" in error
+        for error in errors
+    )
+
+
+def test_opencv_verifier_rejects_built_optional_image_backends(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        build_information=(
+            "FFMPEG: YES\n"
+            "AVIF: /usr/lib/libavif.so\n"
+            "JPEG: build (libjpeg-turbo)\n"
+            "PNG: build (ver 1.6.0)\n"
+            "WEBP: /usr/lib/libwebp.so\n"
+        ),
+    )
+    for backend in ("AVIF", "JPEG", "PNG", "WEBP"):
+        assert any(f"optional {backend} image backend" in error for error in errors)
 
 
 def test_dockerfiles_build_opencv_before_requirements():
@@ -776,3 +825,11 @@ def test_dockerfiles_build_opencv_before_requirements():
         assert source.index("sh /tmp/build-pyav-wheel.sh") < source.index(build)
         assert source.index(build) < source.index(install)
         assert source.index(install) < source.index(requirements_install)
+
+
+def test_opencv_source_disables_optional_image_discovery():
+    source = (
+        Path(__file__).resolve().parents[1] / "docker/build-opencv-wheel.sh"
+    ).read_text()
+    for backend in ("AVIF", "JPEG", "PNG", "SPNG", "TIFF", "WEBP", "GDCM", "GDAL"):
+        assert f"-DWITH_{backend}=OFF" in source

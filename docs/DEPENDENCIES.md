@@ -237,7 +237,7 @@ locked requirements, which are then already satisfied.
 | `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
 | `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm with FriBidi and HarfBuzz, LittleCMS, zlib and XCB from Debian packages |
 | `av` 18.1.0 | `docker/build-pyav-wheel.sh` | FFmpeg 9.0.2 shared libraries under `/opt/ffmpeg9/lib`, built from a hash-verified official release archive; no wheel-private `av.libs` or TLS libraries |
-| `opencv-python` 5.0.0.93 | `docker/build-opencv-wheel.sh` | The same FFmpeg 9.0.2 libraries and Debian `libdav1d7` 1.5.1-1 for CPU AV1 decoding; no `opencv_python.libs` or OpenCV image-codec backends |
+| `opencv-python` 5.0.0.93 | `docker/build-opencv-wheel.sh` | The same FFmpeg 9.0.2 libraries and Debian `libdav1d7` 1.5.1-1 for CPU AV1 decoding; no `opencv_python.libs` or optional OpenCV image-codec backends |
 
 The [PyAV source archive](https://pypi.org/project/av/18.1.0/#files) has SHA-256
 `47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28`.
@@ -271,14 +271,17 @@ separate Debian media path.
 
 The OpenCV wheel retains the exact `opencv-python` distribution identity that
 PySceneDetect 0.7.2 requires. Its compiled scope is scene video capture and
-processing; OpenCV JPEG, PNG, TIFF, WebP, JPEG 2000, GIF and other image-codec
-backends are disabled, as are the unused Protobuf and Flatbuffers backends.
-The build inventory still lists OpenCV's static zlib 1.3.2 and internal
-ittnotify, libclapack, and HAL components; these are retained support code,
-not additional linked media, image-codec, or TLS shared libraries. Pillow
-handles application image decoding and keeps its own verified format support.
-Native acceptance checks normal H.264, HEVC,
-VP8, VP9, MPEG-4, MJPEG and AV1 input, 90 decoded frames and scene starts at
+processing; OpenCV's optional JPEG, PNG, TIFF, WebP, JPEG 2000, GIF, AVIF and
+other optional image-codec backends are disabled even when the production
+builder has `libavif-dev` for Pillow. OpenCV's built-in BMP codec remains
+registered. The unused Protobuf and Flatbuffers backends are disabled.
+With the production builder's image-development packages present, OpenCV
+links Debian `libz.so.1` (zlib 1.3.1) rather than its in-tree zlib. Its
+remaining internal ittnotify, libclapack, and HAL components are retained
+support code, not additional linked media, image-codec, or TLS shared
+libraries. Pillow handles application image decoding and keeps its own verified
+format support. Native acceptance checks normal H.264, HEVC, VP8, VP9,
+MPEG-4, MJPEG and AV1 input, 90 decoded frames and scene starts at
 0, 3 and 6 seconds, plus a true single-scene input. These checks cover the
 listed CPU inputs and do not establish every media profile or clear broader
 dependency findings tracked by #583, #578 and #377.

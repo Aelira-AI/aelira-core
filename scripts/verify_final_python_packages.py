@@ -352,6 +352,36 @@ PYAV_LIBRARIES = {
     "libswresample": (7, 1, 102),
 }
 PYAV_TLS_LIBRARIES = ("libssl", "libcrypto", "libgnutls", "libmbedtls", "libtls")
+OPENCV_IMAGE_LIBRARIES = (
+    "libavif",
+    "libtiff",
+    "libjpeg",
+    "libpng",
+    "libwebp",
+    "libopenjp2",
+    "libjasper",
+    "libjxl",
+    "libspng",
+    "libgdcm",
+    "libgdal",
+)
+OPENCV_OPTIONAL_IMAGE_BACKENDS = (
+    "AVIF",
+    "JPEG",
+    "PNG",
+    "TIFF",
+    "WEBP",
+    "JPEG 2000",
+    "JPEG XL",
+    "OpenEXR",
+    "GDCM",
+    "GDAL",
+    "GIF",
+    "HDR",
+    "SUNRASTER",
+    "PXM",
+    "PFM",
+)
 
 
 def validate_pyav_native(
@@ -503,13 +533,22 @@ def validate_opencv_native(
             )
     for name, path in libraries.items():
         stem = name.split(".so", 1)[0]
-        if stem.startswith(("libav", "libsw")) and stem not in PYAV_LIBRARIES:
+        if (
+            stem.startswith(("libav", "libsw"))
+            and stem not in PYAV_LIBRARIES
+            and not stem.startswith(OPENCV_IMAGE_LIBRARIES)
+        ):
             errors.append(f"venv: unexpected OpenCV FFmpeg library {name} at {path}")
-        if stem in PYAV_LIBRARIES and name != f"{stem}.so.{PYAV_LIBRARIES[stem][0]}":
-            errors.append(
-                f"venv: cv2 resolves unexpected FFmpeg SONAME {name} at {path}"
-            )
-        if stem in ("libtiff", "libjpeg", "libpng", "libwebp", "libopenjp2"):
+        if stem in PYAV_LIBRARIES:
+            if name != f"{stem}.so.{PYAV_LIBRARIES[stem][0]}":
+                errors.append(
+                    f"venv: cv2 resolves unexpected FFmpeg SONAME {name} at {path}"
+                )
+            if not path.startswith("/") or not realpath(path).startswith(PYAV_PREFIX):
+                errors.append(
+                    f"venv: cv2 resolves {name} to {path}; expected {PYAV_PREFIX}"
+                )
+        if stem.startswith(OPENCV_IMAGE_LIBRARIES):
             errors.append(f"venv: cv2 loads disabled image codec {name} at {path}")
         if stem.startswith(PYAV_TLS_LIBRARIES):
             errors.append(f"venv: cv2 loads TLS library {name} at {path}")
@@ -530,8 +569,14 @@ def validate_opencv_native(
             return errors + [f"venv: unable to import cv2: {exc}"]
     if not re.search(r"^\s*FFMPEG:\s+YES\s*$", build_information, re.MULTILINE):
         errors.append("venv: cv2 FFmpeg backend is disabled")
-    if re.search(r"^\s*TIFF:\s+build", build_information, re.MULTILINE):
-        errors.append("venv: cv2 includes a built-in TIFF library")
+    for backend in OPENCV_OPTIONAL_IMAGE_BACKENDS:
+        match = re.search(
+            rf"^\s*{re.escape(backend)}:\s*(.+)$",
+            build_information,
+            re.MULTILINE,
+        )
+        if match and match.group(1).strip() != "NO":
+            errors.append(f"venv: cv2 enables optional {backend} image backend")
     return sorted(set(errors))
 
 
