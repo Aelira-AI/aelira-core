@@ -74,6 +74,22 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     test ! -e "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pillow.libs" && \
     python -m pip uninstall --yes pip
 
+# The official image's bundled Expat modules must not occur in any shipped
+# layer. Remove both before copying its otherwise unchanged /usr/local tree
+# into the fresh Debian runtime.
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-clean
+RUN rm /usr/local/lib/python3.14/lib-dynload/pyexpat.cpython-314-*.so \
+       /usr/local/lib/python3.14/lib-dynload/_elementtree.cpython-314-*.so
+
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-modules
+ARG EXPAT_DEB_VERSION=2.9.0-1~deb13u1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc make libc6-dev libexpat1=${EXPAT_DEB_VERSION} \
+    libexpat1-dev=${EXPAT_DEB_VERSION} pkgconf xz-utils curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/build-python-expat-modules.sh /tmp/build-python-expat-modules.sh
+RUN sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
+
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Resolve the reviewed, locked production tree
 # separately and copy only Node and those dependencies into the API image.
@@ -86,10 +102,32 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
     rm -rf /root/.npm
 
-# Stage 2: Runtime
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS runtime
+# A fresh Debian root excludes the old modules from every shipped layer,
+# while the official /usr/local tree keeps the interpreter ABI.
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS python-expat-base
 
 ARG SOURCE_DATE_EPOCH=0
+ARG EXPAT_DEB_VERSION=2.9.0-1~deb13u1
+ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PYTHON_VERSION=3.14.8 \
+    PYTHON_SHA256=c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73
+
+# Match the official slim interpreter's runtime library closure. Clean
+# generated apt state in this layer so it cannot affect image reproducibility.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates netbase tzdata libbz2-1.0 libc6 libdb5.3t64 \
+    libffi8 libgdbm6t64 liblzma5 libncursesw6 libreadline8t64 \
+    libsqlite3-0 libssl3t64 libtinfo6 libuuid1 libzstd1 zlib1g \
+    libexpat1=${EXPAT_DEB_VERSION} \
+    && rm -rf /var/lib/apt/lists/* /var/log/apt/* \
+    && rm -f /var/log/dpkg.log /var/log/alternatives.log \
+        /etc/machine-id /var/lib/dbus/machine-id /var/cache/ldconfig/aux-cache
+COPY --from=python-expat-clean /usr/local/ /usr/local/
+COPY --from=python-expat-modules /tmp/python-expat-modules/ /usr/local/lib/python3.14/lib-dynload/
+RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
+
+# Stage 2: Runtime
+FROM python-expat-base AS runtime
 
 # The global repair and the final-image checks read the reviewed runtime pin.
 COPY requirements.txt /app/requirements.txt

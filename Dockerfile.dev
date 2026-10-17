@@ -1,3 +1,17 @@
+# Use the same repaired official CPython tree and system Expat as production.
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-clean
+RUN rm /usr/local/lib/python3.14/lib-dynload/pyexpat.cpython-314-*.so \
+       /usr/local/lib/python3.14/lib-dynload/_elementtree.cpython-314-*.so
+
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-modules
+ARG EXPAT_DEB_VERSION=2.9.0-1~deb13u1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc make libc6-dev libexpat1=${EXPAT_DEB_VERSION} \
+    libexpat1-dev=${EXPAT_DEB_VERSION} pkgconf xz-utils curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/build-python-expat-modules.sh /tmp/build-python-expat-modules.sh
+RUN sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
+
 # Match the production Pa11y runtime instead of relying on Debian's Node major.
 FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
 
@@ -8,7 +22,25 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
     rm -rf /root/.npm
 
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS runtime
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS python-expat-base
+ARG EXPAT_DEB_VERSION=2.9.0-1~deb13u1
+ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PYTHON_VERSION=3.14.8 \
+    PYTHON_SHA256=c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates netbase tzdata libbz2-1.0 libc6 libdb5.3t64 \
+    libffi8 libgdbm6t64 liblzma5 libncursesw6 libreadline8t64 \
+    libsqlite3-0 libssl3t64 libtinfo6 libuuid1 libzstd1 zlib1g \
+    libexpat1=${EXPAT_DEB_VERSION} \
+    && rm -rf /var/lib/apt/lists/* /var/log/apt/* \
+    && rm -f /var/log/dpkg.log /var/log/alternatives.log \
+        /etc/machine-id /var/lib/dbus/machine-id /var/cache/ldconfig/aux-cache
+COPY --from=python-expat-clean /usr/local/ /usr/local/
+COPY --from=python-expat-modules /tmp/python-expat-modules/ /usr/local/lib/python3.14/lib-dynload/
+RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
+
+FROM python-expat-base AS runtime
+COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 
 # Install system dependencies + LaTeXML stack
 RUN apt-get update && apt-get install -y \
@@ -58,6 +90,8 @@ RUN apt-get update && apt-get install -y \
     # Pandoc for LaTeX to HTML conversion
     pandoc \
     && rm -rf /var/lib/apt/lists/*
+
+RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py expat
 
 # Copy the same locked Node 24 and Pa11y runtime as the production image.
 COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
