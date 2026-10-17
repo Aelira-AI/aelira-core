@@ -207,6 +207,36 @@ def public_scan_issues(scan: Any | None, result: Any | None) -> list[Any] | None
     ]
 
 
+def retired_media_flash_scan_ids(
+    scans: Sequence[Any], results: Sequence[Any]
+) -> set[str]:
+    """Identify stored media scans containing a withdrawn flash verdict."""
+    types_by_id = {scan.id: scan.scan_type for scan in scans}
+    return {
+        result.scan_id
+        for result in results
+        if any(
+            is_retired_media_flash_issue(types_by_id.get(result.scan_id), issue)
+            for issue in (_stored_issue_list(getattr(result, "issues", None)) or [])
+        )
+    }
+
+
+def is_ambiguous_retired_media_tracker(issue: Any, retired_scan_ids: set[str]) -> bool:
+    """Recognize generic historic tracker rows that cannot be attributed.
+
+    The old automatic mapper stored both rule/message-only caption findings and
+    the retired flash verdict with this same identity. A separately described
+    human finding remains active even when linked to that scan.
+    """
+    return (
+        issue.scan_id in retired_scan_ids
+        and issue.issue_type == "unknown"
+        and issue.description == "No description"
+        and issue.wcag_criterion is None
+    )
+
+
 def public_issue_counts(scan: Any | None, result: Any | None) -> dict[str, int | None]:
     """Return source severity counts, excluding withdrawn media verdicts."""
     if result is None:

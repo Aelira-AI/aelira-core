@@ -30,7 +30,8 @@ from .current_compliance import (
     public_compliance_score,
     public_issue_counts,
     public_scan_issues,
-    is_retired_media_flash_issue,
+    is_ambiguous_retired_media_tracker,
+    retired_media_flash_scan_ids,
 )
 
 from ..config.settings import get_settings
@@ -123,27 +124,14 @@ class AccessibilityEvidenceReport:
         scan_dates = [scan.created_at for scan in scans if scan.created_at]
 
         scans_by_id = {scan.id: scan for scan in scans}
-        retired_scan_ids = {
-            result.scan_id
-            for result in results
-            for scan_type in [
-                getattr(scans_by_id.get(result.scan_id), "scan_type", None)
-            ]
-            if any(
-                is_retired_media_flash_issue(scan_type, issue)
-                for issue in (result.issues if isinstance(result.issues, list) else [])
-            )
-        }
+        retired_scan_ids = retired_media_flash_scan_ids(scans, results)
         # The old automatic mapper stored rule/message-only media findings as
         # unknown/No description. Caption findings can have that exact same
         # identity, so these historic rows cannot be attributed safely.
         ambiguous_tracked = [
             issue
             for issue in stored_tracked
-            if issue.scan_id in retired_scan_ids
-            and issue.issue_type == "unknown"
-            and issue.description == "No description"
-            and issue.wcag_criterion is None
+            if is_ambiguous_retired_media_tracker(issue, retired_scan_ids)
         ]
         ambiguous_ids = {issue.id for issue in ambiguous_tracked}
         tracked = [issue for issue in stored_tracked if issue.id not in ambiguous_ids]

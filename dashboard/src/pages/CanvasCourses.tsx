@@ -16,6 +16,7 @@ import {
 import { apiClient } from '../api/client';
 import { FeatureGate } from '../components/FeatureGate';
 import { useToast } from '../context/toast-context';
+import { completedCourseAverage, completedScanBadge, completedScanNotice } from '../utils/canvasScanStatus';
 
 // ============================================================================
 // Type Definitions
@@ -45,7 +46,7 @@ interface FileScanStatus {
   file_name: string;
   scan_id: string | null;
   compliance_score: number | null;
-  issues_count: number;
+  issues_count: number | null;
   status: string; // "not_tracked", "pending", "processing", "completed", "failed"
   has_remediated_version: boolean;
 }
@@ -289,18 +290,8 @@ export function CanvasCourses(): React.ReactElement {
           const newlyCompleted = files.filter(
             (f) => f.status === 'completed' && (scanningFiles.has(f.provider_file_id))
           );
-          if (newlyCompleted.length === 1) {
-            const f = newlyCompleted[0];
-            const issueText = f.issues_count === 0
-              ? 'No issues found — this file is accessible!'
-              : `${f.issues_count} issue${f.issues_count > 1 ? 's' : ''} found. Click Remediate to fix.`;
-            toast.success(issueText, 'Scan Complete');
-          } else if (newlyCompleted.length > 1) {
-            const totalIssues = newlyCompleted.reduce((sum, f) => sum + f.issues_count, 0);
-            toast.success(
-              `${newlyCompleted.length} files scanned. ${totalIssues} total issue${totalIssues !== 1 ? 's' : ''} found.`,
-              'Scan Complete'
-            );
+          if (newlyCompleted.length > 0) {
+            toast.info(completedScanNotice(newlyCompleted), 'Scan Complete');
           }
 
           setScanningFiles((prev) => {
@@ -407,7 +398,7 @@ export function CanvasCourses(): React.ReactElement {
   const handleRemediateAll = async (courseId: string): Promise<void> => {
     const statuses = scanStatuses[courseId] || [];
     const toRemediate = statuses.filter(
-      (s) => s.status === 'completed' && s.issues_count > 0 && !s.has_remediated_version
+      (s) => s.status === 'completed' && (s.issues_count ?? 0) > 0 && !s.has_remediated_version
     );
     if (toRemediate.length === 0) {
       toast.info('No files need remediation.', 'Nothing to Do');
@@ -466,10 +457,7 @@ export function CanvasCourses(): React.ReactElement {
     const files = courseFiles[courseId] || [];
     const statuses = scanStatuses[courseId] || [];
     const scannedStatuses = statuses.filter((s) => s.status === 'completed');
-    const scores = scannedStatuses
-      .map((s) => s.compliance_score)
-      .filter((s): s is number => s !== null);
-    const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+    const avg = completedCourseAverage(scannedStatuses);
     return { scanned: scannedStatuses.length, total: files.length, avg };
   };
 
@@ -520,26 +508,17 @@ export function CanvasCourses(): React.ReactElement {
       );
     }
 
-    if (status?.status === 'completed' && status.issues_count > 0) {
+    if (status?.status === 'completed') {
+      const badge = completedScanBadge(status);
       return (
         <span
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
-          style={{ backgroundColor: 'var(--feature-warning-surface)', color: 'var(--feature-warning-content)' }}
+          style={badge.intent === 'warning'
+            ? { backgroundColor: 'var(--feature-warning-surface)', color: 'var(--feature-warning-content)' }
+            : { backgroundColor: 'var(--surface-tertiary)', color: 'var(--content-secondary)' }}
         >
-          <AlertTriangle className="w-3 h-3" />
-          {status.issues_count} issue{status.issues_count !== 1 ? 's' : ''}
-        </span>
-      );
-    }
-
-    if (status?.status === 'completed' && status.issues_count === 0) {
-      return (
-        <span
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
-          style={{ backgroundColor: 'var(--feature-success-surface)', color: 'var(--feature-success-content)' }}
-        >
-          <Check className="w-3 h-3" />
-          Compliant
+          {badge.intent === 'warning' && <AlertTriangle className="w-3 h-3" />}
+          {badge.label}
         </span>
       );
     }
@@ -608,7 +587,7 @@ export function CanvasCourses(): React.ReactElement {
 
         {/* Remediate button */}
         {status?.status === 'completed' &&
-          status.issues_count > 0 &&
+          (status.issues_count ?? 0) > 0 &&
           !status.has_remediated_version &&
           !isRemediating && (
             <button
@@ -903,6 +882,11 @@ export function CanvasCourses(): React.ReactElement {
                             {compliance.avg.toFixed(0)}%
                           </span>
                         )}
+                        {compliance.scanned > 0 && compliance.avg === null && (
+                          <span className="text-sm" style={{ color: 'var(--content-secondary)' }}>
+                            Unassessed
+                          </span>
+                        )}
                       </div>
                     </button>
 
@@ -973,6 +957,11 @@ export function CanvasCourses(): React.ReactElement {
                                     style={{ color: getComplianceColor(compliance.avg) }}
                                   >
                                     Avg: {compliance.avg.toFixed(0)}%
+                                  </span>
+                                )}
+                                {compliance.scanned > 0 && compliance.avg === null && (
+                                  <span className="text-sm" style={{ color: 'var(--content-secondary)' }}>
+                                    Overall assessment unavailable
                                   </span>
                                 )}
                               </div>

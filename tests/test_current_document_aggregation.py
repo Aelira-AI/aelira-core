@@ -1,6 +1,7 @@
 """Current compliance is a projection of documents, not scan attempts."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -23,6 +24,7 @@ from src.education.current_compliance import (
     public_cloud_file_score,
     public_cloud_file_scores,
     public_cloud_file_issue_totals,
+    retired_media_flash_scan_ids,
     public_scan_job_results,
     public_compliance_score,
     project_current_documents,
@@ -499,6 +501,33 @@ def test_provider_issue_totals_are_batched_and_preserve_caption_counts():
         "unscanned": None,
     }
     assert db.query.call_count == 2
+
+
+def test_retired_tracker_source_detection_accepts_legacy_issue_shapes_only_for_media():
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+    }
+    scans = [
+        _scan("media-list"),
+        _scan("media-json"),
+        _scan("media-details"),
+        _scan("website"),
+    ]
+    for scan in scans[:3]:
+        scan.scan_type = ScanType.VIDEO
+    scans[3].scan_type = ScanType.WEBSITE
+    results = [_result(scan.id, 100, 1) for scan in scans]
+    results[0].issues = [retired]
+    results[1].issues = json.dumps([retired])
+    results[2].issues = {"details": [retired]}
+    results[3].issues = [retired]
+
+    assert retired_media_flash_scan_ids(scans, results) == {
+        "media-list",
+        "media-json",
+        "media-details",
+    }
 
 
 def test_new_issue_tracking_import_excludes_retired_media_verdict():
