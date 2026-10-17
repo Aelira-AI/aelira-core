@@ -8,7 +8,6 @@ import pytest
 
 from scripts.verify_final_python_packages import (
     PYAV_LIBRARIES,
-    QUICKSTART_PIP_VENDOR,
     required_opencv_version,
     required_msgpack_version,
     required_piper_version,
@@ -46,7 +45,27 @@ def _installed_pip_vendor(root: Path) -> Path:
     vendor = root / "pip" / "_vendor"
     urllib3 = vendor / "urllib3"
     urllib3.mkdir(parents=True)
-    (vendor / "vendor.txt").write_text("\n".join(QUICKSTART_PIP_VENDOR) + "\n")
+    # Frozen independently from the published pip 26.2.1 wheel's vendor.txt.
+    (vendor / "vendor.txt").write_text(
+        "CacheControl==0.14.4\n"
+        "distlib==0.4.2\n"
+        "distro==1.9.0\n"
+        "msgpack==1.1.2\n"
+        "packaging==26.2\n"
+        "platformdirs==4.10.0\n"
+        "pyproject-hooks==1.2.0\n"
+        "requests==2.34.2\n"
+        "    certifi==2026.6.17\n"
+        "    idna==3.18\n"
+        "    urllib3==2.7.0\n"
+        "rich==14.2.0\n"
+        "    pygments==2.20.0\n"
+        "resolvelib==1.2.1\n"
+        "setuptools==70.3.0\n"
+        "tomli==2.4.1\n"
+        "tomli-w==1.2.0\n"
+        "truststore==0.10.4\n"
+    )
     (urllib3 / "__init__.py").write_text("from ._version import __version__\n")
     (urllib3 / "_version.py").write_text("__version__ = version = '2.7.0'\n")
     return vendor
