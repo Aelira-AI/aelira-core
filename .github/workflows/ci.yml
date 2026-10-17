@@ -1478,6 +1478,11 @@ jobs:
           docker run --rm --network none --env HF_HOME=/hf --volume "$empty_cache:/hf" \
             --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
             /app/scripts/smoke_whisper_transcription.py offline-refused --cache-dir /hf/hub
+      - name: Verify source-built image libraries, libtiff version and OCR
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,mode=1777 \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_image_libraries.py
       - name: Show psycopg2 library resolution and absent bundled directories
         run: |
           docker run --rm --network none --entrypoint /bin/sh aelira-worker-isolation:test -c '
