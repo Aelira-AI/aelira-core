@@ -27,6 +27,10 @@ trap 'rm -rf -- "$workdir"' EXIT
 
 build_archive() {
   local destination=$1
+  local tag_args=()
+  if [ -n "${AELIRA_RETAIN_IMAGE_NAME:-}" ]; then
+    tag_args=(--tag "$AELIRA_RETAIN_IMAGE_NAME")
+  fi
   docker buildx build \
     --no-cache \
     --pull=false \
@@ -35,6 +39,7 @@ build_archive() {
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --platform "$platform" \
     --file "$dockerfile" \
+    "${tag_args[@]}" \
     --output "type=oci,dest=$destination,rewrite-timestamp=true" \
     "$context"
 }
@@ -70,3 +75,15 @@ if [ "$first_digest" != "$second_digest" ]; then
 fi
 
 echo "Reproducible image manifest for $platform: $first_digest"
+
+# CI may retain the first of the two proven-equal archives for native runtime
+# checks. The default path still removes both archives with the work directory.
+if [ -n "${AELIRA_RETAIN_ARCHIVE:-}" ]; then
+  mkdir -p "$(dirname "$AELIRA_RETAIN_ARCHIVE")"
+  if [ -e "$AELIRA_RETAIN_ARCHIVE" ]; then
+    echo "Refusing to overwrite retained OCI archive: $AELIRA_RETAIN_ARCHIVE" >&2
+    exit 73
+  fi
+  mv -- "$first_archive" "$AELIRA_RETAIN_ARCHIVE"
+  echo "Retained reproducible OCI archive: $AELIRA_RETAIN_ARCHIVE"
+fi
