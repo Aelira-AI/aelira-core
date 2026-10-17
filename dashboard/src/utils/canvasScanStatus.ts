@@ -37,6 +37,8 @@ export function completedScanNotice(scans: CompletedCanvasScan[]): string {
   const total = counts.reduce<number>((sum, count) => sum + (count ?? 0), 0);
   const findings = counts.some((count) => count === null)
     ? ' Finding count unavailable for some files.'
+    : unknownScores > 0 && total === 0
+      ? ' Review the recorded checks in results.'
     : ` ${total} recorded finding${total === 1 ? '' : 's'}.`;
   return `${prefix}${assessment}${findings} View results for scope.`;
 }

@@ -14,6 +14,7 @@ describe('Canvas completed scan presentation', () => {
       label: 'Unassessed', intent: 'neutral',
     });
     assert.match(completedScanNotice([scan(null, 0)]), /Overall assessment unavailable/);
+    assert.doesNotMatch(completedScanNotice([scan(null, 0)]), /0 recorded|No findings/i);
     assert.doesNotMatch(completedScanNotice([scan(null, 0)]), /accessible|compliant/i);
   });
 
