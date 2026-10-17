@@ -1,8 +1,6 @@
 #!/bin/sh
-# Build the pinned PyAV source release against a private, pinned FFmpeg 9.0.2
-# shared-library prefix. The multimedia transcription path passes locally
-# generated PCM WAV to faster-whisper; this deliberately minimal FFmpeg is
-# separate from the system ffmpeg CLI.
+# Build the pinned PyAV source release against the shared FFmpeg 9.0.2
+# prefix also used by the source-built OpenCV wheel.
 set -eu
 
 out="$1"
@@ -37,6 +35,7 @@ tar -xJf ffmpeg-9.0.2.tar.xz
     cd ffmpeg-9.0.2
     ./configure --prefix="$prefix" --enable-shared --disable-static \
         --disable-programs --disable-doc --disable-autodetect --disable-debug \
+        --enable-libdav1d --disable-decoder=av1 \
         --extra-cflags="-O2 -g0 -ffile-prefix-map=$work=." \
         --extra-ldflags="-Wl,--disable-new-dtags,-rpath,$prefix/lib"
     make --jobs="$(nproc)"
@@ -57,8 +56,5 @@ cp av-18.1.0/LICENSE.txt "$prefix/licenses/pyav-18.1.0/"
             --wheel-dir "$out" .
 )
 
-# Only the shared objects are needed at run time. PyAV's extensions and the
-# FFmpeg siblings carry an RPATH to this prefix; no global loader
-# environment variable is needed in the image.
-rm -rf "$prefix/include" "$prefix/lib/pkgconfig" "$prefix/share" "$prefix/bin"
-find "$prefix/lib" -maxdepth 1 -type l -name 'lib*.so' -delete
+# OpenCV still needs the headers, pkg-config files and linker symlinks.
+# docker/build-opencv-wheel.sh prunes them after the second wheel is built.

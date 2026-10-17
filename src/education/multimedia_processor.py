@@ -1532,7 +1532,23 @@ class MultimediaProcessor:
         """
         try:
             restrict_opencv_capture()
+            import cv2
             from scenedetect import detect, ContentDetector
+
+            # PySceneDetect returns an empty scene list both for a valid single
+            # scene and for a capture that opened but decoded no frames. Check
+            # one real frame before accepting its no-cut result.
+            capture = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+            try:
+                opened = capture.isOpened()
+                decoded, _ = capture.read() if opened else (False, None)
+            finally:
+                capture.release()
+            if not decoded:
+                logger.warning(
+                    "[MultimediaProcessor] OpenCV decoded no frames; using ffmpeg fallback"
+                )
+                return None
 
             # ContentDetector with threshold 30.0 is good for presentations
             # Lower = more sensitive (more scenes detected)
@@ -1584,6 +1600,36 @@ class MultimediaProcessor:
 
         # Fall back to ffmpeg-based detection
         try:
+            # A zero-frame stream can still have a valid container and frame
+            # count metadata. Verify decoded frames before treating no cuts as
+            # a single scene.
+            probe = subprocess.run(
+                local_media_command(
+                    [
+                        "ffprobe",
+                        "-v",
+                        "error",
+                        "-count_frames",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "stream=nb_read_frames",
+                        "-of",
+                        "default=noprint_wrappers=1:nokey=1",
+                        video_path,
+                    ]
+                ),
+                capture_output=True,
+                text=True,
+                timeout=min(300, max(10, duration * 2)),
+            )
+            count = probe.stdout.strip()
+            if probe.returncode != 0 or not count.isdecimal() or int(count) == 0:
+                logger.warning(
+                    "[MultimediaProcessor] ffprobe decoded no video frames; refusing scene result"
+                )
+                return []
+
             # Use ffmpeg to detect scene changes
             # scene threshold 0.3 = 30% pixel change (good for presentations)
             # Lower values = more sensitive, higher = less sensitive
@@ -1604,6 +1650,11 @@ class MultimediaProcessor:
                 text=True,
                 timeout=min(300, duration * 2),  # Timeout scales with video length
             )
+            if result.returncode != 0:
+                logger.warning(
+                    "[MultimediaProcessor] ffmpeg scene detection failed; refusing scene result"
+                )
+                return []
 
             # Parse timestamps from ffmpeg output
             # Format: "pts_time:12.345" in showinfo output
@@ -1627,12 +1678,12 @@ class MultimediaProcessor:
             logger.warning(
                 "[MultimediaProcessor] Scene detection timed out, using fallback"
             )
-            return [0.0]  # Just return start, backup sampling will cover rest
+            return []
         except Exception as e:
             logger.warning(
                 f"[MultimediaProcessor] Scene detection failed: {e}, using fallback"
             )
-            return [0.0]
+            return []
 
     def _describe_keyframe(
         self, llm_client, frame_path: str, timestamp: float
