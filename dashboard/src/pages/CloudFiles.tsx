@@ -48,7 +48,7 @@ function MicrosoftIcon(): React.ReactElement {
 
 function CanvasIcon(): React.ReactElement {
   return (
-    <div className="w-5 h-5 rounded-full bg-[#E74C3C] flex items-center justify-center">
+    <div className="w-5 h-5 rounded-full bg-[#C0392B] flex items-center justify-center">
       <span className="text-white font-bold text-[10px]">C</span>
     </div>
   );
@@ -147,8 +147,9 @@ export function CloudFiles(): React.ReactElement {
         featureName="Cloud Files"
         description="View and manage files synced from your connected cloud storage providers."
       >
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} />
+      <div className="flex items-center justify-center h-64" role="status" aria-label="Loading cloud files">
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+        <span className="sr-only">Loading cloud files...</span>
       </div>
       </FeatureGate>
     );
@@ -162,7 +163,7 @@ export function CloudFiles(): React.ReactElement {
     >
     <div className="max-w-7xl mx-auto px-4 py-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: 'var(--content-primary)' }}>
             Cloud Files
@@ -171,7 +172,7 @@ export function CloudFiles(): React.ReactElement {
             Files synced from your connected cloud storage providers
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button
             onClick={fetchFiles}
             disabled={refreshing}
@@ -193,18 +194,19 @@ export function CloudFiles(): React.ReactElement {
       </div>
 
       {/* Filters */}
-      <div className="mb-6 flex items-center gap-4">
+      <div className="mb-6 flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4" style={{ color: 'var(--content-secondary)' }} />
           <span className="text-sm font-medium" style={{ color: 'var(--content-secondary)' }}>
             Filter by:
           </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filter files by provider">
           {(['all', 'google', 'microsoft', 'canvas'] as ProviderFilter[]).map((filter) => (
             <button
               key={filter}
               onClick={() => setProviderFilter(filter)}
+              aria-pressed={providerFilter === filter}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 providerFilter === filter ? 'text-white' : ''
               }`}
@@ -261,7 +263,7 @@ export function CloudFiles(): React.ReactElement {
           className="rounded-xl overflow-hidden"
           style={{ backgroundColor: 'var(--surface-secondary)' }}
         >
-          <div className="overflow-x-auto">
+          <div role="region" aria-label="Synced cloud files" tabIndex={0} className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
             <table className="w-full">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border-primary)' }}>

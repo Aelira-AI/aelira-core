@@ -533,15 +533,18 @@ export default function Settings(): React.ReactElement {
             </div>
             <div className="px-6 py-4">
               {loadingProfile ? (
-                <div className="flex items-center justify-center py-4">
+                <div className="flex items-center justify-center py-4" role="status" aria-label="Loading profile">
                   <Loader2 className="w-5 h-5 animate-spin text-tertiary" />
+                  <span className="sr-only">Loading profile...</span>
                 </div>
               ) : editingProfile ? (
                 <div className="space-y-4">
                   <div>
-                    <label className="text-sm font-medium text-tertiary block mb-1">Name</label>
+                    <label htmlFor="profile-name" className="text-sm font-medium text-tertiary block mb-1">Name</label>
                     <input
+                      id="profile-name"
                       type="text"
+                      autoComplete="name"
                       value={profileForm.name}
                       onChange={(e: ChangeEvent<HTMLInputElement>) => setProfileForm({ ...profileForm, name: e.target.value })}
                       className="input w-full max-w-md"
@@ -549,8 +552,9 @@ export default function Settings(): React.ReactElement {
                     />
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-tertiary block mb-1">Timezone</label>
+                    <label htmlFor="profile-timezone" className="text-sm font-medium text-tertiary block mb-1">Timezone</label>
                     <select
+                      id="profile-timezone"
                       value={profileForm.timezone}
                       onChange={(e: ChangeEvent<HTMLSelectElement>) => setProfileForm({ ...profileForm, timezone: e.target.value })}
                       className="input w-full max-w-md"
@@ -967,7 +971,7 @@ export default function Settings(): React.ReactElement {
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-medium">Need Help?</p>
-              <p className="text-xs mt-1 opacity-90">
+              <p className="text-xs mt-1">
                 Contact your system administrator or visit our documentation for support with API keys and account management.
               </p>
             </div>

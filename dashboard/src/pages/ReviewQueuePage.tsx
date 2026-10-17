@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, ChangeEvent } from 'react';
+import { PageError } from '../components/ui/PageError';
 import { Link } from 'react-router-dom';
 import {
   ClipboardCheck,
@@ -209,16 +210,11 @@ export function ReviewQueuePage(): React.ReactElement {
 
   if (error) {
     return (
-      <div className="p-8">
-        <div className="max-w-7xl mx-auto">
-          <div
-            className="rounded-lg p-4 bg-[var(--feature-danger-surface)] border border-[var(--feature-danger-content)] text-[var(--feature-danger-content)]"
-            role="alert"
-          >
-            Error: {error}
-          </div>
-        </div>
-      </div>
+      <PageError
+        title="Review Queue"
+        message={`The review queue could not be loaded. ${error}`}
+        onRetry={() => void fetchQueue()}
+      />
     );
   }
 
