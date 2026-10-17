@@ -80,6 +80,10 @@ def required_pyav_version(requirements: Path = REQUIREMENTS) -> str:
     return required_pinned_version("av", requirements)
 
 
+def required_opencv_version(requirements: Path = REQUIREMENTS) -> str:
+    return required_pinned_version("opencv-python", requirements)
+
+
 def required_piper_version(requirements: Path = REQUIREMENTS) -> str:
     return required_pinned_version("piper-tts", requirements)
 
@@ -447,6 +451,90 @@ def validate_pyav_native(
     return sorted(set(errors))
 
 
+def validate_opencv_native(
+    *,
+    version: Callable[[str], str] = importlib.metadata.version,
+    package_not_found: type[Exception] = importlib.metadata.PackageNotFoundError,
+    purelib: Path | None = None,
+    requirements: Path = REQUIREMENTS,
+    ldd: Callable[[Path], str] = run_ldd,
+    realpath: Callable[[str], str] = os.path.realpath,
+    build_information: str | None = None,
+) -> list[str]:
+    """Check source OpenCV identity, FFmpeg linkage, and absent private codecs."""
+    errors: list[str] = []
+    try:
+        expected = required_opencv_version(requirements)
+    except (OSError, ValueError) as exc:
+        return [f"venv: unable to determine required OpenCV version: {exc}"]
+    try:
+        installed = version("opencv-python")
+    except package_not_found:
+        installed = None
+    if installed != expected:
+        errors.append(
+            f"venv: opencv-python is {installed or 'absent'}; expected {expected}"
+        )
+
+    root = purelib or Path(sysconfig.get_paths()["purelib"])
+    private = sorted(str(path) for path in root.glob("opencv_python*.libs"))
+    private.extend(str(path) for path in (root / "cv2").glob("*.libs"))
+    if private:
+        errors.append(
+            f"venv: bundled OpenCV library directory present: {', '.join(private)}"
+        )
+    extensions = sorted((root / "cv2").glob("cv2*.so"))
+    if len(extensions) != 1:
+        errors.append(f"venv: expected one cv2 extension; found {len(extensions)}")
+        return errors
+    try:
+        libraries = _resolved_libraries(ldd(extensions[0]))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return errors + [f"venv: unable to inspect cv2 with ldd: {exc}"]
+
+    for stem in ("libavcodec", "libavformat", "libavutil", "libswscale"):
+        expected_name = f"{stem}.so.{PYAV_LIBRARIES[stem][0]}"
+        path = libraries.get(expected_name)
+        if path is None:
+            errors.append(f"venv: cv2 does not resolve {expected_name}")
+        elif not realpath(path).startswith(PYAV_PREFIX):
+            errors.append(
+                f"venv: cv2 resolves {expected_name} to {path}; expected {PYAV_PREFIX}"
+            )
+    for name, path in libraries.items():
+        stem = name.split(".so", 1)[0]
+        if stem.startswith(("libav", "libsw")) and stem not in PYAV_LIBRARIES:
+            errors.append(f"venv: unexpected OpenCV FFmpeg library {name} at {path}")
+        if stem in PYAV_LIBRARIES and name != f"{stem}.so.{PYAV_LIBRARIES[stem][0]}":
+            errors.append(
+                f"venv: cv2 resolves unexpected FFmpeg SONAME {name} at {path}"
+            )
+        if stem in ("libtiff", "libjpeg", "libpng", "libwebp", "libopenjp2"):
+            errors.append(f"venv: cv2 loads disabled image codec {name} at {path}")
+        if stem.startswith(PYAV_TLS_LIBRARIES):
+            errors.append(f"venv: cv2 loads TLS library {name} at {path}")
+    dav1d = libraries.get("libdav1d.so.7")
+    if dav1d is None or not realpath(dav1d).startswith("/usr/lib/"):
+        errors.append(f"venv: cv2 lacks Debian libdav1d.so.7: {dav1d}")
+
+    if build_information is None:
+        try:
+            import cv2
+
+            build_information = cv2.getBuildInformation()
+            if cv2.__version__ != expected.rsplit(".", 1)[0]:
+                errors.append(
+                    f"venv: imported cv2 is {cv2.__version__}; expected {expected}"
+                )
+        except (ImportError, OSError) as exc:
+            return errors + [f"venv: unable to import cv2: {exc}"]
+    if not re.search(r"^\s*FFMPEG:\s+YES\s*$", build_information, re.MULTILINE):
+        errors.append("venv: cv2 FFmpeg backend is disabled")
+    if re.search(r"^\s*TIFF:\s+build", build_information, re.MULTILINE):
+        errors.append("venv: cv2 includes a built-in TIFF library")
+    return sorted(set(errors))
+
+
 def validate_psycopg2_native(
     *,
     version: Callable[[str], str] = importlib.metadata.version,
@@ -536,6 +624,7 @@ def main() -> int:
         errors.extend(validate_pillow())
         errors.extend(validate_psycopg2_native())
         errors.extend(validate_pyav_native())
+        errors.extend(validate_opencv_native())
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

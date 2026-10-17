@@ -46,11 +46,15 @@ COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_pa
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
+    patch \
     nasm \
+    cmake \
+    ninja-build \
     pkg-config \
     libcairo2-dev \
     curl \
     xz-utils \
+    libdav1d-dev=1.5.1-1 \
     git \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -106,12 +110,18 @@ COPY requirements.txt requirements-dev.txt ./
 
 # Install the pinned runtime and development dependency sets
 COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
+COPY docker/build-opencv-wheel.sh /tmp/build-opencv-wheel.sh
+COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
 RUN pip install --no-cache-dir "pip==26.2.1" "setuptools==84.0.0" "Cython==3.2.9" && \
     sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel && \
     pip install --no-cache-dir --no-deps /tmp/pyav-wheel/av-18.1.0-*.whl && \
     rm -rf /tmp/pyav-wheel /tmp/build-pyav-wheel.sh && \
     pip uninstall --yes Cython && \
-    pip install --no-cache-dir -r requirements-dev.txt
+    sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel /tmp/opencv-ffmpeg9-pr29533.diff && \
+    pip install --no-cache-dir --no-deps /tmp/opencv-wheel/opencv_python-5.0.0.93-*.whl && \
+    rm -rf /tmp/opencv-wheel /tmp/build-opencv-wheel.sh /tmp/opencv-ffmpeg9-pr29533.diff && \
+    pip install --no-cache-dir -r requirements-dev.txt && \
+    python -c "import cv2, importlib.metadata as m; assert m.version('opencv-python') == '5.0.0.93'; assert cv2.__version__ == '5.0.0'"
 
 # Download Piper voice model for TTS
 COPY scripts/download_piper_voice.py scripts/download_piper_voice.py

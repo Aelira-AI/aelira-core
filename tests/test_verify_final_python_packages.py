@@ -8,12 +8,14 @@ import pytest
 
 from scripts.verify_final_python_packages import (
     PYAV_LIBRARIES,
+    required_opencv_version,
     required_msgpack_version,
     required_piper_version,
     required_pyav_version,
     required_psycopg2_version,
     required_urllib3_version,
     validate,
+    validate_opencv_native,
     validate_pillow,
     validate_pyav_native,
     validate_psycopg2_native,
@@ -699,3 +701,78 @@ def test_dockerfile_builds_pyav_before_installing_requirements() -> None:
     )
     assert f"/tmp/pyav-wheel/av-{PYAV_VERSION}-*.whl" in builder
     assert "COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib" in dockerfile
+
+
+OPENCV_VERSION = required_opencv_version()
+
+
+def _opencv_tree(root: Path) -> Path:
+    package = root / "cv2"
+    package.mkdir()
+    (package / "cv2.cpython-314-aarch64-linux-gnu.so").write_bytes(b"")
+    return root
+
+
+def _opencv_ldd(path_prefix: str = "/opt/ffmpeg9/lib") -> str:
+    return "\n".join(
+        [
+            *(
+                f"{stem}.so.{PYAV_LIBRARIES[stem][0]} => {path_prefix}/{stem}.so.{PYAV_LIBRARIES[stem][0]} (0x1234)"
+                for stem in ("libavcodec", "libavformat", "libavutil", "libswscale")
+            ),
+            "libdav1d.so.7 => /usr/lib/aarch64-linux-gnu/libdav1d.so.7 (0x1234)",
+        ]
+    )
+
+
+def _validate_opencv(root: Path, ldd_output: str | None = None, **overrides):
+    options = {
+        "version": _versions({"opencv-python": OPENCV_VERSION}),
+        "package_not_found": MissingPackage,
+        "purelib": root,
+        "ldd": lambda _extension: ldd_output or _opencv_ldd(),
+        "realpath": lambda path: path,
+        "build_information": "  FFMPEG: YES\n  TIFF: NO\n",
+    }
+    options.update(overrides)
+    return validate_opencv_native(**options)
+
+
+def test_opencv_verifier_accepts_shared_ffmpeg_and_debian_dav1d(tmp_path: Path):
+    assert _validate_opencv(_opencv_tree(tmp_path)) == []
+
+
+def test_opencv_verifier_rejects_published_private_wheel(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    (root / "opencv_python.libs").mkdir()
+    errors = _validate_opencv(root, _opencv_ldd(str(root / "opencv_python.libs")))
+    assert any("bundled OpenCV library directory" in error for error in errors)
+    assert any("expected /opt/ffmpeg9/lib/" in error for error in errors)
+
+
+def test_opencv_verifier_rejects_missing_cpu_av1_and_tiff(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        _opencv_ldd().replace("libdav1d.so.7", "libdav1d.so.6")
+        + "\nlibssl-deadbeef.so.3 => /tmp/opencv_python.libs/libssl-deadbeef.so.3 (0x1234)",
+        build_information="FFMPEG: YES\nTIFF: build (4.7.1)\n",
+    )
+    assert any("lacks Debian libdav1d.so.7" in error for error in errors)
+    assert any("built-in TIFF" in error for error in errors)
+    assert any("loads TLS library" in error for error in errors)
+
+
+def test_dockerfiles_build_opencv_before_requirements():
+    root = Path(__file__).resolve().parents[1]
+    for name, requirements in (
+        ("Dockerfile", "requirements.txt"),
+        ("Dockerfile.dev", "requirements-dev.txt"),
+    ):
+        source = (root / name).read_text()
+        build = "sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel /tmp/opencv-ffmpeg9-pr29533.diff"
+        install = f"/tmp/opencv-wheel/opencv_python-{OPENCV_VERSION}-*.whl"
+        requirements_install = f"pip install --no-cache-dir -r {requirements}"
+        assert source.index("sh /tmp/build-pyav-wheel.sh") < source.index(build)
+        assert source.index(build) < source.index(install)
+        assert source.index(install) < source.index(requirements_install)

@@ -226,9 +226,9 @@ the resolver's latest-version choice.
 
 ### Libraries built from source
 
-The published `lxml`, `Pillow`, and `av` wheels bundle native libraries that Debian
+The published `lxml`, `Pillow`, `av`, and `opencv-python` wheels bundle native libraries that Debian
 and the vulnerability scanner do not see, and that lag upstream security
-releases. The API image therefore builds all three from their pinned source
+releases. The API image therefore builds all four from their pinned source
 releases in the builder stage, then installs the resulting wheels before the
 locked requirements, which are then already satisfied.
 
@@ -236,28 +236,52 @@ locked requirements, which are then already satisfied.
 |---|---|---|
 | `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
 | `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm with FriBidi and HarfBuzz, LittleCMS, zlib and XCB from Debian packages |
-| `av` 18.1.0 | `docker/build-pyav-wheel.sh` | FFmpeg 9.0.2 shared libraries from a separate `/opt/ffmpeg9/lib` prefix, built from a hash-verified official release archive; no wheel-private `av.libs` or TLS libraries |
+| `av` 18.1.0 | `docker/build-pyav-wheel.sh` | FFmpeg 9.0.2 shared libraries under `/opt/ffmpeg9/lib`, built from a hash-verified official release archive; no wheel-private `av.libs` or TLS libraries |
+| `opencv-python` 5.0.0.93 | `docker/build-opencv-wheel.sh` | The same FFmpeg 9.0.2 libraries and Debian `libdav1d7` 1.5.1-1 for CPU AV1 decoding; no `opencv_python.libs` or OpenCV image-codec backends |
 
 The [PyAV source archive](https://pypi.org/project/av/18.1.0/#files) has SHA-256
 `47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28`.
 The [official FFmpeg archive](https://ffmpeg.org/download.html) has SHA-256
 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`;
 its official release signature was verified against FFmpeg release signer
-`FCF986EA15E6E293A5644F10B4322F04D67658D8`. The build pins Cython
+`FCF986EA15E6E293A5644F10B4322F04D67658D8`. The PyAV build pins Cython
 3.2.9 and the existing setuptools 84.0.0, disables build isolation, and checks
 both archive hashes before unpacking. The final image carries the FFmpeg and
 PyAV license texts with the seven required shared libraries. PyAV's extension
 modules and the FFmpeg siblings use an embedded RPATH to that prefix.
+The [OpenCV 5.0.0.93 source archive](https://pypi.org/project/opencv-python/5.0.0.93/#files)
+has SHA-256 `66aac3e5b5faa48d4025816592f3af19e4bfc2c68dec067bae2dbb4ca10aa9e2`.
+Its exact [upstream merged FFmpeg 9 compatibility diff](https://github.com/opencv/opencv/compare/49c8d21f16e205647fb77535b3d182f14b2debfe...c0166c617d765ac707dde6b9acd8cfcd49751049.diff)
+has SHA-256 `ee7c145e51c7988325296ea2cc1dc70b42ecd6e27b49386370b926c2211ff6f4`.
+Both hashes are checked before the OpenCV build. Its temporary build environment
+pins NumPy 2.3.2, setuptools 69.5.1 and wheel 0.45.1 as required by the
+sdist's legacy build backend on Python
+3.14; the final application keeps NumPy 2.5.4 and setuptools 84.0.0. FFmpeg's
+development headers and linker symlinks are removed after both wheels exist.
 The final-image verifier checks the installed PyAV version, native FFmpeg
 version tuples, every resolved FFmpeg SONAME and path, and the absence of
 `av.libs` and linked TLS libraries.
 
-This FFmpeg build disables autodetected optional components, including
-TLS/HTTPS and external codecs. Its supported application role is decoding the
-local PCM WAV that `multimedia_processor.py` generates for
-`faster-whisper==1.2.1`. The system `ffmpeg` CLI and OpenCV keep their own
-separate media paths and libraries; this PyAV build does not establish feature
-parity or resolve advisories on those other copies.
+This FFmpeg build disables autodetected optional components, including TLS/HTTPS.
+It explicitly enables Debian's `libdav1d` software AV1 decoder and disables
+FFmpeg's hardware-only native AV1 decoder so OpenCV selects the CPU decoder by
+codec ID. PyAV still decodes the local PCM WAV that `multimedia_processor.py`
+generates for `faster-whisper==1.2.1`. The system `ffmpeg` CLI remains a
+separate Debian media path.
+
+The OpenCV wheel retains the exact `opencv-python` distribution identity that
+PySceneDetect 0.7.2 requires. Its compiled scope is scene video capture and
+processing; OpenCV JPEG, PNG, TIFF, WebP, JPEG 2000, GIF and other image-codec
+backends are disabled, as are the unused Protobuf and Flatbuffers backends.
+The build inventory still lists OpenCV's static zlib 1.3.2 and internal
+ittnotify, libclapack, and HAL components; these are retained support code,
+not additional linked media, image-codec, or TLS shared libraries. Pillow
+handles application image decoding and keeps its own verified format support.
+Native acceptance checks normal H.264, HEVC,
+VP8, VP9, MPEG-4, MJPEG and AV1 input, 90 decoded frames and scene starts at
+0, 3 and 6 seconds, plus a true single-scene input. These checks cover the
+listed CPU inputs and do not establish every media profile or clear broader
+dependency findings tracked by #583, #578 and #377.
 
 Raising any source-built pin means changing the requirement, the build script's
 version and digests, and the policy test together. `pi_heif` is intentionally absent:
