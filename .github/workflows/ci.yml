@@ -1455,6 +1455,13 @@ jobs:
           JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
           JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
         run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=lms
+      - name: Show the LTI and Canvas lines of the API log for a failed run
+        # Job logs of a public repository are public: query strings and tokens are dropped.
+        if: failure()
+        run: |
+          grep -E 'LTI|lti|Canvas|canvas' "$RUNNER_TEMP/journey-api.log" \
+            | sed -E 's/\?[^ "]*//g; s/(token|code|state|login_hint|lti_message_hint)=[^& "]*/\1=<redacted>/g' \
+            | tail -60 || true
       - name: Remove the tool key from the runner
         if: always()
         run: rm -f "$RUNNER_TEMP/lti-private.pem" "$RUNNER_TEMP/lti-public.pem" "$RUNNER_TEMP/journey.env"

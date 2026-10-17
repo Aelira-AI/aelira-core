@@ -27,9 +27,24 @@ export async function assertNoBlockingViolations(
   testInfo: TestInfo,
   options: AxeOptions = {},
 ): Promise<AxeSummary> {
-  // axe reads colours as rendered, so let entrance transitions (toasts fade in over
-  // 300ms) finish; a half-faded element is a measurement artefact, not a finding.
-  await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished.catch(() => undefined))));
+  // axe reads colours as rendered, so let entrance animations and colour transitions
+  // finish (a half-faded toast or a badge mid-transition is a measurement artefact, not
+  // a finding). Endless animations such as spinners are left running.
+  await page.evaluate(async () => {
+    const settled = () =>
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity);
+    for (let round = 0; round < 10; round += 1) {
+      const running = settled();
+      if (running.length === 0) {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (settled().length === 0) return;
+      } else {
+        await Promise.all(running.map((animation) => animation.finished.catch(() => undefined)));
+      }
+    }
+  });
   await injectAxe(page);
   const context = options.exclude?.length ? { exclude: options.exclude.map((s) => [s]) } : undefined;
   const violations = await getViolations(page, context as never, {

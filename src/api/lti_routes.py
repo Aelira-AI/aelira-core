@@ -241,7 +241,7 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _tool_launch_uri(uri: str) -> str:
-    """Upgrade a plain-HTTP launch URL to HTTPS unless it points at this machine."""
+    """Send a plain-HTTP launch URL over HTTPS unless it points at this machine."""
     parsed = urlparse(uri)
     if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
         return uri.replace("http://", "https://", 1)

@@ -1,4 +1,4 @@
-"""The OIDC login keeps a loopback launch URL and upgrades every other plain-HTTP one."""
+"""The OIDC login keeps a loopback launch URL and moves every other plain-HTTP one to HTTPS."""
 
 import pytest
 

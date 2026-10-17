@@ -200,7 +200,7 @@ async function scanRemediateApproveWriteBack(page: Page, testInfo: TestInfo, fil
   await page.goto('/integrations/canvas');
   await dismissCookieBanner(page);
   await page.getByRole('button', { name: /CI Journeys/ }).click();
-  const row = page.getByRole('row', { name: new RegExp(fileName.replace(/\./g, '\\.')) });
+  const row = page.getByRole('row').filter({ hasText: fileName });
   await expect(row).toBeVisible({ timeout: 60_000 });
   await assertNoBlockingViolations(page, `canvas-courses-${fileName}`, testInfo);
   await row.getByRole('button', { name: 'Scan', exact: true }).click();
