@@ -232,6 +232,33 @@ def test_candidate_inspection_refuses_loss(converter, source, monkeypatch, body,
     assert code in [d.code for s in receipts["html"].stages for d in s.diagnostics]
 
 
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ('<span class="math display">raw</span>', {"raw_tex"}),
+        ('<span class="math"><math><mi>x</mi></math></span>', set()),
+        (
+            '<span class="citation"><a href="#ref">[1]</a></span>'
+            '<span class="ltx_cite">missing link</span><div id="ref"></div>',
+            {"unresolved_reference"},
+        ),
+        (
+            '<span class="ltx_cite"><a href="#ref">[1]</a></span>'
+            '<div id="ref"></div>',
+            set(),
+        ),
+        ('<div class="ltx_equation"><span>raw</span></div>', {"malformed_expression"}),
+        ('<div class="ltx_equation"><svg><text>x</text></svg></div>', set()),
+    ],
+)
+def test_candidate_inspection_css_selectors(source, tmp_path, body, expected):
+    candidate = tmp_path / "candidate.html"
+    candidate.write_text(f"<html><body>{body}</body></html>")
+    assert {
+        item.code for item in inspect_candidate(source, candidate).diagnostics
+    } == expected
+
+
 def test_target_presence_is_not_identity_or_reader_activation(source, tmp_path):
     html = tmp_path / "out.html"
     html.write_text('<a href="#eq1">1</a><div id="eq1">x</div>')
