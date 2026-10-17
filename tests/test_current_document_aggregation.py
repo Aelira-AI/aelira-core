@@ -12,6 +12,8 @@ from src.api.user_management import get_department_stats as get_admin_department
 from src.education.compliance_dashboard import ComplianceDashboard
 from src.education.current_compliance import (
     _provider_scan_ids,
+    public_cloud_file_score,
+    public_compliance_score,
     project_current_documents,
 )
 
@@ -63,6 +65,89 @@ def _cloud_file(file_id: str, last_scan_id: str | None):
         department_id="dept-a",
         last_scan_id=last_scan_id,
     )
+
+
+def test_legacy_and_partial_media_never_become_verified_credit():
+    legacy = _scan("legacy", file_hash="b" * 64)
+    legacy.scan_type = ScanType.MULTIMEDIA
+    stale_safe = _result("legacy", 100, 0)
+    stale_safe.structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    partial = _scan("partial", file_hash="b" * 64, created_offset=1)
+    partial.scan_type = ScanType.MULTIMEDIA
+    partial_result = _result("partial", None, 1)
+    partial_result.structure = {
+        "media_type": "video",
+        "flashing_assessment": {
+            "state": "unassessed",
+            "reason": "detector_unavailable",
+            "version": "unassessed-v1",
+        },
+    }
+    projection = project_current_documents(
+        [legacy, partial], [stale_safe, partial_result], []
+    )
+    assert public_compliance_score(legacy, stale_safe) is None
+    assert projection.verified_document_count == 0
+    assert projection.average_compliance_score is None
+    assert projection.historical_scan_count == 2
+
+    audio = _scan("audio", file_hash="c" * 64)
+    audio.scan_type = ScanType.MULTIMEDIA
+    audio_result = _result("audio", 80, 1)
+    audio_result.structure = {
+        "media_type": "audio",
+        "flashing_assessment": {"state": "not_applicable", "version": "unassessed-v1"},
+    }
+    assert public_compliance_score(audio, audio_result) == 80
+
+
+def test_cached_provider_score_cannot_restore_legacy_video_credit():
+    legacy = _scan("legacy")
+    legacy.scan_type = ScanType.MULTIMEDIA
+    result = _result("legacy", 100, 0)
+    result.structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+
+    db = MagicMock()
+
+    def query(model):
+        matches = MagicMock()
+        matches.filter.return_value.first.return_value = (
+            legacy if model is Scan else result
+        )
+        return matches
+
+    db.query.side_effect = query
+    cloud_file = SimpleNamespace(
+        last_scan_id="legacy",
+        last_compliance_score=100,
+        file_type="file",
+        mime_type="video/mp4",
+    )
+    assert public_cloud_file_score(db, cloud_file) is None
+
+    cloud_file.last_scan_id = None
+    assert public_cloud_file_score(db, cloud_file) is None
+
+    cloud_file.file_type = "pdf"
+    cloud_file.mime_type = "application/pdf"
+    assert public_cloud_file_score(db, cloud_file) == 100
+
+    legacy.scan_type = ScanType.MULTIMEDIA
+    result.compliance_score = 80
+    result.structure = {
+        "media_type": "audio",
+        "flashing_assessment": {"state": "not_applicable", "version": "unassessed-v1"},
+    }
+    cloud_file.last_scan_id = "legacy"
+    cloud_file.file_type = "mp3"
+    cloud_file.mime_type = "audio/mpeg"
+    assert public_cloud_file_score(db, cloud_file) == 80
 
 
 def test_duplicate_uploads_and_rescans_use_one_latest_verified_state():

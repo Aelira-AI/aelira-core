@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 
 # Add backend to path
 import sys
@@ -160,6 +161,10 @@ class TestMultimediaProcessor:
 
                 assert result.media_type == "video"
                 assert len(result.transcription) == 2
+                assert result.compliance_score is None
+                assert result.flashing_analysis.state == "unassessed"
+                assert result.flashing_analysis.reason == "disabled"
+                assert result.flashing_analysis.flash_count is None
 
     def test_generate_webvtt(self, processor):
         """Test WebVTT generation."""
@@ -195,14 +200,14 @@ class TestMultimediaProcessor:
             audio_descriptions=[AudioDescription(timestamp=0, description="Test")],
             flashing_analysis=None,
         )
-        assert score == 100.0
+        assert score is None
         assert len(issues) == 0
 
         # Case 2: Missing captions (Critical)
         score, issues = processor._check_compliance(
             media_type="video", duration=10.0, has_captions=False, transcription=None
         )
-        assert score <= 80.0
+        assert score is None
         assert any(i["severity"] == "critical" for i in issues)
 
         # Case 3: Missing audio descriptions (High)
@@ -213,134 +218,232 @@ class TestMultimediaProcessor:
             transcription=[],
             audio_descriptions=None,  # Missing
         )
-        assert score <= 90.0
+        assert score is None
         assert any(i["severity"] == "high" for i in issues)
 
 
-class TestRedFlashDetection:
-    """Test suite for WCAG 2.3.1 Red Flash Threshold Detection."""
+class TestFlashingAssessmentContainment:
+    """The retired heuristic cannot create measurements or safety claims."""
 
-    def test_flashing_content_result_model(self):
-        """Test that FlashingContentResult includes red flash fields."""
-        result = FlashingContentResult(
-            has_flashing=True,
-            flash_count=5,
-            max_flash_frequency=2.5,
-            timestamps=[0.1, 0.3, 0.5, 0.7, 0.9],
-            red_flash_detected=True,
-            red_flash_count=2,
-            red_flash_timestamps=[0.2, 0.6],
-            red_saturation_peak=0.85,
-            severity="dangerous",
-            recommendation="Red flashing detected",
+    @pytest.mark.parametrize("frame_output", ["", "I\nP\n", "0.1,I\n0.2,P\n"])
+    def test_frame_metadata_cannot_establish_safety(
+        self, processor, mock_subprocess, frame_output
+    ):
+        mock_subprocess.return_value.stdout = frame_output
+        result = processor._detect_flashing_content("video.mp4", 60.0)
+        assert result.state == "unassessed"
+        assert result.reason == "detector_unavailable"
+        assert result.has_flashing is None
+        assert result.flash_count is None
+        assert result.max_flash_frequency is None
+        assert result.red_flash_detected is None
+        assert result.severity is None
+        mock_subprocess.assert_not_called()
+
+    def test_unassessed_model_rejects_fake_safe_measurements(self):
+        with pytest.raises(ValueError):
+            FlashingContentResult(has_flashing=False, flash_count=0, severity="safe")
+
+    def test_legacy_reload_cannot_publish_safe_or_numeric_video_claim(self):
+        from src.education.latex_evidence import public_scan_structure
+
+        legacy = {
+            "media_type": "video",
+            "flashing_analysis": {
+                "severity": "safe",
+                "has_flashing": False,
+                "flash_count": 0,
+            },
+            "transcription_output": {
+                "compliance_score": 100,
+                "issues": [{"rule": "WCAG 1.2.2", "severity": "critical"}],
+            },
+        }
+        shown = public_scan_structure(legacy, "MULTIMEDIA")
+        assert shown["flashing_assessment"] == {
+            "state": "unassessed",
+            "reason": "detector_unavailable",
+            "version": "unassessed-v1",
+        }
+        assert shown["transcription_output"]["compliance_score"] is None
+        assert (
+            shown["transcription_output"]["issues"]
+            == legacy["transcription_output"]["issues"]
         )
+        assert "flashing_analysis" not in shown
 
-        assert result.red_flash_detected is True
-        assert result.red_flash_count == 2
-        assert len(result.red_flash_timestamps) == 2
-        assert result.red_saturation_peak == 0.85
+    def test_local_durable_result_keeps_findings_and_companions(self, tmp_path):
+        from src.api.education.multimedia_routes import process_multimedia_background
+        from src.db.models import ScanResult, ScanStatus
 
-    def test_flashing_content_result_defaults(self):
-        """Test that red flash fields have proper defaults."""
-        result = FlashingContentResult(
-            has_flashing=False,
-            flash_count=0,
-            max_flash_frequency=0.0,
-            timestamps=[],
-            severity="safe",
-            recommendation="No issues",
+        media = tmp_path / "lecture.mp4"
+        media.write_bytes(b"local test media")
+        scan = SimpleNamespace(id="scan-1", department_id="dept-1")
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = scan
+        processor = MagicMock()
+        processor.process_media.return_value = MultimediaProcessingResult(
+            file_path=str(media),
+            file_name="lecture.mp4",
+            media_type="video",
+            duration=12.0,
+            has_captions=False,
+            compliance_score=None,
+            flashing_analysis=FlashingContentResult(),
+            transcription=[
+                TranscriptionSegment(start_time=0, end_time=1, text="Hello")
+            ],
+            caption_formats={"webvtt": "WEBVTT", "srt": "1"},
+            issues=[
+                {
+                    "rule": "WCAG 1.2.2",
+                    "severity": "critical",
+                    "message": "Missing captions",
+                }
+            ],
         )
-
-        assert result.red_flash_detected is False
-        assert result.red_flash_count == 0
-        assert result.red_flash_timestamps == []
-        assert result.red_saturation_peak is None
-
-    def test_red_flash_detection_no_video(self, processor, mock_subprocess):
-        """Test red flash detection gracefully handles missing video."""
-        # Mock ffmpeg to fail (no frames extracted)
-        mock_subprocess.return_value.returncode = 1
-        mock_subprocess.return_value.stderr = b"Video not found"
-
-        red_detected, count, timestamps, saturation = processor._detect_red_flashes(
-            "nonexistent.mp4", 10.0, 0.1
-        )
-
-        assert red_detected is False
-        assert count == 0
-        assert timestamps == []
-
-    def test_detect_flashing_includes_red_analysis(self, processor, mock_subprocess):
-        """Test that _detect_flashing_content includes red flash analysis."""
-        # Mock ffprobe for brightness extraction
-        mock_subprocess.return_value.returncode = 0
-        mock_subprocess.return_value.stdout = "0.5,I\n0.6,P\n0.4,P\n"
-
-        with patch.object(processor, "_detect_red_flashes") as mock_red:
-            mock_red.return_value = (True, 3, [0.2, 0.5, 0.8], 0.82)
-
-            result = processor._detect_flashing_content("test.mp4", 10.0)
-
-            assert result.red_flash_detected is True
-            assert result.red_flash_count == 3
-            assert result.red_saturation_peak == 0.82
-
-    def test_red_flash_severity_escalation(self, processor, mock_subprocess):
-        """Test that red flashing properly escalates severity."""
-        mock_subprocess.return_value.returncode = 0
-        mock_subprocess.return_value.stdout = "0.5,I\n0.6,P\n"
-
-        # Mock significant red flashing
-        with patch.object(processor, "_detect_red_flashes") as mock_red:
-            # High frequency red flashing > 3 Hz
-            mock_red.return_value = (
+        with (
+            patch("src.db.database.SessionLocal", return_value=db),
+            patch(
+                "src.education.multimedia_processor.MultimediaProcessor",
+                return_value=processor,
+            ),
+            patch(
+                "src.ai.workspace_provider_runtime.workspace_provider_runtime",
+                return_value=MagicMock(),
+            ),
+            patch("src.services.visual_analysis_service.DurableVisualAnalysisRecorder"),
+            patch(
+                "src.api.education.multimedia_routes.runtime_ollama_usage",
+                return_value={},
+            ),
+        ):
+            process_multimedia_background(
+                str(media),
+                b"local test media",
+                "lecture.mp4",
+                "scan-1",
                 True,
-                10,
-                [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-                0.9,
+                False,
+                False,
+                True,
+                False,
+                "base",
+                "user-1",
+                "dept-1",
             )
+        saved = next(
+            call.args[0]
+            for call in db.add.call_args_list
+            if isinstance(call.args[0], ScanResult)
+        )
+        assert scan.status == ScanStatus.COMPLETED
+        assert saved.compliance_score is None
+        assert saved.issues == processor.process_media.return_value.issues
+        assert saved.structure["flashing_assessment"] == {
+            "state": "unassessed",
+            "reason": "detector_unavailable",
+            "version": "unassessed-v1",
+        }
+        output = saved.structure["transcription_output"]
+        assert output["compliance_score"] is None
+        assert output["transcription"]["full_text"] == "Hello"
+        assert output["captions"] == {"webvtt": "WEBVTT", "srt": "1"}
 
-            with patch.object(
-                processor, "_extract_frame_brightness"
-            ) as mock_brightness:
-                mock_brightness.return_value = [(0.0, 0.5), (0.1, 0.6), (0.2, 0.5)]
+    @pytest.mark.asyncio
+    async def test_unassessed_video_cannot_export_compliance_pdf(self):
+        from fastapi import HTTPException
+        from src.api.education.scan_history_routes import download_scan_report
+        from src.db.models import ScanType
 
-                result = processor._detect_flashing_content("test.mp4", 10.0)
-
-                # Red flashing should escalate to dangerous
-                assert result.severity in ["dangerous", "warning"]
-                assert (
-                    "red" in result.recommendation.lower()
-                    or "RED" in result.recommendation
+        result = SimpleNamespace(
+            compliance_score=None,
+            issues=[{"rule": "WCAG 1.2.2", "severity": "critical"}],
+            structure={
+                "media_type": "video",
+                "flashing_assessment": {"state": "unassessed"},
+            },
+        )
+        scan = SimpleNamespace(
+            id="scan-1", scan_type=ScanType.MULTIMEDIA, result=result
+        )
+        principal = MagicMock()
+        principal.as_legacy_tuple.return_value = (None, "user-1", "dept-1")
+        with (
+            patch(
+                "src.api.education.scan_history_routes.ScanService.get_scan_with_result",
+                return_value=scan,
+            ),
+            patch("src.api.education.scan_history_routes.authorize_scan_access"),
+        ):
+            with pytest.raises(HTTPException) as raised:
+                await download_scan_report(
+                    "scan-1", db=MagicMock(), principal=principal
                 )
+        assert raised.value.status_code == 409
+        assert result.issues[0]["rule"] == "WCAG 1.2.2"
 
-    def test_wcag_red_saturation_criteria(self, processor):
-        """Test WCAG red saturation calculation criteria.
+    @pytest.mark.asyncio
+    async def test_legacy_media_detail_keeps_findings_without_safe_claim(self):
+        from datetime import datetime, timezone
+        from src.api.education.scan_history_routes import get_scan_details
+        from src.db.models import ScanStatus, ScanType
 
-        WCAG defines saturated red as:
-        - R/(R+G+B) >= 0.8
-        - R > 128 (on 0-255 scale)
-        """
-        # This is a unit test for the criteria - actual frame analysis
-        # requires PIL/numpy which may not be available in test env
-
-        # Test case: Pure red (255, 0, 0)
-        # R/(R+G+B) = 255/(255+0+0) = 1.0 >= 0.8 ✓
-        # R = 255 > 128 ✓
-        # Should be detected as saturated red
-
-        # Test case: Dark red (64, 0, 0)
-        # R/(R+G+B) = 64/(64+0+0) = 1.0 >= 0.8 ✓
-        # R = 64 < 128 ✗
-        # Should NOT be detected (not bright enough)
-
-        # Test case: Orange (255, 128, 0)
-        # R/(R+G+B) = 255/(255+128+0) = 0.67 < 0.8 ✗
-        # Should NOT be detected (not saturated enough)
-
-        # The actual _check_frame_red_saturation method handles this
-        # but requires PIL/numpy at runtime
-        assert True  # Placeholder for criteria validation
+        finding = {
+            "rule": "WCAG 1.2.2",
+            "severity": "critical",
+            "message": "Missing captions",
+        }
+        result = SimpleNamespace(
+            compliance_score=100,
+            wcag_level="AA",
+            issues=[finding],
+            critical_issues=1,
+            high_issues=0,
+            medium_issues=0,
+            low_issues=0,
+            structure={
+                "media_type": "video",
+                "flashing_analysis": {"severity": "safe", "flash_count": 0},
+            },
+            suggestions=None,
+            ocr_used=False,
+            ollama_used=False,
+        )
+        scan = SimpleNamespace(
+            id="scan-1",
+            file_name="lecture.mp4",
+            scan_type=ScanType.MULTIMEDIA,
+            status=ScanStatus.COMPLETED,
+            pages=1,
+            file_size_bytes=100,
+            processing_time_ms=10,
+            created_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+            result=result,
+        )
+        principal = MagicMock()
+        principal.as_legacy_tuple.return_value = (None, "user-1", "dept-1")
+        with (
+            patch(
+                "src.api.education.scan_history_routes.ScanService.get_scan_with_result",
+                return_value=scan,
+            ),
+            patch("src.api.education.scan_history_routes.authorize_scan_access"),
+            patch(
+                "src.api.education.remediation_routes.document_remediation_eligibility",
+                return_value=None,
+            ),
+        ):
+            response = await get_scan_details(
+                "scan-1", db=MagicMock(), principal=principal
+            )
+        shown = response["scan"]["result"]
+        assert shown["compliance_score"] is None
+        assert shown["wcag_level"] is None
+        assert shown["issues"] == [finding]
+        assert shown["structure"]["flashing_assessment"]["state"] == "unassessed"
+        assert "flashing_analysis" not in shown["structure"]
 
 
 if __name__ == "__main__":

@@ -240,7 +240,7 @@ export function ScanDetail(): React.ReactElement {
             </div>
 
             {/* Action Buttons */}
-            {!isProcessing && scan.issues.length > 0 && (
+            {!isProcessing && scan.compliance_score != null && scan.issues.length > 0 && (
               <div className="flex flex-wrap items-center gap-3 sm:shrink-0">
                 <button
                   onClick={handleDownloadReport}
@@ -307,7 +307,9 @@ export function ScanDetail(): React.ReactElement {
             <div className="text-sm font-medium text-secondary mb-1">Compliance score</div>
             <div className="text-2xl font-bold text-primary">Unverified</div>
             <p className="text-sm text-tertiary mt-1">
-              This scan has no verified result, so its score and issue findings are unavailable.
+              {scan.type === 'video' || scan.type === 'multimedia'
+                ? 'Overall compliance is unassessed. Available source findings are shown below; video flashing safety has not been established.'
+                : 'This scan has no verified overall score. Available findings are shown below.'}
             </p>
           </div>
         )}
@@ -341,12 +343,15 @@ export function ScanDetail(): React.ReactElement {
         )}
 
         {/* Issues List */}
-        {scan.compliance_score != null && <div className="mb-6">
+        {!isProcessing && ruleIssues.length > 0 && <div className="mb-6">
           <h2 className="text-xl font-semibold text-primary mb-4">
             Rule-based findings ({ruleIssues.length})
           </h2>
           <IssueList issues={ruleIssues} scanType={scan.type} />
         </div>}
+        {!isProcessing && scan.compliance_score == null && ruleIssues.length === 0 && (
+          <p className="text-sm text-secondary mb-6">No source findings were recorded. Other checks remain unassessed.</p>
+        )}
         {scan.compliance_score != null && aiReviews.length > 0 && (
           <section className="mb-6" aria-labelledby="ai-review-heading">
             <h2 id="ai-review-heading" className="text-xl font-semibold text-primary mb-2">AI alt-text review ({aiReviews.length})</h2>

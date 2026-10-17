@@ -82,6 +82,7 @@ describe('scan video queued transcription journey', () => {
         webvtt: 'WEBVTT\n\n00:00.000 --> 00:01.000\nHello',
         srt: '1\n00:00:00,000 --> 00:00:01,000\nHello',
       },
+      flashing_assessment: { state: 'unassessed', reason: 'detector_unavailable' },
       scan_id: 'scan-1',
     }, 1000)
 
@@ -89,6 +90,7 @@ describe('scan video queued transcription journey', () => {
     expect(output).to.include('"Hello from the terminal journey"')
     expect(output).to.include('✓ WebVTT format')
     expect(output).to.include('✓ SRT format')
+    expect(output).to.include('Overall video compliance: unassessed')
   })
 
   it('surfaces a terminal worker failure without producing partial output', async () => {

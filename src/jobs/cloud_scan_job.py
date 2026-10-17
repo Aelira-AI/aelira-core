@@ -79,16 +79,49 @@ def _normalize_processor_result(result: Any) -> Dict[str, Any]:
     valid_score = False
     if isinstance(compliance_score, Real) and not isinstance(compliance_score, bool):
         numeric_score = cast(Any, compliance_score)
-        valid_score = 0 <= numeric_score <= 100 and math.isfinite(numeric_score)
+        valid_score = (
+            normalized.get("media_type") != "video"
+            and 0 <= numeric_score <= 100
+            and math.isfinite(numeric_score)
+        )
+    assessment = normalized.get("flashing_analysis")
+    valid_partial_video = (
+        normalized.get("media_type") == "video"
+        and compliance_score is None
+        and isinstance(normalized.get("issues"), list)
+        and isinstance(assessment, dict)
+        and assessment.get("state") == "unassessed"
+        and assessment.get("reason")
+        in {"detector_unavailable", "disabled", "analysis_failed"}
+        and assessment.get("version") == "unassessed-v1"
+        and all(
+            assessment.get(field) is None
+            for field in (
+                "has_flashing",
+                "flash_count",
+                "max_flash_frequency",
+                "red_flash_detected",
+                "red_flash_count",
+                "severity",
+            )
+        )
+    )
+    valid_result = valid_score or valid_partial_video
     success_is_explicit = "success" in normalized
     explicit_success = normalized.get("success")
     if success_is_explicit and type(explicit_success) is bool:
-        success = explicit_success and not normalized.get("error") and valid_score
+        success = explicit_success and not normalized.get("error") and valid_result
     elif success_is_explicit:
         success = False
     else:
-        success = not normalized.get("error") and valid_score
+        success = not normalized.get("error") and valid_result
     normalized["success"] = success
+    if valid_partial_video:
+        normalized["flashing_analysis"] = {
+            "state": "unassessed",
+            "reason": assessment["reason"],
+            "version": "unassessed-v1",
+        }
     if not success:
         normalized["compliance_score"] = None
         normalized["error"] = _SCAN_FAILURE_MESSAGE
@@ -761,6 +794,18 @@ class CloudScanJob:
                     ]
                 ),
                 issues=issues,
+                structure=(
+                    {
+                        "media_type": result.get("media_type"),
+                        "flashing_assessment": (
+                            result.get("flashing_analysis")
+                            if result.get("media_type") == "video"
+                            else {"state": "not_applicable", "version": "unassessed-v1"}
+                        ),
+                    }
+                    if result.get("media_type") in {"video", "audio"}
+                    else None
+                ),
             )
             db.add(scan_result)
 
@@ -779,20 +824,22 @@ class CloudScanJob:
                 f"issues={len(result.get('issues', []))}"
             )
 
-            # Trigger email alerts for completed scan
-            try:
-                from .email_alert_job import trigger_scan_alerts
+            # The existing completion alert requires a numeric score. Do not
+            # turn an unassessed video into a zero-score email.
+            if compliance_score is not None:
+                try:
+                    from .email_alert_job import trigger_scan_alerts
 
-                await self._checkpoint()
-                await trigger_scan_alerts(db, scan)
-            except LostJobOwnership:
-                db.rollback()
-                raise
-            except Exception as e:
-                # Don't fail the scan if email alerts fail
-                logger.warning(
-                    f"Failed to send email alerts for cloud file {self.cloud_file.id} (dept={self.credential.department_id}): {e}"
-                )
+                    await self._checkpoint()
+                    await trigger_scan_alerts(db, scan)
+                except LostJobOwnership:
+                    db.rollback()
+                    raise
+                except Exception as e:
+                    # Don't fail the scan if email alerts fail
+                    logger.warning(
+                        f"Failed to send email alerts for cloud file {self.cloud_file.id} (dept={self.credential.department_id}): {e}"
+                    )
 
             return {
                 "scan_id": scan.id,

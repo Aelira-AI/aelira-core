@@ -29,7 +29,10 @@ from ..db.models import (
     ScanResult,
     ScanType,
 )
-from .current_compliance import get_department_current_compliance
+from .current_compliance import (
+    get_department_current_compliance,
+    public_compliance_score,
+)
 from .cvd_metrics import aggregate_cvd_metrics
 
 logger = logging.getLogger(__name__)
@@ -181,7 +184,7 @@ class PriorityIssue:
     page_slide_number: Optional[int]
     created_at: datetime
     user_name: str
-    compliance_score: float
+    compliance_score: Optional[float]
     estimated_fix_time_minutes: int
 
 
@@ -554,7 +557,7 @@ class ComplianceDashboard:
                     page_slide_number=issue.get("page") or issue.get("slide"),
                     created_at=scan.created_at,
                     user_name=user_name,
-                    compliance_score=result.compliance_score,
+                    compliance_score=public_compliance_score(scan, result),
                     estimated_fix_time_minutes=fix_time,
                 )
                 priority_issues.append(priority_issue)
@@ -730,13 +733,16 @@ class ComplianceDashboard:
             scans_by_date[date_key] += 1
 
             result = results_by_scan.get(scan.id)
-            if result:
-                scores_by_date[date_key].append(result.compliance_score)
+            score = public_compliance_score(scan, result)
+            if score is not None:
+                scores_by_date[date_key].append(score)
 
         # Calculate daily averages
-        dates = sorted(scores_by_date.keys())
+        dates = sorted(scans_by_date.keys())
         avg_scores = [
             round(sum(scores_by_date[date]) / len(scores_by_date[date]), 2)
+            if scores_by_date[date]
+            else None
             for date in dates
         ]
         scans_counts = [scans_by_date[date] for date in dates]

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
+from numbers import Real
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
@@ -116,6 +118,12 @@ def _standalone_identity(scan: Any) -> tuple[str, str] | None:
 def _is_verified(scan: Any | None, result: Any | None) -> bool:
     if scan is None or result is None:
         return False
+    if (
+        _enum_value(getattr(scan, "scan_type", ""))
+        in {ScanType.VIDEO.value.lower(), ScanType.MULTIMEDIA.value.lower()}
+        and public_compliance_score(scan, result) is None
+    ):
+        return False
     if _enum_value(getattr(scan, "status", "")) == ScanStatus.COMPLETED.value.lower():
         return True
 
@@ -126,6 +134,80 @@ def _is_verified(scan: Any | None, result: Any | None) -> bool:
         getattr(scan, "remediation_outcome", None)
         and getattr(scan, "completed_at", None)
     )
+
+
+def public_compliance_score(scan: Any | None, result: Any | None) -> float | None:
+    """Mask unknown scores and legacy media scores without assessment provenance."""
+    if scan is None or result is None:
+        return None
+    score = getattr(result, "compliance_score", None)
+    if not isinstance(score, Real) or isinstance(score, bool):
+        return None
+    if not isfinite(score) or score < 0 or score > 100:
+        return None
+    if _enum_value(getattr(scan, "scan_type", "")) in {
+        ScanType.VIDEO.value.lower(),
+        ScanType.MULTIMEDIA.value.lower(),
+    }:
+        structure = getattr(result, "structure", None)
+        if not isinstance(structure, dict):
+            return None
+        assessment = structure.get("flashing_assessment")
+        if not (
+            structure.get("media_type") == "audio"
+            and isinstance(assessment, dict)
+            and assessment.get("state") == "not_applicable"
+            and assessment.get("version") == "unassessed-v1"
+        ):
+            return None
+    return float(score)
+
+
+def public_cloud_file_score(db: Session, cloud_file: CloudFile) -> float | None:
+    """Keep cached provider scores from reviving unassessed media results."""
+    cached = cloud_file.last_compliance_score
+    if not isinstance(cached, Real) or isinstance(cached, bool):
+        return None
+    if not isfinite(cached) or cached < 0 or cached > 100:
+        return None
+
+    scan = (
+        db.query(Scan).filter(Scan.id == cloud_file.last_scan_id).first()
+        if cloud_file.last_scan_id
+        else None
+    )
+    if scan is not None and _enum_value(scan.scan_type) in {
+        ScanType.VIDEO.value.lower(),
+        ScanType.MULTIMEDIA.value.lower(),
+    }:
+        result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
+        return public_compliance_score(scan, result)
+
+    file_type = str(getattr(cloud_file, "file_type", None) or "").lower()
+    mime_type = str(getattr(cloud_file, "mime_type", None) or "").lower()
+    if scan is None and file_type in {"", "file", "unknown"}:
+        return None
+    if file_type in {
+        "mp4",
+        "mov",
+        "avi",
+        "mkv",
+        "webm",
+        "m4v",
+        "wmv",
+        "mp3",
+        "wav",
+        "m4a",
+        "aac",
+        "ogg",
+        "flac",
+        "video",
+        "audio",
+        "multimedia",
+    } or mime_type.startswith(("video/", "audio/")):
+        # A cached score alone does not establish a media assessment.
+        return None
+    return float(cached)
 
 
 @dataclass(frozen=True)

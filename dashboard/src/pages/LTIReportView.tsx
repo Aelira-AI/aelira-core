@@ -19,7 +19,7 @@ interface Issue {
 }
 
 interface ScanResult {
-  compliance_score: number;
+  compliance_score: number | null;
   issues: Issue[];
 }
 
@@ -237,7 +237,7 @@ export function LTIReportView(): React.ReactElement {
   }, [accessToken, scanId]);
 
   // Derive values from scan data
-  const score = scan?.result?.compliance_score ?? 0;
+  const score = scan?.result?.compliance_score ?? null;
   const issues = scan?.result?.issues ?? [];
 
   const severityCounts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -256,7 +256,7 @@ export function LTIReportView(): React.ReactElement {
       <div className="max-w-3xl mx-auto">
         {/* Header: file name + score */}
         <div className="flex items-center gap-6 mb-6">
-          <ScoreBadge score={score} />
+          {score == null ? <span role="status">Unassessed</span> : <ScoreBadge score={score} />}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-1">
               <FileText className="w-5 h-5 shrink-0" style={{ color: 'var(--content-secondary)' }} />
@@ -270,8 +270,8 @@ export function LTIReportView(): React.ReactElement {
             <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>
               Compliance Score
             </p>
-            <p className="text-sm mt-1" style={{ color: scoreColor(score) }}>
-              {score >= 90 ? (
+            <p className="text-sm mt-1" style={{ color: score == null ? 'var(--content-secondary)' : scoreColor(score) }}>
+              {score == null ? 'Overall compliance has not been assessed; available findings appear below.' : score >= 90 ? (
                 <span className="flex items-center gap-1">
                   <CheckCircle2 className="w-4 h-4" /> Compliant
                 </span>
@@ -324,12 +324,12 @@ export function LTIReportView(): React.ReactElement {
                 border: '1px solid var(--card-border)',
               }}
             >
-              <CheckCircle2
+              {score != null && <CheckCircle2
                 className="w-8 h-8 mx-auto mb-2"
                 style={{ color: 'var(--status-success-text)' }}
-              />
+              />}
               <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>
-                No accessibility issues found.
+                {score == null ? 'No source findings recorded. Other checks remain unassessed.' : 'No accessibility issues found.'}
               </p>
             </div>
           ) : (

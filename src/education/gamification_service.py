@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
 from enum import Enum
+from .current_compliance import public_compliance_score
 
 logger = logging.getLogger(__name__)
 
@@ -351,8 +352,9 @@ class GamificationService:
                 self.db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
             )
             if result:
-                if result.compliance_score:
-                    compliance_scores.append(result.compliance_score)
+                score = public_compliance_score(scan, result)
+                if score is not None:
+                    compliance_scores.append(score)
                 # Count fixed issues (remediated)
                 if result.remediation_applied:
                     total_issues_fixed += len(result.issues) if result.issues else 0
@@ -465,11 +467,12 @@ class GamificationService:
             result = (
                 self.db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
             )
-            if result and result.compliance_score:
-                if result.compliance_score == 100:
+            score = public_compliance_score(scan, result)
+            if score is not None:
+                if score == 100:
                     if BADGE_DEFINITIONS[BadgeType.PERFECT_SCORE] not in badges:
                         badges.append(BADGE_DEFINITIONS[BadgeType.PERFECT_SCORE])
-                if result.compliance_score >= 90:
+                if score >= 90:
                     if BADGE_DEFINITIONS[BadgeType.COMPLIANT_FILE] not in badges:
                         badges.append(BADGE_DEFINITIONS[BadgeType.COMPLIANT_FILE])
 
@@ -569,8 +572,9 @@ class GamificationService:
                     .filter(ScanResult.scan_id == scan.id)
                     .first()
                 )
-                if result and result.compliance_score:
-                    scores.append(result.compliance_score)
+                score = public_compliance_score(scan, result)
+                if score is not None:
+                    scores.append(score)
 
             avg = sum(scores) / len(scores) if scores else 0
             faculty_scores.append((f.id, avg))
@@ -642,11 +646,12 @@ class GamificationService:
             result = (
                 self.db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
             )
-            if result and result.compliance_score:
+            score = public_compliance_score(scan, result)
+            if score is not None:
                 if scan.created_at < cutoff:
-                    old_scores.append(result.compliance_score)
+                    old_scores.append(score)
                 else:
-                    new_scores.append(result.compliance_score)
+                    new_scores.append(score)
 
         old_avg = sum(old_scores) / len(old_scores) if old_scores else 0
         new_avg = sum(new_scores) / len(new_scores) if new_scores else 0
@@ -693,9 +698,9 @@ class GamificationService:
         if leaderboard_type == "monthly":
             leaderboard.sort(key=lambda x: (-x["score_change_7d"], -x["total_scans"]))
         elif leaderboard_type == "improvement":
-            leaderboard.sort(key=lambda x: (-x["score_change_7d"]))
+            leaderboard.sort(key=lambda x: -x["score_change_7d"])
         elif leaderboard_type == "points":
-            leaderboard.sort(key=lambda x: (-x["total_points"]))
+            leaderboard.sort(key=lambda x: -x["total_points"])
         else:  # all_time
             leaderboard.sort(
                 key=lambda x: (-x["avg_compliance_score"], -x["total_scans"])

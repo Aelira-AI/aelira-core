@@ -192,12 +192,16 @@ static flags = {
       this.log(`  Confidence: ${result.confidence.toFixed(1)}%`)
     }
 
+    if (result.flashing_assessment?.state === 'unassessed') {
+      this.log('  Overall video compliance: unassessed (whole-video flashing assessment unavailable)')
+    }
+
     this.log(`\n  Processing Time: ${(processTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
     if (result.scan_id) {
       this.log(`  Scan ID: ${result.scan_id}`)
-      this.log(`  View full report: ${result.report_url || 'N/A'}\n`)
+      this.log(`  View scan details: ${result.report_url || 'N/A'}\n`)
     }
 
     this.log('💡 Tip: Use --format json for complete transcription and caption files')

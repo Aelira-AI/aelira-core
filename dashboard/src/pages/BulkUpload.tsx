@@ -34,7 +34,7 @@ type FileStatus = 'pending' | 'queued' | 'uploading' | 'processing' | 'complete'
 type ScanType = 'pdf' | 'word' | 'excel' | 'powerpoint' | 'latex' | 'image' | 'unknown';
 
 interface ScanResult {
-  compliance_score?: number;
+  compliance_score?: number | null;
   issues?: unknown[];
 }
 
@@ -129,17 +129,19 @@ function FileRow({ file, onRemove, onView }: FileRowProps): React.ReactElement {
 
       {file.result && (
         <div className="flex items-center gap-2">
-          <span
+          {file.result.compliance_score == null ? (
+            <span className="text-sm text-tertiary">Unassessed</span>
+          ) : <span
             className={`text-sm font-semibold px-2 py-1 rounded ${
-              (file.result.compliance_score ?? 0) >= 80
+              file.result.compliance_score >= 80
                 ? 'bg-[var(--feature-success-surface)] text-[var(--feature-success-content)]'
-                : (file.result.compliance_score ?? 0) >= 60
+                : file.result.compliance_score >= 60
                 ? 'bg-[var(--feature-warning-surface)] text-[var(--feature-warning-content)]'
                 : 'bg-[var(--feature-danger-surface)] text-[var(--feature-danger-content)]'
             }`}
           >
             {file.result.compliance_score}/100
-          </span>
+          </span>}
           <span className="text-xs text-tertiary">
             {file.result.issues?.length || 0} issues
           </span>
@@ -494,15 +496,16 @@ export function BulkUpload(): React.ReactElement {
       return;
     }
 
+    const scoredFiles = completeFiles.filter((f) => f.result?.compliance_score != null);
     const report = {
       generated_at: new Date().toISOString(),
       total_files: files.length,
       summary: {
         complete: files.filter((f) => f.status === 'complete').length,
         failed: files.filter((f) => f.status === 'error').length,
-        average_score:
-          completeFiles.reduce((sum, f) => sum + (f.result?.compliance_score || 0), 0) /
-          completeFiles.length,
+        average_score: scoredFiles.length > 0
+          ? scoredFiles.reduce((sum, f) => sum + (f.result?.compliance_score ?? 0), 0) / scoredFiles.length
+          : null,
       },
       files: completeFiles.map((f) => ({
         filename: f.file.name,

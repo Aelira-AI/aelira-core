@@ -678,7 +678,7 @@ class ScanResult(Base):
     scan_id = Column(String(36), ForeignKey("scans.id"), unique=True, nullable=False)
 
     # Compliance scoring
-    compliance_score = Column(Float, nullable=False)  # 0-100
+    compliance_score = Column(Float, nullable=True)  # Unknown when assessment is incomplete
     wcag_level = Column(String(10), default="AA")  # AA or AAA
 
     # Issue counts by severity (legacy - kept for backward compatibility)

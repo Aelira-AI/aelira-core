@@ -1,6 +1,7 @@
 """Scan history, progress, and report endpoints."""
 
 from ...education.latex_evidence import public_scan_structure
+from ...education.current_compliance import public_compliance_score
 import json as _json
 import logging
 from datetime import datetime, timezone
@@ -99,9 +100,7 @@ async def get_scan_history(
                 "scan_type": scan.scan_type.value,
                 "status": scan.status.value,
                 "pages": scan.pages,
-                "compliance_score": (
-                    scan.result.compliance_score if scan.result else None
-                ),
+                "compliance_score": (public_compliance_score(scan, scan.result)),
                 "total_issues": (
                     (
                         scan.result.critical_issues
@@ -207,8 +206,12 @@ async def get_scan_details(
             ),
             "result": (
                 {
-                    "compliance_score": scan.result.compliance_score,
-                    "wcag_level": scan.result.wcag_level,
+                    "compliance_score": public_compliance_score(scan, scan.result),
+                    "wcag_level": (
+                        scan.result.wcag_level
+                        if public_compliance_score(scan, scan.result) is not None
+                        else None
+                    ),
                     "issues": issues_details,
                     "summary": {
                         "critical": scan.result.critical_issues,
@@ -397,6 +400,12 @@ async def download_scan_report(
 
         authorize_scan_access(db, scan, principal)
 
+        if public_compliance_score(scan, scan.result) is None:
+            raise HTTPException(
+                status_code=409,
+                detail="A compliance PDF is unavailable for an unassessed scan; partial findings remain in scan details.",
+            )
+
         logger.info(
             f"[REPORT] Scan status: {scan.status}, Has result: {scan.result is not None}"
         )
@@ -429,7 +438,7 @@ async def download_scan_report(
             "scan_id": scan.id,
             "url": scan.file_name,  # For websites, file_name contains the URL
             "created_at": scan.created_at.isoformat() if scan.created_at else None,
-            "compliance_score": scan.result.compliance_score if scan.result else 0,
+            "compliance_score": public_compliance_score(scan, scan.result),
             "issues": issues_data,
             "pages_scanned": scan.pages or 1,
             "total_issues": (

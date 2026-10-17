@@ -30,6 +30,7 @@ from ..db.models import (
     ComplianceSnapshot,
 )
 from .compliance_dashboard import ComplianceDashboard
+from .current_compliance import public_compliance_score
 from .deadline_config import DeadlineService
 
 logger = logging.getLogger(__name__)
@@ -272,10 +273,12 @@ class SnapshotService:
 
         for scan in scans:
             date_key = scan.created_at.date().isoformat()
+            data_by_date[date_key]
             result = results_by_scan.get(scan.id)
+            score = public_compliance_score(scan, result)
 
-            if result and result.compliance_score is not None:
-                data_by_date[date_key]["scores"].append(result.compliance_score)
+            if score is not None:
+                data_by_date[date_key]["scores"].append(score)
                 data_by_date[date_key]["issues"] += (
                     result.critical_issues
                     + result.high_issues
@@ -283,9 +286,9 @@ class SnapshotService:
                     + result.low_issues
                 )
 
-                if result.compliance_score >= 90:
+                if score >= 90:
                     data_by_date[date_key]["compliant"] += 1
-                elif result.compliance_score >= 70:
+                elif score >= 70:
                     data_by_date[date_key]["needs_work"] += 1
                 else:
                     data_by_date[date_key]["critical"] += 1

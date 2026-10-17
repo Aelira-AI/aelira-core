@@ -61,6 +61,7 @@ from ..db.models import (
     ScanResult,
 )
 from ..education.canvas_content_scanner import CanvasContentScanner
+from ..education.current_compliance import public_cloud_file_score
 from ..education.canvas_score_verification import (
     count_nodes_by_rule,
     current_canvas_verification,
@@ -659,9 +660,9 @@ async def get_course_content_status(
     for ct, files in type_map.items():
         scanned = [f for f in files if f.last_scan_id is not None]
         scores = [
-            f.last_compliance_score
+            score
             for f in scanned
-            if f.last_compliance_score is not None
+            if (score := public_cloud_file_score(db, f)) is not None
         ]
         type_issues = sum(issue_counts.get(f.last_scan_id, 0) for f in scanned)
         avg = round(sum(scores) / len(scores), 1) if scores else None
@@ -686,7 +687,7 @@ async def get_course_content_status(
             provider_parent_id=cf.provider_parent_id,
             content_type=cf.content_source,
             title=cf.file_name,
-            compliance_score=cf.last_compliance_score,
+            compliance_score=public_cloud_file_score(db, cf),
             issue_count=issue_counts.get(cf.last_scan_id, 0) if cf.last_scan_id else 0,
             writeback_status=cf.writeback_status,
             has_remediated_version=cf.has_remediated_version or False,
@@ -834,9 +835,9 @@ async def get_course_overview(
         )
         written = sum(1 for f in files if f.writeback_status == "written_back")
         scores = [
-            f.last_compliance_score
+            score
             for f in files
-            if f.last_compliance_score is not None
+            if (score := public_cloud_file_score(db, f)) is not None
         ]
         avg = sum(scores) / len(scores) if scores else None
 

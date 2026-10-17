@@ -71,6 +71,7 @@ from ..services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
 from ..jobs.brightspace_content_job import enqueue_brightspace_content_remediation
 from ..services.scan_fix_service import build_output_membership, persist_scan_fixes
 from ..education.remediation.score_reporting import score_fields
+from ..education.current_compliance import public_cloud_file_score
 from ..services.lms_content_approval import (
     LMSContentApprovalError,
     approve_lms_content,
@@ -2510,7 +2511,7 @@ async def get_brightspace_content_status(
             else 0
         )
 
-        score = cf.last_compliance_score
+        score = public_cloud_file_score(db, cf)
         if score is not None:
             scanned_count += 1
             total_score += score

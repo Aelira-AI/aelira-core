@@ -50,6 +50,7 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..education.current_compliance import public_cloud_file_score
 from ..integrations.cloud_base import (
     CloudFileInfo,
     CloudIntegrationError,
@@ -242,9 +243,11 @@ async def get_google_credential(
             refresh_token = token_manager.decrypt_token(credential.refresh_token)
 
             # Refresh tokens
-            new_access, new_refresh, new_expires = (
-                await token_manager.refresh_google_token(refresh_token)
-            )
+            (
+                new_access,
+                new_refresh,
+                new_expires,
+            ) = await token_manager.refresh_google_token(refresh_token)
 
             # Update credential
             credential.access_token = token_manager.encrypt_token(new_access)
@@ -1056,7 +1059,7 @@ async def list_drive_files(
                     file_size_bytes=file.file_size_bytes,
                     web_view_link=file.web_view_link,
                     last_scanned_at=file.last_scanned_at,
-                    last_compliance_score=file.last_compliance_score,
+                    last_compliance_score=public_cloud_file_score(db, file),
                     needs_rescan=file.needs_rescan,
                 )
                 for file in files

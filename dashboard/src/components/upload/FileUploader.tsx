@@ -68,7 +68,7 @@ interface ScanResult {
   status?: string;
   progress?: number;
   progress_message?: string;
-  compliance_score?: number;
+  compliance_score?: number | null;
   issues?: ScanIssue[];
   [key: string]: unknown;
 }
@@ -227,7 +227,7 @@ export function FileUploader({
   // Video/Multimedia options
   const [generateAudioDescriptions, setGenerateAudioDescriptions] = useState<boolean>(true);
   const [generateSpokenDescriptions, setGenerateSpokenDescriptions] = useState<boolean>(false);
-  const [detectFlashing, setDetectFlashing] = useState<boolean>(true);
+  const detectFlashing = true;
   const [generateTranscript, setGenerateTranscript] = useState<boolean>(false);
   // Remediation options
   const [autoRemediate, setAutoRemediate] = useState<boolean>(false);
@@ -329,7 +329,7 @@ export function FileUploader({
         const innerResult = unwrapResponse<ScanResult>(scanData, 'result');
         const resultData: ScanResult = {
           scan_id: scanId,
-          compliance_score: innerResult.compliance_score || 0,
+          compliance_score: innerResult.compliance_score ?? null,
           issues: innerResult.issues || [],
         };
 
@@ -852,24 +852,9 @@ export function FileUploader({
                 </p>
               </div>
             </label>
-            <label className="flex items-center space-x-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={detectFlashing}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setDetectFlashing(e.target.checked)
-                }
-                className="w-4 h-4 text-[var(--content-accent)] rounded focus:ring-[var(--interactive-primary-bg)]"
-                disabled={uploading}
-              />
-              <div>
-                <span className="text-sm font-medium text-primary">Detect Flashing Content</span>
-                <p className="text-xs text-secondary mt-0.5">
-                  Check for seizure-triggering flashing (WCAG 2.3.1). Analyzes frame brightness
-                  changes.
-                </p>
-              </div>
-            </label>
+            <p className="text-sm text-secondary" role="note">
+              Whole-video flashing assessment is unavailable. Video results will show any source findings without an overall compliance score.
+            </p>
             <label className="flex items-center space-x-3 cursor-pointer">
               <input
                 type="checkbox"
@@ -1171,7 +1156,12 @@ export function FileUploader({
               </div>
 
               {/* Compliance Score */}
-              {scan.result.compliance_score !== undefined && (
+              {scan.result.compliance_score == null && (
+                <p className="text-sm text-secondary" role="status">
+                  Overall compliance unassessed. Available source findings appear below; video flashing safety has not been established.
+                </p>
+              )}
+              {scan.result.compliance_score != null && (
                 <div className="flex items-center space-x-4">
                   <div className="flex-1">
                     <div className="flex items-center justify-between mb-2">

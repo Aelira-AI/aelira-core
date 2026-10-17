@@ -187,11 +187,11 @@ export function Dashboard(): React.ReactElement {
         try {
           setTrendLoading(true);
           const trendResponse = await scansApi.getComplianceTrend(departmentId, 30);
-          interface RawTrendPoint { date: string; avg_compliance_score?: number; scan_count?: number }
+          interface RawTrendPoint { date: string; avg_compliance_score?: number | null; scan_count?: number }
           const trendArray = unwrapResponse<RawTrendPoint[]>(trendResponse, 'trend');
-          const chartData = trendArray.map((point) => ({
+          const chartData = trendArray.filter((point) => point.avg_compliance_score != null).map((point) => ({
             date: point.date,
-            score: point.avg_compliance_score || 0,
+            score: point.avg_compliance_score as number,
             scans: point.scan_count || 0,
           }));
           setTrendData(chartData);

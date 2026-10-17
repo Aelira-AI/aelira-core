@@ -52,6 +52,7 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..education.current_compliance import public_cloud_file_score
 
 # Alias for test compatibility
 get_db = get_db_dependency
@@ -245,11 +246,13 @@ async def get_microsoft_credential(
             refresh_token = token_manager.decrypt_token(credential.refresh_token)
 
             # Refresh tokens
-            new_access, new_refresh, new_expires = (
-                await token_manager.refresh_microsoft_token(
-                    refresh_token,
-                    scopes=credential.scopes,
-                )
+            (
+                new_access,
+                new_refresh,
+                new_expires,
+            ) = await token_manager.refresh_microsoft_token(
+                refresh_token,
+                scopes=credential.scopes,
             )
 
             # Update credential
@@ -814,7 +817,7 @@ async def list_onedrive_files(
                     file_size_bytes=cloud_file.file_size_bytes,
                     web_view_link=cloud_file.web_view_link,
                     last_scanned_at=cloud_file.last_scanned_at,
-                    last_compliance_score=cloud_file.last_compliance_score,
+                    last_compliance_score=public_cloud_file_score(db, cloud_file),
                     needs_rescan=cloud_file.needs_rescan,
                 )
             )

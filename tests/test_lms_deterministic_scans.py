@@ -1101,7 +1101,10 @@ async def test_canvas_axe_failure_is_failed_without_score_or_raw_error(caplog):
 
 @pytest.mark.asyncio
 async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_score_zero():
-    from src.education.multimedia_processor import MultimediaProcessingResult
+    from src.education.multimedia_processor import (
+        FlashingContentResult,
+        MultimediaProcessingResult,
+    )
     from src.jobs.cloud_scan_job import CloudScanJob
 
     credential = SimpleNamespace(department_id="dept-1")
@@ -1123,8 +1126,9 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
         media_type="video",
         duration=1.0,
         has_captions=True,
-        compliance_score=91.0,
-        issues=[],
+        compliance_score=None,
+        flashing_analysis=FlashingContentResult(),
+        issues=[{"severity": "critical", "rule": "WCAG 1.2.2"}],
     )
     processor = MagicMock()
     processor.process_media.return_value = model
@@ -1139,8 +1143,16 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
             "/tmp/video.mp4", db
         )
     assert result["success"] is True
-    assert cloud_file.last_compliance_score == 91.0
+    assert cloud_file.last_compliance_score is None
     assert cloud_file.needs_rescan is False
+    saved_result = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "ScanResult"
+    )
+    assert saved_result.compliance_score is None
+    assert saved_result.issues == model.issues
+    assert saved_result.structure["flashing_assessment"]["state"] == "unassessed"
 
     failed_file = SimpleNamespace(**cloud_file.__dict__)
     failed_file.id = "failed-1"
@@ -1266,7 +1278,10 @@ async def test_scan_worker_types_sanitized_handler_failure_before_terminalizing(
 
 def test_all_real_processor_models_without_success_are_normalized_from_score():
     from src.education.docx_processor import DocxProcessingResult
-    from src.education.multimedia_processor import MultimediaProcessingResult
+    from src.education.multimedia_processor import (
+        FlashingContentResult,
+        MultimediaProcessingResult,
+    )
     from src.education.pdf_checks.models import PDFProcessingResult
     from src.education.pptx_processor import PowerPointProcessingResult
     from src.education.xlsx_processor import XlsxProcessingResult
@@ -1333,14 +1348,53 @@ def test_all_real_processor_models_without_success_are_normalized_from_score():
             media_type="video",
             duration=1,
             has_captions=True,
-            compliance_score=84,
+            compliance_score=None,
+            flashing_analysis=FlashingContentResult(),
             issues=[],
         ),
     ]
 
     normalized = [_normalize_processor_result(model) for model in models]
     assert [item["success"] for item in normalized] == [True] * 5
-    assert [item["compliance_score"] for item in normalized] == [80, 81, 82, 83, 84]
+    assert [item["compliance_score"] for item in normalized] == [80, 81, 82, 83, None]
+
+
+def test_cloud_video_partial_requires_bounded_assessment_contract():
+    from src.jobs.cloud_scan_job import _normalize_processor_result
+
+    base = {
+        "media_type": "video",
+        "compliance_score": None,
+        "issues": [{"rule": "WCAG 1.2.2"}],
+    }
+    rejected = _normalize_processor_result(base)
+    assert rejected["success"] is False
+    assert rejected["error_code"] == "SCAN_PROCESSING_FAILED"
+
+    accepted = _normalize_processor_result(
+        {
+            **base,
+            "flashing_analysis": {
+                "state": "unassessed",
+                "reason": "analysis_failed",
+                "version": "unassessed-v1",
+                "has_flashing": None,
+                "flash_count": None,
+                "max_flash_frequency": None,
+                "red_flash_detected": None,
+                "red_flash_count": None,
+                "severity": None,
+                "recommendation": "private exception string must not persist",
+            },
+        }
+    )
+    assert accepted["success"] is True
+    assert accepted["issues"] == base["issues"]
+    assert accepted["compliance_score"] is None
+    assert "recommendation" not in accepted["flashing_analysis"]
+
+    numeric_video = _normalize_processor_result({**base, "compliance_score": 100})
+    assert numeric_video["success"] is False
 
 
 def test_scan_routes_delegate_execution_to_durable_enqueue():

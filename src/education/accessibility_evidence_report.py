@@ -26,6 +26,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 from sqlalchemy.orm import Session
+from .current_compliance import public_compliance_score
 
 from ..config.settings import get_settings
 from ..db.models import (
@@ -116,10 +117,16 @@ class AccessibilityEvidenceReport:
         pages_or_slides = sum(scan.pages or 0 for scan in scans)
         scan_dates = [scan.created_at for scan in scans if scan.created_at]
 
+        scans_by_id = {scan.id: scan for scan in scans}
         scores = [
-            float(result.compliance_score)
+            score
             for result in results
-            if result.compliance_score is not None
+            if (
+                score := public_compliance_score(
+                    scans_by_id.get(result.scan_id), result
+                )
+            )
+            is not None
         ]
         engines = sorted(
             {
