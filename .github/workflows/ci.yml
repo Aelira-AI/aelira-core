@@ -1473,6 +1473,59 @@ jobs:
           docker run --rm --network none --env HF_HOME=/hf --volume "$empty_cache:/hf" \
             --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
             /app/scripts/smoke_whisper_transcription.py offline-refused --cache-dir /hf/hub
+      - name: Show psycopg2 library resolution and absent bundled directories
+        run: |
+          docker run --rm --network none --entrypoint /bin/sh aelira-worker-isolation:test -c '
+            set -eu
+            site=$(/opt/venv/bin/python -c "import sysconfig; print(sysconfig.get_paths()[\"purelib\"])")
+            extension=$(ls "$site"/psycopg2/_psycopg*.so)
+            uname -m
+            echo "ldd $extension"
+            ldd "$extension"
+            echo "psycopg2 entries in site-packages:"
+            ls -1 "$site" | grep -i psycopg2
+            if find / -xdev -name "psycopg2*.libs" 2>/dev/null | grep .; then
+              echo "bundled psycopg2 library directory exists" >&2
+              exit 1
+            fi
+            echo "no psycopg2*.libs directory exists anywhere in the image"
+          '
+      - name: Run the psycopg2 database smoke test against PostgreSQL 16
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/psycopg2-runtime
+          docker network create psycopg2-smoke
+          docker run --detach --name psycopg2-smoke-db --network psycopg2-smoke \
+            --env POSTGRES_USER=aelira --env POSTGRES_PASSWORD=smoke-test-only \
+            --env POSTGRES_DB=aelira_smoke \
+            --health-cmd "pg_isready --host=127.0.0.1 --username=aelira --dbname=aelira_smoke" \
+            --health-interval 2s --health-timeout 5s --health-retries 30 \
+            postgres:16
+          for attempt in $(seq 1 60); do
+            state=$(docker inspect --format '{{.State.Health.Status}}' psycopg2-smoke-db)
+            [ "$state" = healthy ] && break
+            sleep 2
+          done
+          test "$state" = healthy
+          docker run --rm --network psycopg2-smoke \
+            --env DATABASE_URL=postgresql://aelira:smoke-test-only@psycopg2-smoke-db:5432/aelira_smoke \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_psycopg2_runtime.py | tee test-results/psycopg2-runtime/report.json
+      - name: Remove the psycopg2 smoke database
+        if: always()
+        run: |
+          mkdir -p test-results/psycopg2-runtime
+          docker logs psycopg2-smoke-db > test-results/psycopg2-runtime/postgres.log 2>&1 || true
+          docker rm --force psycopg2-smoke-db || true
+          docker network rm psycopg2-smoke || true
+      - name: Retain psycopg2 runtime evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: psycopg2-runtime-${{ matrix.runner }}
+          path: test-results/psycopg2-runtime/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Enforce 0.75-CPU worker isolation under representative saturation
         if: matrix.platform == 'linux/amd64'
         run: python3 scripts/verify_worker_cpu_isolation.py --image aelira-worker-isolation:test

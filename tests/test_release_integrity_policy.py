@@ -92,6 +92,26 @@ def test_api_image_builds_lxml_from_hash_verified_sources() -> None:
     assert script.count("curl ") == 1
 
 
+def test_api_image_builds_psycopg2_from_the_hash_verified_source_archive() -> None:
+    script = (ROOT / "docker" / "build-psycopg2-wheel.sh").read_text()
+    frozen_inputs = (
+        ROOT / "runtime-security" / "psycopg2" / "inputs.sha256"
+    ).read_text()
+
+    digest = "e324ecf60f952d21dd11413b8bbed0951bbd99579a06fd06f28bfc37737cd373"
+    archive = "psycopg2_binary-2.9.13.tar.gz"
+    # The image build and the frozen native recipe pin the same source bytes.
+    assert f"{digest}  {archive}" in frozen_inputs
+    assert archive in script and digest in script
+    assert "sha256sum --check --strict" in script
+    # Every download goes through the verifying helper, and the wheel is built
+    # from that archive against the system libpq rather than fetched from PyPI.
+    assert script.count("fetch https://") == 1
+    assert script.count("curl ") == 1
+    assert "--no-build-isolation" in script and "--no-deps" in script
+    assert "static_libpq" not in script and "PSYCOPG" not in script
+
+
 def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     api = (ROOT / "Dockerfile").read_text()
     dashboard = (ROOT / "dashboard" / "Dockerfile").read_text()

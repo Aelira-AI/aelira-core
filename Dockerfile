@@ -26,9 +26,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy requirements and install Python dependencies. lxml is built first from
 # its pinned source release against hash-verified libxml2 2.15.4 and libxslt
 # 1.1.45; the published wheels bundle an older, affected libxml2. The pinned
-# requirement is then already satisfied by that build.
+# requirement is then already satisfied by that build. psycopg2-binary follows
+# the same pattern: its published wheels bundle a private libpq, OpenSSL and
+# Kerberos copy that system updates never reach, so the pinned release is built
+# from its hash-verified source archive against Debian's libpq instead.
 COPY requirements.txt .
 COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
+COPY docker/build-psycopg2-wheel.sh /tmp/build-psycopg2-wheel.sh
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
     python -m pip uninstall --yes setuptools && \
@@ -36,6 +40,9 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
     pip install --no-cache-dir --no-deps /tmp/lxml-wheel/lxml-6.1.3-*.whl && \
     rm -rf /tmp/lxml-wheel /tmp/build-lxml-wheel.sh && \
+    sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel && \
+    pip install --no-cache-dir --no-deps /tmp/psycopg2-wheel/psycopg2_binary-2.9.13-*.whl && \
+    rm -rf /tmp/psycopg2-wheel /tmp/build-psycopg2-wheel.sh && \
     pip install --no-cache-dir -r requirements.txt && \
     python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
     python -m pip uninstall --yes pip
