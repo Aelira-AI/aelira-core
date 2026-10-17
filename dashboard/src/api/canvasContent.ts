@@ -26,6 +26,8 @@ export interface BatchWritebackRequest {
 // ============================================================================
 
 export interface CanvasContentScanResponse {
+  /** Set when the scan was queued as a durable job; item counts are not known yet. */
+  job_id?: string;
   total_items: number;
   jobs_queued: number;
   skipped: number;
