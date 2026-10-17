@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -29,6 +30,27 @@ test("a reused evidence directory cannot publish an earlier report", () => {
     expect(existsSync(join(output, "status.json"))).toBe(false);
   } finally {
     rmSync(output, { recursive: true });
+  }
+});
+
+test("an older-image probe requires its matching verifier source", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "psycopg2-probe-pair-test-"));
+  const probe = join(scratch, "smoke_psycopg2_runtime.py");
+  copyFileSync(join(import.meta.dir, "smoke_psycopg2_runtime.py"), probe);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "run", join(import.meta.dir, "smoke_psycopg2_tls.ts"),
+        join(scratch, "output"), "arm64", "older-image:test", probe,
+      ],
+      { encoding: "utf8", env: { ...process.env, PATH: "" } },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("probe and verifier must both exist");
+    expect(existsSync(join(scratch, "output"))).toBe(false);
+  } finally {
+    rmSync(scratch, { recursive: true });
   }
 });
 

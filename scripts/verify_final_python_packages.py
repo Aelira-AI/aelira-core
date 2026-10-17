@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
+import hashlib
 import importlib.metadata
 import os
 import re
@@ -514,6 +517,94 @@ def validate_psycopg2_native(
                 "expected a system path under /usr/lib"
             )
     return errors
+
+
+def psycopg2_record_receipt(root: Path | None = None) -> dict[str, object]:
+    """Verify installed bytes against RECORD, including the native extension.
+
+    This extends the hashed-entry check in the frozen component verifier without
+    changing that recipe input. RECORD and signature files may be unhashed;
+    every other installed package file must have a SHA-256 digest and size.
+    """
+    distribution = importlib.metadata.distribution("psycopg2-binary")
+    site = root or Path(distribution.locate_file(""))
+    metadata_path = Path(distribution._path)
+    if metadata_path.parent.resolve() != site.resolve():
+        raise ValueError("distribution metadata is outside the selected site-packages")
+    if distribution.version != required_psycopg2_version():
+        raise ValueError("distribution version differs from requirements")
+    if any(site.glob("psycopg2*.libs")) or (site / "psycopg2" / ".libs").exists():
+        raise ValueError("bundled psycopg2 library directory is installed")
+    installed = [
+        (item.metadata.get("Name") or "").lower().replace("_", "-")
+        for item in importlib.metadata.distributions(path=[str(site)])
+    ]
+    if installed.count("psycopg2-binary") != 1 or "psycopg2" in installed:
+        raise ValueError("ambiguous psycopg2 distribution metadata")
+    record_bytes = (metadata_path / "RECORD").read_bytes()
+    if not record_bytes:
+        raise ValueError("missing or empty RECORD")
+    try:
+        record = record_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("RECORD is not UTF-8") from exc
+    verified: dict[str, str] = {}
+    unhashed: list[str] = []
+    for row in csv.reader(record.splitlines(), strict=True):
+        if len(row) != 3:
+            raise ValueError("RECORD row must have three fields")
+        filename, digest, size = row
+        path = (site / filename).resolve(strict=True)
+        if (
+            not path.is_relative_to(site.resolve())
+            or filename in verified
+            or filename in unhashed
+        ):
+            raise ValueError("unsafe or duplicate RECORD path")
+        if not digest or not size:
+            permissible_metadata = (
+                path.name in {"RECORD", "RECORD.jws", "RECORD.p7s"}
+                and path.parent == metadata_path
+            )
+            permissible_bytecode = path.suffix == ".pyc" and "__pycache__" in path.parts
+            if digest or size or not (permissible_metadata or permissible_bytecode):
+                raise ValueError(f"unhashed installed file: {filename}")
+            unhashed.append(filename)
+            continue
+        if not digest.startswith("sha256=") or not size.isdecimal():
+            raise ValueError(f"invalid hash or size: {filename}")
+        data = path.read_bytes()
+        actual = (
+            base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+        )
+        if digest[7:] != actual or int(size) != len(data):
+            raise ValueError(f"installed bytes differ from RECORD: {filename}")
+        verified[filename] = hashlib.sha256(data).hexdigest()
+    package_files = {
+        str(path.relative_to(site))
+        for path in (site / "psycopg2").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    missing = package_files - verified.keys()
+    if missing:
+        raise ValueError(f"package files lack hashed RECORD entries: {sorted(missing)}")
+    extensions = sorted((site / "psycopg2").glob("_psycopg*.so"))
+    if len(extensions) != 1 or str(extensions[0].relative_to(site)) not in verified:
+        raise ValueError("expected one hashed native extension")
+    metadata_relative = str(metadata_path.relative_to(site))
+    if (
+        f"{metadata_relative}/METADATA" not in verified
+        or f"{metadata_relative}/RECORD" not in unhashed
+    ):
+        raise ValueError("required package metadata is not hashed")
+    return {
+        "package": "psycopg2-binary",
+        "version": distribution.version,
+        "record_hashes_verified": len(verified),
+        "record_sha256": hashlib.sha256(record_bytes).hexdigest(),
+        "extension_path": str(extensions[0].resolve(strict=True)),
+        "extension_sha256": verified[str(extensions[0].relative_to(site))],
+    }
 
 
 def main() -> int:

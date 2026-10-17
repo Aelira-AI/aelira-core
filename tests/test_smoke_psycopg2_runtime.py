@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.smoke_psycopg2_runtime import (
     check_loaded_libraries,
     classify_tls_refusal,
+    database_library_paths,
+    library_receipt,
     mapped_libraries,
     require_tls_refusal,
+    trusted_interpreter_extensions,
 )
+import scripts.smoke_psycopg2_runtime as runtime
 
 SYSTEM = {
     "libpq.so.5.17": "/usr/lib/x86_64-linux-gnu/libpq.so.5.17",
@@ -62,6 +67,192 @@ def test_mapped_libraries_reads_resolved_shared_objects(tmp_path: Path) -> None:
         "libpq.so.5.17": "/usr/lib/x86_64-linux-gnu/libpq.so.5.17",
         "libssl.so.3": "/usr/lib/x86_64-linux-gnu/libssl.so.3",
     }
+
+
+def test_database_closure_includes_static_and_connection_loaded_libraries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    dynamic = tmp_path / "libldap.so.2"
+    dynamic.write_bytes(b"ldap")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    monkeypatch.setattr(runtime, "SYSTEM_LIBRARY_PREFIX", str(tmp_path) + "/")
+    observed = {
+        "_psycopg.so": str(extension),
+        "libpq.so.5": str(static),
+        "libldap.so.2": str(dynamic),
+    }
+    assert database_library_paths(extension, {}, observed, set()) == {
+        "libpq.so.5": str(static),
+        "libldap.so.2": str(dynamic),
+    }
+
+
+def test_database_closure_rejects_an_unmapped_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="absent from process maps"):
+        database_library_paths(extension, {}, {"_psycopg.so": str(extension)}, set())
+
+
+def test_database_closure_excludes_preexisting_unrelated_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    unrelated = tmp_path / "libunrelated.so.1"
+    unrelated.write_bytes(b"other")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    monkeypatch.setattr(runtime, "SYSTEM_LIBRARY_PREFIX", str(tmp_path) + "/")
+    observed = {
+        "_psycopg.so": str(extension),
+        "libpq.so.5": str(static),
+        "libunrelated.so.1": str(unrelated),
+    }
+    assert database_library_paths(
+        extension, {"libunrelated.so.1": str(unrelated)}, observed, set()
+    ) == {"libpq.so.5": str(static)}
+
+
+def test_database_closure_rejects_new_unexplained_off_prefix_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    unexpected = tmp_path / "private.so"
+    unexpected.write_bytes(b"untrusted")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="unexplained off-prefix"):
+        database_library_paths(
+            extension,
+            {},
+            {
+                "_psycopg.so": str(extension),
+                "libpq.so.5": str(static),
+                "private.so": str(unexpected),
+            },
+            set(),
+        )
+
+
+def test_only_actual_stdlib_extension_module_is_trusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "lib-dynload" / "_decimal.so"
+    extension.parent.mkdir()
+    extension.write_bytes(b"stdlib")
+    unrelated = tmp_path / "third-party" / "other.so"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"other")
+    monkeypatch.setattr(
+        runtime.sysconfig, "get_config_var", lambda _: str(extension.parent)
+    )
+    monkeypatch.setitem(
+        runtime.sys.modules, "fixture_stdlib", SimpleNamespace(__file__=str(extension))
+    )
+    monkeypatch.setitem(
+        runtime.sys.modules,
+        "fixture_third_party",
+        SimpleNamespace(__file__=str(unrelated)),
+    )
+    trusted = trusted_interpreter_extensions()
+    assert str(extension) in trusted
+    assert str(unrelated) not in trusted
+
+
+def test_database_library_receipt_rejects_off_prefix() -> None:
+    with pytest.raises(RuntimeError, match="outside /usr/lib"):
+        library_receipt({"libpq.so.5": "/opt/private/libpq.so.5"})
+
+
+def test_database_library_receipt_requires_one_debian_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
+    monkeypatch.setattr(
+        runtime.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+    )
+    with pytest.raises(RuntimeError, match="missing or ambiguous Debian owner"):
+        library_receipt({"libpq.so.5": "/usr/lib/libpq.so.5"})
+
+
+def test_database_library_receipt_records_binary_and_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"mapped bytes")
+    replies = iter(
+        [
+            "libpq5:amd64: /usr/lib/libpq.so.5\n",
+            "libpq5:amd64\t17.11-0+deb13u1\tpostgresql-17\t17.11-0+deb13u1",
+        ]
+    )
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=next(replies)),
+    )
+    receipt = library_receipt({"libpq.so.5": "/usr/lib/libpq.so.5"})
+    assert receipt["libpq.so.5"]["source_package"] == "postgresql-17"
+    assert (
+        receipt["libpq.so.5"]["sha256"]
+        == runtime.hashlib.sha256(b"mapped bytes").hexdigest()
+    )
+
+
+def test_database_library_receipt_requires_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
+    replies = iter(
+        [
+            "libpq5:amd64: /usr/lib/libpq.so.5\n",
+            "libpq5:amd64\t17.11-0+deb13u1\t\t",
+        ]
+    )
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=next(replies)),
+    )
+    with pytest.raises(RuntimeError, match="incomplete Debian package identity"):
+        library_receipt({"libpq.so.5": "/usr/lib/libpq.so.5"})
 
 
 @pytest.mark.parametrize(

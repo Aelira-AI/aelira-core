@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
+import csv
+import hashlib
+import importlib.metadata
 
 import pytest
 
@@ -17,6 +21,7 @@ from scripts.verify_final_python_packages import (
     validate_pillow,
     validate_pyav_native,
     validate_psycopg2_native,
+    psycopg2_record_receipt,
 )
 
 PIPER_VERSION = required_piper_version()
@@ -553,6 +558,80 @@ def test_psycopg2_verifier_requires_one_extension_module(tmp_path: Path) -> None
     errors = _validate_psycopg2(tmp_path)
     assert len(errors) == 1
     assert "expected exactly one psycopg2 extension module" in errors[0]
+
+
+def _installed_psycopg2_fixture(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    package = root / "psycopg2"
+    package.mkdir()
+    extension = package / "_psycopg.cpython-314-x86_64-linux-gnu.so"
+    extension.write_bytes(b"native extension bytes")
+    (package / "__init__.py").write_text("version = 'fixture'\n")
+    metadata = root / "psycopg2_binary-2.9.13.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: psycopg2-binary\nVersion: 2.9.13\n")
+    rows = []
+    for path in (extension, package / "__init__.py", metadata / "METADATA"):
+        data = path.read_bytes()
+        digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+        )
+        rows.append((str(path.relative_to(root)), f"sha256={digest}", str(len(data))))
+    rows.append((str((metadata / "RECORD").relative_to(root)), "", ""))
+    record = metadata / "RECORD"
+    with record.open("w", newline="") as output:
+        csv.writer(output).writerows(rows)
+    monkeypatch.setattr(
+        importlib.metadata,
+        "distribution",
+        lambda _: importlib.metadata.PathDistribution(metadata),
+    )
+    return extension, record
+
+
+def test_installed_psycopg2_record_covers_native_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    receipt = psycopg2_record_receipt(tmp_path)
+    assert receipt["record_hashes_verified"] == 3
+    assert (
+        receipt["extension_sha256"]
+        == hashlib.sha256(extension.read_bytes()).hexdigest()
+    )
+    assert b"\r\n" in record.read_bytes()
+    assert receipt["record_sha256"] == hashlib.sha256(record.read_bytes()).hexdigest()
+
+
+def test_installed_psycopg2_record_rejects_mutated_native_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension, _ = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    extension.write_bytes(b"modified")
+    with pytest.raises(ValueError, match="installed bytes differ"):
+        psycopg2_record_receipt(tmp_path)
+
+
+def test_installed_psycopg2_record_requires_native_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    rows = list(csv.reader(record.read_text().splitlines()))
+    rows[0][1:] = ["", ""]
+    with record.open("w", newline="") as output:
+        csv.writer(output).writerows(rows)
+    with pytest.raises(ValueError, match="unhashed installed file"):
+        psycopg2_record_receipt(tmp_path)
+
+
+def test_installed_psycopg2_record_rejects_malformed_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    record.write_text("psycopg2/_psycopg.so,sha256=bad\n")
+    with pytest.raises(ValueError, match="three fields"):
+        psycopg2_record_receipt(tmp_path)
 
 
 def test_psycopg2_verifier_follows_the_canonical_pin(tmp_path: Path) -> None:
