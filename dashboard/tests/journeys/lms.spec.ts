@@ -1,7 +1,7 @@
 /* global process */
 import { test, expect, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { assertNoBlockingViolations } from './support/a11y';
-import { apiGet, scanIdFromUrl, type RemediationJob } from './support/scans';
+import { apiGet } from './support/scans';
 import { apiUrl, dismissCookieBanner, sha256 } from './support/stack';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
@@ -181,86 +181,92 @@ test('the course copy is in a known state before anything is written', async ({ 
   await writeFile(snapshotPath, JSON.stringify(describe(files)));
 });
 
-test('the teacher launches the tool from the course and lands in the course scope', async ({ page }, testInfo) => {
+test('the teacher launches from the course, then scans, remediates, approves and writes back a PDF and a DOCX', async ({ page }, testInfo) => {
+  test.setTimeout(900_000);
+  const context = await canvasSession(page.context().browser() as Browser);
+
+  // Launch from the course the way a teacher does.
   await page.goto(`${canvas}/login/canvas`);
   if (/\/login/.test(new URL(page.url()).pathname)) await signInToCanvas(page);
   await page.waitForURL((url) => !url.pathname.startsWith('/login'));
   await page.goto(`${canvas}/courses/${courseId}`);
   await page.getByRole('link', { name: 'Accessibility Scanner (CI)' }).click();
-  // Canvas will not frame a plain-HTTP tool and offers a new window instead, which is
-  // also the first-party context a locally run tool needs.
   // Record what Canvas sent to the tool's login endpoint, minus the one-time hints.
   page.context().on('request', (request) => {
     if (!request.url().endsWith('/lti/login')) return;
     const form = new URLSearchParams(request.postData() ?? '');
-    const sent = Object.fromEntries(
-      ['iss', 'client_id', 'lti_deployment_id', 'target_link_uri'].map((key) => [key, form.get(key)]),
-    );
+    const sent = Object.fromEntries(['iss', 'client_id', 'lti_deployment_id', 'target_link_uri'].map((key) => [key, form.get(key)]));
     console.log(`LTI login request from Canvas: ${JSON.stringify(sent)}`);
   });
+  // Canvas will not frame a plain-HTTP tool and offers a new window instead, which is
+  // also the first-party context a locally run tool needs.
   const popup = page.waitForEvent('popup');
   await page.getByRole('button', { name: /Load Accessibility Scanner \(CI\) in a new window/ }).click();
   const tool = await popup;
   await tool.waitForURL((url) => url.origin === 'http://localhost:15373', { timeout: 90_000 });
-  await snap(tool, testInfo, 'lti-launched');
-  await expect(tool.getByText(/CI Journeys/).first()).toBeVisible({ timeout: 90_000 });
-  await expect(tool.getByText(pdfName).first()).toBeVisible();
-  await expect(tool.getByText(docxName).first()).toBeVisible();
-  await assertNoBlockingViolations(tool, 'lti-course-view', testInfo);
-  await tool.close();
-});
+  await dismissCookieBanner(tool);
 
-async function scanRemediateApproveWriteBack(page: Page, testInfo: TestInfo, fileName: string, context: BrowserContext) {
-  await page.goto('/integrations/canvas');
-  await dismissCookieBanner(page);
-  await page.getByRole('button', { name: /CI Journeys/ }).click();
-  const row = page.getByRole('row').filter({ hasText: fileName });
-  await expect(row).toBeVisible({ timeout: 60_000 });
-  await assertNoBlockingViolations(page, `canvas-courses-${fileName}`, testInfo);
-  await row.getByRole('button', { name: 'Scan', exact: true }).click();
-  await expect(row.getByRole('button', { name: 'View Results' })).toBeVisible({ timeout: 180_000 });
-  await row.getByRole('button', { name: 'View Results' }).click();
-  await expect(page.getByRole('heading', { name: fileName })).toBeVisible();
-  const scanId = scanIdFromUrl(page.url());
-  await assertNoBlockingViolations(page, `canvas-scan-${fileName}`, testInfo);
-
-  await page.goto(`/remediate/${scanId}`);
-  await page.getByRole('button', { name: 'Start Remediation' }).click();
-  const download = page.getByRole('button', { name: 'Download improved working file' });
-  await expect(download).toBeVisible({ timeout: 240_000 });
-  await assertNoBlockingViolations(page, `canvas-remediated-${fileName}`, testInfo);
-  const job = await apiGet<RemediationJob>(page.request, `/education/scans/${scanId}/remediation/latest`);
-  expect(job.status).toBe('completed');
-  expect(job.download_available).toBe(true);
-
-  await page.getByRole('link', { name: 'Review changes' }).click();
-  await page.getByRole('button', { name: /^Approve all \d+ pending fixes/ }).click();
-  await page.getByLabel(/I have reviewed this working file/).check();
-  await page.getByRole('button', { name: 'Approve this file for publication' }).click();
-  await expect(page.getByText(/· Approved for publication/)).toBeVisible();
-  await assertNoBlockingViolations(page, `canvas-review-approved-${fileName}`, testInfo);
-  await page.getByRole('button', { name: 'Write back approved file' }).click();
-  await expect(page.getByText(/Write-back is queued/)).toBeVisible();
-
-  // Canvas now holds a remediated copy beside the original, and its bytes are the approved artifact.
-  const written = accessibleCopy(fileName);
-  let copy: CanvasFile | undefined;
-  await expect
-    .poll(async () => (copy = (await courseFiles(context)).find((f) => f.display_name === written)), {
-      message: `${written} never appeared in the course`,
-      timeout: 180_000,
-    })
-    .toBeDefined();
-  const bytes = await (await context.request.get((copy as CanvasFile).url)).body();
-  expect(sha256(bytes), 'Canvas holds the approved bytes').toBe(job.score_measurement?.output_sha256);
-  await snap(page, testInfo, `written-${fileName}`);
-}
-
-for (const fileName of [pdfName, docxName]) {
-  test(`${fileName}: scan, remediate, approve and write back to Canvas`, async ({ page, browser }, testInfo) => {
-    await scanRemediateApproveWriteBack(page, testInfo, fileName, await canvasSession(browser));
+  await test.step('the launch lands in the launching course, and only there', async () => {
+    await expect(tool.getByRole('heading', { name: /CI Journeys/ })).toBeVisible({ timeout: 90_000 });
+    expect(new URL(tool.url()).pathname).toBe(`/canvas/courses/${courseId}/content`);
+    await expect(tool.getByRole('row').filter({ hasText: pdfName })).toBeVisible();
+    await expect(tool.getByRole('row').filter({ hasText: docxName })).toBeVisible();
+    await assertNoBlockingViolations(tool, 'lti-course-content', testInfo);
   });
-}
+
+  await test.step('scan the course content', async () => {
+    await tool.getByRole('button', { name: 'Scan Content' }).click();
+    for (const name of [pdfName, docxName]) {
+      await expect(tool.getByRole('row').filter({ hasText: name })).not.toContainText('Unscanned', { timeout: 240_000 });
+    }
+    await expect(tool.getByRole('button', { name: 'Scan Content' })).toBeVisible({ timeout: 240_000 });
+    await snap(tool, testInfo, 'content-scanned');
+    await assertNoBlockingViolations(tool, 'lti-course-content-scanned', testInfo);
+  });
+
+  const approved: Record<string, { sha256: string }> = {};
+  for (const name of [pdfName, docxName]) {
+    await test.step(`remediate and approve ${name}`, async () => {
+      await tool.goto(`/canvas/courses/${courseId}/content`);
+      const row = tool.getByRole('row').filter({ hasText: name });
+      await expect(row).toBeVisible();
+      await row.getByRole('button', { name: 'Remediate' }).click();
+      await expect(row.getByRole('button', { name: 'Remediate' })).toHaveCount(0, { timeout: 240_000 });
+      await snap(tool, testInfo, `remediated-${name}`);
+      await row.getByRole('button', { name: 'Review' }).click();
+      const panel = tool.getByRole('region', { name: 'Managed remediation artifact' });
+      await expect(panel).toBeVisible({ timeout: 60_000 });
+      await assertNoBlockingViolations(tool, `lti-review-${name}`, testInfo);
+      const shown = (await panel.innerText()).match(/SHA-256 ([a-f0-9]{12})/)?.[1];
+      expect(shown, 'the review shows the artifact digest').toBeTruthy();
+      const pending = tool.waitForEvent('download');
+      await panel.getByRole('button', { name: 'Download' }).click();
+      const bytes = await readFile(await (await pending).path());
+      expect(sha256(bytes).startsWith(shown as string), 'the downloaded bytes are the artifact the review shows').toBe(true);
+      approved[name] = { sha256: sha256(bytes) };
+      await tool.getByRole('button', { name: 'Approve remediation' }).click();
+      await expect(tool.getByText('Managed artifact approved').first()).toBeVisible({ timeout: 60_000 });
+    });
+  }
+
+  await test.step('write the approved files back and check what Canvas now holds', async () => {
+    await tool.goto(`/canvas/courses/${courseId}/content`);
+    await tool.getByRole('button', { name: 'Write Back All Approved' }).click();
+    await expect(tool.getByText('Write Back Complete').first()).toBeVisible({ timeout: 240_000 });
+    for (const name of [pdfName, docxName]) {
+      let copy: CanvasFile | undefined;
+      await expect
+        .poll(async () => (copy = (await courseFiles(context)).find((f) => f.display_name === accessibleCopy(name))), {
+          message: `${accessibleCopy(name)} never appeared in the course`,
+          timeout: 240_000,
+        })
+        .toBeDefined();
+      const held = await (await context.request.get((copy as CanvasFile).url)).body();
+      expect(sha256(held), `Canvas holds the approved bytes of ${name}`).toBe(approved[name].sha256);
+    }
+    await snap(tool, testInfo, 'written-back');
+  });
+});
 
 test('the course copy is back to its starting state', async ({ browser }) => {
   const context = await canvasSession(browser);
