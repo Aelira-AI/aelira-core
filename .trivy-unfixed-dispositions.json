@@ -789,22 +789,6 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
-      "id": "CVE-2026-66046",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
       "id": "CVE-2026-6653",
       "osFamily": "debian",
       "packages": [
@@ -1247,54 +1231,6 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "reason": "util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-76956",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-76957",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-77214",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1815,22 +1751,6 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "reason": "libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-93990",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"

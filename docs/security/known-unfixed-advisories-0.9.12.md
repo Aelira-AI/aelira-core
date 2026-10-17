@@ -6,7 +6,9 @@ None has a fix in Debian at publication time, so none can be resolved by
 updating packages. Each one is reviewed, listed here, and accepted by the
 release gate only while its review is current
 (`.trivy-unfixed-dispositions.json`, reviewed 2026-10-15, expires 2027-01-12).
-Every finding stays in the published scan reports.
+Every finding stays in the published scan reports. Statements in this document
+that proved wrong after publication are corrected under [Corrections after
+publication](#corrections-after-publication).
 
 **Not affected** means the vulnerable code cannot be reached in this image, for
 the stated reason. **Affected** means the vulnerable library processes content
@@ -23,8 +25,10 @@ The image scanner does not see libraries compiled into Python itself or into
 Python wheels. The copies the application uses to parse user documents are
 handled directly:
 
-- Python 3.14.8 bundles Expat 2.8.5, which includes the fixes for the Expat
-  advisories below.
+- Python 3.14.8 bundles Expat 2.8.5. That copy has the fixes for
+  CVE-2026-66046, CVE-2026-76956, CVE-2026-76957 and CVE-2026-93990, but not
+  the fixes for CVE-2026-77214 and CVE-2026-102633, which first ship in Expat
+  2.9.0. See the correction below.
 - lxml is built from its source release against libxml2 2.15.4 and libxslt
   1.1.45, which include the fixes for the libxml2 advisories below; the
   published lxml wheels still bundle libxml2 2.14.
@@ -78,7 +82,6 @@ handled directly:
 | CVE-2026-66039 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | CAF demuxer. Media inputs are restricted to the supported container allowlist, which excludes CAF. |
 | CVE-2026-66040 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PNG decoding in FFmpeg. Media inputs are restricted to the supported codec allowlist, which excludes PNG; FFmpeg only writes PNG frames. |
 | CVE-2026-66041 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS. |
-| CVE-2026-66046 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-6653 | libxml2 | `vulnerable_code_cannot_be_controlled_by_adversary` | libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4. |
 | CVE-2026-67215 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON JSON Patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-67216 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON object comparison. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
@@ -91,9 +94,6 @@ handled directly:
 | CVE-2026-75144 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | Dirac decoder. Media inputs are restricted to the supported codec allowlist, which excludes Dirac. |
 | CVE-2026-75146 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | DASH demuxer. Media inputs are restricted to local files and the supported container allowlist, which excludes DASH. |
 | CVE-2026-76642 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems. |
-| CVE-2026-76956 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
-| CVE-2026-76957 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
-| CVE-2026-77214 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-78408 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux nsenter. The application never runs nsenter and has no privileges to join namespaces. |
 | CVE-2026-78409 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux mount helpers. The application runs as an unprivileged user and never mounts filesystems. |
 | CVE-2026-78410 | bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux | `vulnerable_code_not_in_execute_path` | util-linux bind-mount handling. The application runs as an unprivileged user and never mounts filesystems. |
@@ -107,5 +107,62 @@ handled directly:
 | CVE-2026-88053 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract int-template loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files. |
 | CVE-2026-88806 | libx11-6, libx11-data, libx11-xcb1 | `vulnerable_code_not_in_execute_path` | libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
 | CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
-| CVE-2026-93990 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-9538 | libperl5.40, perl, perl-base, perl-modules-5.40 | `vulnerable_code_not_in_execute_path` | Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar. |
+
+## Corrections after publication
+
+### Python's bundled Expat does not contain every Expat fix
+
+This document and the libexpat1 dispositions it listed said that the Expat
+bundled in Python 3.14.8 "includes the fixes". That was wrong for
+CVE-2026-77214. Python 3.14.8 bundles Expat 2.8.5 (`Modules/expat/expat.h` at
+the `v3.14.8` tag defines version 2.8.5). The upstream changelog for Expat 2.9.0
+lists two security fixes that 2.8.5 does not have:
+
+- CVE-2026-77214: `XML_ParseBuffer` did not check its `len` argument against
+  the available buffer capacity.
+- CVE-2026-102633: an integer overflow in `expat_realloc` on 32-bit platforms.
+  The published images are 64-bit (amd64 and arm64).
+
+The fixes for CVE-2026-66046, CVE-2026-76956, CVE-2026-76957 and
+CVE-2026-93990 are in 2.8.4 and 2.8.5, so those four statements stand. The
+Python-bundled copy stays at 2.8.5 until CPython ships Expat 2.9.0. This is
+tracked in [#589](https://github.com/Aelira-AI/aelira-core/issues/589).
+
+Assessment of reachability for CVE-2026-77214, from reading `pyexpat.c` at
+`v3.14.8`: that file calls `XML_ParseBuffer` in one place, `xmlparser.ParseFile`.
+Immediately before the call it obtains a buffer with
+`XML_GetBuffer(parser, BUF_SIZE)` (`BUF_SIZE` is 2048), reads at most `BUF_SIZE`
+bytes into it (`readinst` rejects a longer result), and passes the number of
+bytes read as `len`. The length therefore cannot exceed the capacity that was
+just obtained, so the over-read looks unreachable through pyexpat. This is an
+assessment from reading that one file, not a proof. It does not cover any other
+code in the image that loads Expat.
+
+### Debian libexpat1 is fixed; the dispositions are removed
+
+Debian published `libexpat1 2.9.0-1~deb13u1` for trixie (DSA-6566-1, amd64 and
+arm64). It covers CVE-2026-66046, CVE-2026-76956, CVE-2026-76957,
+CVE-2026-77214, CVE-2026-93990 and CVE-2026-102633. The five dispositions for
+`libexpat1 2.8.3-1~deb13u1` (CVE-2026-66046, CVE-2026-76956, CVE-2026-76957,
+CVE-2026-77214 and CVE-2026-93990) are removed from
+`.trivy-unfixed-dispositions.json` and from the tables above. Images built
+from the runtime Dockerfile install the fixed package through its
+`apt-get upgrade`, and the Docker CI job now fails if the built image has a
+`libexpat1` older than 2.9.0. The v0.9.12 images keep `libexpat1 2.8.3-1~deb13u1`
+and remain exposed to the library as described in their original dispositions.
+
+### Embedded libraries that were not disclosed
+
+The image scanner does not see the libraries bundled inside Python wheels.
+Two wheels bundle libraries that were not listed above. The `pi_heif` copies are a known gap. The `psycopg2-binary` copies shipped in v0.9.12 and are replaced from the next release.
+
+| Wheel | Bundled library | Behind upstream | Reachability |
+| --- | --- | --- | --- |
+| `pi_heif` 1.4.0 (pinned in `requirements.txt`) | libheif 1.23.0 | libheif 1.23.2 through 1.23.6 are security releases; 1.23.2 and 1.23.3 each fix an issue upstream rates critical. See [libheif releases](https://github.com/strukturag/libheif/releases). | Unverified. No code under `src/` imports `pi_heif`. ocrmypdf 17.13.0 imports `pillow_heif`, a different distribution that is not in `requirements.txt`, so on a reading of its source it does not load `pi_heif`. That has not been exercised in a running image. |
+| `pi_heif` 1.4.0 | libde265 1.1.0 | libde265 1.1.2 is a security release (use-after-free and double free in multi-threaded decoding); 1.1.3 is current. See [libde265 releases](https://github.com/strukturag/libde265/releases). | Same as above. |
+| `psycopg2-binary` 2.9.13 (v0.9.12 wheel) | OpenSSL 3.5.8 on amd64 and arm64; the aarch64 wheel also bundled OpenSSL 1.1.1k | OpenSSL 3.5.9 fixes eight advisories, all rated Low by OpenSSL (see [OpenSSL vulnerabilities](https://openssl-library.org/news/vulnerabilities/)). OpenSSL 1.1.1k is no longer supported upstream. | v0.9.12 shipped these bundled copies. The driver connects only to the deployment's own PostgreSQL service and does not process content that users supply, and the bundled versions were not assessed against every current advisory. From the next release the driver is built from source and linked to Debian's libpq, libssl and libcrypto, and the wheel's bundled library directory is absent ([#645](https://github.com/Aelira-AI/aelira-core/issues/645), refs [#588](https://github.com/Aelira-AI/aelira-core/issues/588)). |
+
+The bundled versions were read from the library files inside the published
+wheels for both architectures. The `pi_heif` gap is tracked in
+[#583](https://github.com/Aelira-AI/aelira-core/issues/583).
