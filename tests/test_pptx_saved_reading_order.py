@@ -283,6 +283,29 @@ def test_overlapping_and_grouped_shapes_are_refused_without_output(tmp_path):
         )
 
 
+def test_scan_order_support_refuses_unbounded_or_missing_geometry(tmp_path):
+    source = tmp_path / "geometry.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    first = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1))
+    slide.shapes.add_textbox(Inches(5), Inches(1), Inches(2), Inches(1))
+    first.left = -Inches(1)
+    presentation.save(source)
+    evidence = inspect_slide_orders(source)[0]
+    assert evidence["status"] == "manual_review"
+    assert evidence["reason"] == "Shape extends outside slide bounds"
+    assert "current_shape_ids" not in evidence
+
+    first.left = Inches(1)
+    transform = first._element.spPr.xfrm
+    first._element.spPr.remove(transform)
+    presentation.save(source)
+    evidence = inspect_slide_orders(source)[0]
+    assert evidence["status"] == "manual_review"
+    assert evidence["reason"] == "Unknown shape geometry"
+    assert "current_shape_ids" not in evidence
+
+
 def test_multiple_slides_and_already_correct_order(tmp_path):
     source, output = tmp_path / "input.pptx", tmp_path / "output.pptx"
     ids = _deck(source)

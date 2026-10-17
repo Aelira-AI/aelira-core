@@ -91,22 +91,28 @@ def _tree(root):
     return tree
 
 
+def _validate_bounds(shape, slide_width, slide_height):
+    try:
+        left, top, width, height = (
+            shape.left,
+            shape.top,
+            shape.width,
+            shape.height,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise UnsupportedReadingOrder("Unknown shape geometry") from exc
+    if any(
+        not isinstance(value, int) or isinstance(value, bool)
+        for value in (left, top, width, height)
+    ):
+        raise UnsupportedReadingOrder("Unknown shape geometry")
+    if width <= 0 or height <= 0:
+        raise UnsupportedReadingOrder("Unknown shape bounds")
+    if left < 0 or top < 0 or left + width > slide_width or top + height > slide_height:
+        raise UnsupportedReadingOrder("Shape extends outside slide bounds")
+
+
 def _overlap(first, second, slide_width, slide_height):
-    for shape in (first, second):
-        if any(
-            not isinstance(value, int) or isinstance(value, bool)
-            for value in (shape.left, shape.top, shape.width, shape.height)
-        ):
-            raise UnsupportedReadingOrder("Unknown shape geometry")
-        if shape.width <= 0 or shape.height <= 0:
-            raise UnsupportedReadingOrder("Unknown shape bounds")
-        if (
-            shape.left < 0
-            or shape.top < 0
-            or shape.left + shape.width > slide_width
-            or shape.top + shape.height > slide_height
-        ):
-            raise UnsupportedReadingOrder("Shape extends outside slide bounds")
     return (
         first.left <= second.left + second.width
         and second.left <= first.left + first.width
@@ -139,6 +145,8 @@ def _slide_info(presentation, slide_index, requested):
     by_id = {shape.shape_id: shape for shape in slide.shapes}
     if set(by_id) != set(current):
         raise UnsupportedReadingOrder("Shape identity could not be resolved")
+    for shape in by_id.values():
+        _validate_bounds(shape, presentation.slide_width, presentation.slide_height)
     new_rank = {value: index for index, value in enumerate(requested)}
     for first_index, first_id in enumerate(current):
         for second_id in current[first_index + 1 :]:

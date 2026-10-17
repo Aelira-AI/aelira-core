@@ -1,11 +1,11 @@
 """HTTP integration for remediation enqueue, stored status and artifact mapping.
 
-Positive paths use PostgreSQL and the real enqueue/artifact services. Completed
-job state is an explicit fixture for receipt/download mapping, not evidence of
-worker processing or an accessibility remediation result.
+Positive paths use PostgreSQL and the real enqueue/artifact services. The PPTX
+case runs a claimed handler and isolated worker; other completed job states
+are explicit fixtures for receipt/download mapping.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -182,12 +182,14 @@ def test_pptx_reviewer_order_enqueues_source_bound_local_job(queue_http, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_pptx_reviewed_upload_is_published_and_downloaded(queue_http, tmp_path):
+async def test_pptx_reviewed_upload_is_published_and_downloaded(
+    queue_http, tmp_path, monkeypatch
+):
     from pptx import Presentation
     from pptx.util import Inches
 
     from src.education.remediation.pptx_reading_order import verify_saved_order
-    from src.jobs.remediation_job import process_remediation_job
+    from src.jobs import remediation_job
 
     case = queue_http
     source = tmp_path / "reviewed.pptx"
@@ -215,21 +217,49 @@ async def test_pptx_reviewed_upload_is_published_and_downloaded(queue_http, tmp_
     )
     assert response.status_code == 202, response.text
     job = _jobs(case).one()
-    outcome = await process_remediation_job(
-        {
-            "job_id": job.id,
-            "scan_id": case.scan.id,
-            "department_id": case.scan.department_id,
-            "actor_id": case.user.id,
-            "file_path": str(source),
-            "options": job.payload["options"],
-        },
-        case.db,
+    isolated_calls = []
+    run_isolated = remediation_job.run_remediation_subprocess
+
+    async def observed_isolated_worker(**kwargs):
+        isolated_calls.append(kwargs)
+        return await run_isolated(**kwargs)
+
+    monkeypatch.setattr(
+        remediation_job, "run_remediation_subprocess", observed_isolated_worker
     )
+    job.status = "processing"
+    job.claim_token = str(uuid.uuid4())
+    job.worker_id = "pptx-test-worker"
+    job.claimed_at = datetime.now(timezone.utc)
+    job.heartbeat_at = job.claimed_at
+    job.lease_expires_at = job.claimed_at + timedelta(minutes=5)
+    case.db.commit()
+    ownership_checks = []
+
+    async def assert_owned():
+        case.db.refresh(job)
+        assert job.status == "processing"
+        assert job.worker_id == "pptx-test-worker"
+        ownership_checks.append(job.claim_token)
+
+    job._assert_owned = assert_owned
+    outcome = await remediation_job.handle_remediation_job(job, case.db, None)
     assert outcome["success"] is True, outcome
     assert outcome["fixed_count"] == 1
+    assert len(isolated_calls) == 1
+    assert isolated_calls[0]["scan_type"] == ScanType.POWERPOINT
+    assert ownership_checks and all(
+        token == job.claim_token for token in ownership_checks
+    )
     artifact_id = outcome["artifact_id"]
+    # The queue processor finalizes job status after the handler returns. Keep
+    # that separate step explicit while exercising the real status/download API.
     job.status = "completed"
+    job.claim_token = None
+    job.worker_id = None
+    job.claimed_at = None
+    job.heartbeat_at = None
+    job.lease_expires_at = None
     job.completed_at = datetime.now(timezone.utc)
     job.progress = 100
     job.result_data = outcome
@@ -243,6 +273,13 @@ async def test_pptx_reviewed_upload_is_published_and_downloaded(queue_http, tmp_
     assert artifact.sha256 == hashlib.sha256(downloaded.content).hexdigest()
     assert artifact.size_bytes == len(downloaded.content)
     verify_saved_order(source, delivered, case.scan.file_hash, {0: target})
+    status = case.client.get(f"/education/remediation/jobs/{job.id}")
+    assert status.status_code == 200
+    assert (
+        status.json()["issue_outcomes"][0]["source_index_scope"]
+        == "accepted_pptx_order"
+    )
+    assert status.json()["issue_outcomes"][0]["status"] == "fixed"
 
 
 def test_completed_job_exposes_working_download_before_separate_approval(queue_http):

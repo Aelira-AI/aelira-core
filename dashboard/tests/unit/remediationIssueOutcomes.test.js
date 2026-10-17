@@ -136,6 +136,20 @@ describe('persisted remediation issue outcomes', () => {
     }
   });
 
+  it('keeps submitted PowerPoint order outcomes and fixes separate from scan findings', () => {
+    const issues = [{ id: 'pptx-reading-order-0', description: 'Reviewer accepted a complete slide shape order', location: 'Slide 1' }];
+    const orderFix = fix({ category: 'reading_order', description: issues[0].description, location: 'Slide 1' });
+    const rows = pairIssuesWithFixes(issues, [orderFix], {
+      total_issues: 1,
+      issue_outcomes: [{ source_index: 0, source_index_scope: 'accepted_pptx_order', issue_id: 'pptx-reading-order-0', status: 'fixed' }],
+    });
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcomeSource, 'unreported');
+    assert.equal(rows[0].recordedOutcome, undefined);
+    assert.equal(rows[1].outcomeSource, 'persisted_fix');
+    assert.equal(rows[1].fix, orderFix);
+  });
+
   it('maps a verified approved subset back to no-ID original rows without inventing unselected outcomes', () => {
     const issues = Array.from({ length: 17 }, (_, index) => ({ description: `Finding ${index}` }));
     const originalIndices = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 16];

@@ -98,7 +98,9 @@ export function pairIssuesWithFixes(
   counts?: RemediationOutcomeCounts,
 ): RemediationIssueRow[] {
   const fixesBySignature = new Map<string, RemediationFixSummary[]>();
+  const submittedPptxOrder = counts?.issue_outcomes?.some((outcome) => outcome.source_index_scope === 'accepted_pptx_order') ?? false;
   for (const fix of fixes) {
+    if (submittedPptxOrder) continue;
     const signature = issueSignature(fix);
     const matches = fixesBySignature.get(signature) || [];
     matches.push(fix);
@@ -116,6 +118,9 @@ export function pairIssuesWithFixes(
       rows.push({ issue: fix, fix, outcomeSource: 'persisted_fix' });
     }
   }
+  if (submittedPptxOrder) {
+    for (const fix of fixes) rows.push({ issue: fix, fix, outcomeSource: 'persisted_fix' });
+  }
 
   // The job's source index identifies the original finding, not a guessed text match.
   // Reject duplicate indices and conflicting identities rather than invent attribution.
@@ -124,7 +129,7 @@ export function pairIssuesWithFixes(
     for (const [index, issue] of issues.entries()) {
       rows[index].outcomeSource = 'unreported';
       const idIsUnique = typeof issue.id === 'string' && issues.filter((source) => source.id === issue.id).length === 1;
-      const identityMatches = idIsUnique ? recorded.filter((item) => item.issue_id === issue.id) : [];
+      const identityMatches = idIsUnique ? recorded.filter((item) => item.source_index_scope !== 'accepted_pptx_order' && item.issue_id === issue.id) : [];
       const matches = identityMatches.length > 0 ? identityMatches : recorded.filter((item) => {
         if (item.source_index_scope === 'original_scan') {
           return counts.total_issues === issues.length && item.source_index === index;
