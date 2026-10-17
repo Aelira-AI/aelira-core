@@ -163,6 +163,15 @@ runs:
         mkdir -p "$RUNNER_TEMP/journey-artifacts"
         set -a; . "$RUNNER_TEMP/journey.env"; set +a
         alembic upgrade head
+        # Handler failures are logged with their exception class in a log record
+        # field the default formatter drops; append it so a failed run is readable.
+        printf '%s\n' 'import logging' '_format = logging.Formatter.format' \
+          'def _with_error_type(self, record):' \
+          '    text = _format(self, record)' \
+          '    kind = getattr(record, "error_type", None)' \
+          '    return f"{text} [error_type={kind}]" if kind else text' \
+          'logging.Formatter.format = _with_error_type' > "$RUNNER_TEMP/sitecustomize.py"
+        export PYTHONPATH="$RUNNER_TEMP${PYTHONPATH:+:$PYTHONPATH}"
         nohup uvicorn src.api.main:app --host 127.0.0.1 --port 18300 --no-proxy-headers \
           > "$RUNNER_TEMP/journey-api.log" 2>&1 &
         nohup python -m src.jobs.worker > "$RUNNER_TEMP/journey-worker.log" 2>&1 &

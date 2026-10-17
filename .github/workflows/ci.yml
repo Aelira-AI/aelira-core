@@ -1460,6 +1460,10 @@ jobs:
         run: |
           grep -E 'ERROR|WARNING|Traceback|Error|canvas|Canvas|scan' "$RUNNER_TEMP/journey-worker.log" \
             | sed -E 's/\?[^ "]*//g' | tail -60 || true
+      - name: Show database errors for a failed run
+        # Only the error and detail lines; statements can carry course content.
+        if: failure()
+        run: docker logs journeys-postgres 2>&1 | grep -E 'ERROR:|DETAIL:' | tail -20 || true
       - name: Show the LTI and Canvas lines of the API log for a failed run
         # Job logs of a public repository are public: query strings and tokens are dropped.
         if: failure()
