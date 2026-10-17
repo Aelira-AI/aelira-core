@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The API image no longer installs `libxml2-utils` (`xmllint`, `xmlcatalog`) and removes `xdg-utils` (`xdg-email`, `xdg-open`), which nothing in the application, the TeX and LaTeXML conversion paths or ImageMagick runs. `xdg-utils` is a hard dependency of `texlive-base`, so it is purged with dpkg in the same layer; a build-time and CI check asserts both packages and their executables stay absent. The CVE-2022-4055 disposition is removed. libX11, libXrender, cJSON and GnuTLS stay because Chromium, FFmpeg, Ghostscript, ImageMagick and poppler link them directly.
 - The API image builds psycopg2-binary 2.9.13 from its hash-verified source archive against Debian's libpq instead of installing the published wheel, which bundles its own libpq, OpenSSL and Kerberos copies in `psycopg2_binary.libs`. The package name and version are unchanged. The final-image package check now fails if a bundled library directory exists or if the extension module resolves libpq, libssl or libcrypto outside `/usr/lib`, and CI runs a PostgreSQL 16 smoke test against the built image on amd64 and arm64 ([#588](https://github.com/Aelira-AI/aelira-core/issues/588)).
 
 ### Fixed
