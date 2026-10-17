@@ -519,7 +519,9 @@ def validate_psycopg2_native(
     return errors
 
 
-def psycopg2_record_receipt(root: Path | None = None) -> dict[str, object]:
+def psycopg2_record_receipt(
+    root: Path | None = None, requirements: Path = REQUIREMENTS
+) -> dict[str, object]:
     """Verify installed bytes against RECORD, including the native extension.
 
     This extends the hashed-entry check in the frozen component verifier without
@@ -531,7 +533,7 @@ def psycopg2_record_receipt(root: Path | None = None) -> dict[str, object]:
     metadata_path = Path(distribution._path)
     if metadata_path.parent.resolve() != site.resolve():
         raise ValueError("distribution metadata is outside the selected site-packages")
-    if distribution.version != required_psycopg2_version():
+    if distribution.version != required_psycopg2_version(requirements):
         raise ValueError("distribution version differs from requirements")
     if any(site.glob("psycopg2*.libs")) or (site / "psycopg2" / ".libs").exists():
         raise ValueError("bundled psycopg2 library directory is installed")

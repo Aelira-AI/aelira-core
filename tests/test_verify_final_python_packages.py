@@ -634,6 +634,21 @@ def test_installed_psycopg2_record_rejects_malformed_metadata(
         psycopg2_record_receipt(tmp_path)
 
 
+def test_installed_psycopg2_record_requires_the_reviewed_pin_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    requirements = tmp_path / "requirements.txt"
+    with pytest.raises(FileNotFoundError):
+        psycopg2_record_receipt(tmp_path, requirements)
+    requirements.write_text("psycopg2-binary==2.9.12\n")
+    with pytest.raises(ValueError, match="distribution version differs"):
+        psycopg2_record_receipt(tmp_path, requirements)
+    requirements.write_text("psycopg2-binary>=2.9.13\n")
+    with pytest.raises(ValueError, match="one exact psycopg2-binary pin"):
+        psycopg2_record_receipt(tmp_path, requirements)
+
+
 def test_psycopg2_verifier_follows_the_canonical_pin(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("psycopg2-binary==2.9.14 # reviewed pin\n")

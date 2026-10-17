@@ -416,6 +416,9 @@ def main() -> int:
         "helper_runtime_sha256": hashlib.sha256(
             Path(package_verifier.__file__).read_bytes()
         ).hexdigest(),
+        "requirements_runtime_sha256": hashlib.sha256(
+            package_verifier.REQUIREMENTS.read_bytes()
+        ).hexdigest(),
         "image_id": os.environ["AELIRA_RUNTIME_IMAGE_ID"],
         "architecture": architecture,
         "loaded_libraries": library_receipt(loaded),

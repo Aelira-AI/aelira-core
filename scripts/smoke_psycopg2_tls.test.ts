@@ -3,6 +3,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -47,7 +48,34 @@ test("an older-image probe requires its matching verifier source", () => {
       { encoding: "utf8", env: { ...process.env, PATH: "" } },
     );
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("probe and verifier must both exist");
+    expect(result.stderr).toContain("probe, verifier, and requirements must all exist");
+    expect(existsSync(join(scratch, "output"))).toBe(false);
+  } finally {
+    rmSync(scratch, { recursive: true });
+  }
+});
+
+test("an older-image probe requires reviewed requirements before Docker", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "psycopg2-requirements-test-"));
+  const scripts = join(scratch, "scripts");
+  mkdirSync(scripts);
+  const probe = join(scripts, "smoke_psycopg2_runtime.py");
+  copyFileSync(join(import.meta.dir, "smoke_psycopg2_runtime.py"), probe);
+  copyFileSync(
+    join(import.meta.dir, "verify_final_python_packages.py"),
+    join(scripts, "verify_final_python_packages.py"),
+  );
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "run", join(import.meta.dir, "smoke_psycopg2_tls.ts"),
+        join(scratch, "output"), "arm64", "older-image:test", probe,
+      ],
+      { encoding: "utf8", env: { ...process.env, PATH: "" } },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("probe, verifier, and requirements must all exist");
     expect(existsSync(join(scratch, "output"))).toBe(false);
   } finally {
     rmSync(scratch, { recursive: true });
