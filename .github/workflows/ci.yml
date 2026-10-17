@@ -1682,7 +1682,9 @@ jobs:
             fi
             echo "no psycopg2*.libs directory exists anywhere in the image"
           '
-      - name: Reject reused psycopg2 TLS evidence directories
+      - name: Verify psycopg2 TLS evidence and Docker cleanup guards
+        env:
+          AELIRA_DOCKER_LIFECYCLE_TEST: "1"
         run: bun test scripts/smoke_psycopg2_tls.test.ts
       - name: Verify final-image psycopg2 TLS and database behavior against PostgreSQL 16
         id: psycopg2_tls

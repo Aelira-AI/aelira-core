@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const image = process.argv[4] ?? "aelira-worker-isolation:test";
 const postgresImage = "postgres:16";
@@ -49,12 +49,13 @@ const nonce = randomUUID().slice(0, 12);
 const label = `aelira.psycopg2-tls=${nonce}`;
 const network = `aelira-psycopg2-tls-${nonce}`;
 const database = `aelira-psycopg2-db-${nonce}`;
+const clientContainer = `aelira-psycopg2-client-${nonce}`;
 const server = join(fixture, "server");
 const client = join(fixture, "client");
 let stage = "setup";
-let networkCreated = false;
-let databaseCreated = false;
 let passed = false;
+let imageId = "";
+let postgresId = "";
 const evidenceScope = probeSource
   ? "older-image-read-only-probe-control"
   : "native-final-image-ci";
@@ -87,34 +88,104 @@ function chownInContainer(imageName: string, uid: string, path: string): void {
   );
 }
 
-function assertOwnedContainer(): void {
-  const labels = JSON.parse(
-    docker("inspect", "--format", "{{json .Config.Labels}}", database),
-  ) as Record<string, string>;
-  if (labels["aelira.psycopg2-tls"] !== nonce) {
-    throw new Error("database container ownership mismatch");
+type DockerMount = {
+  Type: string;
+  Source: string;
+  Destination: string;
+  RW: boolean;
+};
+
+function removeOwnedContainer(name: string, role: "database" | "client"): void {
+  const names = docker("ps", "--all", "--format", "{{.Names}}")
+    .split("\n")
+    .filter(Boolean);
+  if (!names.includes(name)) return;
+  const info = JSON.parse(
+    docker("inspect", "--type", "container", "--format", "{{json .}}", name),
+  ) as {
+    Name: string;
+    Image: string;
+    Config: { Labels: Record<string, string> };
+    HostConfig: { NetworkMode: string };
+    Mounts: DockerMount[];
+  };
+  const expectedImage = role === "database" ? postgresId : imageId;
+  if (
+    info.Name !== `/${name}` ||
+    !expectedImage ||
+    info.Image !== expectedImage ||
+    info.Config.Labels["aelira.psycopg2-tls"] !== nonce ||
+    info.HostConfig.NetworkMode !== network
+  ) {
+    throw new Error(`${role} container ownership mismatch`);
   }
-  const mounts = JSON.parse(
-    docker("inspect", "--format", "{{json .Mounts}}", database),
-  ) as Array<{ Type: string; Source: string; Destination: string }>;
-  for (const mount of mounts) {
-    if (mount.Type === "bind" && !mount.Source.startsWith(fixture + sep)) {
-      throw new Error("database container has an unexpected bind mount");
-    }
-    if (mount.Type === "volume" && mount.Destination !== "/var/lib/postgresql/data") {
-      throw new Error("database container has an unexpected volume");
+  const expectedBinds = new Map<string, string>();
+  if (role === "database") {
+    expectedBinds.set("/tls", server);
+  } else {
+    expectedBinds.set("/run/secrets/pg_password", join(client, "password"));
+    expectedBinds.set("/run/certs/trusted.crt", join(client, "trusted.crt"));
+    expectedBinds.set("/run/certs/unrelated.crt", join(client, "unrelated.crt"));
+    if (probeSource) {
+      expectedBinds.set("/app/scripts/smoke_psycopg2_runtime.py", probeSource);
     }
   }
+  const seenBinds = new Set<string>();
+  for (const mount of info.Mounts) {
+    if (mount.Type === "bind") {
+      if (
+        mount.RW ||
+        expectedBinds.get(mount.Destination) !== mount.Source ||
+        seenBinds.has(mount.Destination)
+      ) {
+        throw new Error(`${role} container has an unexpected bind mount`);
+      }
+      seenBinds.add(mount.Destination);
+    } else if (
+      !(
+        (role === "database" &&
+          mount.Type === "volume" &&
+          mount.Destination === "/var/lib/postgresql/data") ||
+        (role === "client" &&
+          mount.Type === "tmpfs" &&
+          mount.Destination === "/tmp")
+      )
+    ) {
+      throw new Error(`${role} container has an unexpected mount`);
+    }
+  }
+  if (seenBinds.size !== expectedBinds.size) {
+    throw new Error(`${role} container is missing an expected bind mount`);
+  }
+  docker("rm", "--force", "--volumes", name);
+}
+
+function removeOwnedNetwork(): void {
+  const names = docker("network", "ls", "--format", "{{.Name}}")
+    .split("\n")
+    .filter(Boolean);
+  if (!names.includes(network)) return;
+  const info = JSON.parse(
+    docker("network", "inspect", "--format", "{{json .}}", network),
+  ) as { Name: string; Labels: Record<string, string>; Internal: boolean };
+  if (
+    info.Name !== network ||
+    info.Labels["aelira.psycopg2-tls"] !== nonce ||
+    !info.Internal
+  ) {
+    throw new Error("synthetic network ownership mismatch");
+  }
+  docker("network", "rm", network);
 }
 
 async function main(): Promise<void> {
   try {
     stage = "image identity";
-    const imageId = docker("image", "inspect", image, "--format", "{{.Id}}");
+    imageId = docker("image", "inspect", image, "--format", "{{.Id}}");
     const imageArch = docker(
       "image",
       "inspect",
-      image,
+      imageId,
       "--format",
       "{{.Architecture}}",
     );
@@ -122,7 +193,7 @@ async function main(): Promise<void> {
       throw new Error("final image architecture mismatch");
     }
     docker("pull", postgresImage);
-    const postgresId = docker(
+    postgresId = docker(
       "image",
       "inspect",
       postgresImage,
@@ -132,7 +203,7 @@ async function main(): Promise<void> {
     const postgresArch = docker(
       "image",
       "inspect",
-      postgresImage,
+      postgresId,
       "--format",
       "{{.Architecture}}",
     );
@@ -167,15 +238,14 @@ async function main(): Promise<void> {
     chmodSync(join(client, "trusted.crt"), 0o644);
     chmodSync(join(client, "unrelated.crt"), 0o644);
     chmodSync(key, 0o400);
-    const pgUid = ownerFor(postgresImage, ["-u", "postgres"]);
-    const clientUid = ownerFor(image, ["-u"]);
-    chownInContainer(postgresImage, pgUid, "server/password");
-    chownInContainer(postgresImage, pgUid, "server/server.key");
-    chownInContainer(postgresImage, clientUid, "client/password");
+    const pgUid = ownerFor(postgresId, ["-u", "postgres"]);
+    const clientUid = ownerFor(imageId, ["-u"]);
+    chownInContainer(postgresId, pgUid, "server/password");
+    chownInContainer(postgresId, pgUid, "server/server.key");
+    chownInContainer(postgresId, clientUid, "client/password");
 
     stage = "isolated PostgreSQL";
     docker("network", "create", "--internal", "--label", label, network);
-    networkCreated = true;
     docker(
       "run", "--detach", "--pull=never", "--name", database,
       "--label", label, "--network", network,
@@ -184,11 +254,10 @@ async function main(): Promise<void> {
       "--env", "POSTGRES_USER=aelira",
       "--env", "POSTGRES_DB=aelira_smoke",
       "--env", "POSTGRES_PASSWORD_FILE=/tls/password",
-      postgresImage, "postgres", "-c", "ssl=on",
+      postgresId, "postgres", "-c", "ssl=on",
       "-c", "ssl_cert_file=/tls/server.crt",
       "-c", "ssl_key_file=/tls/server.key",
     );
-    databaseCreated = true;
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt++) {
       try {
@@ -211,7 +280,8 @@ async function main(): Promise<void> {
 
     stage = "final-image TLS and SQL controls";
     const result = docker(
-      "run", "--rm", "--pull=never", "--network", network,
+      "run", "--rm", "--pull=never", "--name", clientContainer,
+      "--label", label, "--network", network,
       "--read-only", "--tmpfs", "/tmp:rw,nosuid,mode=1777",
       ...(probeSource ? ["--mount", `type=bind,src=${probeSource},dst=/app/scripts/smoke_psycopg2_runtime.py,readonly`] : []),
       "--mount", `type=bind,src=${join(client, "password")},dst=/run/secrets/pg_password,readonly`,
@@ -226,7 +296,7 @@ async function main(): Promise<void> {
       "--env", "AELIRA_PG_UNTRUSTED_CA_FILE=/run/certs/unrelated.crt",
       "--env", `AELIRA_RUNTIME_IMAGE_ID=${imageId}`,
       "--env", `AELIRA_EXPECT_ARCH=${expectedArch}`,
-      "--entrypoint", "/opt/venv/bin/python", image,
+      "--entrypoint", "/opt/venv/bin/python", imageId,
       "/app/scripts/smoke_psycopg2_runtime.py",
     );
     const receipt = JSON.parse(result) as Record<string, unknown>;
@@ -242,26 +312,20 @@ async function main(): Promise<void> {
     passed = true;
   } finally {
     let cleanupFailed = false;
-    if (databaseCreated) {
+    for (const [name, role] of [
+      [clientContainer, "client"],
+      [database, "database"],
+    ] as const) {
       try {
-        assertOwnedContainer();
-        docker("rm", "--force", "--volumes", database);
+        removeOwnedContainer(name, role);
       } catch {
         cleanupFailed = true;
       }
     }
-    if (networkCreated) {
-      try {
-        const labels = JSON.parse(
-          docker("network", "inspect", "--format", "{{json .Labels}}", network),
-        ) as Record<string, string>;
-        if (labels["aelira.psycopg2-tls"] !== nonce) {
-          throw new Error("synthetic network ownership mismatch");
-        }
-        docker("network", "rm", network);
-      } catch {
-        cleanupFailed = true;
-      }
+    try {
+      removeOwnedNetwork();
+    } catch {
+      cleanupFailed = true;
     }
     if (!cleanupFailed) rmSync(fixture, { recursive: true, force: true });
     writeFileSync(
