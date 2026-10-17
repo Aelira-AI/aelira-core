@@ -489,7 +489,9 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                 Recorded Results
               </h2>
               <p className="mt-1 text-sm text-tertiary">
-                Applied changes and unresolved findings are counted separately. An improved score does not approve the document for publication.
+                {job.issue_outcomes?.length && job.issue_outcomes.every(outcome => outcome.source_index_scope === 'accepted_pptx_order')
+                  ? 'These results count accepted slide order requests. The original scan findings below have no new per-finding outcome from this job.'
+                  : 'Applied changes and unresolved findings are counted separately. An improved score does not approve the document for publication.'}
               </p>
             </div>
             <AggregateResults job={job} rows={issueRows} />

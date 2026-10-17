@@ -31,6 +31,7 @@ registerHooks({
 });
 
 const { AggregateResults, RecordedOutcomeGroups } = await import('../../src/components/results/RemediationOutcomeBreakdown.tsx');
+const { pairIssuesWithFixes } = await import('../../src/utils/remediationIssueOutcomes.ts');
 
 const render = (component, props) => renderToStaticMarkup(React.createElement(component, props));
 const rows = [
@@ -43,6 +44,47 @@ it('renders delivered change totals and review count even when historical score 
   const markup = render(AggregateResults, { job: { fixed_count: 12, total_issues: 17, remaining_count: 5, manual_count: 5, score_verified: false }, rows });
   for (const text of ['12', 'Changes applied', 'Human review changes', 'Manual work remaining', '17']) assert.ok(markup.includes(text));
   assert.doesNotMatch(render(AggregateResults, { job: {} }), /Changes applied|Human review changes/);
+});
+
+it('counts accepted slide orders without claiming outcomes for three original scan findings', () => {
+  const findings = [
+    { id: 'alt-text', description: 'Image missing alternative text' },
+    { id: 'slide-1-title', description: 'Slide 1 missing title' },
+    { id: 'slide-2-title', description: 'Slide 2 missing title' },
+  ];
+  const job = {
+    fixed_count: 1, manual_count: 0, remaining_count: 0, total_issues: 1,
+    outcome_unreported_count: 0, original_score: 49, remediated_score: 49,
+    issue_outcomes: [{ source_index: 0, source_index_scope: 'accepted_pptx_order',
+      issue_id: 'pptx-reading-order-0', status: 'fixed', needs_review: true }],
+  };
+  const rows = pairIssuesWithFixes(findings, [{ id: 'order-fix', category: 'reading_order',
+    description: 'Reviewer accepted a complete slide shape order', needs_review: true,
+    review_status: 'pending' }], job);
+  assert.equal(rows.length, 4);
+  assert.ok(rows.slice(0, 3).every(row => row.outcomeSource === 'unreported'));
+  const markup = render(AggregateResults, { job, rows });
+  for (const [count, label] of [[1, 'Slide orders applied'], [1, 'Slide orders needing human review'],
+    [0, 'Order requests not applied'], [1, 'Accepted slide order requests']]) {
+    assert.match(markup, new RegExp(`>${count}</p><p[^>]*>${label}</p>`));
+  }
+  assert.doesNotMatch(markup, /Total issues|Manual work remaining|Remaining</);
+  assert.match(render(RecordedOutcomeGroups, { rows }), /Withheld, failed or unreported outcomes \(3\)/);
+
+  const unknownReview = { ...job, issue_outcomes: [{ ...job.issue_outcomes[0], needs_review: undefined }] };
+  assert.doesNotMatch(render(AggregateResults, { job: unknownReview, rows }), /Slide orders needing human review/);
+});
+
+it('retains finding summary labels for original scans and approved subsets', () => {
+  for (const scope of ['original_scan', 'approved_subset']) {
+    const markup = render(AggregateResults, { job: { fixed_count: 1, remaining_count: 2,
+      total_issues: 3, manual_count: 2, issue_outcomes: [{ source_index: 0,
+        source_index_scope: scope, status: 'fixed' }] }, rows });
+    for (const label of ['Changes applied', 'Manual work remaining', 'Remaining', 'Total issues']) {
+      assert.ok(markup.includes(label));
+    }
+    assert.doesNotMatch(markup, /Accepted slide order requests/);
+  }
 });
 
 it('renders separate anchored groups and source-authored manual guidance in normal document flow', () => {
