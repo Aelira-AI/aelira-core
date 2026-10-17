@@ -158,11 +158,12 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
     <div className="space-y-6">
       {/* URL Input */}
       <div>
-        <label className="block text-sm font-medium text-primary mb-2">Website URL</label>
+        <label htmlFor="website-url" className="block text-sm font-medium text-primary mb-2">Website URL</label>
         <div className="flex space-x-2">
           <div className="flex-1 relative">
             <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 text-secondary w-5 h-5" />
             <input
+              id="website-url"
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -306,8 +307,9 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-primary mb-1">Crawl Depth</label>
+            <label htmlFor="website-crawl-depth" className="block text-sm font-medium text-primary mb-1">Crawl Depth</label>
             <select
+              id="website-crawl-depth"
               value={options.max_depth}
               onChange={handleSelectChange('max_depth')}
               className="input"
@@ -320,8 +322,9 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-primary mb-1">Max Pages</label>
+            <label htmlFor="website-max-pages" className="block text-sm font-medium text-primary mb-1">Max Pages</label>
             <select
+              id="website-max-pages"
               value={options.max_pages}
               onChange={handleSelectChange('max_pages')}
               className="input"
