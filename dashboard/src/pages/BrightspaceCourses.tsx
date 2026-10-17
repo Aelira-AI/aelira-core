@@ -183,7 +183,6 @@ export default function BrightspaceCourses(): ReactElement {
                 <Link
                   to={`/brightspace/courses/${encodeURIComponent(course.orgUnitId)}/content`}
                   className="group flex min-h-28 items-center justify-between gap-4 rounded-xl border border-[var(--border-primary)] bg-[var(--surface-secondary)] p-5 transition-colors hover:border-[var(--content-accent)] hover:bg-[var(--surface-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-                  aria-label={`Review content for ${course.name}`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate font-semibold text-[var(--content-primary)]">

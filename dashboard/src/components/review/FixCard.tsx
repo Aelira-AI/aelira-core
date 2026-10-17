@@ -76,25 +76,21 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 function getCategoryColor(category: string): { bg: string; text: string } {
+  // Semantic tokens, not fixed -400 palette colors: those were chosen for the
+  // dark theme and drop below 4.5:1 on the light surfaces. The category is
+  // always named in the label, so color carries no information on its own.
   switch (category) {
     case 'alt_text':
-      return { bg: 'bg-purple-500/10', text: 'text-purple-400' };
     case 'heading':
-      return { bg: 'bg-blue-500/10', text: 'text-blue-400' };
     case 'language':
-      return { bg: 'bg-cyan-500/10', text: 'text-cyan-400' };
     case 'title':
-      return { bg: 'bg-indigo-500/10', text: 'text-indigo-400' };
     case 'structure':
-      return { bg: 'bg-amber-500/10', text: 'text-amber-400' };
     case 'navigation':
-      return { bg: 'bg-teal-500/10', text: 'text-teal-400' };
     case 'reading_order':
-      return { bg: 'bg-rose-500/10', text: 'text-rose-400' };
     case 'table':
-      return { bg: 'bg-emerald-500/10', text: 'text-emerald-400' };
+      return { bg: 'bg-[var(--surface-accent-subtle)]', text: 'text-[var(--content-accent)]' };
     default:
-      return { bg: 'bg-[var(--surface-tertiary)]', text: 'text-[var(--content-tertiary)]' };
+      return { bg: 'bg-[var(--surface-tertiary)]', text: 'text-[var(--content-secondary)]' };
   }
 }
 
@@ -191,7 +187,6 @@ export function FixCard({
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between p-4 hover:bg-[var(--surface-secondary)] transition-colors text-left"
         aria-expanded={expanded}
-        aria-label={`${fix.description}, ${CATEGORY_LABELS[fix.category] || fix.category} fix, click to ${expanded ? 'collapse' : 'expand'} details`}
       >
         <div className="flex items-center gap-3 min-w-0">
           {/* Category badge */}

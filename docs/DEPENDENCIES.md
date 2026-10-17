@@ -16,7 +16,7 @@ the production roles that keep each one in the shipped environment.
 ### Coupled Python pins
 
 Exact transitive pins must satisfy the parent package's published requirements.
-`pydantic==2.13.5` requires `pydantic_core==2.46.5`; `sympy==1.14.0`
+`pydantic==2.14.1` requires `pydantic_core==2.50.1`; `sympy==1.14.0`
 requires `mpmath>=1.1.0,<1.4`, for which the pinned version is `1.3.0`.
 Independent minor updates of these transitive packages can make the entire
 runtime and development installation unsatisfiable.

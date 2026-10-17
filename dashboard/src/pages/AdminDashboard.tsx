@@ -18,6 +18,7 @@ import { adminApi } from '../api/admin';
 import { unwrapResponse } from '../utils/apiUnwrap';
 import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { LMSAIPolicyCard } from '../components/admin/LMSAIPolicyCard';
 import { InstitutionComplianceCard } from '../components/admin/InstitutionComplianceCard';
 import { OperationsHealthCard } from '../components/admin/OperationsHealthCard';
@@ -67,6 +68,16 @@ export function AdminDashboard(): React.ReactElement {
   const [inviting, setInviting] = useState<boolean>(false);
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
   const [showRemoveModal, setShowRemoveModal] = useState<boolean>(false);
+  // Both dialogs move focus inside, keep Tab within them, close on Escape and
+  // hand focus back to the control that opened them.
+  const inviteDialogRef = useFocusTrap<HTMLDivElement>(showInviteModal, {
+    onEscape: () => setShowInviteModal(false),
+    initialFocus: '#invite-email',
+  });
+  const removeDialogRef = useFocusTrap<HTMLDivElement>(showRemoveModal, {
+    onEscape: () => { setShowRemoveModal(false); setUserToRemove(null); },
+    initialFocus: '[data-autofocus]',
+  });
   const [userToRemove, setUserToRemove] = useState<User | null>(null);
   const [removing, setRemoving] = useState<boolean>(false);
   const [exporting, setExporting] = useState<ExportType | null>(null);
@@ -270,7 +281,6 @@ export function AdminDashboard(): React.ReactElement {
           <button
             onClick={() => setShowInviteModal(true)}
             className="btn-primary flex items-center space-x-2"
-            aria-label="Invite new user"
           >
             <UserPlus className="w-4 h-4" aria-hidden="true" />
             <span>Invite User</span>
@@ -323,7 +333,6 @@ export function AdminDashboard(): React.ReactElement {
               onClick={() => handleExport('csv')}
               disabled={exporting !== null}
               className="btn-secondary flex items-center space-x-2"
-              aria-label="Export as CSV"
             >
               {exporting === 'csv' ? (
                 <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -337,7 +346,6 @@ export function AdminDashboard(): React.ReactElement {
               onClick={() => handleExport('excel')}
               disabled={exporting !== null}
               className="btn-secondary flex items-center space-x-2"
-              aria-label="Export as Excel"
             >
               {exporting === 'excel' ? (
                 <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -351,7 +359,6 @@ export function AdminDashboard(): React.ReactElement {
               onClick={() => handleExport('bulk')}
               disabled={exporting !== null}
               className="btn-secondary flex items-center space-x-2"
-              aria-label="Bulk export as ZIP"
             >
               {exporting === 'bulk' ? (
                 <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -375,8 +382,8 @@ export function AdminDashboard(): React.ReactElement {
               <p className="text-tertiary">No users yet. Invite your first faculty member!</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full" role="grid">
+            <div role="region" aria-label="Faculty members" tabIndex={0} className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
+              <table className="w-full">
                 <thead>
                   <tr className="border-b border-primary">
                     <th className="text-left py-3 px-4 text-sm font-medium text-secondary">User</th>
@@ -423,7 +430,7 @@ export function AdminDashboard(): React.ReactElement {
                           value={user.role}
                           onChange={(e: ChangeEvent<HTMLSelectElement>) => handleRoleChange(user.id, e.target.value)}
                           disabled={user.id === currentUser?.id}
-                          className="text-sm rounded-md border border-primary px-2 py-1 bg-surface-primary text-primary"
+                          className="text-sm rounded-md border border-[var(--border-control)] px-2 py-1 bg-surface-primary text-primary"
                           aria-label={`Change role for ${user.email}`}
                         >
                           <option value="faculty">Faculty</option>
@@ -472,12 +479,12 @@ export function AdminDashboard(): React.ReactElement {
               {invitations.map((invite) => (
                 <div
                   key={invite.id}
-                  className="flex items-center justify-between p-4 rounded-lg bg-surface-tertiary border border-primary"
+                  className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between p-4 rounded-lg bg-surface-tertiary border border-primary"
                 >
-                  <div className="flex items-center space-x-4">
+                  <div className="flex min-w-0 items-center space-x-4">
                     <Mail className="w-5 h-5 text-secondary" aria-hidden="true" />
-                    <div>
-                      <div className="font-medium text-primary">{invite.email}</div>
+                    <div className="min-w-0">
+                      <div className="font-medium text-primary break-all">{invite.email}</div>
                       <div className="text-sm text-secondary">
                         {invite.role === 'admin' ? (
                           <span className="flex items-center">
@@ -524,6 +531,7 @@ export function AdminDashboard(): React.ReactElement {
       {/* Invite User Modal */}
       {showInviteModal && (
         <div
+          ref={inviteDialogRef}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
           role="dialog"
           aria-modal="true"
@@ -560,7 +568,7 @@ export function AdminDashboard(): React.ReactElement {
                   value={inviteEmail}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setInviteEmail(e.target.value)}
                   placeholder="faculty@university.edu"
-                  className="w-full px-3 py-2 rounded-lg border border-primary bg-surface-primary text-primary"
+                  className="w-full px-3 py-2 rounded-lg border border-[var(--border-control)] bg-surface-primary text-primary"
                   required
                 />
               </div>
@@ -576,7 +584,7 @@ export function AdminDashboard(): React.ReactElement {
                   id="invite-role"
                   value={inviteRole}
                   onChange={(e: ChangeEvent<HTMLSelectElement>) => setInviteRole(e.target.value as UserRole)}
-                  className="w-full px-3 py-2 rounded-lg border border-primary bg-surface-primary text-primary"
+                  className="w-full px-3 py-2 rounded-lg border border-[var(--border-control)] bg-surface-primary text-primary"
                 >
                   <option value="faculty">Faculty</option>
                   <option value="admin">Admin</option>
@@ -608,6 +616,7 @@ export function AdminDashboard(): React.ReactElement {
       {/* Remove User Confirmation Modal */}
       {showRemoveModal && userToRemove && (
         <div
+          ref={removeDialogRef}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
           role="alertdialog"
           aria-modal="true"
@@ -632,6 +641,7 @@ export function AdminDashboard(): React.ReactElement {
                   setShowRemoveModal(false);
                   setUserToRemove(null);
                 }}
+                data-autofocus
                 className="btn-secondary"
               >
                 Cancel

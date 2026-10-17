@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { PageError } from '../components/ui/PageError';
 import { useNavigate } from 'react-router-dom';
 import { Calendar, FileText, Eye, Download, Trash2, Loader, FileCode, Upload, X } from 'lucide-react';
 import { scansApi } from '../api/scans';
 import { trackEvent } from '../utils/analytics';
 import { useToast } from '../context/toast-context';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface Scan {
   id: string;
@@ -26,8 +28,15 @@ type FilterType = 'all' | 'website' | 'pdf' | 'word' | 'excel' | 'powerpoint' | 
 
 // Delete confirmation modal component
 function DeleteConfirmModal({ scan, onConfirm, onCancel, isDeleting }: DeleteConfirmModalProps): React.ReactElement {
+  // Focus lands on Cancel (the safe action), Tab stays inside, Escape cancels,
+  // and focus returns to the Delete button that opened the dialog.
+  const dialogRef = useFocusTrap<HTMLDivElement>(true, {
+    onEscape: () => { if (!isDeleting) onCancel(); },
+    initialFocus: '[data-autofocus]',
+  });
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       role="dialog"
       aria-modal="true"
@@ -53,6 +62,7 @@ function DeleteConfirmModal({ scan, onConfirm, onCancel, isDeleting }: DeleteCon
         <div className="flex gap-3 justify-end">
           <button
             onClick={onCancel}
+            data-autofocus
             className="px-4 py-2 rounded-lg text-sm font-medium bg-[var(--surface-tertiary)] text-secondary hover:bg-[var(--surface-accent-subtle)] transition-colors"
             disabled={isDeleting}
           >
@@ -229,23 +239,7 @@ export function History(): React.ReactElement {
 
   if (error) {
     return (
-      <div className="p-8">
-        <div className="max-w-7xl mx-auto">
-          <div
-            className="rounded-lg p-4 bg-[var(--surface-error-subtle)] border border-[var(--content-error)] text-[var(--content-error)]"
-            role="alert"
-          >
-            <p className="font-medium">Error loading scan history</p>
-            <p className="text-sm mt-1">{error}</p>
-            <button
-              onClick={() => window.location.reload()}
-              className="mt-3 text-sm underline hover:no-underline"
-            >
-              Try again
-            </button>
-          </div>
-        </div>
-      </div>
+      <PageError title="Scan History" message={`Error loading scan history. ${error}`} />
     );
   }
 

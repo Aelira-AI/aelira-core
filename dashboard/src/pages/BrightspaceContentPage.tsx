@@ -563,8 +563,9 @@ export default function BrightspaceContentPage({
   if (loading) {
     return (
       <div className="max-w-7xl mx-auto px-4 py-8">
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
+        <div className="flex items-center justify-center h-64" role="status" aria-label="Loading course content">
+          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" aria-hidden="true" />
+          <span className="sr-only">Loading course content...</span>
         </div>
       </div>
     );
@@ -576,7 +577,7 @@ export default function BrightspaceContentPage({
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
       {/* Breadcrumb & Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Link
@@ -604,7 +605,7 @@ export default function BrightspaceContentPage({
             Review and remediate accessibility issues across all course content.
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button
             onClick={fetchStatus}
             disabled={scanPolling}
@@ -627,8 +628,8 @@ export default function BrightspaceContentPage({
 
       {/* Overall compliance banner */}
       {data && (
-        <div className="mb-6 rounded-xl p-6 flex items-center justify-between bg-[var(--surface-secondary)] border border-[var(--border-primary)]">
-          <div className="flex items-center gap-6">
+        <div className="mb-6 rounded-xl p-6 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between bg-[var(--surface-secondary)] border border-[var(--border-primary)]">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <div>
               <p className="text-sm font-medium mb-1 text-[var(--content-secondary)]">
                 Overall Compliance
@@ -684,7 +685,7 @@ export default function BrightspaceContentPage({
           </div>
 
           {/* Action buttons */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               variant="primary"
               size="sm"
@@ -772,7 +773,7 @@ export default function BrightspaceContentPage({
               Content by Module
             </h2>
           </div>
-          <div className="overflow-x-auto">
+          <div role="region" aria-label="Content by module" tabIndex={0} className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-primary)]">
@@ -874,7 +875,7 @@ export default function BrightspaceContentPage({
       {data && (
         <div className="rounded-xl overflow-hidden bg-[var(--surface-secondary)] border border-[var(--border-primary)]">
           {/* Table controls */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-primary)]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-6 py-4 border-b border-[var(--border-primary)]">
             <h2 className="text-lg font-semibold font-serif text-[var(--content-primary)]">
               All Content Items
               {filteredAndSortedItems.length !== data.items.length && (
@@ -883,23 +884,24 @@ export default function BrightspaceContentPage({
                 </span>
               )}
             </h2>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               {/* Search */}
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--surface-tertiary)] border border-[var(--border-primary)]">
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--surface-tertiary)] border border-[var(--border-control)] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]">
                 <Search className="w-3.5 h-3.5 text-[var(--content-tertiary)]" />
                 <input
                   type="text"
                   placeholder="Search items..."
+                  aria-label="Search content items"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="bg-transparent outline-none text-sm w-48 text-[var(--content-primary)]"
+                  className="bg-transparent outline-none text-sm w-32 sm:w-48 min-w-0 text-[var(--content-primary)]"
                 />
               </div>
             </div>
           </div>
 
           {/* Table */}
-          <div className="overflow-x-auto">
+          <div role="region" aria-label="Course content items" tabIndex={0} className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-primary)]">

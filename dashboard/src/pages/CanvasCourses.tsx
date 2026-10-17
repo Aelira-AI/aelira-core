@@ -616,8 +616,8 @@ export function CanvasCourses(): React.ReactElement {
                 e.stopPropagation();
                 handleRemediateFile(file.id, courseId);
               }}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-colors"
-              style={{ backgroundColor: 'var(--interactive-accent-bg)' }}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{ backgroundColor: 'var(--interactive-accent-bg)', color: 'var(--interactive-accent-fg)' }}
             >
               Remediate
             </button>
@@ -656,8 +656,9 @@ export function CanvasCourses(): React.ReactElement {
         featureName="Canvas Courses"
         description="Browse and scan files from your Canvas LMS courses for accessibility compliance."
       >
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} />
+        <div className="flex items-center justify-center h-64" role="status" aria-label="Loading Canvas courses">
+          <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+          <span className="sr-only">Loading Canvas courses...</span>
         </div>
       </FeatureGate>
     );
@@ -674,7 +675,7 @@ export function CanvasCourses(): React.ReactElement {
     >
       <div className="max-w-7xl mx-auto px-4 py-8">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
           <div>
             <div className="flex items-center gap-2 mb-1">
               <Link
@@ -700,7 +701,7 @@ export function CanvasCourses(): React.ReactElement {
               them.
             </p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <button
               onClick={fetchCourses}
               disabled={refreshing}
@@ -803,15 +804,16 @@ export function CanvasCourses(): React.ReactElement {
             {/* Search */}
             <div className="mb-6">
               <div
-                className="flex items-center gap-3 px-4 py-2.5 rounded-lg"
+                className="flex items-center gap-3 px-4 py-2.5 rounded-lg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]"
                 style={{
                   backgroundColor: 'var(--surface-secondary)',
-                  border: '1px solid var(--border-primary)',
+                  border: '1px solid var(--border-control)',
                 }}
               >
-                <Search className="w-4 h-4" style={{ color: 'var(--content-tertiary)' }} />
+                <Search className="w-4 h-4" style={{ color: 'var(--content-tertiary)' }} aria-hidden="true" />
                 <input
                   type="text"
+                  aria-label="Search courses"
                   placeholder="Search courses..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -927,11 +929,13 @@ export function CanvasCourses(): React.ReactElement {
                         </div>
                         {/* Loading files */}
                         {isLoadingFiles && (
-                          <div className="flex items-center justify-center py-12">
+                          <div className="flex items-center justify-center py-12" role="status" aria-label="Loading course files">
                             <Loader2
                               className="w-6 h-6 animate-spin"
                               style={{ color: 'var(--accent)' }}
+                              aria-hidden="true"
                             />
+                            <span className="sr-only">Loading course files...</span>
                           </div>
                         )}
 
@@ -994,8 +998,8 @@ export function CanvasCourses(): React.ReactElement {
                                     e.stopPropagation();
                                     handleRemediateAll(course.id);
                                   }}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-colors"
-                                  style={{ backgroundColor: 'var(--interactive-accent-bg)' }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                  style={{ backgroundColor: 'var(--interactive-accent-bg)', color: 'var(--interactive-accent-fg)' }}
                                 >
                                   Remediate All
                                 </button>
@@ -1003,7 +1007,7 @@ export function CanvasCourses(): React.ReactElement {
                             </div>
 
                             {/* Table */}
-                            <div className="overflow-x-auto">
+                            <div role="region" aria-label="Course files" tabIndex={0} className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
                               <table className="w-full">
                                 <thead>
                                   <tr
