@@ -1,10 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { assertNoBlockingViolations } from './support/a11y';
 import { apiGet, scanIdFromUrl } from './support/scans';
-import { dismissCookieBanner } from './support/stack';
-import { pdfInfo } from './support/files';
+import { apiUrl, dismissCookieBanner } from './support/stack';
 
 const clip = resolve(import.meta.dirname, '../../../tests/journeys/fixtures/teaching-clip.mp4');
 const spoken = 'Welcome to the biology lab. Today we measure plant growth and record the results in a table.';
@@ -127,14 +125,13 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   const ai = await apiGet<{ primary_provider: string | null }>(page.request, '/api/ai/health');
   expect(ai.primary_provider).toBeNull();
 
-  // The dashboard's own downloadable output for the scan is a PDF report of exactly these findings.
-  const pending = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Report', exact: true }).click();
-  const download = await pending;
-  const reportPath = resolve(import.meta.dirname, '../../journey-results/downloads/media-report.pdf');
-  await download.saveAs(reportPath);
-  expect((await readFile(reportPath)).subarray(0, 4).toString()).toBe('%PDF');
-  expect((await pdfInfo(reportPath)).Pages).toBe('1');
+  // Partial findings remain visible, but an unassessed scan cannot issue a compliance PDF.
+  await expect(page.getByRole('button', { name: 'Report', exact: true })).toHaveCount(0);
+  const reportResponse = await page.request.get(new URL(`/education/scans/${scanId}/report`, apiUrl).toString());
+  expect(reportResponse.status()).toBe(409);
+  expect(await reportResponse.json()).toEqual({
+    detail: 'A compliance PDF is unavailable for an unassessed scan; partial findings remain in scan details.',
+  });
 
   // Remediation cannot caption media; it must say so and offer no file.
   await page.getByRole('link', { name: 'Open Remediation Review' }).click();

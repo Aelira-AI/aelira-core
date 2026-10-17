@@ -150,6 +150,19 @@ test.describe('document journeys', () => {
       expect.arrayContaining([expect.stringMatching(/title not set/i), expect.stringMatching(/language not set/i)]),
     );
 
+    // An assessed scan still offers a compliance PDF through the keyboard-accessible Report action.
+    expect(scanned.compliance_score).not.toBeNull();
+    const reportPending = page.waitForEvent('download');
+    await resetFocus(page);
+    await pressWithKeyboard(page, page.getByRole('button', { name: 'Report', exact: true }));
+    const report = await reportPending;
+    const reportDirectory = resolve(downloads, upload.scanId);
+    await mkdir(reportDirectory, { recursive: true });
+    const reportPath = resolve(reportDirectory, 'metadata-scan-report.pdf');
+    await report.saveAs(reportPath);
+    expect((await readFile(reportPath)).subarray(0, 4).toString()).toBe('%PDF');
+    expect(Number((await pdfInfo(reportPath)).Pages)).toBeGreaterThan(0);
+
     await remediateInTheUi(page, testInfo, upload.scanId, true);
     const saved = await downloadWorkingFile(page, 'remediated-metadata.pdf', true);
     await assertNoBlockingViolations(page, 'remediation-complete-metadata.pdf', testInfo);
