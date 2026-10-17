@@ -15,6 +15,12 @@ interface Cue {
   text: string;
 }
 
+interface FlashingAssessment {
+  state: 'unassessed';
+  reason: 'detector_unavailable' | 'disabled' | 'analysis_failed';
+  version: 'unassessed-v1';
+}
+
 /** Lower-case words only, so punctuation and capitalisation cannot decide the verdict. */
 const words = (text: string) => text.toLowerCase().replace(/[^a-z ]+/g, ' ').split(/\s+/).filter(Boolean);
 
@@ -30,13 +36,19 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   await assertNoBlockingViolations(page, 'media-scan-complete', testInfo);
   await page.getByRole('link', { name: 'View Full Report' }).click();
   await expect(page.getByRole('heading', { name: 'Rule-based findings (2)' })).toBeVisible();
+  await expect(page.getByText('Unverified', { exact: true })).toBeVisible();
+  await expect(page.getByText(
+    'Overall compliance is unassessed. Available source findings are shown below; video flashing safety has not been established.',
+    { exact: true },
+  )).toBeVisible();
   const scanId = scanIdFromUrl(page.url());
 
   const record = await apiGet<{
     scan: {
       status: string;
       result: {
-        compliance_score: number;
+        compliance_score: number | null;
+        wcag_level: string | null;
         issues: { rule: string; message: string }[];
         structure: {
           duration: number;
@@ -45,7 +57,12 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
           has_captions: boolean;
           verification_passed: boolean;
           manual_review_required: boolean;
+          flashing_assessment: FlashingAssessment;
           transcription_output: {
+            compliance_score: number | null;
+            flashing_assessment: FlashingAssessment;
+            issues_count: number;
+            issues: { rule: string; message: string }[];
             transcription: { segments: Cue[]; full_text: string };
             captions: { webvtt: string; srt: string };
           };
@@ -55,6 +72,22 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   }>(page.request, `/education/scans/${scanId}`);
   expect(record.scan.status.toLowerCase()).toBe('completed');
   const { structure, issues } = record.scan.result;
+
+  // A finished transcription does not establish an overall video score or flashing safety.
+  expect(record.scan.result.compliance_score).toBeNull();
+  expect(record.scan.result.wcag_level).toBeNull();
+  expect(structure.flashing_assessment).toEqual({
+    state: 'unassessed', reason: 'detector_unavailable', version: 'unassessed-v1',
+  });
+  expect(structure.transcription_output.compliance_score).toBeNull();
+  expect(structure.transcription_output.flashing_assessment).toEqual(structure.flashing_assessment);
+  expect(structure).not.toHaveProperty('flashing_analysis');
+  expect(structure.transcription_output).not.toHaveProperty('flashing_analysis');
+  expect(structure.transcription_output.issues_count).toBe(2);
+  expect(structure.transcription_output.issues.map((issue) => issue.rule))
+    .toEqual(['WCAG 1.2.2', 'WCAG 1.2.3']);
+  expect([...issues, ...structure.transcription_output.issues].map((issue) => issue.message).join(' '))
+    .not.toMatch(/(?:dangerous|problematic) flashing (?:content )?detected/i);
 
   // Real speech recognition on the clip's real audio: the words that were spoken, in order.
   const transcript = structure.transcription_output.transcription;
