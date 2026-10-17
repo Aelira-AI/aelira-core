@@ -1417,6 +1417,12 @@ jobs:
     if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Every run writes to the same synthetic Canvas course; hold the lock for
+    # the whole job so setup, journey writeback, and cleanup cannot overlap.
+    concurrency:
+      group: canvas-lms-synthetic-course
+      queue: max
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require every Canvas credential
