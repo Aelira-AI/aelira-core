@@ -215,11 +215,25 @@ test('the teacher launches from the course, then scans, remediates, approves and
   });
 
   await test.step('scan the course content', async () => {
+    const queued = tool.waitForResponse((r) => r.url().endsWith('/canvas/content/scan') && r.request().method() === 'POST');
     await tool.getByRole('button', { name: 'Scan Content' }).click();
+    const response = await queued;
+    expect(response.status()).toBe(200);
+    console.log(`Scan request answered: ${JSON.stringify(await response.json())}`);
+    // The scan is a queued job. The page polls for a while; refresh it ourselves after that.
     for (const name of [pdfName, docxName]) {
-      await expect(tool.getByRole('row').filter({ hasText: name })).not.toContainText('Unscanned', { timeout: 240_000 });
+      await expect
+        .poll(
+          async () => {
+            const refresh = tool.getByRole('button', { name: 'Refresh' });
+            if (await refresh.isEnabled()) await refresh.click();
+            return (await tool.getByRole('row').filter({ hasText: name }).innerText()).includes('Unscanned');
+          },
+          { message: `${name} was never scanned`, timeout: 300_000, intervals: [5_000] },
+        )
+        .toBe(false);
     }
-    await expect(tool.getByRole('button', { name: 'Scan Content' })).toBeVisible({ timeout: 240_000 });
+    await expect(tool.getByRole('button', { name: 'Scan Content' })).toBeVisible({ timeout: 120_000 });
     await snap(tool, testInfo, 'content-scanned');
     await assertNoBlockingViolations(tool, 'lti-course-content-scanned', testInfo);
   });
