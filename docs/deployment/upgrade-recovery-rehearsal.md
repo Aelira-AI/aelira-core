@@ -8,6 +8,40 @@ does not migrate, stop, back up, restore or delete infrastructure itself.
 This is an integration gate. It does not replace browser journeys, published
 image checks, packed CLI checks or verification of prerelease distribution.
 
+## Automated local orchestration
+
+`scripts/upgrade_rehearsal.ts` automates the isolated install, coordinated backup,
+upgrade, restoration and cleanup described below:
+
+```bash
+bun scripts/upgrade_rehearsal.ts --from 0.9.12 \
+  --to-api example/api:candidate --to-dashboard example/dashboard:candidate \
+  --output test-results/rehearsal-receipt.json
+```
+
+Build the candidate images locally first, or add `--pull-to` for registry images.
+Use version tags or immutable digests; mutable `latest` references are refused.
+The requested `--platform` is set on services and helper containers and checked
+against each running application container's manifest descriptor. Docker must
+provide containerd image and container manifest descriptors.
+
+Each invocation uses a random project identity, checks that it owns no existing
+resources, and publishes its six ports only on loopback. Host application settings,
+Compose profiles and verifier flags are removed from subprocess environments.
+Private backups contain encryption keys and synthetic data; retain them securely.
+The public receipt contains image digests, timings, checks and hashes, without
+configuration values. A failed or incomplete check makes the receipt fail.
+`--validate-receipt` checks a saved receipt's structural consistency; it does not
+independently rerun the recorded operations.
+
+The checked-in [arm64 control receipt](../testing/receipts/upgrade-0.9.12-arm64-control.json)
+records 21 passing checks over 88 operations, from published v0.9.12 images to
+locally built images of `be079917`, followed by restoration. Both images had the
+same Alembic head, so this control exercised no schema migration or downgrade.
+It is evidence for that local integration pair, not final v0.9.13 artifact
+acceptance. Repeat the rehearsal against the final candidate and each supported
+platform before making those broader claims.
+
 ## Prepare an isolated stack
 
 Run the previous release with PostgreSQL, Redis, an API, a worker, shared durable
@@ -61,8 +95,11 @@ The evidence records the exception. Leave it unset for baseline restoration.
 
 Seeding creates the first administrator, changes notification and timezone
 preferences, and scans/remediates a spreadsheet and Word document. The
-spreadsheet must produce a digest-verified download. The Word document must
-retain its unresolved findings and refuse a download. The resulting `seed.json`
+spreadsheet must produce a digest-verified download with no remaining findings.
+The Word fixture records the previous release's actual verified outcome, which
+can be a partial downloadable repair or a withheld result. Later checks require
+that exact saved outcome and any downloaded bytes to survive; this gate does not
+require previous releases to support identical Word repairs. The resulting `seed.json`
 contains the synthetic profile, complete scan results, remediation outcomes and
 download hashes. Keep this snapshot unchanged; seeding refuses to overwrite it.
 Each invocation requests a fresh login. The application permits five magic-link

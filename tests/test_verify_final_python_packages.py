@@ -12,6 +12,7 @@ from scripts.verify_final_python_packages import (
     required_psycopg2_version,
     required_urllib3_version,
     validate,
+    validate_pillow,
     validate_psycopg2_native,
 )
 
@@ -327,6 +328,119 @@ def test_dockerfile_installs_piper_only_through_requirements() -> None:
     dependency_install = dockerfile.read_text().split("# Pa11y needs Node", 1)[0]
     assert "pip install --no-cache-dir -r requirements.txt" in dependency_install
     assert "piper-tts" not in dependency_install
+
+
+class FakeFeatures:
+    """Stand-in for PIL.features with a controllable libtiff and feature set."""
+
+    def __init__(self, libtiff: str = "4.7.2", missing: tuple[str, ...] = ()) -> None:
+        self.libtiff = libtiff
+        self.missing = missing
+
+    def version(self, name: str) -> str:
+        assert name == "libtiff"
+        return self.libtiff
+
+    def check(self, name: str) -> bool:
+        return name not in self.missing
+
+
+def _pillow_tree(
+    root: Path, extension_bytes: bytes = b"LIBTIFF, Version 4.7.2"
+) -> None:
+    package = root / "PIL"
+    package.mkdir()
+    (package / "_imaging.cpython-314-x86_64-linux-gnu.so").write_bytes(extension_bytes)
+
+
+def test_final_package_verifier_accepts_source_built_pillow(tmp_path: Path) -> None:
+    _pillow_tree(tmp_path)
+
+    assert validate_pillow(features=FakeFeatures(), purelib=tmp_path) == []
+
+
+def test_final_package_verifier_rejects_the_wheel_bundled_libtiff(
+    tmp_path: Path,
+) -> None:
+    _pillow_tree(tmp_path)
+
+    errors = validate_pillow(features=FakeFeatures("4.7.1"), purelib=tmp_path)
+
+    assert any("Pillow libtiff is 4.7.1" in error for error in errors)
+
+
+def test_final_package_verifier_rejects_the_wheel_private_library_directory(
+    tmp_path: Path,
+) -> None:
+    _pillow_tree(tmp_path)
+    (tmp_path / "pillow.libs").mkdir()
+
+    errors = validate_pillow(features=FakeFeatures(), purelib=tmp_path)
+
+    assert any("wheel-private library directory" in error for error in errors)
+
+
+def test_final_package_verifier_rejects_a_shared_libtiff_dependency(
+    tmp_path: Path,
+) -> None:
+    _pillow_tree(tmp_path, b"\x00libtiff.so.6\x00")
+
+    errors = validate_pillow(features=FakeFeatures(), purelib=tmp_path)
+
+    assert any("links a shared libtiff" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "feature",
+    [
+        "pil",
+        "jpg",
+        "jpg_2000",
+        "zlib",
+        "libtiff",
+        "webp",
+        "avif",
+        "freetype2",
+        "raqm",
+        "fribidi",
+        "harfbuzz",
+        "libjpeg_turbo",
+        "littlecms2",
+        "xcb",
+    ],
+)
+def test_final_package_verifier_requires_each_codec_and_text_feature(
+    tmp_path: Path, feature: str
+) -> None:
+    _pillow_tree(tmp_path)
+
+    errors = validate_pillow(
+        features=FakeFeatures(missing=(feature,)), purelib=tmp_path
+    )
+
+    assert f"venv: Pillow feature {feature} is unavailable" in errors
+
+
+@pytest.mark.parametrize("package", ["pi-heif", "pybind11"])
+def test_final_package_verifier_rejects_packages_the_image_must_not_ship(
+    tmp_path: Path, package: str
+) -> None:
+    errors = validate(
+        "venv",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+                package: "1.0.0",
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+
+    assert f"venv: {package} is 1.0.0; expected absent" in errors
 
 
 PSYCOPG2_VERSION = required_psycopg2_version()

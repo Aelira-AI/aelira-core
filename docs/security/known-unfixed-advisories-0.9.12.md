@@ -38,7 +38,14 @@ handled directly:
 - Pillow 12.3.0 bundles libtiff 4.7.1, which is assumed affected by
   CVE-2026-36849 (denial of service through a large SamplesPerPixel tag) and
   is reachable through uploaded TIFF images. No Pillow release with a fixed
-  libtiff is available yet.
+  libtiff is available yet. API images built after 0.9.12 build Pillow from
+  source with libtiff 4.7.2, which contains the fix, and the image build
+  checks the libtiff version Pillow reports.
+- `pi_heif` 1.4.0 bundles libheif 1.23.0 and libde265 1.1.0, which are behind
+  upstream security releases. ocrmypdf 17 does not depend on `pi_heif` and
+  loads HEIF support only from a different, uninstalled package, and nothing
+  in the application imports it. API images built after 0.9.12 do not install
+  `pi_heif`.
 
 ## Affected
 
@@ -155,14 +162,19 @@ and remain exposed to the library as described in their original dispositions.
 ### Embedded libraries that were not disclosed
 
 The image scanner does not see the libraries bundled inside Python wheels.
-Two wheels bundle libraries that were not listed above. The `pi_heif` copies are a known gap. The `psycopg2-binary` copies shipped in v0.9.12 and are replaced from the next release.
+Two wheels installed in v0.9.12 bundled libraries that were not listed above.
+The `pi_heif` copies were a gap in that release. From the next release,
+`pi_heif` is absent from `requirements.txt`, the final-image check rejects it,
+and a built-image smoke check exercises PDF OCR on both architectures. The
+`psycopg2-binary` copies shipped in v0.9.12 and are replaced from the next
+release.
 
 | Wheel | Bundled library | Behind upstream | Reachability |
 | --- | --- | --- | --- |
-| `pi_heif` 1.4.0 (pinned in `requirements.txt`) | libheif 1.23.0 | libheif 1.23.2 through 1.23.6 are security releases; 1.23.2 and 1.23.3 each fix an issue upstream rates critical. See [libheif releases](https://github.com/strukturag/libheif/releases). | Unverified. No code under `src/` imports `pi_heif`. ocrmypdf 17.13.0 imports `pillow_heif`, a different distribution that is not in `requirements.txt`, so on a reading of its source it does not load `pi_heif`. That has not been exercised in a running image. |
-| `pi_heif` 1.4.0 | libde265 1.1.0 | libde265 1.1.2 is a security release (use-after-free and double free in multi-threaded decoding); 1.1.3 is current. See [libde265 releases](https://github.com/strukturag/libde265/releases). | Same as above. |
+| `pi_heif` 1.4.0 (v0.9.12 wheel) | libheif 1.23.0 | libheif 1.23.2 through 1.23.6 are security releases; 1.23.2 and 1.23.3 each fix an issue upstream rates critical. See [libheif releases](https://github.com/strukturag/libheif/releases). | Reachability in v0.9.12 was not verified. No code under `src/` imports `pi_heif`. ocrmypdf 17.13.0 imports `pillow_heif`, a different distribution that was not installed, so on a reading of its source it does not load `pi_heif`. That path was not exercised in a v0.9.12 image. The wheel is absent from images built after v0.9.12. |
+| `pi_heif` 1.4.0 (v0.9.12 wheel) | libde265 1.1.0 | libde265 1.1.2 is a security release (use-after-free and double free in multi-threaded decoding); 1.1.3 is current. See [libde265 releases](https://github.com/strukturag/libde265/releases). | Same v0.9.12 reachability limit and next-release removal as above. |
 | `psycopg2-binary` 2.9.13 (v0.9.12 wheel) | OpenSSL 3.5.8 on amd64 and arm64; the aarch64 wheel also bundled OpenSSL 1.1.1k | OpenSSL 3.5.9 fixes eight advisories, all rated Low by OpenSSL (see [OpenSSL vulnerabilities](https://openssl-library.org/news/vulnerabilities/)). OpenSSL 1.1.1k is no longer supported upstream. | v0.9.12 shipped these bundled copies. The driver connects only to the deployment's own PostgreSQL service and does not process content that users supply, and the bundled versions were not assessed against every current advisory. From the next release the driver is built from source and linked to Debian's libpq, libssl and libcrypto, and the wheel's bundled library directory is absent ([#645](https://github.com/Aelira-AI/aelira-core/issues/645), refs [#588](https://github.com/Aelira-AI/aelira-core/issues/588)). |
 
 The bundled versions were read from the library files inside the published
-wheels for both architectures. The `pi_heif` gap is tracked in
+wheels for both architectures. The historical `pi_heif` gap and its removal are tracked in
 [#583](https://github.com/Aelira-AI/aelira-core/issues/583).

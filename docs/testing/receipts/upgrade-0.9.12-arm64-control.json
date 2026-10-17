@@ -1,0 +1,1431 @@
+{
+  "schema": "aelira-upgrade-rehearsal/1",
+  "run_id": "20261017t101649396z-4a455cdbc511",
+  "started_at": "2026-10-17T10:16:49.396Z",
+  "finished_at": "2026-10-17T10:20:22.175Z",
+  "tool": {
+    "revision": "c740e3323f365ac713ac622b0f26a76cb7481f64",
+    "compose_file_sha256": "d27d895fbdfba286cc65567cbbda07657661f35418b45597c39e08222de7df2b",
+    "verifier_sha256": "70a1cbd83ac0ed949dc960ce7f8159510b6a4ecfcf2328036234dc194a395af0",
+    "rehearsal_script_sha256": "63067b864601ef266859049e6387f5b90da3d7acc9de3f617dfa1c927c0ef8d9",
+    "tracked_inputs_modified": true
+  },
+  "host": {
+    "os": "darwin",
+    "arch": "arm64",
+    "docker_server": "29.7.2 aarch64",
+    "compose": "5.5.0",
+    "buildx": "github.com/docker/buildx v0.36.1-desktop.1 83d819cf8237b52ef45a2a9857eeb83a7b10977f",
+    "bun": "1.3.14",
+    "target_platform": "linux/arm64"
+  },
+  "images": {
+    "from": {
+      "version": "0.9.12",
+      "api": {
+        "ref": "ghcr.io/aelira-ai/aelira-core-api:0.9.12",
+        "kind": "registry",
+        "platform": "linux/arm64",
+        "index_digest": "sha256:ab53bb1c07e280b6c7e8133480304b99cdccf1d9407937b4c90efb0bad3d3514",
+        "platform_manifest_digest": "sha256:3ed4814bd353953cfdc61123c0144144dc2e76c71bc0be131910d5d31b51b6c0",
+        "local_image_id": "sha256:3ed4814bd353953cfdc61123c0144144dc2e76c71bc0be131910d5d31b51b6c0",
+        "architecture": "arm64",
+        "os": "linux",
+        "repo_digests": [
+          "ghcr.io/aelira-ai/aelira-core-api@sha256:ab53bb1c07e280b6c7e8133480304b99cdccf1d9407937b4c90efb0bad3d3514"
+        ],
+        "created": "2026-10-15T13:38:27.149631764Z",
+        "manifests": [
+          {
+            "platform": "linux/amd64",
+            "digest": "sha256:c8f2028b53a6886ed641eaf1454d19f57cc34f53c3bc33178d0cfaa731de53f4"
+          },
+          {
+            "platform": "linux/arm64",
+            "digest": "sha256:3ed4814bd353953cfdc61123c0144144dc2e76c71bc0be131910d5d31b51b6c0"
+          }
+        ]
+      },
+      "dashboard": {
+        "ref": "ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12",
+        "kind": "registry",
+        "platform": "linux/arm64",
+        "index_digest": "sha256:fab51b1c5e9a09890808f48872eb3d88b5509d400122532754f9337d3dc143db",
+        "platform_manifest_digest": "sha256:b71ef2eb15473433b9399caa97aaaa0a7457da8a180c3f83061c80d469a08269",
+        "local_image_id": "sha256:b71ef2eb15473433b9399caa97aaaa0a7457da8a180c3f83061c80d469a08269",
+        "architecture": "arm64",
+        "os": "linux",
+        "repo_digests": [
+          "ghcr.io/aelira-ai/aelira-core-dashboard@sha256:fab51b1c5e9a09890808f48872eb3d88b5509d400122532754f9337d3dc143db"
+        ],
+        "created": "2026-10-15T13:34:37.728636459Z",
+        "manifests": [
+          {
+            "platform": "linux/amd64",
+            "digest": "sha256:e2237e9ae3e3af232facc7b3e4d33a4c562b04f2756d8465118a18ac9b457abf"
+          },
+          {
+            "platform": "linux/arm64",
+            "digest": "sha256:b71ef2eb15473433b9399caa97aaaa0a7457da8a180c3f83061c80d469a08269"
+          }
+        ]
+      }
+    },
+    "to": {
+      "api": {
+        "ref": "ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991",
+        "kind": "local",
+        "platform": "linux/arm64",
+        "index_digest": "sha256:0d6b66368b597fb855bf524cbcc813e88dcc5e42c3bf084c304ff6d258ff6e80",
+        "platform_manifest_digest": "sha256:c04e3e9c1105b1100b5ad1fdfbf15f44f66e24c30c8a01bb62558fa573c9fc24",
+        "local_image_id": "sha256:c04e3e9c1105b1100b5ad1fdfbf15f44f66e24c30c8a01bb62558fa573c9fc24",
+        "architecture": "arm64",
+        "os": "linux",
+        "repo_digests": [
+          "ghcr.io/aelira-ai/aelira-core-api@sha256:0d6b66368b597fb855bf524cbcc813e88dcc5e42c3bf084c304ff6d258ff6e80"
+        ],
+        "created": "2026-10-16T14:17:07.875242959Z"
+      },
+      "dashboard": {
+        "ref": "ghcr.io/aelira-ai/aelira-core-dashboard:rehearsal-main-be07991",
+        "kind": "local",
+        "platform": "linux/arm64",
+        "index_digest": "sha256:d2c26d529d855d8fefa643c7814607d7c23f5a612a800dff5ca11563176bb0c0",
+        "platform_manifest_digest": "sha256:5075dd0683044a152c6bf826c412d44d2d0a1e67169ecfc02c7a7915df4d5987",
+        "local_image_id": "sha256:5075dd0683044a152c6bf826c412d44d2d0a1e67169ecfc02c7a7915df4d5987",
+        "architecture": "arm64",
+        "os": "linux",
+        "repo_digests": [
+          "ghcr.io/aelira-ai/aelira-core-dashboard@sha256:d2c26d529d855d8fefa643c7814607d7c23f5a612a800dff5ca11563176bb0c0"
+        ],
+        "created": "2026-10-16T14:20:38.633626375Z"
+      }
+    },
+    "mailpit": {
+      "ref": "axllent/mailpit@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387",
+      "image_id": "sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387",
+      "repo_digests": [
+        "axllent/mailpit@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387"
+      ]
+    }
+  },
+  "isolation": {
+    "projects": [
+      "aelira-rehearsal-20261017t101649396z-4a455cdbc511-a",
+      "aelira-rehearsal-20261017t101649396z-4a455cdbc511-r"
+    ],
+    "ports": {
+      "primary": {
+        "api": 18700,
+        "mail": 18701,
+        "dashboard": 18702
+      },
+      "restore": {
+        "api": 18710,
+        "mail": 18711,
+        "dashboard": 18712
+      }
+    },
+    "loopback_only": true
+  },
+  "steps": [
+    {
+      "id": "git-revision",
+      "name": "Record the repository revision",
+      "command": "git rev-parse HEAD",
+      "started_at": "2026-10-17T10:16:49.399Z",
+      "duration_ms": 78,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "git-clean",
+      "name": "Check the rehearsal inputs for local changes",
+      "command": "git status --porcelain -- docker-compose.prod.yml scripts/verify_upgrade_recovery.ts",
+      "started_at": "2026-10-17T10:16:49.477Z",
+      "duration_ms": 73,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "docker-info",
+      "name": "Check the Docker daemon",
+      "command": "docker info --format {{.ServerVersion}} {{.Architecture}}",
+      "started_at": "2026-10-17T10:16:49.550Z",
+      "duration_ms": 1149,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "version-compose",
+      "name": "Record docker version",
+      "command": "docker compose version --short",
+      "started_at": "2026-10-17T10:16:50.699Z",
+      "duration_ms": 52,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "version-buildx",
+      "name": "Record docker version",
+      "command": "docker buildx version",
+      "started_at": "2026-10-17T10:16:50.751Z",
+      "duration_ms": 59,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "version-bun",
+      "name": "Record bun version",
+      "command": "bun --version",
+      "started_at": "2026-10-17T10:16:50.810Z",
+      "duration_ms": 5,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "collision-check",
+      "name": "List published ports of existing containers",
+      "command": "docker ps -a --format {{.Names}} {{.Ports}}",
+      "started_at": "2026-10-17T10:16:50.815Z",
+      "duration_ms": 47,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "pull-from-api",
+      "name": "Pull the from-release API image",
+      "command": "docker pull --platform linux/arm64 ghcr.io/aelira-ai/aelira-core-api:0.9.12",
+      "started_at": "2026-10-17T10:16:51.071Z",
+      "duration_ms": 1640,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "pull-from-dashboard",
+      "name": "Pull the from-release dashboard image",
+      "command": "docker pull --platform linux/arm64 ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12",
+      "started_at": "2026-10-17T10:16:52.711Z",
+      "duration_ms": 3905,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "pull-mailpit",
+      "name": "Pull Mailpit",
+      "command": "docker pull --platform linux/arm64 axllent/mailpit@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387",
+      "started_at": "2026-10-17T10:16:56.616Z",
+      "duration_ms": 6186,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-2f92e755",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-api:0.9.12",
+      "command": "docker image inspect ghcr.io/aelira-ai/aelira-core-api:0.9.12 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:02.802Z",
+      "duration_ms": 197,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-2f92e755-platform",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-api:0.9.12",
+      "command": "docker image inspect --platform linux/arm64 ghcr.io/aelira-ai/aelira-core-api:0.9.12 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:02.999Z",
+      "duration_ms": 82,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "registry-2f92e755",
+      "name": "Resolve registry identity of ghcr.io/aelira-ai/aelira-core-api:0.9.12",
+      "command": "docker buildx imagetools inspect --raw ghcr.io/aelira-ai/aelira-core-api:0.9.12",
+      "started_at": "2026-10-17T10:17:03.081Z",
+      "duration_ms": 3851,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-9c3576b7",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12",
+      "command": "docker image inspect ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:06.933Z",
+      "duration_ms": 114,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-9c3576b7-platform",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12",
+      "command": "docker image inspect --platform linux/arm64 ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:07.047Z",
+      "duration_ms": 56,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "registry-9c3576b7",
+      "name": "Resolve registry identity of ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12",
+      "command": "docker buildx imagetools inspect --raw ghcr.io/aelira-ai/aelira-core-dashboard:0.9.12",
+      "started_at": "2026-10-17T10:17:07.103Z",
+      "duration_ms": 5551,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-ce2aff51",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991",
+      "command": "docker image inspect ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:12.655Z",
+      "duration_ms": 96,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-ce2aff51-platform",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991",
+      "command": "docker image inspect --platform linux/arm64 ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:12.752Z",
+      "duration_ms": 62,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-8d015b31",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-dashboard:rehearsal-main-be07991",
+      "command": "docker image inspect ghcr.io/aelira-ai/aelira-core-dashboard:rehearsal-main-be07991 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:12.814Z",
+      "duration_ms": 43,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-8d015b31-platform",
+      "name": "Inspect local image ghcr.io/aelira-ai/aelira-core-dashboard:rehearsal-main-be07991",
+      "command": "docker image inspect --platform linux/arm64 ghcr.io/aelira-ai/aelira-core-dashboard:rehearsal-main-be07991 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:12.857Z",
+      "duration_ms": 46,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "inspect-mailpit",
+      "name": "Inspect Mailpit",
+      "command": "docker image inspect axllent/mailpit@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387 --format {{json .}}",
+      "started_at": "2026-10-17T10:17:12.903Z",
+      "duration_ms": 37,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "reserve-a-container",
+      "name": "Refuse pre-existing container resources for the new project",
+      "command": "docker ps -a --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-a --format {{.ID}}",
+      "started_at": "2026-10-17T10:17:12.940Z",
+      "duration_ms": 24,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "reserve-a-volume",
+      "name": "Refuse pre-existing volume resources for the new project",
+      "command": "docker volume ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-a --format {{.Name}}",
+      "started_at": "2026-10-17T10:17:12.964Z",
+      "duration_ms": 22,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "reserve-a-network",
+      "name": "Refuse pre-existing network resources for the new project",
+      "command": "docker network ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-a --format {{.ID}}",
+      "started_at": "2026-10-17T10:17:12.986Z",
+      "duration_ms": 21,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-up",
+      "name": "Start the from-release stack",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml up -d",
+      "started_at": "2026-10-17T10:17:13.009Z",
+      "duration_ms": 22274,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-worker-ready",
+      "name": "Worker readiness probe",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T worker python -m src.jobs.healthcheck --mode readiness",
+      "started_at": "2026-10-17T10:17:44.016Z",
+      "duration_ms": 1212,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-ps-api",
+      "name": "Find the api container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps -q api",
+      "started_at": "2026-10-17T10:17:45.262Z",
+      "duration_ms": 113,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-img-api",
+      "name": "Read the running image manifest and platform of api",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} 920c93ccc1e305427ae5e9ad7c1399fbc0b8000ba810eacf0ec2691e40ad9e70",
+      "started_at": "2026-10-17T10:17:45.375Z",
+      "duration_ms": 20,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-ps-worker",
+      "name": "Find the worker container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps -q worker",
+      "started_at": "2026-10-17T10:17:45.395Z",
+      "duration_ms": 73,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-img-worker",
+      "name": "Read the running image manifest and platform of worker",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} 2a836995eec74493c0bc94b4c8d9b7319031b9b3ecc0aee9fbadbdf2cbc0b4a8",
+      "started_at": "2026-10-17T10:17:45.468Z",
+      "duration_ms": 15,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-ps-dashboard",
+      "name": "Find the dashboard container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps -q dashboard",
+      "started_at": "2026-10-17T10:17:45.483Z",
+      "duration_ms": 69,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "install-img-dashboard",
+      "name": "Read the running image manifest and platform of dashboard",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} 14c3f489c55ac04d66cdd0d67cec1c27276f19dec7c892f0ea63fd487d707bd6",
+      "started_at": "2026-10-17T10:17:45.552Z",
+      "duration_ms": 15,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "from-head",
+      "name": "Read the image Alembic head",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml run --rm --no-deps --entrypoint alembic api heads",
+      "started_at": "2026-10-17T10:17:45.567Z",
+      "duration_ms": 1047,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "baseline-seed",
+      "name": "Run the persisted-state gate (seed, baseline)",
+      "command": "bun scripts/verify_upgrade_recovery.ts seed",
+      "started_at": "2026-10-17T10:17:46.615Z",
+      "duration_ms": 38802,
+      "exit_code": 0,
+      "status": "pass",
+      "detail": [
+        "PASS baseline course.xlsx: durable outcome and download boundary",
+        "PASS baseline course.docx: durable outcome and download boundary"
+      ]
+    },
+    {
+      "id": "backup-stop",
+      "name": "Stop the API and worker before backup",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml stop api worker",
+      "started_at": "2026-10-17T10:18:25.421Z",
+      "duration_ms": 6124,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-confirm-stopped",
+      "name": "Confirm the API and worker stopped",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps --status running -q api worker",
+      "started_at": "2026-10-17T10:18:31.545Z",
+      "duration_ms": 299,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-counts",
+      "name": "Count rows in every application table",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres psql -U aelira -d aelira -At -c select table_name || '|' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by 1",
+      "started_at": "2026-10-17T10:18:31.844Z",
+      "duration_ms": 398,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-revision",
+      "name": "Read the stored Alembic revision",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres psql -U aelira -d aelira -At -c select version_num from alembic_version",
+      "started_at": "2026-10-17T10:18:32.243Z",
+      "duration_ms": 332,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-dump",
+      "name": "Dump PostgreSQL in custom format",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres pg_dump -Fc -U aelira aelira",
+      "started_at": "2026-10-17T10:18:32.575Z",
+      "duration_ms": 485,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-catalog",
+      "name": "Inspect the dump catalog",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres pg_restore -l",
+      "started_at": "2026-10-17T10:18:33.062Z",
+      "duration_ms": 297,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-uploads",
+      "name": "Archive the uploads volume with ownership",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-a_upload_data:/data:ro -v $WORK/backup:/backup ghcr.io/aelira-ai/aelira-core-api:0.9.12 -c tar --numeric-owner -C /data -cf /backup/uploads.tar .",
+      "started_at": "2026-10-17T10:18:33.359Z",
+      "duration_ms": 990,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-files",
+      "name": "Hash every file in the a uploads volume",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-a_upload_data:/data:ro ghcr.io/aelira-ai/aelira-core-api:0.9.12 -c cd /data && find . -type f -exec sha256sum {} + | LC_ALL=C sort -k2",
+      "started_at": "2026-10-17T10:18:34.349Z",
+      "duration_ms": 1512,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "backup-owners",
+      "name": "Record ownership and modes in the a uploads volume",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-a_upload_data:/data:ro ghcr.io/aelira-ai/aelira-core-api:0.9.12 -c cd /data && find . -exec stat -c '%u:%g %a %n' {} + | LC_ALL=C sort -k3",
+      "started_at": "2026-10-17T10:18:35.861Z",
+      "duration_ms": 935,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgrade-migrate",
+      "name": "Run the migration explicitly with the candidate image",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml run --rm --entrypoint alembic api upgrade head",
+      "started_at": "2026-10-17T10:18:36.805Z",
+      "duration_ms": 2716,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "to-head",
+      "name": "Read the image Alembic head",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml run --rm --no-deps --entrypoint alembic api heads",
+      "started_at": "2026-10-17T10:18:39.521Z",
+      "duration_ms": 1194,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgrade-revision",
+      "name": "Read the stored Alembic revision",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres psql -U aelira -d aelira -At -c select version_num from alembic_version",
+      "started_at": "2026-10-17T10:18:40.715Z",
+      "duration_ms": 126,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgrade-up",
+      "name": "Start the candidate stack",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml up -d",
+      "started_at": "2026-10-17T10:18:40.841Z",
+      "duration_ms": 12596,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-worker-ready",
+      "name": "Worker readiness probe",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T worker python -m src.jobs.healthcheck --mode readiness",
+      "started_at": "2026-10-17T10:19:03.325Z",
+      "duration_ms": 1155,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-ps-api",
+      "name": "Find the api container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps -q api",
+      "started_at": "2026-10-17T10:19:04.539Z",
+      "duration_ms": 144,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-img-api",
+      "name": "Read the running image manifest and platform of api",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} c0b880eaed792f77b3baa1454001974a731da924354e17d1fc5104ba3847e996",
+      "started_at": "2026-10-17T10:19:04.683Z",
+      "duration_ms": 22,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-ps-worker",
+      "name": "Find the worker container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps -q worker",
+      "started_at": "2026-10-17T10:19:04.705Z",
+      "duration_ms": 84,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-img-worker",
+      "name": "Read the running image manifest and platform of worker",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} beae0d09524c059e88284fefbac78f72872a32170ee963fa6d18075e45fb6f07",
+      "started_at": "2026-10-17T10:19:04.789Z",
+      "duration_ms": 21,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-ps-dashboard",
+      "name": "Find the dashboard container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml ps -q dashboard",
+      "started_at": "2026-10-17T10:19:04.810Z",
+      "duration_ms": 84,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-img-dashboard",
+      "name": "Read the running image manifest and platform of dashboard",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} 6493084f9cacfff71b716c9a0c2e36525a37b3729b8fcabbf4b6b86be5e4d019",
+      "started_at": "2026-10-17T10:19:04.894Z",
+      "duration_ms": 15,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-verify",
+      "name": "Run the persisted-state gate (verify, upgraded)",
+      "command": "bun scripts/verify_upgrade_recovery.ts verify",
+      "started_at": "2026-10-17T10:19:04.909Z",
+      "duration_ms": 1119,
+      "exit_code": 0,
+      "status": "pass",
+      "detail": [
+        "PASS upgraded: administrator profile, saved scan results, job dispositions and exact artifact hashes"
+      ]
+    },
+    {
+      "id": "upgraded-counts",
+      "name": "Count rows in every application table",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres psql -U aelira -d aelira -At -c select table_name || '|' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by 1",
+      "started_at": "2026-10-17T10:19:06.028Z",
+      "duration_ms": 383,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-files",
+      "name": "Hash every file in the a uploads volume",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-a_upload_data:/data:ro ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991 -c cd /data && find . -type f -exec sha256sum {} + | LC_ALL=C sort -k2",
+      "started_at": "2026-10-17T10:19:06.412Z",
+      "duration_ms": 2475,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "upgraded-owners",
+      "name": "Record ownership and modes in the a uploads volume",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-a_upload_data:/data:ro ghcr.io/aelira-ai/aelira-core-api:rehearsal-main-be07991 -c cd /data && find . -exec stat -c '%u:%g %a %n' {} + | LC_ALL=C sort -k3",
+      "started_at": "2026-10-17T10:19:08.887Z",
+      "duration_ms": 672,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "candidate-new-exercise",
+      "name": "Run the persisted-state gate (exercise, candidate-new)",
+      "command": "bun scripts/verify_upgrade_recovery.ts exercise",
+      "started_at": "2026-10-17T10:19:09.560Z",
+      "duration_ms": 15349,
+      "exit_code": 0,
+      "status": "pass",
+      "detail": [
+        "PASS candidate-new course.xlsx: durable outcome and download boundary"
+      ]
+    },
+    {
+      "id": "reserve-r-container",
+      "name": "Refuse pre-existing container resources for the new project",
+      "command": "docker ps -a --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-r --format {{.ID}}",
+      "started_at": "2026-10-17T10:19:24.911Z",
+      "duration_ms": 19,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "reserve-r-volume",
+      "name": "Refuse pre-existing volume resources for the new project",
+      "command": "docker volume ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-r --format {{.Name}}",
+      "started_at": "2026-10-17T10:19:24.930Z",
+      "duration_ms": 18,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "reserve-r-network",
+      "name": "Refuse pre-existing network resources for the new project",
+      "command": "docker network ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-r --format {{.ID}}",
+      "started_at": "2026-10-17T10:19:24.948Z",
+      "duration_ms": 16,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-create",
+      "name": "Create the restore stack with fresh volumes without starting it",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml up --no-start",
+      "started_at": "2026-10-17T10:19:24.965Z",
+      "duration_ms": 1227,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-db-up",
+      "name": "Start only PostgreSQL and Redis",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml up -d --wait postgres redis",
+      "started_at": "2026-10-17T10:19:26.192Z",
+      "duration_ms": 10996,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-db",
+      "name": "Restore the database dump",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres pg_restore --exit-on-error -U aelira -d aelira",
+      "started_at": "2026-10-17T10:19:37.189Z",
+      "duration_ms": 480,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-uploads",
+      "name": "Extract the uploads archive with ownership",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-r_upload_data:/data:rw -v $WORK/backup:/backup:ro ghcr.io/aelira-ai/aelira-core-api:0.9.12 -c tar --numeric-owner -C /data -xpf /backup/uploads.tar",
+      "started_at": "2026-10-17T10:19:37.669Z",
+      "duration_ms": 398,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-counts",
+      "name": "Count rows in every application table",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres psql -U aelira -d aelira -At -c select table_name || '|' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by 1",
+      "started_at": "2026-10-17T10:19:38.068Z",
+      "duration_ms": 131,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-revision",
+      "name": "Read the stored Alembic revision",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml exec -T postgres psql -U aelira -d aelira -At -c select version_num from alembic_version",
+      "started_at": "2026-10-17T10:19:38.200Z",
+      "duration_ms": 89,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restored-files",
+      "name": "Hash every file in the r uploads volume",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-r_upload_data:/data:ro ghcr.io/aelira-ai/aelira-core-api:0.9.12 -c cd /data && find . -type f -exec sha256sum {} + | LC_ALL=C sort -k2",
+      "started_at": "2026-10-17T10:19:38.290Z",
+      "duration_ms": 236,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restored-owners",
+      "name": "Record ownership and modes in the r uploads volume",
+      "command": "docker run --rm --platform linux/arm64 --user 0:0 --entrypoint sh -v aelira-rehearsal-20261017t101649396z-4a455cdbc511-r_upload_data:/data:ro ghcr.io/aelira-ai/aelira-core-api:0.9.12 -c cd /data && find . -exec stat -c '%u:%g %a %n' {} + | LC_ALL=C sort -k3",
+      "started_at": "2026-10-17T10:19:38.526Z",
+      "duration_ms": 243,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restore-up",
+      "name": "Start the matched from-release stack on restored storage",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml up -d",
+      "started_at": "2026-10-17T10:19:38.769Z",
+      "duration_ms": 11442,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-worker-ready",
+      "name": "Worker readiness probe",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml exec -T worker python -m src.jobs.healthcheck --mode readiness",
+      "started_at": "2026-10-17T10:19:55.979Z",
+      "duration_ms": 2137,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-ps-api",
+      "name": "Find the api container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml ps -q api",
+      "started_at": "2026-10-17T10:19:58.321Z",
+      "duration_ms": 91,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-img-api",
+      "name": "Read the running image manifest and platform of api",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} a4cbd7081f4d2d248f2cd8e0f92d6618114a5c0d0c57a83216a1d7bc81bf4502",
+      "started_at": "2026-10-17T10:19:58.412Z",
+      "duration_ms": 14,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-ps-worker",
+      "name": "Find the worker container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml ps -q worker",
+      "started_at": "2026-10-17T10:19:58.426Z",
+      "duration_ms": 73,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-img-worker",
+      "name": "Read the running image manifest and platform of worker",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} 6b8dc871b03fc937f8f5594919e17852ab5a6926b17911aaafae330b8869114b",
+      "started_at": "2026-10-17T10:19:58.499Z",
+      "duration_ms": 16,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-ps-dashboard",
+      "name": "Find the dashboard container",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml ps -q dashboard",
+      "started_at": "2026-10-17T10:19:58.515Z",
+      "duration_ms": 63,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "rollback-img-dashboard",
+      "name": "Read the running image manifest and platform of dashboard",
+      "command": "docker inspect -f {\"image\":\"{{.Image}}\",\"descriptor\":{{json .ImageManifestDescriptor}}} 8e4a5730af13241a71833fc2b97b24e14923f62061f7d3543ced55a65b90b5ef",
+      "started_at": "2026-10-17T10:19:58.578Z",
+      "duration_ms": 14,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "restored-verify",
+      "name": "Run the persisted-state gate (verify, restored)",
+      "command": "bun scripts/verify_upgrade_recovery.ts verify",
+      "started_at": "2026-10-17T10:19:58.592Z",
+      "duration_ms": 958,
+      "exit_code": 0,
+      "status": "pass",
+      "detail": [
+        "PASS restored: administrator profile, saved scan results, job dispositions and exact artifact hashes"
+      ]
+    },
+    {
+      "id": "restored-new-exercise",
+      "name": "Run the persisted-state gate (exercise, restored-new)",
+      "command": "bun scripts/verify_upgrade_recovery.ts exercise",
+      "started_at": "2026-10-17T10:19:59.550Z",
+      "duration_ms": 11933,
+      "exit_code": 0,
+      "status": "pass",
+      "detail": [
+        "PASS restored-new course.xlsx: durable outcome and download boundary"
+      ]
+    },
+    {
+      "id": "cleanup-a",
+      "name": "Remove the a stack, its volumes and network",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-a -f docker-compose.prod.yml -f rehearsal.override.yml down --volumes --remove-orphans",
+      "started_at": "2026-10-17T10:20:11.486Z",
+      "duration_ms": 7589,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-verify-a-container",
+      "name": "List remaining containers of the a stack",
+      "command": "docker ps -a --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-a --format {{.Names}}",
+      "started_at": "2026-10-17T10:20:19.075Z",
+      "duration_ms": 24,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-verify-a-volume",
+      "name": "List remaining volumes of the a stack",
+      "command": "docker volume ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-a --format {{.Name}}",
+      "started_at": "2026-10-17T10:20:19.099Z",
+      "duration_ms": 25,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-verify-a-network",
+      "name": "List remaining networks of the a stack",
+      "command": "docker network ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-a --format {{.Name}}",
+      "started_at": "2026-10-17T10:20:19.124Z",
+      "duration_ms": 33,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-r",
+      "name": "Remove the r stack, its volumes and network",
+      "command": "docker compose -p aelira-rehearsal-20261017t101649396z-4a455cdbc511-r -f docker-compose.prod.yml -f rehearsal.override.yml down --volumes --remove-orphans",
+      "started_at": "2026-10-17T10:20:19.157Z",
+      "duration_ms": 2948,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-verify-r-container",
+      "name": "List remaining containers of the r stack",
+      "command": "docker ps -a --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-r --format {{.Names}}",
+      "started_at": "2026-10-17T10:20:22.105Z",
+      "duration_ms": 31,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-verify-r-volume",
+      "name": "List remaining volumes of the r stack",
+      "command": "docker volume ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-r --format {{.Name}}",
+      "started_at": "2026-10-17T10:20:22.136Z",
+      "duration_ms": 21,
+      "exit_code": 0,
+      "status": "pass"
+    },
+    {
+      "id": "cleanup-verify-r-network",
+      "name": "List remaining networks of the r stack",
+      "command": "docker network ls --filter label=com.docker.compose.project=aelira-rehearsal-20261017t101649396z-4a455cdbc511-r --format {{.Name}}",
+      "started_at": "2026-10-17T10:20:22.157Z",
+      "duration_ms": 17,
+      "exit_code": 0,
+      "status": "pass"
+    }
+  ],
+  "checks": [
+    {
+      "id": "from_images_resolved",
+      "description": "Both from-release images resolve to the registry manifest for the target platform",
+      "status": "pass",
+      "evidence": {
+        "api": "sha256:3ed4814bd353953cfdc61123c0144144dc2e76c71bc0be131910d5d31b51b6c0",
+        "dashboard": "sha256:b71ef2eb15473433b9399caa97aaaa0a7457da8a180c3f83061c80d469a08269"
+      }
+    },
+    {
+      "id": "to_images_resolved",
+      "description": "Both candidate images resolve to a manifest for the target platform",
+      "status": "pass",
+      "evidence": {
+        "api": "sha256:c04e3e9c1105b1100b5ad1fdfbf15f44f66e24c30c8a01bb62558fa573c9fc24",
+        "dashboard": "sha256:5075dd0683044a152c6bf826c412d44d2d0a1e67169ecfc02c7a7915df4d5987"
+      }
+    },
+    {
+      "id": "install_ready",
+      "description": "The from-release stack serves live and ready endpoints with a healthy worker and dashboard",
+      "status": "pass",
+      "evidence": {
+        "api_live": 200,
+        "api_ready": 200,
+        "worker_ready": true,
+        "dashboard_http": 200
+      }
+    },
+    {
+      "id": "baseline_seeded",
+      "description": "A user, scans and remediation jobs were created through the real API and worker, with a digest-verified download",
+      "status": "pass",
+      "evidence": {
+        "profile_id": "29d0f32d-88ff-4df4-8b3d-acdd4ab81bf7",
+        "csrf_matches": true,
+        "records": [
+          {
+            "scan_id": "2cc5dc52-ec09-4088-98d4-89baea83aa38",
+            "job_id": "85a4b5e8-d03f-4c03-ba8a-2ae58e472aa1",
+            "job_status": "completed",
+            "download_status": 200,
+            "output_sha256": "870363e28b4ea80e96633f6983ca5c6b7973bf2e93971febb9e25c82a7a144b1"
+          },
+          {
+            "scan_id": "b4a1845b-49cd-483d-9b04-5dd9f37910d9",
+            "job_id": "718084af-ed49-4de3-a301-eb0ab3ca2e1c",
+            "job_status": "completed",
+            "download_status": 200,
+            "output_sha256": "f655ff14cc1bd861c12759ed2bc97c7b6c50c4ba32dc8fdf37e0d8bf01be4bdb"
+          }
+        ]
+      }
+    },
+    {
+      "id": "backup_complete",
+      "description": "A coordinated database dump, uploads archive and configuration copy were taken with the writers stopped",
+      "status": "pass",
+      "evidence": {
+        "sha256": {
+          "database_dump": "995b4cd04d8818bcb5986075e12cebeae6b4e7d85ce9960d133c5c457aeefc28",
+          "uploads_archive": "8317636cc00cd6d9e7a3d8a2cc6ef019240a6a9999ab024fce432f4dfdb52e41",
+          "config": "e2e5aa4fdb3c6818293c651b4edef1e8f176febc65848b366767275c3ea6651d"
+        },
+        "catalog_entries": 361,
+        "upload_files": 4,
+        "alembic_revision": "20260928_pdf_edit_pub"
+      }
+    },
+    {
+      "id": "upgrade_migration_head",
+      "description": "The database is at the candidate image's single Alembic head",
+      "status": "pass",
+      "evidence": {
+        "from_head": "20260928_pdf_edit_pub",
+        "to_head": "20260928_pdf_edit_pub",
+        "stored_before": "20260928_pdf_edit_pub",
+        "stored_after": "20260928_pdf_edit_pub",
+        "schema_transition": false
+      }
+    },
+    {
+      "id": "upgraded_images_running",
+      "description": "API, worker and dashboard run the candidate images",
+      "status": "pass",
+      "evidence": {
+        "api": {
+          "image": "sha256:0d6b66368b597fb855bf524cbcc813e88dcc5e42c3bf084c304ff6d258ff6e80",
+          "descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:c04e3e9c1105b1100b5ad1fdfbf15f44f66e24c30c8a01bb62558fa573c9fc24",
+            "size": 3919,
+            "platform": {
+              "architecture": "arm64",
+              "os": "linux"
+            }
+          }
+        },
+        "worker": {
+          "image": "sha256:0d6b66368b597fb855bf524cbcc813e88dcc5e42c3bf084c304ff6d258ff6e80",
+          "descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:c04e3e9c1105b1100b5ad1fdfbf15f44f66e24c30c8a01bb62558fa573c9fc24",
+            "size": 3919,
+            "platform": {
+              "architecture": "arm64",
+              "os": "linux"
+            }
+          }
+        },
+        "dashboard": {
+          "image": "sha256:d2c26d529d855d8fefa643c7814607d7c23f5a612a800dff5ca11563176bb0c0",
+          "descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:5075dd0683044a152c6bf826c412d44d2d0a1e67169ecfc02c7a7915df4d5987",
+            "size": 2568,
+            "platform": {
+              "architecture": "arm64",
+              "os": "linux"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "upgraded_ready",
+      "description": "The candidate stack serves live and ready endpoints with a healthy worker and dashboard",
+      "status": "pass",
+      "evidence": {
+        "api_live": 200,
+        "api_ready": 200,
+        "worker_ready": true,
+        "dashboard_http": 200
+      }
+    },
+    {
+      "id": "upgraded_data_survived",
+      "description": "The profile, saved scan results, job dispositions and exact artifact bytes match the pre-upgrade snapshot",
+      "status": "pass",
+      "evidence": {
+        "preserved_records": 2,
+        "csrf_matches": true,
+        "legacy_notification_correction": false
+      }
+    },
+    {
+      "id": "upgraded_tables_retained",
+      "description": "No application table has fewer rows than at backup",
+      "status": "pass",
+      "evidence": {
+        "lost": []
+      }
+    },
+    {
+      "id": "upgraded_files_retained",
+      "description": "Every file in the pre-upgrade uploads volume is present with the same digest",
+      "status": "pass",
+      "evidence": {
+        "changed_or_missing": [],
+        "file_count": 4
+      }
+    },
+    {
+      "id": "upgraded_new_scan",
+      "description": "The upgraded worker scanned and remediated a new document with a verified download",
+      "status": "pass",
+      "evidence": {
+        "scan_id": "82c18c31-fd63-40ef-a25e-9c10ae790294",
+        "job_id": "9889eb9c-28cc-4324-b7a4-80325ddfd0eb",
+        "job_status": "completed",
+        "download_status": 200,
+        "output_sha256": "f027d824eefc5a8c1c9a3880b0ce768d8fc379c05245f85899d0f391c1dd5344",
+        "csrf_matches": true
+      }
+    },
+    {
+      "id": "restore_config_identical",
+      "description": "The restored private configuration is byte-identical to the backed-up file",
+      "status": "pass",
+      "evidence": {
+        "sha256": "e2e5aa4fdb3c6818293c651b4edef1e8f176febc65848b366767275c3ea6651d"
+      }
+    },
+    {
+      "id": "restore_tables_exact",
+      "description": "Before any application starts, every table row count and the Alembic revision equal the backup",
+      "status": "pass",
+      "evidence": {
+        "differing": [],
+        "revision": "20260928_pdf_edit_pub"
+      }
+    },
+    {
+      "id": "restore_files_exact",
+      "description": "Restored uploads match the backup in file digests, ownership and modes",
+      "status": "pass",
+      "evidence": {
+        "file_count": 4
+      }
+    },
+    {
+      "id": "rollback_images_running",
+      "description": "API, worker and dashboard run the from-release images again",
+      "status": "pass",
+      "evidence": {
+        "api": {
+          "image": "sha256:ab53bb1c07e280b6c7e8133480304b99cdccf1d9407937b4c90efb0bad3d3514",
+          "descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:3ed4814bd353953cfdc61123c0144144dc2e76c71bc0be131910d5d31b51b6c0",
+            "size": 3919,
+            "platform": {
+              "architecture": "arm64",
+              "os": "linux"
+            }
+          }
+        },
+        "worker": {
+          "image": "sha256:ab53bb1c07e280b6c7e8133480304b99cdccf1d9407937b4c90efb0bad3d3514",
+          "descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:3ed4814bd353953cfdc61123c0144144dc2e76c71bc0be131910d5d31b51b6c0",
+            "size": 3919,
+            "platform": {
+              "architecture": "arm64",
+              "os": "linux"
+            }
+          }
+        },
+        "dashboard": {
+          "image": "sha256:fab51b1c5e9a09890808f48872eb3d88b5509d400122532754f9337d3dc143db",
+          "descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:b71ef2eb15473433b9399caa97aaaa0a7457da8a180c3f83061c80d469a08269",
+            "size": 2568,
+            "platform": {
+              "architecture": "arm64",
+              "os": "linux"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rollback_ready",
+      "description": "The rolled-back stack serves live and ready endpoints with a healthy worker and dashboard",
+      "status": "pass",
+      "evidence": {
+        "api_live": 200,
+        "api_ready": 200,
+        "worker_ready": true,
+        "dashboard_http": 200
+      }
+    },
+    {
+      "id": "rollback_data_survived",
+      "description": "The profile, saved scan results, job dispositions and exact artifact bytes match the pre-upgrade snapshot after rollback",
+      "status": "pass",
+      "evidence": {
+        "preserved_records": 2
+      }
+    },
+    {
+      "id": "rollback_post_backup_excluded",
+      "description": "The scan created after the backup returns 404 after rollback",
+      "status": "pass",
+      "evidence": {
+        "absent_scan_id": "82c18c31-fd63-40ef-a25e-9c10ae790294"
+      }
+    },
+    {
+      "id": "rollback_new_scan",
+      "description": "The rolled-back worker scanned and remediated a new document with a verified download",
+      "status": "pass",
+      "evidence": {
+        "scan_id": "0b931ae3-d7ef-4886-853b-ca1854ba1d24",
+        "job_id": "9fc0b3b7-9c00-499d-bc83-6662be0f339d",
+        "job_status": "completed",
+        "download_status": 200,
+        "output_sha256": "88c6a62ebce8691ee5e1968ad33be8ebad2999f2f3c40cf288f8a068dc443056"
+      }
+    },
+    {
+      "id": "cleanup_complete",
+      "description": "Every rehearsal container, volume and network was removed",
+      "status": "pass",
+      "evidence": {
+        "projects": [
+          "aelira-rehearsal-20261017t101649396z-4a455cdbc511-a",
+          "aelira-rehearsal-20261017t101649396z-4a455cdbc511-r"
+        ],
+        "residual": []
+      }
+    }
+  ],
+  "data": {
+    "alembic": {
+      "from_head": "20260928_pdf_edit_pub",
+      "to_head": "20260928_pdf_edit_pub",
+      "schema_transition": false,
+      "rollback_method": "restore of the pre-upgrade database dump, uploads archive and configuration into fresh storage with the from-release images",
+      "migration_downgrade_exercised": false
+    },
+    "table_counts": {
+      "at_backup": {
+        "alembic_version": 1,
+        "api_keys": 0,
+        "artifact_orphan_quarantine": 0,
+        "audit_logs": 0,
+        "canvas_content_remediation_evidence": 0,
+        "cloud_files": 0,
+        "cloud_job_queue": 4,
+        "cloud_oauth_credentials": 0,
+        "cloud_sync_folders": 0,
+        "cloud_webhook_subscriptions": 0,
+        "compliance_snapshots": 0,
+        "contact_submissions": 0,
+        "content_writeback_log": 0,
+        "deleted_emails": 0,
+        "department_ai_provider_configs": 0,
+        "departments": 1,
+        "email_alert_settings": 0,
+        "email_sends": 0,
+        "issue_tracking": 0,
+        "lti_ags_context": 0,
+        "lti_registrations": 0,
+        "magic_links": 1,
+        "maintenance_cursors": 2,
+        "marketing_campaigns": 0,
+        "matterhorn_results": 0,
+        "remediation_artifacts": 2,
+        "review_audit_log": 2,
+        "scan_fixes": 4,
+        "scan_results": 2,
+        "scans": 2,
+        "security_scan_results": 2,
+        "signup_logs": 1,
+        "usage_tracking": 0,
+        "user_invitations": 0,
+        "user_sessions": 1,
+        "users": 1,
+        "visual_analyses": 0,
+        "visual_analysis_attempts": 0,
+        "waitlist_signups": 0,
+        "wcag_guidelines": 112,
+        "worker_heartbeats": 1
+      },
+      "after_upgrade_verify": {
+        "alembic_version": 1,
+        "api_keys": 0,
+        "artifact_orphan_quarantine": 0,
+        "audit_logs": 0,
+        "canvas_content_remediation_evidence": 0,
+        "cloud_files": 0,
+        "cloud_job_queue": 4,
+        "cloud_oauth_credentials": 0,
+        "cloud_sync_folders": 0,
+        "cloud_webhook_subscriptions": 0,
+        "compliance_snapshots": 0,
+        "contact_submissions": 0,
+        "content_writeback_log": 0,
+        "deleted_emails": 0,
+        "department_ai_provider_configs": 0,
+        "departments": 1,
+        "email_alert_settings": 0,
+        "email_sends": 0,
+        "issue_tracking": 0,
+        "lti_ags_context": 0,
+        "lti_registrations": 0,
+        "magic_links": 2,
+        "maintenance_cursors": 2,
+        "marketing_campaigns": 0,
+        "matterhorn_results": 0,
+        "remediation_artifacts": 2,
+        "review_audit_log": 2,
+        "scan_fixes": 4,
+        "scan_results": 2,
+        "scans": 2,
+        "security_scan_results": 2,
+        "signup_logs": 1,
+        "usage_tracking": 0,
+        "user_invitations": 0,
+        "user_sessions": 2,
+        "users": 1,
+        "visual_analyses": 0,
+        "visual_analysis_attempts": 0,
+        "waitlist_signups": 0,
+        "wcag_guidelines": 112,
+        "worker_heartbeats": 2
+      },
+      "after_restore_before_start": {
+        "alembic_version": 1,
+        "api_keys": 0,
+        "artifact_orphan_quarantine": 0,
+        "audit_logs": 0,
+        "canvas_content_remediation_evidence": 0,
+        "cloud_files": 0,
+        "cloud_job_queue": 4,
+        "cloud_oauth_credentials": 0,
+        "cloud_sync_folders": 0,
+        "cloud_webhook_subscriptions": 0,
+        "compliance_snapshots": 0,
+        "contact_submissions": 0,
+        "content_writeback_log": 0,
+        "deleted_emails": 0,
+        "department_ai_provider_configs": 0,
+        "departments": 1,
+        "email_alert_settings": 0,
+        "email_sends": 0,
+        "issue_tracking": 0,
+        "lti_ags_context": 0,
+        "lti_registrations": 0,
+        "magic_links": 1,
+        "maintenance_cursors": 2,
+        "marketing_campaigns": 0,
+        "matterhorn_results": 0,
+        "remediation_artifacts": 2,
+        "review_audit_log": 2,
+        "scan_fixes": 4,
+        "scan_results": 2,
+        "scans": 2,
+        "security_scan_results": 2,
+        "signup_logs": 1,
+        "usage_tracking": 0,
+        "user_invitations": 0,
+        "user_sessions": 1,
+        "users": 1,
+        "visual_analyses": 0,
+        "visual_analysis_attempts": 0,
+        "waitlist_signups": 0,
+        "wcag_guidelines": 112,
+        "worker_heartbeats": 1
+      }
+    },
+    "uploads": {
+      "files_at_backup": 4,
+      "listing_sha256": "4f4d041522bcac6092b0fd5706e2293778062adc7a5e9ab0724fcb6f4ac19de4",
+      "ownership_listing_sha256": "5a1d28ae2460a46839939f155d8aae894ef2139595746238c207fa33ad91312b"
+    },
+    "backup": {
+      "sha256": {
+        "database_dump": "995b4cd04d8818bcb5986075e12cebeae6b4e7d85ce9960d133c5c457aeefc28",
+        "uploads_archive": "8317636cc00cd6d9e7a3d8a2cc6ef019240a6a9999ab024fce432f4dfdb52e41",
+        "config": "e2e5aa4fdb3c6818293c651b4edef1e8f176febc65848b366767275c3ea6651d"
+      },
+      "catalog_entries": 361
+    },
+    "baseline": {
+      "profile_id": "29d0f32d-88ff-4df4-8b3d-acdd4ab81bf7",
+      "records": [
+        {
+          "scan_id": "2cc5dc52-ec09-4088-98d4-89baea83aa38",
+          "job_id": "85a4b5e8-d03f-4c03-ba8a-2ae58e472aa1",
+          "job_status": "completed",
+          "download_status": 200,
+          "output_sha256": "870363e28b4ea80e96633f6983ca5c6b7973bf2e93971febb9e25c82a7a144b1"
+        },
+        {
+          "scan_id": "b4a1845b-49cd-483d-9b04-5dd9f37910d9",
+          "job_id": "718084af-ed49-4de3-a301-eb0ab3ca2e1c",
+          "job_status": "completed",
+          "download_status": 200,
+          "output_sha256": "f655ff14cc1bd861c12759ed2bc97c7b6c50c4ba32dc8fdf37e0d8bf01be4bdb"
+        }
+      ]
+    },
+    "new_work": {
+      "candidate": {
+        "scan_id": "82c18c31-fd63-40ef-a25e-9c10ae790294",
+        "job_id": "9889eb9c-28cc-4324-b7a4-80325ddfd0eb",
+        "job_status": "completed",
+        "download_status": 200,
+        "output_sha256": "f027d824eefc5a8c1c9a3880b0ce768d8fc379c05245f85899d0f391c1dd5344"
+      },
+      "rolled_back": {
+        "scan_id": "0b931ae3-d7ef-4886-853b-ca1854ba1d24",
+        "job_id": "9fc0b3b7-9c00-499d-bc83-6662be0f339d",
+        "job_status": "completed",
+        "download_status": 200,
+        "output_sha256": "88c6a62ebce8691ee5e1968ad33be8ebad2999f2f3c40cf288f8a068dc443056"
+      }
+    }
+  },
+  "result": {
+    "passed": true,
+    "failed_checks": [],
+    "missing_checks": [],
+    "error": null
+  }
+}
