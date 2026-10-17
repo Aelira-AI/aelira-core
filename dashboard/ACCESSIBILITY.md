@@ -131,7 +131,7 @@ Line numbers drift as the file grows (it's 1400+ lines and actively maintained) 
 | Navbar.tsx | Pass | role="banner", aria-labels on buttons |
 | Sidebar.tsx | Pass | aria-label on nav, focus trap, escape key |
 | ThemeToggle.tsx | Pass | Dynamic aria-label for theme state |
-| ToastContext.tsx | Pass | role="alert", aria-live="polite" |
+| ToastContext.tsx | Pass | Persistent polite status region for non-error messages, role="alert" for errors, countdown paused while hovered or focused, Escape dismisses |
 | Dashboard.tsx | Fixed | Loading spinner, error state, icons |
 | History.tsx | Fixed | Loading spinner |
 | ScanDetail.tsx | Fixed | Loading spinner, error state |
@@ -152,7 +152,9 @@ Line numbers drift as the file grows (it's 1400+ lines and actively maintained) 
 | Sidebar.tsx (mobile overlay) | Pass | Decorative dismiss backdrop is role="presentation" aria-hidden; explicit close button for keyboard users |
 | charts/IssuesByTypeChart.tsx | Pass | Chart type switcher is a labelled role="group" with aria-label="Chart type"; buttons carry aria-pressed |
 | charts/WCAGCriteriaChart.tsx | Pass | role="img" with a dynamic aria-label describing the chart |
-| hooks/useFocusTrap.ts | Pass | Tab/Shift+Tab focus trap with wraparound and focus restore; used by review/TableStructureEditor.tsx's scope selector |
+| hooks/useFocusTrap.ts | Pass | Moves focus in, traps Tab/Shift+Tab with wraparound, closes on Escape and restores focus; used by every dialog (delete scan, delete account, invite and remove user, cookie preferences, integration connect and disconnect, folder selection) and the table scope selector |
+| layout/RouteAnnouncer.tsx | Pass | Sets a distinct document title per route and announces client-side navigation through a polite status region |
+| ui/PageError.tsx | Pass | Full-page failure state with an h1, an alert and a retry action |
 
 ---
 
@@ -170,11 +172,25 @@ The following critical flows can be completed using keyboard only:
 
 ## Color Contrast
 
-- Light mode: All text meets 4.5:1 contrast ratio
-- Dark mode: All text meets 4.5:1 contrast ratio
-- Interactive elements: Visible focus indicators in both modes
+- Text: the regression suite measures contrast in both themes with axe-core and, where axe cannot resolve oklch/oklab colours, with a canvas-based measurement of the painted result. Use the semantic `--content-*` and `--surface-*` tokens rather than fixed palette colours such as `text-purple-400`, which were chosen for the dark theme.
+- Form controls: use `--border-control` (not `--border-primary`) for the visible boundary of inputs, selects and text areas. It reaches 3:1 against every surface in both themes (WCAG 1.4.11).
+- Interactive elements: visible focus indicators in both modes. A control that removes its own outline must show one on its wrapper with `focus-within`.
 
 ---
+
+## Regression suite (#376)
+
+`tests/a11y-audit.spec.ts` runs against synthetic API fixtures (`tests/fixtures/a11y-api.ts`, no backend) and is part of the CI end-to-end job. It covers:
+
+- axe-core (WCAG 2.0 and 2.1, A and AA) on every route and main state (default, empty, loading, error, open dialogs and menus) in the light and dark themes at 1440 and 375 CSS pixels;
+- no whole-page horizontal scrolling at 320 CSS pixels;
+- dialog keyboard behaviour (focus in, Tab and Shift+Tab trapped, Escape closes, focus returns);
+- accessible names, state and descriptions of switches, selects and search fields;
+- per-route document titles and the navigation announcement, scan progress semantics and loading announcements;
+- notification timing, using a controlled clock;
+- form control boundary and text contrast that axe-core cannot resolve.
+
+These checks do not establish conformance. They do not replace screen-reader testing, which #376 tracks separately.
 
 ## Screen Reader Support — How to Verify
 

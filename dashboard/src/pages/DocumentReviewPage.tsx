@@ -510,7 +510,7 @@ function DocumentReviewContent({ scanId, cloudFileId: suppliedCloudId, backPath,
               onClick={handleApproveAll}
               disabled={approveAllLoading || editSaving}
               className="flex items-center gap-2"
-              aria-label={`Approve all ${needsReviewCount} pending fixes`}
+              aria-label={`Approve All (${needsReviewCount}) pending fixes`}
             >
               {approveAllLoading ? (
                 <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />

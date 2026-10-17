@@ -87,8 +87,9 @@ export function ActiveSessionsCard({
       </div>
       <div className="px-6 py-4">
         {loadingSessions ? (
-          <div className="flex items-center justify-center py-4">
-            <Loader2 className="w-5 h-5 animate-spin text-tertiary" />
+          <div className="flex items-center justify-center py-4" role="status" aria-label="Loading sessions">
+            <Loader2 className="w-5 h-5 animate-spin text-tertiary" aria-hidden="true" />
+            <span className="sr-only">Loading sessions...</span>
           </div>
         ) : (
           <div className="space-y-3">
@@ -148,6 +149,7 @@ export function ActiveSessionsCard({
                       disabled={revokingSession === session.id}
                       className="btn-secondary shrink-0 px-3 py-1.5 text-sm flex items-center gap-1"
                       title="Sign out this device"
+                      aria-label={`Sign out ${browser} on ${device}`}
                     >
                       {revokingSession === session.id ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
