@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, ChangeEvent, FormEvent, ReactNode }
 import { Link } from 'react-router-dom';
 import { Cloud, Settings, ExternalLink, Check, X, Loader2, FolderTree as FolderTreeIcon, AlertTriangle } from 'lucide-react';
 import { apiClient } from '../api/client';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { FolderSelectionModal } from '../components/FolderSelectionModal';
 import { useToast } from '../context/toast-context';
 import { FeatureGate } from '../components/FeatureGate';
@@ -100,7 +101,7 @@ function MicrosoftIcon(): React.ReactElement {
 
 function CanvasIcon(): React.ReactElement {
   return (
-    <div className="w-10 h-10 rounded-full bg-[#E74C3C] flex items-center justify-center">
+    <div className="w-10 h-10 rounded-full bg-[#C0392B] flex items-center justify-center">
       <span className="text-white font-bold text-lg">C</span>
     </div>
   );
@@ -117,7 +118,7 @@ function BlackboardIcon(): React.ReactElement {
 function MoodleIcon(): React.ReactElement {
   return (
     <div className="w-10 h-10 rounded-full bg-[#F98012] flex items-center justify-center">
-      <span className="text-[#1A1A1A] font-bold text-lg">M</span>
+      <span className="text-[#1D1D1F] font-bold text-lg">M</span>
     </div>
   );
 }
@@ -125,7 +126,7 @@ function MoodleIcon(): React.ReactElement {
 function BrightspaceIcon(): React.ReactElement {
   return (
     <div className="w-10 h-10 rounded bg-[#FF6F00] flex items-center justify-center">
-      <span className="text-[#1A1A1A] font-bold text-sm">D2L</span>
+      <span className="text-[#1D1D1F] font-bold text-sm">D2L</span>
     </div>
   );
 }
@@ -181,10 +182,13 @@ function LMSUrlInputModal({ provider, isOpen, onSubmit, onCancel, isConnecting }
     }
   };
 
+  const dialogRef = useFocusTrap<HTMLDivElement>(isOpen, { onEscape: () => { if (!isConnecting) onCancel(); } });
+
   if (!isOpen) return null;
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
       onClick={onCancel}
@@ -273,12 +277,18 @@ function DisconnectConfirmModal({ provider, isOpen, onConfirm, onCancel, isDisco
     }
   }, [isOpen]);
 
+  const dialogRef = useFocusTrap<HTMLDivElement>(isOpen, {
+    onEscape: () => { if (!isDisconnecting) onCancel(); },
+    initialFocus: '[data-autofocus]',
+  });
+
   if (!isOpen) return null;
 
   const providerName = provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : 'this integration';
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
       onClick={onCancel}
@@ -315,6 +325,7 @@ function DisconnectConfirmModal({ provider, isOpen, onConfirm, onCancel, isDisco
         <div className="flex gap-3">
           <button
             ref={cancelButtonRef}
+            data-autofocus
             type="button"
             onClick={onCancel}
             disabled={isDisconnecting}
@@ -653,8 +664,9 @@ export function Integrations(): React.ReactElement {
         featureName="Platform Integrations"
         description="Connect Google Drive, Microsoft OneDrive, Canvas, Blackboard, and other platforms to automatically scan your documents."
       >
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} />
+      <div className="flex items-center justify-center h-64" role="status" aria-label="Loading integrations">
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+        <span className="sr-only">Loading integrations...</span>
       </div>
       </FeatureGate>
     );
@@ -668,7 +680,7 @@ export function Integrations(): React.ReactElement {
     >
     <div className="max-w-6xl mx-auto px-4 py-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: 'var(--content-primary)' }}>
             Platform Integrations
@@ -677,7 +689,7 @@ export function Integrations(): React.ReactElement {
             Connect your cloud storage and LMS platforms to automatically scan documents.
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button
             onClick={handleOpenFolderSelection}
             disabled={!integrations.google.connected && !integrations.microsoft.connected}
@@ -695,7 +707,6 @@ export function Integrations(): React.ReactElement {
             to="/integrations/settings"
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
             style={{ backgroundColor: 'var(--surface-tertiary)', color: 'var(--content-primary)' }}
-            aria-label="Configure alert notification settings"
           >
             <Settings className="w-4 h-4" aria-hidden="true" />
             Alert Settings

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useId } from 'react';
 import { useToast } from '../context/toast-context';
 import { apiClient } from '../api/client';
 import {
@@ -26,13 +26,19 @@ interface ToggleSwitchProps {
   enabled: boolean;
   onChange: (enabled: boolean) => void;
   disabled?: boolean;
+  /** id of the element that names the switch */
+  labelledBy: string;
+  /** id of the element that describes the switch */
+  describedBy?: string;
 }
 
-const ToggleSwitch: React.FC<ToggleSwitchProps> = ({ enabled, onChange, disabled }) => (
+const ToggleSwitch: React.FC<ToggleSwitchProps> = ({ enabled, onChange, disabled, labelledBy, describedBy }) => (
   <button
     type="button"
     role="switch"
-    aria-checked={enabled}
+    aria-checked={Boolean(enabled)}
+    aria-labelledby={labelledBy}
+    aria-describedby={describedBy}
     disabled={disabled}
     onClick={() => onChange(!enabled)}
     className={`
@@ -42,6 +48,9 @@ const ToggleSwitch: React.FC<ToggleSwitchProps> = ({ enabled, onChange, disabled
     `}
     style={{
       backgroundColor: enabled ? 'var(--content-accent)' : 'var(--surface-tertiary)',
+      // The off track is only a few shades from the card behind it, so it
+      // carries a control-strength outline (WCAG 1.4.11).
+      borderColor: enabled ? 'transparent' : 'var(--border-control)',
     }}
   >
     <span
@@ -50,7 +59,7 @@ const ToggleSwitch: React.FC<ToggleSwitchProps> = ({ enabled, onChange, disabled
         transition duration-200 ease-in-out
         ${enabled ? 'translate-x-5' : 'translate-x-0'}
       `}
-      style={{ backgroundColor: 'var(--surface-primary)' }}
+      style={{ backgroundColor: enabled ? 'var(--surface-primary)' : 'var(--content-secondary)' }}
     />
   </button>
 );
@@ -73,7 +82,11 @@ const PreferenceItem: React.FC<PreferenceItemProps> = ({
   onChange,
   disabled,
   children,
-}) => (
+}) => {
+  const baseId = useId();
+  const labelId = `${baseId}-label`;
+  const descriptionId = `${baseId}-description`;
+  return (
   <div
     className="p-4 rounded-lg border transition-colors"
     style={{
@@ -92,17 +105,24 @@ const PreferenceItem: React.FC<PreferenceItemProps> = ({
           {icon}
         </div>
         <div>
-          <h4 className="font-medium text-primary">{label}</h4>
-          <p className="text-sm text-tertiary mt-0.5">{description}</p>
+          <h4 id={labelId} className="font-medium text-primary">{label}</h4>
+          <p id={descriptionId} className="text-sm text-secondary mt-0.5">{description}</p>
         </div>
       </div>
-      <ToggleSwitch enabled={enabled} onChange={onChange} disabled={disabled} />
+      <ToggleSwitch
+        enabled={enabled}
+        onChange={onChange}
+        disabled={disabled}
+        labelledBy={labelId}
+        describedBy={descriptionId}
+      />
     </div>
     {children && enabled && (
       <div className="mt-4 ml-12">{children}</div>
     )}
   </div>
-);
+  );
+};
 
 const DAYS_OF_WEEK = [
   { value: 0, label: 'Monday' },
@@ -190,8 +210,9 @@ export default function EmailPreferencesCard(): React.ReactElement {
             Email Notifications
           </h2>
         </div>
-        <div className="px-6 py-8 flex items-center justify-center">
+        <div className="px-6 py-8 flex items-center justify-center" role="status" aria-label="Loading email preferences">
           <Loader2 className="w-6 h-6 animate-spin text-tertiary" />
+          <span className="sr-only">Loading email preferences...</span>
         </div>
       </div>
     );
@@ -280,10 +301,11 @@ export default function EmailPreferencesCard(): React.ReactElement {
                   <span className="text-sm text-secondary">Send every</span>
                 </div>
                 <select
+                  aria-label="Day of the week for the weekly summary"
                   value={preferences.weekly_summary_day}
                   onChange={(e) => updatePreference('weekly_summary_day', parseInt(e.target.value))}
                   className="input py-1.5 text-sm"
-                  style={{ minWidth: '140px' }}
+                  style={{ minWidth: '140px', borderColor: 'var(--content-secondary)' }}
                 >
                   {DAYS_OF_WEEK.map((day) => (
                     <option key={day.value} value={day.value}>
@@ -293,10 +315,11 @@ export default function EmailPreferencesCard(): React.ReactElement {
                 </select>
                 <span className="text-sm text-secondary">at</span>
                 <select
+                  aria-label="Hour of the day for the weekly summary, UTC"
                   value={preferences.weekly_summary_hour}
                   onChange={(e) => updatePreference('weekly_summary_hour', parseInt(e.target.value))}
                   className="input py-1.5 text-sm"
-                  style={{ minWidth: '120px' }}
+                  style={{ minWidth: '120px', borderColor: 'var(--content-secondary)' }}
                 >
                   {HOURS.map((hour) => (
                     <option key={hour.value} value={hour.value}>

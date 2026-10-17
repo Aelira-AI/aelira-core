@@ -198,21 +198,28 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
         {isScanning && (
           <div className="mt-4 p-4 bg-[var(--surface-accent-subtle)] border border-[var(--border-accent)] rounded-lg">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-[var(--content-accent)]">
+              <span className="text-sm font-medium text-[var(--content-accent)]" role="status">
                 Scanning...
               </span>
               <span className="text-sm font-semibold text-[var(--content-accent)]">
                 {progress}%
               </span>
             </div>
-            <div className="w-full bg-[var(--surface-tertiary)] rounded-full h-2.5 mb-2">
+            <div
+              className="w-full bg-[var(--surface-tertiary)] rounded-full h-2.5 mb-2"
+              role="progressbar"
+              aria-label="Website scan progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progress}
+            >
               <div
                 className="bg-[var(--interactive-primary-bg)] h-2.5 rounded-full transition-all duration-300"
                 style={{ width: `${progress}%` }}
               ></div>
             </div>
             {progressMessage && (
-              <div className="text-xs text-[var(--content-accent)]">{progressMessage}</div>
+              <div className="text-xs text-[var(--content-accent)]" role="status">{progressMessage}</div>
             )}
           </div>
         )}

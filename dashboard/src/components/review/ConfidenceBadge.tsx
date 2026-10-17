@@ -12,10 +12,9 @@ export function ConfidenceBadge({ confidence, size = 'md' }: ConfidenceBadgeProp
   }
   const pct = Math.round(confidence * 100);
   const color =
-    confidence >= 0.85 ? 'text-green-400' :
-    confidence >= 0.7 ? 'text-yellow-400' :
-    confidence >= 0.5 ? 'text-orange-400' :
-    'text-red-400';
+    confidence >= 0.85 ? 'text-[var(--content-success)]' :
+    confidence >= 0.5 ? 'text-[var(--content-warning)]' :
+    'text-[var(--content-error)]';
 
   const dotSize = size === 'sm' ? 'w-2 h-2' : 'w-2.5 h-2.5';
 

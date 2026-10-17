@@ -1355,7 +1355,7 @@ jobs:
   e2e-release:
     name: Deterministic Chromium release smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: dashboard
@@ -1378,6 +1378,10 @@ jobs:
         env:
           VITE_API_URL: http://localhost:8000
         run: ./node_modules/.bin/playwright test tests/dashboard-polish.spec.ts tests/auth-continuation.spec.ts --project=chromium
+      - name: Run dashboard route accessibility regression
+        env:
+          VITE_API_URL: http://localhost:8000
+        run: ./node_modules/.bin/playwright test tests/a11y-audit.spec.ts --project=chromium --workers=2
 
   user-journeys:
     name: Browser user journeys (documents, web, media)
@@ -1577,6 +1581,7 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
+          docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
       - name: Verify real faster-whisper download and offline load through huggingface-hub
         run: |
