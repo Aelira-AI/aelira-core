@@ -28,6 +28,14 @@ EXPECTED = {
         "pybind11": None,
         "Cython": None,
     },
+    # The developer image keeps pip for its supported interactive workflow.
+    "quickstart": {
+        "setuptools": "84.0.0",
+        "pip": "26.2.1",
+        "pi-heif": None,
+        "pybind11": None,
+        "Cython": None,
+    },
 }
 # Pillow is built from source against libtiff 4.7.2 (docker/build-pillow-wheel.sh)
 # and must keep the wheel's codec and text-shaping capabilities.
@@ -53,6 +61,29 @@ FORBIDDEN_METADATA = {
     "setuptools": "70.3.0",
     "urllib3": "2.7.0",
 }
+# pip 26.2.1 is retained only in quickstart. This is the exact vendor.txt
+# inventory of its published wheel, including pip's private urllib3 2.7.0.
+# It does not satisfy the application's separate urllib3 2.8.0 pin.
+QUICKSTART_PIP_VENDOR = (
+    "CacheControl==0.14.4",
+    "distlib==0.4.2",
+    "distro==1.9.0",
+    "msgpack==1.1.2",
+    "packaging==26.2",
+    "platformdirs==4.10.0",
+    "pyproject-hooks==1.2.0",
+    "requests==2.34.2",
+    "certifi==2026.6.17",
+    "idna==3.18",
+    "urllib3==2.7.0",
+    "rich==14.2.0",
+    "pygments==2.20.0",
+    "resolvelib==1.2.1",
+    "setuptools==70.3.0",
+    "tomli==2.4.1",
+    "tomli-w==1.2.0",
+    "truststore==0.10.4",
+)
 REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements.txt"
 
 
@@ -83,6 +114,10 @@ def required_pyav_version(requirements: Path = REQUIREMENTS) -> str:
     return required_pinned_version("av", requirements)
 
 
+def required_opencv_version(requirements: Path = REQUIREMENTS) -> str:
+    return required_pinned_version("opencv-python", requirements)
+
+
 def required_piper_version(requirements: Path = REQUIREMENTS) -> str:
     return required_pinned_version("piper-tts", requirements)
 
@@ -110,7 +145,7 @@ def validate(
         expected["msgpack"] = required_msgpack_version(requirements)
     except (OSError, ValueError) as exc:
         errors.append(f"{scope}: unable to determine required msgpack version: {exc}")
-    if scope == "venv":
+    if scope in {"venv", "quickstart"}:
         try:
             expected["urllib3"] = required_urllib3_version(requirements)
         except (OSError, ValueError) as exc:
@@ -154,7 +189,33 @@ def validate(
             )
 
     vendored_urllib3 = metadata_root / "pip" / "_vendor" / "urllib3"
-    if vendored_urllib3.exists():
+    if scope == "quickstart":
+        vendor_manifest = metadata_root / "pip" / "_vendor" / "vendor.txt"
+        try:
+            inventory = tuple(
+                line.strip() for line in vendor_manifest.read_text().splitlines()
+            )
+        except OSError as exc:
+            errors.append(f"quickstart: unable to read pip vendor manifest: {exc}")
+        else:
+            if inventory != QUICKSTART_PIP_VENDOR:
+                errors.append("quickstart: pip vendor manifest differs from pip 26.2.1")
+
+        vendor_version = vendored_urllib3 / "_version.py"
+        try:
+            version_source = vendor_version.read_text()
+        except OSError as exc:
+            errors.append(f"quickstart: unable to read pip-vendored urllib3: {exc}")
+        else:
+            match = re.search(
+                r"(?m)^__version__\s*=\s*version\s*=\s*['\"]([^'\"]+)['\"]",
+                version_source,
+            )
+            if not (vendored_urllib3 / "__init__.py").is_file() or (
+                match is None or match.group(1) != "2.7.0"
+            ):
+                errors.append("quickstart: pip-vendored urllib3 is not 2.7.0")
+    elif vendored_urllib3.exists():
         errors.append(f"{scope}: pip-vendored urllib3 remains at {vendored_urllib3}")
 
     return errors
@@ -351,6 +412,36 @@ PYAV_LIBRARIES = {
     "libswresample": (7, 1, 102),
 }
 PYAV_TLS_LIBRARIES = ("libssl", "libcrypto", "libgnutls", "libmbedtls", "libtls")
+OPENCV_IMAGE_LIBRARIES = (
+    "libavif",
+    "libtiff",
+    "libjpeg",
+    "libpng",
+    "libwebp",
+    "libopenjp2",
+    "libjasper",
+    "libjxl",
+    "libspng",
+    "libgdcm",
+    "libgdal",
+)
+OPENCV_OPTIONAL_IMAGE_BACKENDS = (
+    "AVIF",
+    "JPEG",
+    "PNG",
+    "TIFF",
+    "WEBP",
+    "JPEG 2000",
+    "JPEG XL",
+    "OpenEXR",
+    "GDCM",
+    "GDAL",
+    "GIF",
+    "HDR",
+    "SUNRASTER",
+    "PXM",
+    "PFM",
+)
 
 
 def validate_pyav_native(
@@ -447,6 +538,105 @@ def validate_pyav_native(
                 f"venv: PyAV reports {stem} {library_versions.get(stem)}; "
                 f"expected {expected_version}"
             )
+    return sorted(set(errors))
+
+
+def validate_opencv_native(
+    *,
+    version: Callable[[str], str] = importlib.metadata.version,
+    package_not_found: type[Exception] = importlib.metadata.PackageNotFoundError,
+    purelib: Path | None = None,
+    requirements: Path = REQUIREMENTS,
+    ldd: Callable[[Path], str] = run_ldd,
+    realpath: Callable[[str], str] = os.path.realpath,
+    build_information: str | None = None,
+) -> list[str]:
+    """Check source OpenCV identity, FFmpeg linkage, and absent private codecs."""
+    errors: list[str] = []
+    try:
+        expected = required_opencv_version(requirements)
+    except (OSError, ValueError) as exc:
+        return [f"venv: unable to determine required OpenCV version: {exc}"]
+    try:
+        installed = version("opencv-python")
+    except package_not_found:
+        installed = None
+    if installed != expected:
+        errors.append(
+            f"venv: opencv-python is {installed or 'absent'}; expected {expected}"
+        )
+
+    root = purelib or Path(sysconfig.get_paths()["purelib"])
+    private = sorted(str(path) for path in root.glob("opencv_python*.libs"))
+    private.extend(str(path) for path in (root / "cv2").glob("*.libs"))
+    if private:
+        errors.append(
+            f"venv: bundled OpenCV library directory present: {', '.join(private)}"
+        )
+    extensions = sorted((root / "cv2").glob("cv2*.so"))
+    if len(extensions) != 1:
+        errors.append(f"venv: expected one cv2 extension; found {len(extensions)}")
+        return errors
+    try:
+        libraries = _resolved_libraries(ldd(extensions[0]))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return errors + [f"venv: unable to inspect cv2 with ldd: {exc}"]
+
+    for stem in ("libavcodec", "libavformat", "libavutil", "libswscale"):
+        expected_name = f"{stem}.so.{PYAV_LIBRARIES[stem][0]}"
+        path = libraries.get(expected_name)
+        if path is None:
+            errors.append(f"venv: cv2 does not resolve {expected_name}")
+        elif not realpath(path).startswith(PYAV_PREFIX):
+            errors.append(
+                f"venv: cv2 resolves {expected_name} to {path}; expected {PYAV_PREFIX}"
+            )
+    for name, path in libraries.items():
+        stem = name.split(".so", 1)[0]
+        if (
+            stem.startswith(("libav", "libsw"))
+            and stem not in PYAV_LIBRARIES
+            and not stem.startswith(OPENCV_IMAGE_LIBRARIES)
+        ):
+            errors.append(f"venv: unexpected OpenCV FFmpeg library {name} at {path}")
+        if stem in PYAV_LIBRARIES:
+            if name != f"{stem}.so.{PYAV_LIBRARIES[stem][0]}":
+                errors.append(
+                    f"venv: cv2 resolves unexpected FFmpeg SONAME {name} at {path}"
+                )
+            if not path.startswith("/") or not realpath(path).startswith(PYAV_PREFIX):
+                errors.append(
+                    f"venv: cv2 resolves {name} to {path}; expected {PYAV_PREFIX}"
+                )
+        if stem.startswith(OPENCV_IMAGE_LIBRARIES):
+            errors.append(f"venv: cv2 loads disabled image codec {name} at {path}")
+        if stem.startswith(PYAV_TLS_LIBRARIES):
+            errors.append(f"venv: cv2 loads TLS library {name} at {path}")
+    dav1d = libraries.get("libdav1d.so.7")
+    if dav1d is None or not realpath(dav1d).startswith("/usr/lib/"):
+        errors.append(f"venv: cv2 lacks Debian libdav1d.so.7: {dav1d}")
+
+    if build_information is None:
+        try:
+            import cv2
+
+            build_information = cv2.getBuildInformation()
+            if cv2.__version__ != expected.rsplit(".", 1)[0]:
+                errors.append(
+                    f"venv: imported cv2 is {cv2.__version__}; expected {expected}"
+                )
+        except (ImportError, OSError) as exc:
+            return errors + [f"venv: unable to import cv2: {exc}"]
+    if not re.search(r"^\s*FFMPEG:\s+YES\s*$", build_information, re.MULTILINE):
+        errors.append("venv: cv2 FFmpeg backend is disabled")
+    for backend in OPENCV_OPTIONAL_IMAGE_BACKENDS:
+        match = re.search(
+            rf"^\s*{re.escape(backend)}:\s*(.+)$",
+            build_information,
+            re.MULTILINE,
+        )
+        if match and match.group(1).strip() != "NO":
+            errors.append(f"venv: cv2 enables optional {backend} image backend")
     return sorted(set(errors))
 
 
@@ -625,10 +815,11 @@ def main() -> int:
         return 0
     errors = [] if args.scope == "expat" else validate(args.scope)
     errors.extend(validate_expat_native())
-    if args.scope == "venv":
+    if args.scope in {"venv", "quickstart"}:
         errors.extend(validate_pillow())
         errors.extend(validate_psycopg2_native())
         errors.extend(validate_pyav_native())
+        errors.extend(validate_opencv_native())
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

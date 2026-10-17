@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     make \
+    patch \
+    cmake \
+    ninja-build \
     nasm \
     libpq-dev \
     libcairo2-dev \
@@ -28,6 +31,7 @@ RUN apt-get update && apt-get install -y \
     libwebp-dev \
     libopenjp2-7-dev \
     libavif-dev \
+    libdav1d-dev=1.5.1-1 \
     libxcb1-dev \
     liblzma-dev \
     libzstd-dev \
@@ -40,13 +44,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy requirements and install Python dependencies. lxml is built first from
 # its pinned source release against hash-verified libxml2 2.15.4 and libxslt
 # 1.1.45; the published wheels bundle an older, affected libxml2. Pillow is
-# built against hash-verified libtiff 4.7.2, and psycopg2-binary is built
-# against Debian's libpq. Their pinned requirements are then satisfied.
+# built against hash-verified libtiff 4.7.2, psycopg2-binary is built against
+# Debian's libpq, and PyAV/OpenCV share the FFmpeg 9.0.2 prefix. Their pinned
+# requirements are then satisfied.
 COPY requirements.txt .
 COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
 COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh
 COPY docker/build-psycopg2-wheel.sh /tmp/build-psycopg2-wheel.sh
 COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
+COPY docker/build-opencv-wheel.sh /tmp/build-opencv-wheel.sh
+COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir "pip==26.2.1" && \
     python -m pip uninstall --yes setuptools && \
@@ -67,10 +74,14 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --no-deps /tmp/pyav-wheel/av-18.1.0-*.whl && \
     rm -rf /tmp/pyav-wheel /tmp/build-pyav-wheel.sh && \
     python -m pip uninstall --yes Cython && \
+    sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel /tmp/opencv-ffmpeg9-pr29533.diff && \
+    pip install --no-cache-dir --no-deps /tmp/opencv-wheel/opencv_python-5.0.0.93-*.whl && \
+    rm -rf /tmp/opencv-wheel /tmp/build-opencv-wheel.sh /tmp/opencv-ffmpeg9-pr29533.diff && \
     pip install --no-cache-dir -r requirements.txt && \
     python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
     python -c "from PIL import features; v = features.version('libtiff'); assert v == '4.7.2', v" && \
     python -c "import av; assert av.__version__ == '18.1.0'; assert av.library_versions['libavcodec'] == (63, 1, 102)" && \
+    python -c "import cv2, importlib.metadata as m; assert m.version('opencv-python') == '5.0.0.93'; assert cv2.__version__ == '5.0.0'" && \
     test ! -e "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pillow.libs" && \
     python -m pip uninstall --yes pip
 
@@ -180,6 +191,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     libwebpmux3 \
     libopenjp2-7 \
     libavif16 \
+    libdav1d7=1.5.1-1 \
     libxcb1 \
     liblzma5 \
     libzstd1 \
