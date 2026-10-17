@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).
+- Canvas course scans can retain a file and another content item with the same native ID. The original cloud-file constraint rejected that valid pair despite the newer course/content identity index, causing the durable scan to fail. Uniqueness for other cloud providers remains enforced ([#650](https://github.com/Aelira-AI/aelira-core/issues/650)).
+
+### Operator action required
+
+- Before deploying these unreleased changes, back up PostgreSQL and run `alembic upgrade head`; verify the single head is `20261017_canvas_scope`. The migration changes the `cloud_files` uniqueness rule. Its downgrade refuses when stored Canvas items share a native ID across content types or courses; reconcile those rows before attempting to restore an older schema. Keep the API and worker on the same application revision.
 
 ## [0.9.12] - 2026-10-15
 
