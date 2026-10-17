@@ -895,6 +895,20 @@ async def process_remediation_job(
         source_scan_type = scan.scan_type
         approved_fix_snapshot: dict[str, tuple[Any, ...]] | None = None
         approved_fixes_only = options.get("approved_fixes_only") is True
+        pptx_order_request = options.get("pptx_reviewed_reading_order")
+        if pptx_order_request is not None and (
+            str(getattr(scan.scan_type, "value", scan.scan_type)).upper()
+            != "POWERPOINT"
+            or cloud_file_id is not None
+            or job_data.get("upload_to_cloud") is True
+            or approved_fixes_only
+            or not isinstance(pptx_order_request, dict)
+        ):
+            return {
+                "success": False,
+                "error": "invalid_job_payload",
+                "scan_id": scan_id,
+            }
         if approved_fixes_only:
             scan_type_value = str(
                 getattr(scan.scan_type, "value", scan.scan_type)
@@ -929,7 +943,7 @@ async def process_remediation_job(
                     "error": "manual_required",
                     "scan_id": scan_id,
                 }
-        elif not scan_result.issues:
+        elif not scan_result.issues and pptx_order_request is None:
             try:
                 scan.status = ScanStatus.COMPLETED
                 _set_remediation_outcome(scan, RemediationOutcome.NO_OP)
@@ -1016,6 +1030,47 @@ async def process_remediation_job(
                     "scan_id": scan_id,
                     "score_verification_reason": "artifact_mismatch",
                 }
+        reviewed_pptx_issues = None
+        if pptx_order_request is not None:
+            from ..education.remediation.pptx_reading_order import (
+                UnsupportedReadingOrder,
+                reviewed_order_issues,
+            )
+
+            raw_orders = pptx_order_request.get("accepted_shape_ids_by_slide")
+            expected_hash = pptx_order_request.get("source_sha256")
+            if (
+                not source_hash_bound
+                or expected_hash != original_file_hash
+                or not isinstance(raw_orders, dict)
+                or any(
+                    type(key) is not int
+                    and (
+                        not isinstance(key, str)
+                        or not key.isdecimal()
+                        or str(int(key)) != key
+                    )
+                    for key in raw_orders
+                )
+            ):
+                return {
+                    "success": False,
+                    "error": "manual_required",
+                    "scan_id": scan_id,
+                }
+            try:
+                targets = {int(key): value for key, value in raw_orders.items()}
+                if len(targets) != len(raw_orders):
+                    raise ValueError("Duplicate slide index")
+                reviewed_pptx_issues = reviewed_order_issues(
+                    file_path, expected_hash, targets
+                )
+            except (UnsupportedReadingOrder, ValueError, TypeError, OSError):
+                return {
+                    "success": False,
+                    "error": "manual_required",
+                    "scan_id": scan_id,
+                }
 
         # Managed artifacts supersede caller-visible backup paths.
 
@@ -1037,7 +1092,11 @@ async def process_remediation_job(
                 for fix in approved_fixes
             ]
             if approved_fixes_only
-            else (scan_result.issues or [])
+            else (
+                reviewed_pptx_issues
+                if reviewed_pptx_issues is not None
+                else (scan_result.issues or [])
+            )
         )
         if (
             approved_fixes_only
@@ -1093,7 +1152,13 @@ async def process_remediation_job(
                     else None
                 ),
                 source_index_scope=(
-                    "approved_subset" if approved_fixes_only else "original_scan"
+                    "approved_subset"
+                    if approved_fixes_only
+                    else (
+                        "accepted_pptx_order"
+                        if reviewed_pptx_issues is not None
+                        else "original_scan"
+                    )
                 ),
                 source_original_indices=source_original_indices,
                 source_sha256=(original_file_hash if source_hash_bound else None),
@@ -1180,6 +1245,8 @@ async def process_remediation_job(
                     "success": False,
                     "error": f"No remediator available for scan type: {scan.scan_type}",
                 }
+            if reviewed_pptx_issues is not None:
+                remediator.config.use_supplied_fixes = True
             if is_pdf:
                 remediation_result = await _to_thread_cancellation_safe(
                     remediator.remediate,

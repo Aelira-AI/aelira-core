@@ -15,12 +15,18 @@ from pptx.util import Inches
 from src.education.remediation.base import RemediationConfig
 from src.education.remediation.pptx_reading_order import (
     UnsupportedReadingOrder,
+    inspect_slide_orders,
     repair_saved_order,
+    reviewed_order_issues,
     source_sha256,
     validate_order,
     verify_saved_order,
 )
 from src.education.remediation.pptx_remediator import PptxRemediator
+from src.jobs.remediation_subprocess import (
+    RemediationSubprocessError,
+    run_remediation_subprocess,
+)
 
 
 def _deck(path):
@@ -97,6 +103,80 @@ def test_saved_order_and_unrelated_package_parts_are_preserved(tmp_path):
         hashlib.sha256(saved["ppt/media/image1.png"]).digest()
         == hashlib.sha256(original["ppt/media/image1.png"]).digest()
     )
+
+
+@pytest.mark.asyncio
+async def test_reviewed_order_crosses_worker_and_bound_download(tmp_path):
+    source = tmp_path / "uploaded.pptx"
+    ids = _deck(source)
+    target = [ids[1], ids[0], ids[2]]
+    digest = source_sha256(source)
+    evidence = inspect_slide_orders(source)
+    assert evidence[0]["status"] == "supported_for_reviewer_order"
+    assert evidence[0]["current_shape_ids"] == ids
+    assert evidence[0]["shapes"][0]["shape_id"] == ids[0]
+    assert "accepted_shape_ids" not in evidence[0]
+    issues = reviewed_order_issues(source, digest, {0: target})
+    execution = await run_remediation_subprocess(
+        source_path="",
+        source_stream=BytesIO(source.read_bytes()),
+        source_filename=source.name,
+        scan_type="POWERPOINT",
+        issues=issues,
+        options={
+            "use_ai": False,
+            "pptx_reviewed_reading_order": {
+                "source_sha256": digest,
+                "accepted_shape_ids_by_slide": {"0": target},
+            },
+        },
+        work_root=tmp_path / "work",
+        timeout_seconds=30,
+        termination_grace_seconds=0.1,
+    )
+    try:
+        assert execution.success is True
+        assert execution.fixed_count == 1
+        assert execution.verification_passed is True
+        metadata = execution.output_claim_metadata()
+        with execution.open_output_stream() as stream:
+            delivered_bytes = stream.read()
+        assert metadata["sha256"] == hashlib.sha256(delivered_bytes).hexdigest()
+        assert metadata["size_bytes"] == len(delivered_bytes)
+        delivered = tmp_path / "downloaded.pptx"
+        delivered.write_bytes(delivered_bytes)
+        verify_saved_order(source, delivered, digest, {0: target})
+        assert [
+            shape.shape_id for shape in Presentation(delivered).slides[0].shapes
+        ] == target
+    finally:
+        execution.close_output_claim()
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_substituted_reviewed_issue(tmp_path):
+    source = tmp_path / "uploaded.pptx"
+    ids = _deck(source)
+    target = [ids[1], ids[0], ids[2]]
+    digest = source_sha256(source)
+    issues = reviewed_order_issues(source, digest, {0: target})
+    issues[0]["metadata"]["accepted_shape_ids"] = ids
+    with pytest.raises(RemediationSubprocessError, match="invalid_job_payload"):
+        await run_remediation_subprocess(
+            source_path=str(source),
+            scan_type="POWERPOINT",
+            issues=issues,
+            options={
+                "use_ai": False,
+                "pptx_reviewed_reading_order": {
+                    "source_sha256": digest,
+                    "accepted_shape_ids_by_slide": {"0": target},
+                },
+            },
+            work_root=tmp_path / "work",
+            timeout_seconds=30,
+            termination_grace_seconds=0.1,
+        )
 
 
 def test_direct_reviewer_order_is_verified_after_delivery(tmp_path):

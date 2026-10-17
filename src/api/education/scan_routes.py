@@ -398,6 +398,11 @@ def process_pptx_background(
         )
 
         # Store slide structure
+        from ...education.remediation.pptx_reading_order import source_sha256
+
+        uploaded_sha256 = hashlib.sha256(file_content).hexdigest()
+        if source_sha256(file_path) != uploaded_sha256:
+            raise ValueError("PowerPoint scan source changed")
         structure = {
             "total_slides": result.total_slides,
             "total_shapes": result.total_shapes,
@@ -410,6 +415,13 @@ def process_pptx_background(
                 }
                 for slide in result.slides
             ],
+        }
+        from ...education.remediation.pptx_reading_order import inspect_slide_orders
+
+        structure["reading_order_review"] = {
+            "source_sha256": uploaded_sha256,
+            "slides": inspect_slide_orders(file_path),
+            "meaning_verified": False,
         }
 
         # Update scan record

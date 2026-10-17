@@ -1,6 +1,7 @@
 """Real Office scan persistence must remain usable at the worker boundary."""
 
 from copy import deepcopy
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -53,6 +54,18 @@ def persist_scan(tmp_path, monkeypatch, kind):
     assert db.add.call_count == 1, scan_row.__dict__
     stored = db.add.call_args.args[0]
     return source, scan, stored
+
+
+def test_persisted_pptx_scan_exposes_source_bound_order_evidence(tmp_path, monkeypatch):
+    source, _, stored = persist_scan(tmp_path, monkeypatch, "pptx")
+    review = stored.structure["reading_order_review"]
+    assert review["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert review["meaning_verified"] is False
+    assert review["slides"][0]["status"] == "supported_for_reviewer_order"
+    assert review["slides"][0]["current_shape_ids"] == [
+        shape.shape_id for shape in Presentation(source).slides[0].shapes
+    ]
+    assert "accepted_shape_ids" not in review["slides"][0]
 
 
 @pytest.mark.parametrize("kind", ["docx", "pptx", "xlsx"])

@@ -172,6 +172,50 @@ def validate_order(
     return specs
 
 
+def inspect_slide_orders(source: str | Path) -> list[dict]:
+    """Expose saved shape identities for review, without inferring intent."""
+    presentation = Presentation(str(source))
+    evidence = []
+    for index, slide in enumerate(presentation.slides):
+        row = {"slide_index": index, "status": "manual_review"}
+        try:
+            current = _shape_ids(_tree(etree.fromstring(slide.part.blob)))
+            _slide_info(presentation, index, current)
+        except UnsupportedReadingOrder as exc:
+            row["reason"] = str(exc)
+        else:
+            row["status"] = "supported_for_reviewer_order"
+            row["current_shape_ids"] = current
+            row["shapes"] = [
+                {"shape_id": shape.shape_id, "name": shape.name}
+                for shape in slide.shapes
+            ]
+        evidence.append(row)
+    return evidence
+
+
+def reviewed_order_issues(
+    source: str | Path, expected_sha256: str, targets: dict[int, list[int]]
+) -> list[dict]:
+    """Build explicit review requests only after checking the retained source."""
+    specs = validate_order(source, expected_sha256, targets)
+    return [
+        {
+            "id": f"pptx-reading-order-{index}",
+            "category": "reading_order",
+            "severity": "medium",
+            "description": "Reviewer accepted a complete slide shape order",
+            "location": f"Slide {index + 1}",
+            "metadata": {
+                "slide_index": index,
+                "source_sha256": expected_sha256,
+                "accepted_shape_ids": target,
+            },
+        }
+        for index, _, target in specs.values()
+    ]
+
+
 def _reordered_xml(source_xml: bytes, target: list[int]) -> bytes:
     root = etree.fromstring(source_xml)
     tree = _tree(root)

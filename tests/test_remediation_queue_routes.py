@@ -140,6 +140,111 @@ def test_repeat_enqueue_reuses_active_job(queue_http):
     assert _jobs(queue_http).count() == 1
 
 
+def test_pptx_reviewer_order_enqueues_source_bound_local_job(queue_http, tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    case = queue_http
+    source = tmp_path / "reviewed.pptx"
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    first = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1))
+    second = slide.shapes.add_textbox(Inches(5), Inches(1), Inches(2), Inches(1))
+    first.text, second.text = "Second", "First"
+    deck.save(source)
+    case.scan.scan_type = ScanType.POWERPOINT
+    case.scan.storage_path = str(source)
+    case.scan.file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    case.db.commit()
+    body = {
+        "source_sha256": case.scan.file_hash,
+        "accepted_shape_ids_by_slide": {"0": [second.shape_id, first.shape_id]},
+        "reviewer_accepted": True,
+    }
+    url = f"/education/powerpoint/reading-order/{case.scan.id}"
+    response = case.client.post(url, headers={"Prefer": "respond-async"}, json=body)
+    assert response.status_code == 202, response.text
+    job = _jobs(case).one()
+    assert job.payload["options"]["pptx_reviewed_reading_order"] == {
+        "source_sha256": case.scan.file_hash,
+        "accepted_shape_ids_by_slide": {"0": [second.shape_id, first.shape_id]},
+    }
+    assert job.payload["options"]["use_ai"] is False
+    assert job.cloud_file_id is None
+    assert (
+        case.client.post(url, json={**body, "reviewer_accepted": False}).status_code
+        == 400
+    )
+    assert (
+        case.client.post(url, json={**body, "source_sha256": "0" * 64}).status_code
+        == 409
+    )
+
+
+@pytest.mark.asyncio
+async def test_pptx_reviewed_upload_is_published_and_downloaded(queue_http, tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    from src.education.remediation.pptx_reading_order import verify_saved_order
+    from src.jobs.remediation_job import process_remediation_job
+
+    case = queue_http
+    source = tmp_path / "reviewed.pptx"
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    first = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1))
+    second = slide.shapes.add_textbox(Inches(5), Inches(1), Inches(2), Inches(1))
+    first.text, second.text = "Second", "First"
+    deck.save(source)
+    case.scan.scan_type = ScanType.POWERPOINT
+    case.scan.storage_path = str(source)
+    case.scan.file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    case.scan.current_remediation_artifact_id = None
+    case.db.commit()
+    target = [second.shape_id, first.shape_id]
+    body = {
+        "source_sha256": case.scan.file_hash,
+        "accepted_shape_ids_by_slide": {"0": target},
+        "reviewer_accepted": True,
+    }
+    response = case.client.post(
+        f"/education/powerpoint/reading-order/{case.scan.id}",
+        headers={"Prefer": "respond-async"},
+        json=body,
+    )
+    assert response.status_code == 202, response.text
+    job = _jobs(case).one()
+    outcome = await process_remediation_job(
+        {
+            "job_id": job.id,
+            "scan_id": case.scan.id,
+            "department_id": case.scan.department_id,
+            "actor_id": case.user.id,
+            "file_path": str(source),
+            "options": job.payload["options"],
+        },
+        case.db,
+    )
+    assert outcome["success"] is True, outcome
+    assert outcome["fixed_count"] == 1
+    artifact_id = outcome["artifact_id"]
+    job.status = "completed"
+    job.completed_at = datetime.now(timezone.utc)
+    job.progress = 100
+    job.result_data = outcome
+    case.db.commit()
+    downloaded = case.client.get(f"/education/remediation/jobs/{job.id}/download")
+    assert downloaded.status_code == 200, downloaded.text[:200]
+    delivered = tmp_path / "downloaded.pptx"
+    delivered.write_bytes(downloaded.content)
+    artifact = case.db.get(type(case.artifact), artifact_id)
+    assert downloaded.headers["etag"] == f'"{artifact.sha256}"'
+    assert artifact.sha256 == hashlib.sha256(downloaded.content).hexdigest()
+    assert artifact.size_bytes == len(downloaded.content)
+    verify_saved_order(source, delivered, case.scan.file_hash, {0: target})
+
+
 def test_completed_job_exposes_working_download_before_separate_approval(queue_http):
     case = queue_http
     response = _enqueue(case)
