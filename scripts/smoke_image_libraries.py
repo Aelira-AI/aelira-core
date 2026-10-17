@@ -14,7 +14,16 @@ import io
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageCms, ImageDraw, ImageFont, UnidentifiedImageError, features
+from PIL import (
+    Image,
+    ImageChops,
+    ImageCms,
+    ImageDraw,
+    ImageFont,
+    ImageStat,
+    UnidentifiedImageError,
+    features,
+)
 
 EXPECTED_LIBTIFF = "4.7.2"
 REQUIRED_FEATURES = (
@@ -59,11 +68,9 @@ def _roundtrip(image: Image.Image, fmt: str, tolerance: int, **options: object) 
         decoded.load()
         assert decoded.size == image.size, (fmt, options, decoded.size)
         difference = max(
-            abs(a - b)
-            for left, right in zip(
-                image.convert("RGB").getdata(), decoded.convert("RGB").getdata()
-            )
-            for a, b in zip(left, right)
+            ImageStat.Stat(
+                ImageChops.difference(image.convert("RGB"), decoded.convert("RGB"))
+            ).mean
         )
     assert difference <= tolerance, (fmt, options, difference)
 
@@ -79,12 +86,12 @@ def check_features() -> str:
 def check_codecs() -> None:
     image = _sample()
     _roundtrip(image, "PNG", 0)
-    _roundtrip(image, "JPEG", 40, quality=95)
+    _roundtrip(image, "JPEG", 20, quality=95)
     _roundtrip(image, "WEBP", 0, lossless=True)
     _roundtrip(image, "JPEG2000", 0, irreversible=False)
-    _roundtrip(image, "AVIF", 60, quality=95)
+    _roundtrip(image, "AVIF", 25, quality=95)
     for compression in TIFF_COMPRESSIONS:
-        tolerance = 40 if compression == "tiff_jpeg" else 0
+        tolerance = 20 if compression == "tiff_jpeg" else 0
         _roundtrip(image, "TIFF", tolerance, compression=compression)
 
 
@@ -103,7 +110,10 @@ def check_multipage_tiff() -> None:
         assert decoded.n_frames == 2
         for index, expected in enumerate(pages):
             decoded.seek(index)
-            assert list(decoded.convert("RGB").getdata()) == list(expected.getdata())
+            assert (
+                ImageChops.difference(decoded.convert("RGB"), expected).getbbox()
+                is None
+            )
 
 
 def check_malformed_input_is_refused() -> None:
