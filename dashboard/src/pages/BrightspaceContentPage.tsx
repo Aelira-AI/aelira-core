@@ -499,7 +499,7 @@ export default function BrightspaceContentPage({
           break;
         }
         case 'issue_count':
-          cmp = a.issue_count - b.issue_count;
+          cmp = (a.issue_count ?? -1) - (b.issue_count ?? -1);
           break;
         case 'module_path':
           cmp = a.module_path.localeCompare(b.module_path);
@@ -797,9 +797,7 @@ export default function BrightspaceContentPage({
               <tbody>
                 {Array.from(groupedItems.entries()).map(
                   ([modulePath, items], idx) => {
-                    const scannedCount = items.filter(
-                      (i) => i.compliance_score !== null
-                    ).length;
+                    const scannedCount = items.filter((i) => i.scan_status !== null).length;
                     const scannedItems = items.filter(
                       (i) => i.compliance_score !== null
                     );
@@ -810,10 +808,9 @@ export default function BrightspaceContentPage({
                             0
                           ) / scannedItems.length
                         : null;
-                    const totalIssues = items.reduce(
-                      (sum, i) => sum + i.issue_count,
-                      0
-                    );
+                    const totalIssues = items.some((item) => item.issue_count === null)
+                      ? null
+                      : items.reduce((sum, item) => sum + (item.issue_count ?? 0), 0);
 
                     return (
                       <tr
@@ -853,12 +850,12 @@ export default function BrightspaceContentPage({
                             className="text-sm tabular-nums font-medium"
                             style={{
                               color:
-                                totalIssues > 0
+                                (totalIssues ?? 0) > 0
                                   ? 'var(--content-error)'
                                   : 'var(--content-secondary)',
                             }}
                           >
-                            {totalIssues}
+                            {totalIssues ?? '--'}
                           </span>
                         </td>
                       </tr>
@@ -1031,14 +1028,12 @@ export default function BrightspaceContentPage({
                                     className="text-sm tabular-nums font-medium"
                                     style={{
                                       color:
-                                        item.issue_count > 0
+                                        (item.issue_count ?? 0) > 0
                                           ? 'var(--content-error)'
                                           : 'var(--content-secondary)',
                                     }}
                                   >
-                                    {item.compliance_score !== null
-                                      ? item.issue_count
-                                      : '--'}
+                                    {item.issue_count ?? '--'}
                                   </span>
                                 </td>
 
@@ -1062,7 +1057,7 @@ export default function BrightspaceContentPage({
                                 <td className="px-6 py-3">
                                   <div className="flex items-center justify-end gap-2">
                                     {item.compliance_score !== null &&
-                                      item.issue_count > 0 && (
+                                      (item.issue_count ?? 0) > 0 && (
                                         <button
                                           onClick={(e) => {
                                             e.stopPropagation();

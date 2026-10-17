@@ -22,6 +22,7 @@ from src.education.current_compliance import (
     _provider_scan_ids,
     public_cloud_file_score,
     public_cloud_file_scores,
+    public_cloud_file_issue_totals,
     public_scan_job_results,
     public_compliance_score,
     project_current_documents,
@@ -264,6 +265,19 @@ def test_faculty_leaderboard_excludes_legacy_video_and_preserves_measured_zero()
         "media_type": "video",
         "flashing_analysis": {"severity": "safe"},
     }
+    caption_issue = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired_flash = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+        "timestamps": [1.0],
+    }
+    results[0].issues = [caption_issue, retired_flash]
+    results[0].critical_issues = 2
     scan_iter = iter(scans)
     result_iter = iter(results)
     db = MagicMock()
@@ -314,6 +328,16 @@ def test_cached_scan_jobs_mask_legacy_media_without_mutating_stored_blobs():
         "media_type": "video",
         "flashing_analysis": {"severity": "safe"},
     }
+    results[0].issues = [
+        {"rule": "WCAG 1.2.2", "severity": "critical", "message": "Missing captions"},
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "critical",
+            "message": "Dangerous flashing content detected (4.0 Hz)",
+            "timestamps": [1.0],
+        },
+    ]
+    results[0].critical_issues = 2
     results[3].structure = {
         "media_type": "video",
         "flashing_assessment": {
@@ -373,9 +397,132 @@ def test_cached_scan_jobs_mask_legacy_media_without_mutating_stored_blobs():
         None,
         75,
     ]
-    assert public["legacy-video"]["issues_found"] == 1
+    assert [public[job.id].get("issues_found") for job in jobs] == [
+        1,
+        1,
+        0,
+        1,
+        None,
+        None,
+        None,
+    ]
     assert jobs[0].result_data["compliance_score"] == 100
+    assert jobs[0].result_data["issues_found"] == 1
+    assert len(results[0].issues) == 2
     assert db.query.call_count == 2
+
+
+def test_retired_media_flash_filter_keeps_other_source_findings():
+    from src.education.current_compliance import (
+        public_issue_counts,
+        public_issue_total,
+        public_scan_issues,
+    )
+
+    caption = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+        "timestamps": [1.0],
+    }
+    website = _scan("website")
+    website.scan_type = ScanType.WEBSITE
+    video = _scan("video")
+    video.scan_type = ScanType.VIDEO
+    result = _result("video", 100, 2)
+    result.issues = [caption, retired]
+    assert public_scan_issues(video, result) == [caption]
+    assert public_issue_counts(video, result)["critical"] == 1
+    assert public_issue_total(video, result) == 1
+    assert result.issues == [caption, retired]
+    assert public_scan_issues(website, result) == [caption, retired]
+    assert public_issue_total(website, result) == 2
+    result.issues = [retired]
+    result.critical_issues = 1
+    assert public_scan_issues(video, result) == []
+    assert public_issue_total(video, result) == 0
+    assert public_compliance_score(video, result) is None
+    result.issues = [
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "high",
+            "message": "Potentially problematic flashing detected (11 flashes)",
+        }
+    ]
+    result.critical_issues = 0
+    result.high_issues = 1
+    assert public_issue_total(video, result) == 0
+
+
+def test_provider_issue_totals_are_batched_and_preserve_caption_counts():
+    scans = [_scan("video"), _scan("website")]
+    scans[0].scan_type = ScanType.VIDEO
+    scans[0].document_id = "video-file"
+    scans[1].scan_type = ScanType.WEBSITE
+    scans[1].document_id = "website-file"
+    caption = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+    }
+    results = [_result("video", 100, 2), _result("website", 80, 1)]
+    results[0].issues = [caption, retired]
+    results[1].issues = [retired]
+    files = [
+        _cloud_file("video-file", "video"),
+        _cloud_file("website-file", "website"),
+        _cloud_file("unscanned", None),
+    ]
+    db = MagicMock()
+
+    def query(model):
+        response = MagicMock()
+        response.filter.return_value.all.return_value = (
+            scans if model is Scan else results
+        )
+        return response
+
+    db.query.side_effect = query
+    assert public_cloud_file_issue_totals(db, files) == {
+        "video-file": 1,
+        "website-file": 1,
+        "unscanned": None,
+    }
+    assert db.query.call_count == 2
+
+
+def test_new_issue_tracking_import_excludes_retired_media_verdict():
+    from src.education.issue_tracking_service import IssueTrackingService
+
+    scan = _scan("legacy-video")
+    scan.scan_type = ScanType.VIDEO
+    result = _result("legacy-video", 100, 2)
+    result.issues = [
+        {"type": "missing_captions", "severity": "critical"},
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "critical",
+            "message": "Dangerous flashing content detected (4.0 Hz)",
+        },
+    ]
+    with patch.object(
+        IssueTrackingService, "create_tracked_issue", return_value="caption"
+    ) as create:
+        assert IssueTrackingService.create_issues_from_scan_result(
+            MagicMock(), scan, result
+        ) == ["caption"]
+    create.assert_called_once()
+    assert result.issues[1]["rule"] == "WCAG 2.3.1"
 
 
 def test_duplicate_uploads_and_rescans_use_one_latest_verified_state():

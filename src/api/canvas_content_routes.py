@@ -58,10 +58,15 @@ from ..db.models import (
     CloudProvider,
     ContentWritebackLog,
     Department,
+    Scan,
     ScanResult,
 )
 from ..education.canvas_content_scanner import CanvasContentScanner
-from ..education.current_compliance import public_cloud_file_scores
+from ..education.current_compliance import (
+    public_cloud_file_issue_totals,
+    public_cloud_file_scores,
+    public_scan_issues,
+)
 from ..education.canvas_score_verification import (
     count_nodes_by_rule,
     current_canvas_verification,
@@ -163,7 +168,7 @@ class ContentItemStatus(BaseModel):
     content_type: Optional[str] = None
     title: str
     compliance_score: Optional[float] = None
-    issue_count: int = 0
+    issue_count: Optional[int] = None
     writeback_status: Optional[str] = None
     has_remediated_version: bool = False
     remediation_origin: Optional[str] = None
@@ -183,7 +188,7 @@ class ContentTypeStatus(BaseModel):
     total: int
     scanned: int
     average_compliance: Optional[float] = None
-    issues: int = 0
+    issues: Optional[int] = None
 
 
 class CourseContentStatusResponse(BaseModel):
@@ -204,9 +209,9 @@ class CourseOverviewItem(BaseModel):
     total_items: int = 0
     scanned_items: int = 0
     avg_compliance: Optional[float] = None
-    total_issues: int = 0
+    total_issues: Optional[int] = None
     written_back: int = 0
-    status: str  # "not_started", "critical", "at_risk", "on_track", "compliant"
+    status: str  # "not_started", "unassessed", "critical", "at_risk", "on_track", "compliant"
 
 
 class CourseOverviewResponse(BaseModel):
@@ -216,7 +221,7 @@ class CourseOverviewResponse(BaseModel):
     total_items: int
     total_scanned: int
     avg_compliance: Optional[float] = None
-    total_issues: int
+    total_issues: Optional[int]
     courses: List[CourseOverviewItem]
     deadline: Dict[str, Any]
 
@@ -636,23 +641,7 @@ async def get_course_content_status(
         ct = cf.content_source or "file"
         type_map.setdefault(ct, []).append(cf)
 
-    # Count issues per cloud file from scan results
-    issue_counts: Dict[str, int] = {}
-    scan_ids = [cf.last_scan_id for cf in cloud_files if cf.last_scan_id]
-    if scan_ids:
-        from ..db.models import ScanResult
-
-        scan_results = (
-            db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
-        )
-        for sr in scan_results:
-            total = (
-                (sr.critical_issues or 0)
-                + (sr.high_issues or 0)
-                + (sr.medium_issues or 0)
-                + (sr.low_issues or 0)
-            )
-            issue_counts[sr.scan_id] = total
+    issue_counts = public_cloud_file_issue_totals(db, cloud_files)
 
     by_type: List[ContentTypeStatus] = []
     public_scores = public_cloud_file_scores(db, cloud_files)
@@ -661,7 +650,10 @@ async def get_course_content_status(
     for ct, files in type_map.items():
         scanned = [f for f in files if f.last_scan_id is not None]
         scores = [score for f in scanned if (score := public_scores[f.id]) is not None]
-        type_issues = sum(issue_counts.get(f.last_scan_id, 0) for f in scanned)
+        counts = [issue_counts[f.id] for f in files]
+        type_issues = (
+            sum(counts) if all(value is not None for value in counts) else None
+        )
         avg = round(sum(scores) / len(scores), 1) if scores else None
         all_scores.extend(scores)
         by_type.append(
@@ -685,7 +677,7 @@ async def get_course_content_status(
             content_type=cf.content_source,
             title=cf.file_name,
             compliance_score=public_scores[cf.id],
-            issue_count=issue_counts.get(cf.last_scan_id, 0) if cf.last_scan_id else 0,
+            issue_count=issue_counts[cf.id],
             writeback_status=cf.writeback_status,
             has_remediated_version=cf.has_remediated_version or False,
             remediation_origin=cf.remediation_origin,
@@ -753,21 +745,7 @@ async def get_course_overview(
     # Excluding them let an institution-wide score describe only part of
     # what it claimed to describe.
 
-    # Compute issue counts from scan results (same pattern as get_course_content_status)
-    issue_counts: Dict[str, int] = {}
-    scan_ids = [cf.last_scan_id for cf in cloud_files if cf.last_scan_id]
-    if scan_ids:
-        scan_results = (
-            db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
-        )
-        for sr in scan_results:
-            total = (
-                (sr.critical_issues or 0)
-                + (sr.high_issues or 0)
-                + (sr.medium_issues or 0)
-                + (sr.low_issues or 0)
-            )
-            issue_counts[sr.scan_id] = total
+    issue_counts = public_cloud_file_issue_totals(db, cloud_files)
 
     # Group by course (provider_parent_id = Canvas course ID)
     courses_map: Dict[str, List[CloudFile]] = {}
@@ -828,9 +806,8 @@ async def get_course_overview(
     for course_id, files in courses_map.items():
         items = len(files)
         scanned = sum(1 for f in files if f.last_scan_id is not None)
-        issues = sum(
-            issue_counts.get(f.last_scan_id, 0) for f in files if f.last_scan_id
-        )
+        counts = [issue_counts[f.id] for f in files]
+        issues = sum(counts) if all(value is not None for value in counts) else None
         written = sum(1 for f in files if f.writeback_status == "written_back")
         scores = [score for f in files if (score := public_scores[f.id]) is not None]
         avg = sum(scores) / len(scores) if scores else None
@@ -838,6 +815,8 @@ async def get_course_overview(
         # Determine status
         if scanned == 0:
             status = "not_started"
+        elif avg is None:
+            status = "unassessed"
         elif avg is not None and avg >= 95:
             status = "compliant"
         elif avg is not None and avg >= 70:
@@ -867,7 +846,11 @@ async def get_course_overview(
 
         total_items += items
         total_scanned += scanned
-        total_issues += issues
+        total_issues = (
+            total_issues + issues
+            if total_issues is not None and issues is not None
+            else None
+        )
         if avg is not None:
             all_scores.append(avg)
 
@@ -879,7 +862,8 @@ async def get_course_overview(
         "at_risk": 1,
         "on_track": 2,
         "compliant": 3,
-        "not_started": 4,
+        "unassessed": 4,
+        "not_started": 5,
     }
     course_items.sort(
         key=lambda c: (status_order.get(c.status, 9), -(c.avg_compliance or 0))
@@ -925,16 +909,24 @@ async def get_content_diff(
     issues_remaining = 0
     issues: List[ContentIssueDetail] = []
     if cf.last_scan_id:
+        source_scan = db.get(Scan, cf.last_scan_id)
         scan_result = (
             db.query(ScanResult).filter(ScanResult.scan_id == cf.last_scan_id).first()
         )
-        if scan_result and isinstance(scan_result.issues, list):
+        source_issues = (
+            public_scan_issues(source_scan, scan_result) if source_scan else None
+        )
+        if source_issues is not None:
             try:
-                issues_remaining = sum(count_nodes_by_rule(scan_result.issues).values())
+                issues_remaining = sum(count_nodes_by_rule(source_issues).values())
             except ValueError:
-                issues_remaining = len(scan_result.issues)
-            issues = [_format_scan_issue(raw) for raw in scan_result.issues]
-            verification = current_canvas_verification(cf, scan_result.issues)
+                issues_remaining = len(source_issues)
+            issues = [
+                _format_scan_issue(raw)
+                for raw in source_issues
+                if isinstance(raw, dict)
+            ]
+            verification = current_canvas_verification(cf, source_issues)
             if verification is not None:
                 issues_fixed = verification["fixed"]
                 issues_remaining = (

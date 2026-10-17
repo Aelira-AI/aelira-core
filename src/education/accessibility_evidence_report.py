@@ -26,7 +26,12 @@ from reportlab.platypus import (
     TableStyle,
 )
 from sqlalchemy.orm import Session
-from .current_compliance import public_compliance_score
+from .current_compliance import (
+    public_compliance_score,
+    public_issue_counts,
+    public_scan_issues,
+    is_retired_media_flash_issue,
+)
 
 from ..config.settings import get_settings
 from ..db.models import (
@@ -84,7 +89,7 @@ class AccessibilityEvidenceReport:
             if scan_ids
             else []
         )
-        tracked = (
+        stored_tracked = (
             db.query(IssueTracking)
             .filter(
                 IssueTracking.department_id == department_id,
@@ -118,6 +123,30 @@ class AccessibilityEvidenceReport:
         scan_dates = [scan.created_at for scan in scans if scan.created_at]
 
         scans_by_id = {scan.id: scan for scan in scans}
+        retired_scan_ids = {
+            result.scan_id
+            for result in results
+            for scan_type in [
+                getattr(scans_by_id.get(result.scan_id), "scan_type", None)
+            ]
+            if any(
+                is_retired_media_flash_issue(scan_type, issue)
+                for issue in (result.issues if isinstance(result.issues, list) else [])
+            )
+        }
+        # The old automatic mapper stored rule/message-only media findings as
+        # unknown/No description. Caption findings can have that exact same
+        # identity, so these historic rows cannot be attributed safely.
+        ambiguous_tracked = [
+            issue
+            for issue in stored_tracked
+            if issue.scan_id in retired_scan_ids
+            and issue.issue_type == "unknown"
+            and issue.description == "No description"
+            and issue.wcag_criterion is None
+        ]
+        ambiguous_ids = {issue.id for issue in ambiguous_tracked}
+        tracked = [issue for issue in stored_tracked if issue.id not in ambiguous_ids]
         scores = [
             score
             for result in results
@@ -140,27 +169,46 @@ class AccessibilityEvidenceReport:
             {str(result.scan_mode) for result in results if result.scan_mode}
         )
         wcag_levels = sorted(
-            {str(result.wcag_level) for result in results if result.wcag_level}
-        )
-
-        severity_counts = Counter(
             {
-                "critical": sum(result.critical_issues or 0 for result in results),
-                "high": sum(result.high_issues or 0 for result in results),
-                "medium": sum(result.medium_issues or 0 for result in results),
-                "low": sum(result.low_issues or 0 for result in results),
+                str(result.wcag_level)
+                for result in results
+                if result.wcag_level
+                and public_compliance_score(scans_by_id.get(result.scan_id), result)
+                is not None
             }
         )
+
+        issue_counts = [
+            public_issue_counts(scans_by_id.get(result.scan_id), result)
+            for result in results
+        ]
+        severity_counts = {
+            severity: (
+                sum(counts[severity] for counts in issue_counts)
+                if all(counts[severity] is not None for counts in issue_counts)
+                else None
+            )
+            for severity in ("critical", "high", "medium", "low")
+        }
         raw_findings: list[dict[str, Any]] = []
         for result in results:
-            if isinstance(result.issues, list):
-                raw_findings.extend(
-                    item for item in result.issues if isinstance(item, dict)
+            raw_findings.extend(
+                item
+                for item in (
+                    public_scan_issues(scans_by_id.get(result.scan_id), result) or []
                 )
-        raw_total = max(sum(severity_counts.values()), len(raw_findings))
+                if isinstance(item, dict)
+            )
+        raw_total = (
+            max(sum(severity_counts.values()), len(raw_findings))
+            if all(value is not None for value in severity_counts.values())
+            else None
+        )
         tracked_statuses = Counter(_enum_value(issue.status) for issue in tracked)
 
         if not results:
+            tracker_coverage = "unavailable"
+        elif raw_total is None:
             tracker_coverage = "unavailable"
         elif raw_total == 0 or len(tracked) >= raw_total:
             tracker_coverage = "complete"
@@ -194,6 +242,8 @@ class AccessibilityEvidenceReport:
             tracked_open
             if tracker_coverage == "complete"
             else max(raw_total - tracked_closed, tracked_open)
+            if raw_total is not None
+            else None
         )
 
         if not results:
@@ -227,6 +277,10 @@ class AccessibilityEvidenceReport:
             limitations.append(
                 "Issue-tracker coverage is not complete; raw scan findings remain the source for total finding counts."
             )
+        if ambiguous_tracked:
+            limitations.append(
+                "Ambiguous historical media tracker rows were excluded from active finding status and coverage; their stored history remains available, but they cannot be attributed to a retained finding."
+            )
         if not validator_results:
             limitations.append(
                 "No stored format-validator checkpoint evidence is available."
@@ -249,9 +303,14 @@ class AccessibilityEvidenceReport:
         for item in raw_findings[:10]:
             representative_findings.append(
                 {
-                    "type": item.get("type") or item.get("code") or "unclassified",
+                    "type": item.get("type")
+                    or item.get("code")
+                    or item.get("rule")
+                    or "unclassified",
                     "severity": item.get("severity") or "unknown",
-                    "criterion": item.get("wcag") or item.get("criterion"),
+                    "criterion": item.get("wcag")
+                    or item.get("criterion")
+                    or item.get("rule"),
                 }
             )
 

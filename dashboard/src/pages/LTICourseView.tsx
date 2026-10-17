@@ -80,7 +80,7 @@ interface ContentTypeStatus {
   total: number;
   scanned: number;
   average_compliance: number | null;
-  issues: number;
+  issues: number | null;
 }
 
 interface ContentItemStatus {
@@ -91,7 +91,7 @@ interface ContentItemStatus {
   title: string;
   content_type: string;
   compliance_score: number | null;
-  issue_count: number;
+  issue_count: number | null;
   writeback_status: string | null;
   has_remediated_version: boolean;
   remediation_origin: 'automatic' | 'manual' | null;
@@ -329,14 +329,14 @@ export function LTICourseView(): React.ReactElement {
   );
 
   // Content summary stats — unscanned merged rows (live-only files with no
-  // DB row yet) count toward `total` but must NOT count as scanned or
-  // contribute to issues/writtenBack: they carry compliance_score: null,
-  // issue_count: 0, writeback_status: null by construction, so the same
-  // filters that already excluded not-yet-scanned DB items exclude them too.
+  // DB row yet) count toward `total` but not scanned or issue totals.
+  // A scan without an overall score remains scanned and unassessed.
   const contentStats = useMemo(() => {
     const total = mergedItems.length;
-    const scanned = mergedItems.filter((i) => i.compliance_score !== null).length;
-    const issues = mergedItems.reduce((sum, i) => sum + (i.issue_count || 0), 0);
+    const scanned = mergedItems.filter((i) => i.scan_id !== null).length;
+    const issues = mergedItems.some((item) => item.issue_count === null)
+      ? null
+      : mergedItems.reduce((sum, item) => sum + (item.issue_count ?? 0), 0);
     const writtenBack = mergedItems.filter(
       (i) => i.writeback_status === 'written_back' || i.writeback_status === 'writtenback'
     ).length;
@@ -1077,7 +1077,7 @@ export function LTICourseView(): React.ReactElement {
       {[
         { label: 'Total Content Items', value: contentStats.total, color: 'var(--content-primary)' },
         { label: 'Scanned', value: contentStats.scanned, color: 'var(--content-primary)' },
-        { label: 'Issues Found', value: contentStats.issues, color: contentStats.issues > 0 ? 'var(--content-error)' : 'var(--content-primary)' },
+        { label: 'Issues Found', value: contentStats.issues ?? '--', color: (contentStats.issues ?? 0) > 0 ? 'var(--content-error)' : 'var(--content-primary)' },
         { label: 'Written Back', value: contentStats.writtenBack, color: contentStats.writtenBack > 0 ? 'var(--content-success)' : 'var(--content-primary)' },
       ].map((stat) => (
         <div
@@ -1166,8 +1166,8 @@ export function LTICourseView(): React.ReactElement {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-right text-sm tabular-nums" style={{ color: typeInfo.issues > 0 ? 'var(--content-error)' : 'var(--content-primary)' }}>
-                    {typeInfo.issues}
+                  <td className="px-4 py-2.5 text-right text-sm tabular-nums" style={{ color: (typeInfo.issues ?? 0) > 0 ? 'var(--content-error)' : 'var(--content-primary)' }}>
+                    {typeInfo.issues ?? '--'}
                   </td>
                 </tr>
               );
@@ -1270,9 +1270,9 @@ export function LTICourseView(): React.ReactElement {
                   <td className="px-4 py-3 text-center">
                     <span
                       className="text-sm tabular-nums"
-                      style={{ color: item.issue_count > 0 ? 'var(--content-error)' : 'var(--content-secondary)' }}
+                      style={{ color: (item.issue_count ?? 0) > 0 ? 'var(--content-error)' : 'var(--content-secondary)' }}
                     >
-                      {item.issue_count}
+                      {item.issue_count ?? '--'}
                     </span>
                   </td>
 

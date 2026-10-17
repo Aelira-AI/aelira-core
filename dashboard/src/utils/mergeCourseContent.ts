@@ -22,7 +22,7 @@ export interface StatusContentItem {
   content_type: string | null;
   title: string;
   compliance_score: number | null;
-  issue_count: number;
+  issue_count: number | null;
   writeback_status: string | null;
   has_remediated_version: boolean;
   remediation_origin: 'automatic' | 'manual' | null;
@@ -58,7 +58,7 @@ export interface MergedContentItem {
   /** 'page' | 'assignment' | 'announcement' | 'quiz' | 'discussion' | 'file' | ... */
   content_type: string;
   compliance_score: number | null;
-  issue_count: number;
+  issue_count: number | null;
   writeback_status: string | null;
   has_remediated_version: boolean;
   remediation_origin: 'automatic' | 'manual' | null;
@@ -123,7 +123,7 @@ function fromLiveFile(
     title: file.display_name || file.filename,
     content_type: 'file',
     compliance_score: null,
-    issue_count: 0,
+    issue_count: null,
     writeback_status: null,
     has_remediated_version: false,
     remediation_origin: null,
@@ -177,7 +177,7 @@ export function mergeCourseContent(
 export function isRemediable(item: MergedContentItem): boolean {
   return (
     item.compliance_score !== null &&
-    item.issue_count > 0 &&
+    (item.issue_count ?? 0) > 0 &&
     !item.has_remediated_version &&
     !!item.scan_id
   );
@@ -240,7 +240,7 @@ export interface ContentItemState {
  *
  * Priority order (checked top to bottom — terminal writeback states win
  * over remediation state, which wins over the raw issue count):
- *   1. compliance_score === null           -> unscanned
+ *   1. compliance_score === null           -> unscanned or unassessed
  *   2. writeback_status === 'approved'     -> approved
  *   3. writeback_status is a written_back  -> written_back
  *      variant ('written_back'/'writtenback')
@@ -261,7 +261,7 @@ export interface ContentItemState {
  */
 export function contentItemState(item: MergedContentItem): ContentItemState {
   if (item.compliance_score === null) {
-    return { key: 'unscanned', label: 'Unscanned' };
+    return { key: 'unscanned', label: item.scan_id ? 'Unassessed' : 'Unscanned' };
   }
   if (item.writeback_status === 'approved') {
     return { key: 'approved', label: 'Approved' };
@@ -327,7 +327,7 @@ export interface ContentTypeSummary {
   total: number;
   scanned: number;
   average_compliance: number | null;
-  issues: number;
+  issues: number | null;
 }
 
 /**
@@ -338,7 +338,8 @@ export interface ContentTypeSummary {
  *
  * Unscanned rows (compliance_score: null) count toward `total` but are
  * excluded from `scanned` and from the average_compliance calculation —
- * they have no score to average in.
+ * they have no scan or score to average in. An unassessed scan counts as a
+ * scan but contributes no score.
  */
 export function groupContentByType(items: MergedContentItem[]): ContentTypeSummary[] {
   const groups = new Map<string, MergedContentItem[]>();
@@ -353,6 +354,7 @@ export function groupContentByType(items: MergedContentItem[]): ContentTypeSumma
 
   return Array.from(groups.entries()).map(([content_type, groupItems]) => {
     const scannedItems = groupItems.filter((i) => i.compliance_score !== null);
+    const scannedCount = groupItems.filter((i) => i.scan_id !== null).length;
     const average_compliance =
       scannedItems.length > 0
         ? scannedItems.reduce((sum, i) => sum + (i.compliance_score ?? 0), 0) /
@@ -361,9 +363,11 @@ export function groupContentByType(items: MergedContentItem[]): ContentTypeSumma
     return {
       content_type,
       total: groupItems.length,
-      scanned: scannedItems.length,
+      scanned: scannedCount,
       average_compliance,
-      issues: groupItems.reduce((sum, i) => sum + i.issue_count, 0),
+      issues: groupItems.some((item) => item.issue_count === null)
+        ? null
+        : groupItems.reduce((sum, item) => sum + (item.issue_count ?? 0), 0),
     };
   });
 }

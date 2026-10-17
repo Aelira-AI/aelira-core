@@ -31,6 +31,14 @@ def _result(scan_id, score, media_type=None):
 def test_all_legacy_video_scores_remain_unknown_in_faculty_stats():
     scan = _scan("legacy-video", ScanType.VIDEO, datetime.utcnow())
     result = _result("legacy-video", 100, "video")
+    result.remediation_applied = True
+    result.issues = [
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "critical",
+            "message": "Dangerous flashing content detected (4.0 Hz)",
+        }
+    ]
     user = SimpleNamespace(id="user-1", name="Faculty", email="faculty@example.test")
     db = MagicMock()
 
@@ -53,6 +61,7 @@ def test_all_legacy_video_scores_remain_unknown_in_faculty_stats():
 
     assert stats.total_scans == 1
     assert stats.avg_compliance_score is None
+    assert stats.total_issues_fixed == 0
     assert stats.score_change_7d is None
     assert stats.score_change_30d is None
     assert stats.all_time_rank is None
@@ -62,6 +71,7 @@ def test_all_legacy_video_scores_remain_unknown_in_faculty_stats():
         BadgeType.PERFECT_SCORE,
         BadgeType.COMPLIANT_FILE,
         BadgeType.IMPROVEMENT_5,
+        BadgeType.FIRST_FIX,
     }.intersection(badge.badge_type for badge in stats.badges_earned)
 
 

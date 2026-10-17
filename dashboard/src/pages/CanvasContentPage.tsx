@@ -574,7 +574,7 @@ export default function CanvasContentPage(): React.ReactElement {
           break;
         }
         case 'issue_count':
-          cmp = a.issue_count - b.issue_count;
+          cmp = (a.issue_count ?? -1) - (b.issue_count ?? -1);
           break;
         case 'content_type':
           cmp = a.content_type.localeCompare(b.content_type);
@@ -858,12 +858,12 @@ export default function CanvasContentPage(): React.ReactElement {
                       <td className="px-6 py-3 text-right">
                         <span
                           className={`text-sm tabular-nums font-medium ${
-                            typeStatus.issues > 0
+                            (typeStatus.issues ?? 0) > 0
                               ? 'text-[var(--content-error)]'
                               : 'text-[var(--content-secondary)]'
                           }`}
                         >
-                          {typeStatus.issues}
+                          {typeStatus.issues ?? '--'}
                         </span>
                       </td>
                     </tr>
@@ -1019,12 +1019,12 @@ export default function CanvasContentPage(): React.ReactElement {
                       <td className="px-6 py-3">
                         <span
                           className={`text-sm tabular-nums font-medium ${
-                            item.issue_count > 0
+                            (item.issue_count ?? 0) > 0
                               ? 'text-[var(--content-error)]'
                               : 'text-[var(--content-secondary)]'
                           }`}
                         >
-                          {item.compliance_score !== null ? item.issue_count : '--'}
+                          {item.issue_count ?? '--'}
                         </span>
                       </td>
 
@@ -1069,7 +1069,7 @@ export default function CanvasContentPage(): React.ReactElement {
                                 Remediate
                               </button>
                             )}
-                          {item.compliance_score !== null && item.issue_count > 0 && (
+                          {item.compliance_score !== null && (item.issue_count ?? 0) > 0 && (
                             <button
                               onClick={() =>
                                 navigate(`/canvas/courses/${courseId}/content/${item.cloud_file_id}/review`)

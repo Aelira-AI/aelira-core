@@ -498,7 +498,10 @@ class MultimediaProcessor:
             video_path: Path to video file
 
         Returns:
-            True if captions found, False otherwise
+            True if subtitles found, False after a successful video-stream probe
+
+        Raises:
+            RuntimeError: Stream metadata could not establish caption presence
         """
         try:
             cmd = [
@@ -514,10 +517,23 @@ class MultimediaProcessor:
             result = subprocess.run(
                 local_media_command(cmd), capture_output=True, text=True, timeout=30
             )
-            return "codec_type=subtitle" in result.stdout
-        except Exception as e:
-            print(f"[MultimediaProcessor] Failed to check captions: {e}")
-            return False
+            if result.returncode != 0 or not isinstance(result.stdout, str):
+                raise ValueError("probe failed")
+            stream_types = []
+            for line in result.stdout.splitlines():
+                key, separator, value = line.partition("=")
+                if (
+                    not separator
+                    or key != "codec_type"
+                    or value not in {"audio", "video", "subtitle", "data", "attachment"}
+                ):
+                    raise ValueError("invalid stream metadata")
+                stream_types.append(value)
+            if "video" not in stream_types:
+                raise ValueError("video stream not observed")
+            return "subtitle" in stream_types
+        except Exception:
+            raise RuntimeError("Caption stream inspection unavailable") from None
 
     def _extract_audio(self, video_path: str) -> Optional[str]:
         """

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
 from enum import Enum
-from .current_compliance import public_compliance_score
+from .current_compliance import public_compliance_score, public_scan_issues
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +357,7 @@ class GamificationService:
                     compliance_scores.append(score)
                 # Count fixed issues (remediated)
                 if result.remediation_applied:
-                    total_issues_fixed += len(result.issues) if result.issues else 0
+                    total_issues_fixed += len(public_scan_issues(scan, result) or [])
 
         avg_score = (
             sum(compliance_scores) / len(compliance_scores)

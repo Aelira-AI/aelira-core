@@ -1,11 +1,13 @@
 """Tenant and authority boundaries for department-wide analytics."""
 
 import asyncio
+import csv
 from io import BytesIO
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import zipfile
+from openpyxl import load_workbook
 
 import pytest
 from fastapi import HTTPException
@@ -38,6 +40,7 @@ from src.db.models import (
     UserRole,
 )
 from src.education.accessibility_evidence_report import AccessibilityEvidenceReport
+from src.education.issue_tracking_service import IssueTrackingService
 
 DEPARTMENT = "department-one"
 OTHER_DEPARTMENT = "department-two"
@@ -533,6 +536,141 @@ def test_evidence_snapshot_is_tenant_bounded_and_not_a_conformance_decision(tena
     assert report["verification"]["status"] == "automated_evidence_only"
     assert "Other University" not in str(report)
     assert "missing_label" not in str(report)
+
+
+def test_legacy_media_flash_is_absent_from_evidence_and_all_exports(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    caption = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+        "timestamps": [1.0],
+    }
+    tenant_db.add(
+        Scan(
+            id="legacy-video",
+            scan_type=ScanType.MULTIMEDIA,
+            status=ScanStatus.COMPLETED,
+            file_name="lecture.mp4",
+            user_id="user-one",
+            department_id=DEPARTMENT,
+        )
+    )
+    tenant_db.flush()
+    tenant_db.add(
+        ScanResult(
+            id="legacy-video-result",
+            scan_id="legacy-video",
+            compliance_score=100,
+            critical_issues=2,
+            high_issues=0,
+            medium_issues=0,
+            low_issues=0,
+            issues=[caption, retired],
+            structure={
+                "media_type": "video",
+                "flashing_analysis": {"severity": "dangerous"},
+            },
+        )
+    )
+    tenant_db.add_all(
+        [
+            IssueTracking(
+                id="legacy-ambiguous-tracker",
+                scan_id="legacy-video",
+                department_id=DEPARTMENT,
+                issue_hash=IssueTrackingService.generate_issue_hash(
+                    "legacy-video", "unknown", "No description"
+                ),
+                issue_type="unknown",
+                description="No description",
+                severity=IssuePriority.CRITICAL,
+                status=IssueStatus.OPEN,
+            ),
+            IssueTracking(
+                id="human-media-tracker",
+                scan_id="legacy-video",
+                department_id=DEPARTMENT,
+                issue_hash="independent-human-finding",
+                issue_type="human_review",
+                description="Human observed a separate photosensitivity concern",
+                wcag_criterion="2.3.1",
+                severity=IssuePriority.HIGH,
+                status=IssueStatus.OPEN,
+            ),
+        ]
+    )
+    tenant_db.commit()
+
+    report = AccessibilityEvidenceReport.collect(tenant_db, DEPARTMENT)
+    assert report["score"]["average"] == 95
+    assert report["unresolved_findings"]["by_severity"]["critical"] == 1
+    assert report["unresolved_findings"]["total"] == 3
+    assert report["unresolved_findings"]["by_status"]["OPEN"] == 3
+    assert any(
+        "Ambiguous historical media tracker rows were excluded" in limitation
+        for limitation in report["limitations"]
+    )
+    assert tenant_db.get(IssueTracking, "legacy-ambiguous-tracker") is not None
+    assert tenant_db.get(IssueTracking, "human-media-tracker") is not None
+    assert "Dangerous flashing" not in str(report)
+
+    app.dependency_overrides[get_db_dependency] = lambda: tenant_db
+    app.dependency_overrides[get_authenticated_principal] = lambda: _principal(
+        UserRole.ADMIN
+    )
+    try:
+        client = TestClient(app)
+        exported_csv = client.get(f"/analytics/export/{DEPARTMENT}/csv")
+        with patch(
+            "src.education.compliance_dashboard.ComplianceDashboard.get_department_compliance",
+            return_value=SimpleNamespace(
+                total_scans=2,
+                total_files_scanned=1,
+                avg_compliance_score=95,
+                total_critical=1,
+                total_high=1,
+                total_medium=1,
+                total_low=0,
+            ),
+        ):
+            exported_excel = client.get(f"/analytics/export/{DEPARTMENT}/excel")
+        exported_bulk = client.get(
+            f"/analytics/export/{DEPARTMENT}/bulk",
+            params={"include_pdfs": "false", "include_certificate": "false"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db_dependency, None)
+        app.dependency_overrides.pop(get_authenticated_principal, None)
+
+    assert [
+        exported_csv.status_code,
+        exported_excel.status_code,
+        exported_bulk.status_code,
+    ] == [200, 200, 200]
+    csv_rows = list(csv.reader(exported_csv.text.splitlines()))
+    csv_video = next(row for row in csv_rows if row[0] == "legacy-video")
+    assert csv_video[5] == "Not assessed"
+    assert csv_video[6] == csv_video[10] == "1"
+    workbook = load_workbook(BytesIO(exported_excel.content), read_only=True)
+    excel_video = next(
+        row for row in workbook["All Scans"].values if row[0] == "legacy-video"
+    )
+    assert excel_video[5] == "Not assessed"
+    assert excel_video[6] == excel_video[10] == 1
+    with zipfile.ZipFile(BytesIO(exported_bulk.content)) as archive:
+        bulk_rows = list(csv.reader(archive.read("summary.csv").decode().splitlines()))
+    bulk_video = next(row for row in bulk_rows if row[0] == "legacy-video")
+    assert bulk_video[5] == "Not assessed"
+    assert bulk_video[6] == bulk_video[10] == "1"
+    assert tenant_db.query(ScanResult).filter_by(
+        id="legacy-video-result"
+    ).one().issues == [caption, retired]
 
 
 def test_pending_human_review_blocks_recorded_review_status(tenant_db):

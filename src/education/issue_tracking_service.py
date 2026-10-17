@@ -30,6 +30,7 @@ from ..db.models import (
     User,
 )
 from ..security.audit_service import AuditService
+from .current_compliance import public_scan_issues
 
 logger = logging.getLogger(__name__)
 
@@ -270,12 +271,13 @@ class IssueTrackingService:
         Returns:
             List of created IssueTracking objects
         """
-        if not result.issues:
+        source_issues = public_scan_issues(scan, result)
+        if not source_issues:
             return []
 
         tracked_issues = []
 
-        for issue_data in result.issues:
+        for issue_data in source_issues:
             try:
                 tracked = IssueTrackingService.create_tracked_issue(
                     db=db,

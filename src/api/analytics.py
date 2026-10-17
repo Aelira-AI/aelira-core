@@ -22,7 +22,12 @@ import math
 from ..db.database import get_db_dependency
 from ..db.models import Department, UserRole
 from ..education.deadline_config import DeadlineService
-from ..education.current_compliance import public_compliance_score
+from ..education.current_compliance import (
+    public_compliance_score,
+    public_issue_counts,
+    public_issue_total,
+    public_scan_issues,
+)
 from ..education.snapshot_service import SnapshotService
 from ..education.institution_compliance import (
     InstitutionNotFoundError,
@@ -798,11 +803,12 @@ async def export_scans_csv(
             result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
 
             compliance_score = public_compliance_score(scan, result)
-            critical = result.critical_issues if result else 0
-            high = result.high_issues if result else 0
-            medium = result.medium_issues if result else 0
-            low = result.low_issues if result else 0
-            total_issues = critical + high + medium + low
+            issue_counts = public_issue_counts(scan, result)
+            critical = issue_counts["critical"]
+            high = issue_counts["high"]
+            medium = issue_counts["medium"]
+            low = issue_counts["low"]
+            total_issues = public_issue_total(scan, result)
 
             writer.writerow(
                 [
@@ -1024,11 +1030,12 @@ async def export_scans_excel(
             result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
 
             compliance_score = public_compliance_score(scan, result)
-            critical = result.critical_issues if result else 0
-            high = result.high_issues if result else 0
-            medium = result.medium_issues if result else 0
-            low = result.low_issues if result else 0
-            total_issues = critical + high + medium + low
+            issue_counts = public_issue_counts(scan, result)
+            critical = issue_counts["critical"]
+            high = issue_counts["high"]
+            medium = issue_counts["medium"]
+            low = issue_counts["low"]
+            total_issues = public_issue_total(scan, result)
 
             row_data = [
                 scan.id,
@@ -1237,10 +1244,11 @@ async def export_bulk_zip(
                     db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
                 )
                 compliance_score = public_compliance_score(scan, result)
-                critical = result.critical_issues if result else 0
-                high = result.high_issues if result else 0
-                medium = result.medium_issues if result else 0
-                low = result.low_issues if result else 0
+                issue_counts = public_issue_counts(scan, result)
+                critical = issue_counts["critical"]
+                high = issue_counts["high"]
+                medium = issue_counts["medium"]
+                low = issue_counts["low"]
 
                 writer.writerow(
                     [
@@ -1258,7 +1266,7 @@ async def export_bulk_zip(
                         high,
                         medium,
                         low,
-                        critical + high + medium + low,
+                        public_issue_total(scan, result),
                     ]
                 )
 
@@ -1291,7 +1299,7 @@ async def export_bulk_zip(
                         )
                         if (
                             result
-                            and result.issues
+                            and public_scan_issues(scan, result)
                             and public_compliance_score(scan, result) is not None
                         ):
                             report_bytes = (
@@ -1306,7 +1314,7 @@ async def export_bulk_zip(
                                     compliance_score=public_compliance_score(
                                         scan, result
                                     ),
-                                    issues=result.issues or [],
+                                    issues=public_scan_issues(scan, result) or [],
                                     suggestions=result.suggestions or [],
                                 )
                             )

@@ -178,8 +178,10 @@ class TestMultimediaProcessor:
             mock_res = MagicMock()
             mock_res.returncode = 0
 
-            if "ffprobe" in cmd and any("codec_type" in part for part in cmd):
+            if "format=duration" in cmd:
                 mock_res.stdout = "duration=15.0\ncodec_type=video"
+            elif "ffprobe" in cmd:
+                mock_res.stdout = "codec_type=video"
             elif "ffmpeg" in cmd:
                 # Audio extraction
                 pass
@@ -208,6 +210,62 @@ class TestMultimediaProcessor:
                 assert result.flashing_analysis.state == "unassessed"
                 assert result.flashing_analysis.reason == "disabled"
                 assert result.flashing_analysis.flash_count is None
+
+    @pytest.mark.parametrize(
+        "second_returncode,second_stdout",
+        [
+            (1, ""),
+            (0, ""),
+            (0, "codec_type=invalid"),
+            (0, "codec_type=audio"),
+        ],
+    )
+    def test_failed_second_video_probe_cannot_claim_missing_captions(
+        self, processor, mock_subprocess, second_returncode, second_stdout
+    ):
+        first = SimpleNamespace(returncode=0, stdout="duration=15.0\ncodec_type=video")
+        second = SimpleNamespace(returncode=second_returncode, stdout=second_stdout)
+        mock_subprocess.side_effect = [first, second]
+        with pytest.raises(RuntimeError, match="Caption stream inspection unavailable"):
+            processor.process_media(
+                "lecture.mp4",
+                generate_captions=False,
+                generate_audio_descriptions=False,
+                detect_flashing=False,
+            )
+        assert mock_subprocess.call_count == 2
+
+    def test_missing_caption_probe_dependency_has_bounded_error(
+        self, processor, mock_subprocess, caplog, capsys
+    ):
+        first = SimpleNamespace(returncode=0, stdout="duration=15.0\ncodec_type=video")
+        mock_subprocess.side_effect = [first, FileNotFoundError("/private/probe")]
+        with pytest.raises(
+            RuntimeError, match="Caption stream inspection unavailable"
+        ) as raised:
+            processor.process_media(
+                "lecture.mp4",
+                generate_captions=False,
+                generate_audio_descriptions=False,
+                detect_flashing=False,
+            )
+        assert "/private/probe" not in str(raised.value)
+        assert "/private/probe" not in caplog.text
+        assert "/private/probe" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "streams,has_captions",
+        [
+            ("codec_type=video", False),
+            ("codec_type=video\ncodec_type=subtitle", True),
+        ],
+    )
+    def test_successful_video_stream_probe_establishes_caption_presence(
+        self, processor, mock_subprocess, streams, has_captions
+    ):
+        mock_subprocess.return_value.returncode = 0
+        mock_subprocess.return_value.stdout = streams
+        assert processor._check_existing_captions("lecture.mp4") is has_captions
 
     def test_generate_webvtt(self, processor):
         """Test WebVTT generation."""
@@ -437,17 +495,28 @@ class TestFlashingAssessmentContainment:
             "severity": "critical",
             "message": "Missing captions",
         }
+        retired = {
+            "rule": "WCAG 2.3.1",
+            "severity": "critical",
+            "message": "Dangerous flashing content detected (4.0 Hz)",
+            "timestamps": [1.0],
+        }
         result = SimpleNamespace(
             compliance_score=100,
             wcag_level="AA",
-            issues=[finding],
-            critical_issues=1,
+            issues=[finding, retired],
+            critical_issues=2,
             high_issues=0,
             medium_issues=0,
             low_issues=0,
             structure={
                 "media_type": "video",
                 "flashing_analysis": {"severity": "safe", "flash_count": 0},
+                "transcription_output": {
+                    "issues": [finding, retired],
+                    "issues_count": 2,
+                    "compliance_score": 100,
+                },
             },
             suggestions=None,
             ocr_used=False,
@@ -485,8 +554,18 @@ class TestFlashingAssessmentContainment:
         assert shown["compliance_score"] is None
         assert shown["wcag_level"] is None
         assert shown["issues"] == [finding]
+        assert shown["summary"] == {
+            "critical": 1,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "total": 1,
+        }
         assert shown["structure"]["flashing_assessment"]["state"] == "unassessed"
+        assert shown["structure"]["transcription_output"]["issues"] == [finding]
+        assert shown["structure"]["transcription_output"]["issues_count"] == 1
         assert "flashing_analysis" not in shown["structure"]
+        assert result.issues == [finding, retired]
 
 
 if __name__ == "__main__":

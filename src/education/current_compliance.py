@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from math import isfinite
 from numbers import Real
 from typing import Any, Iterable, Mapping, Sequence
@@ -163,9 +164,115 @@ def public_compliance_score(scan: Any | None, result: Any | None) -> float | Non
     return float(score)
 
 
+_SEVERITIES = ("critical", "high", "medium", "low")
+_RETIRED_FLASH_MESSAGES = (
+    "Dangerous flashing content detected (",
+    "Potentially problematic flashing detected (",
+)
+
+
+def is_retired_media_flash_issue(scan_type: Any, issue: Any) -> bool:
+    """Identify only verdicts emitted by the withdrawn video flash heuristic."""
+    return (
+        _enum_value(scan_type)
+        in {ScanType.VIDEO.value.lower(), ScanType.MULTIMEDIA.value.lower()}
+        and isinstance(issue, dict)
+        and issue.get("rule") == "WCAG 2.3.1"
+        and isinstance(issue.get("message"), str)
+        and issue["message"].startswith(_RETIRED_FLASH_MESSAGES)
+    )
+
+
+def _stored_issue_list(value: Any) -> list[Any] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, dict):
+        value = value.get("details")
+    return value if isinstance(value, list) else None
+
+
+def public_scan_issues(scan: Any | None, result: Any | None) -> list[Any] | None:
+    """Project stored findings without publishing retired media flash verdicts."""
+    if result is None:
+        return None
+    issues = _stored_issue_list(getattr(result, "issues", None))
+    if issues is None:
+        return None
+    scan_type = getattr(scan, "scan_type", None)
+    return [
+        issue for issue in issues if not is_retired_media_flash_issue(scan_type, issue)
+    ]
+
+
+def public_issue_counts(scan: Any | None, result: Any | None) -> dict[str, int | None]:
+    """Return source severity counts, excluding withdrawn media verdicts."""
+    if result is None:
+        return {severity: None for severity in _SEVERITIES}
+    scan_type = _enum_value(getattr(scan, "scan_type", None))
+    if scan_type in {ScanType.VIDEO.value.lower(), ScanType.MULTIMEDIA.value.lower()}:
+        issues = public_scan_issues(scan, result)
+        if issues is not None:
+            return {
+                severity: sum(
+                    isinstance(issue, dict) and issue.get("severity") == severity
+                    for issue in issues
+                )
+                for severity in _SEVERITIES
+            }
+        # No parseable source list can establish which old counts came from the
+        # retired detector. An explicit all-zero stored count remains zero.
+        if any(getattr(result, f"{severity}_issues", None) for severity in _SEVERITIES):
+            return {severity: None for severity in _SEVERITIES}
+    return {
+        severity: getattr(result, f"{severity}_issues", None)
+        for severity in _SEVERITIES
+    }
+
+
+def public_issue_total(scan: Any | None, result: Any | None) -> int | None:
+    counts = public_issue_counts(scan, result)
+    return (
+        sum(counts.values())
+        if all(value is not None for value in counts.values())
+        else None
+    )
+
+
 def public_cloud_file_score(db: Session, cloud_file: CloudFile) -> float | None:
     """Keep cached provider scores from reviving unassessed media results."""
     return public_cloud_file_scores(db, [cloud_file])[cloud_file.id]
+
+
+def public_cloud_file_issue_totals(
+    db: Session, cloud_files: Sequence[CloudFile]
+) -> dict[str, int | None]:
+    """Resolve active source findings for provider inventory in two queries."""
+    scan_ids = {file.last_scan_id for file in cloud_files if file.last_scan_id}
+    scans = db.query(Scan).filter(Scan.id.in_(scan_ids)).all() if scan_ids else []
+    results = (
+        db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
+        if scan_ids
+        else []
+    )
+    scans_by_id = {scan.id: scan for scan in scans}
+    results_by_scan = {result.scan_id: result for result in results}
+    totals = {}
+    for cloud_file in cloud_files:
+        scan = scans_by_id.get(cloud_file.last_scan_id)
+        result = results_by_scan.get(cloud_file.last_scan_id)
+        if (
+            scan is None
+            or result is None
+            or scan.department_id != cloud_file.department_id
+            or getattr(scan, "document_id", None) not in (None, cloud_file.id)
+        ):
+            totals[cloud_file.id] = None
+        else:
+            totals[cloud_file.id] = public_issue_total(scan, result)
+    return totals
 
 
 def public_cloud_file_scores(
@@ -244,17 +351,17 @@ def public_scan_job_results(
     db: Session, jobs: Sequence[CloudJobQueue]
 ) -> dict[str, dict[str, Any] | None]:
     """Mask cached scan-job scores using linked, department-owned scan evidence."""
-    scored_jobs = [
+    evidence_jobs = [
         job
         for job in jobs
         if _enum_value(job.job_type) == "scan"
         and isinstance(job.result_data, dict)
-        and "compliance_score" in job.result_data
+        and {"compliance_score", "issues_found"}.intersection(job.result_data)
     ]
-    scored_ids = {job.id for job in scored_jobs}
+    evidence_ids = {job.id for job in evidence_jobs}
     scan_ids = {
         job.result_data.get("scan_id")
-        for job in scored_jobs
+        for job in evidence_jobs
         if isinstance(job.result_data.get("scan_id"), str)
     }
     scans = db.query(Scan).filter(Scan.id.in_(scan_ids)).all() if scan_ids else []
@@ -273,7 +380,7 @@ def public_scan_job_results(
             public[job.id] = blob
             continue
         safe = dict(blob)
-        if job.id in scored_ids:
+        if job.id in evidence_ids:
             scan_id = blob.get("scan_id")
             scan = scans_by_id.get(scan_id) if isinstance(scan_id, str) else None
             result = results_by_scan.get(getattr(scan, "id", None))
@@ -282,11 +389,16 @@ def public_scan_job_results(
                 and scan.department_id == job.department_id
                 and (job.cloud_file_id is None or scan.document_id == job.cloud_file_id)
             )
-            safe["compliance_score"] = (
-                public_compliance_score(scan, result)
-                if owns_scan and _is_verified(scan, result)
-                else None
-            )
+            if "compliance_score" in safe:
+                safe["compliance_score"] = (
+                    public_compliance_score(scan, result)
+                    if owns_scan and _is_verified(scan, result)
+                    else None
+                )
+            if "issues_found" in safe:
+                safe["issues_found"] = (
+                    public_issue_total(scan, result) if owns_scan else None
+                )
         public[job.id] = safe
     return public
 
@@ -388,9 +500,8 @@ class CurrentComplianceProjection:
         )
 
     def issue_count(self, severity: str) -> int:
-        field = f"{severity}_issues"
         return sum(
-            int(getattr(document.result, field, 0) or 0)
+            int(public_issue_counts(document.scan, document.result)[severity] or 0)
             for document in self.verified_documents
         )
 

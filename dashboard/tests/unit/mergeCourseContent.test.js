@@ -257,6 +257,7 @@ describe('groupContentByType', () => {
         provider_file_id: 'p-2',
         content_type: 'file',
         compliance_score: null,
+        scan_id: null,
         scan_status: 'unscanned',
       }),
     ]);
@@ -271,6 +272,7 @@ describe('groupContentByType', () => {
         provider_file_id: 'p-2',
         content_type: 'file',
         compliance_score: null,
+        scan_id: null,
         scan_status: 'unscanned',
       }),
     ]);
@@ -285,6 +287,7 @@ describe('groupContentByType', () => {
         provider_file_id: 'p-1',
         content_type: 'file',
         compliance_score: null,
+        scan_id: null,
         scan_status: 'unscanned',
       }),
     ]);
@@ -297,6 +300,24 @@ describe('groupContentByType', () => {
       mergedItem({ provider_file_id: 'p-2', content_type: 'page', issue_count: 2 }),
     ]);
     assert.equal(result[0].issues, 5);
+  });
+
+  it('counts an unassessed scan without assigning a score or unknown issue total', () => {
+    const result = groupContentByType([
+      mergedItem({ provider_file_id: 'p-1', compliance_score: 100, issue_count: 0 }),
+      mergedItem({ provider_file_id: 'p-2', compliance_score: null, issue_count: null }),
+    ]);
+    assert.equal(result[0].scanned, 2);
+    assert.equal(result[0].average_compliance, 100);
+    assert.equal(result[0].issues, null);
+  });
+
+  it('retains a known caption finding on an unassessed scan', () => {
+    const result = groupContentByType([
+      mergedItem({ compliance_score: null, issue_count: 1 }),
+    ]);
+    assert.equal(result[0].issues, 1);
+    assert.equal(result[0].average_compliance, null);
   });
 
   it('returns an empty list for empty input', () => {
@@ -417,10 +438,15 @@ describe('isApprovable', () => {
 describe('contentItemState', () => {
   it('is unscanned when compliance_score is null', () => {
     const state = contentItemState(
-      mergedItem({ compliance_score: null, scan_status: 'unscanned' })
+      mergedItem({ compliance_score: null, scan_id: null, scan_status: 'unscanned' })
     );
     assert.equal(state.key, 'unscanned');
     assert.equal(state.label, 'Unscanned');
+  });
+
+  it('labels a stored scan with no overall score as unassessed', () => {
+    const state = contentItemState(mergedItem({ compliance_score: null, issue_count: 1 }));
+    assert.equal(state.label, 'Unassessed');
   });
 
   it('is needs_remediation when scanned, has issues, no remediation yet', () => {

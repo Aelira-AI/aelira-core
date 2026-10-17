@@ -32,6 +32,7 @@ from ..db.models import (
 from .current_compliance import (
     get_department_current_compliance,
     public_compliance_score,
+    public_scan_issues,
 )
 from .cvd_metrics import aggregate_cvd_metrics
 
@@ -511,25 +512,12 @@ class ComplianceDashboard:
 
         for scan in scans:
             result = results_by_scan.get(scan.id)
-            if not result or not result.issues:
+            issues_data = public_scan_issues(scan, result)
+            if not issues_data:
                 continue
 
             user = users_by_id.get(scan.user_id) if scan.user_id else None
             user_name = user.name if user else "System scan"
-
-            # Extract issues from JSON (handle various formats)
-            issues_data = result.issues
-            if isinstance(issues_data, str):
-                # If issues is a JSON string, try to parse it
-                try:
-                    import json
-
-                    issues_data = json.loads(issues_data)
-                except (json.JSONDecodeError, TypeError):
-                    issues_data = []
-
-            if not isinstance(issues_data, list):
-                issues_data = []
 
             for issue in issues_data:
                 # Skip non-dict entries

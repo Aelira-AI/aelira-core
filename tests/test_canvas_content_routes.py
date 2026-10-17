@@ -26,7 +26,7 @@ import uuid
 from src.api.main import app
 from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
-from src.db.models import CloudProvider, UserRole
+from src.db.models import CloudProvider, ScanType, UserRole
 from src.services.lms_content_approval import approve_lms_content
 
 pytestmark = pytest.mark.integration
@@ -64,12 +64,8 @@ def mock_session():
     session = MagicMock()
     session.query.return_value.filter.return_value.first.return_value = None
     session.query.return_value.filter.return_value.all.return_value = []
-    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
-        None
-    )
-    session.query.return_value.filter.return_value.order_by.return_value.all.return_value = (
-        []
-    )
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    session.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
     return session
 
 
@@ -83,8 +79,8 @@ def patch_require_feature():
 @pytest.fixture
 def override_deps(mock_api_key, mock_session, patch_require_feature):
     """Override FastAPI dependencies for auth and DB."""
-    app.dependency_overrides[get_authenticated_principal] = (
-        lambda: AuthenticatedPrincipal(
+    app.dependency_overrides[get_authenticated_principal] = lambda: (
+        AuthenticatedPrincipal(
             api_key=mock_api_key,
             user_id="test-user-123",
             department_id="test-dept-456",
@@ -637,6 +633,36 @@ class TestContentDiff:
         # No fabricated-pool text anywhere in the response.
         assert "Added missing alt text" not in str(data)
         assert "Fixed heading hierarchy" not in str(data)
+
+    def test_diff_quarantines_retired_media_flash_finding(
+        self, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(content_source="file", last_scan_id="scan-1")
+        scan_result = MagicMock()
+        scan_result.issues = [
+            {
+                "rule": "WCAG 2.3.1",
+                "message": "Dangerous flashing content detected (4.0 Hz)",
+                "severity": "critical",
+            },
+            {
+                "id": "caption-missing",
+                "rule": "WCAG 1.2.2",
+                "message": "Captions missing",
+                "severity": "critical",
+            },
+        ]
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            cf,
+            scan_result,
+        ]
+        mock_session.get.return_value = SimpleNamespace(scan_type=ScanType.VIDEO)
+
+        response = client.get(f"/canvas/content/{cf.id}/diff")
+
+        assert response.status_code == 200
+        assert response.json()["issues_remaining"] == 1
+        assert len(response.json()["issues"]) == 1
 
     def test_diff_reports_the_verified_split_when_a_rescan_recorded_one(
         self, client, mock_session, override_deps

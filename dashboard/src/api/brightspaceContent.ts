@@ -51,7 +51,9 @@ export interface ContentItemStatus {
   title: string;
   content_type: string;
   compliance_score: number | null;
-  issue_count: number;
+  issue_count: number | null;
+  last_scanned_at: string | null;
+  scan_status: string | null;
   writeback_status: string | null;
   has_remediated_version: boolean;
   approval_eligible: boolean;

@@ -18,6 +18,7 @@ const STATUS_CONFIG: Record<string, { label: string; variant: BadgeProps['varian
   at_risk:     { label: 'At Risk',      variant: 'warning'  },
   on_track:    { label: 'On Track',     variant: 'accent'   },
   compliant:   { label: 'Compliant',    variant: 'success'  },
+  unassessed:  { label: 'Unassessed',   variant: 'neutral'  },
   not_started: { label: 'Not Started',  variant: 'neutral'  },
 };
 
@@ -94,15 +95,19 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
         const average = typeof statusData.average_compliance === 'number'
           ? statusData.average_compliance
           : null;
-        const totalIssues = items.reduce(
-          (sum: number, item: { issue_count?: number }) => sum + (item.issue_count || 0),
-          0,
-        );
+        const totalIssues = items.some((item: { issue_count?: number | null }) => item.issue_count == null)
+          ? null
+          : items.reduce(
+              (sum: number, item: { issue_count?: number | null }) => sum + (item.issue_count ?? 0),
+              0,
+            );
         const writtenBack = items.filter(
           (item: { writeback_status?: string | null }) => item.writeback_status === 'written_back'
         ).length;
         const status: CourseOverviewItem['status'] = scannedItems === 0
           ? 'not_started'
+          : average === null
+            ? 'unassessed'
           : average !== null && average >= 95
             ? 'compliant'
             : average !== null && average >= 70
@@ -133,7 +138,9 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
       avg_compliance: scores.length
         ? scores.reduce((sum, score) => sum + score, 0) / scores.length
         : null,
-      total_issues: courses.reduce((sum, course) => sum + course.total_issues, 0),
+      total_issues: courses.some((course) => course.total_issues === null)
+        ? null
+        : courses.reduce((sum, course) => sum + (course.total_issues ?? 0), 0),
       courses,
       deadline: statsResponse.data?.stats?.deadline ?? null,
     };
@@ -147,7 +154,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
     }
     courses = [...courses].sort((a, b) => {
       if (sortBy === 'compliance') return (a.avg_compliance ?? -1) - (b.avg_compliance ?? -1);
-      if (sortBy === 'issues') return b.total_issues - a.total_issues;
+      if (sortBy === 'issues') return (b.total_issues ?? -1) - (a.total_issues ?? -1);
       return a.course_name.localeCompare(b.course_name);
     });
     return courses;
@@ -205,7 +212,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
   function renderContent() {
     if (!data) return null;
     const filtered = getFilteredCourses();
-    const avgCompliance = data.avg_compliance ?? 0;
+    const avgCompliance = data.avg_compliance;
     const deadline = hasDatedDeadline(data.deadline) ? data.deadline : null;
     const configurationRequired = data.deadline?.applicability === 'configuration_required';
 
@@ -256,7 +263,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
           </div>
           <div className="bg-[var(--surface-secondary)] p-4 rounded-lg border border-[var(--border-primary)]">
             <div className="text-sm text-[var(--content-secondary)]">Issues Found</div>
-            <div className="text-2xl font-bold text-[var(--content-primary)]">{data.total_issues}</div>
+            <div className="text-2xl font-bold text-[var(--content-primary)]">{data.total_issues ?? '—'}</div>
           </div>
           {deadline && (
             <div className="bg-[var(--surface-secondary)] p-4 rounded-lg border border-[var(--border-primary)]">
@@ -278,15 +285,17 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
         <div className="bg-[var(--surface-secondary)] p-4 rounded-lg border border-[var(--border-primary)]">
           <div className="flex justify-between text-sm mb-2">
             <span className="text-[var(--content-secondary)]">Scanned: {data.total_scanned} / {data.total_items}</span>
-            <span className="text-[var(--content-secondary)]">{avgCompliance.toFixed(0)}%</span>
+            <span className="text-[var(--content-secondary)]">{avgCompliance === null ? 'Not assessed' : `${avgCompliance.toFixed(0)}%`}</span>
           </div>
-          <ProgressBar value={avgCompliance} tone={getProgressTone(avgCompliance)} aria-label="Overall compliance progress" />
+          {avgCompliance !== null && (
+            <ProgressBar value={avgCompliance} tone={getProgressTone(avgCompliance)} aria-label="Overall compliance progress" />
+          )}
         </div>
 
         {/* Filters */}
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-sm text-[var(--content-secondary)]">Filter:</span>
-          {['all', 'critical', 'at_risk', 'on_track', 'compliant', 'not_started'].map(f => (
+          {['all', 'critical', 'at_risk', 'on_track', 'compliant', 'unassessed', 'not_started'].map(f => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -329,7 +338,6 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
             <tbody>
               {filtered.map(course => {
                 const sc = STATUS_CONFIG[course.status] || STATUS_CONFIG.not_started;
-                const scoreValue = course.avg_compliance ?? 0;
                 return (
                   <tr
                     key={course.course_id}
@@ -339,7 +347,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
                       <Link
                         to={courseHref(course.course_id)}
                         className="font-medium text-[var(--content-accent)] hover:underline"
-                        aria-label={`${course.course_name}, ${scoreValue.toFixed(0)}% compliant, ${course.total_issues} issues`}
+                        aria-label={`${course.course_name}, ${course.avg_compliance === null ? 'score not assessed' : `${course.avg_compliance.toFixed(0)}% automated scan score`}, ${course.total_issues === null ? 'issue count unavailable' : `${course.total_issues} issues`}`}
                       >
                         {course.course_name}
                       </Link>
@@ -352,7 +360,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
                     <td className="px-4 py-3 text-center">
                       <ScoreChip score={course.avg_compliance ?? null} />
                     </td>
-                    <td className="px-4 py-3 text-center text-[var(--content-secondary)]">{course.total_issues}</td>
+                    <td className="px-4 py-3 text-center text-[var(--content-secondary)]">{course.total_issues ?? '—'}</td>
                     <td className="px-4 py-3 text-center text-[var(--content-secondary)]">{course.written_back}</td>
                     <td className="px-4 py-3 text-center">
                       <Badge variant={sc.variant}>{sc.label}</Badge>

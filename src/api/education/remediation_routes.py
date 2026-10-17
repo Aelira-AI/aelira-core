@@ -79,6 +79,7 @@ from ._scope import authorize_review_scan_access, authorize_scan_access
 from ...education.remediation.latex_pdf_validation import latex_result_fields
 from ...education.remediation.score_reporting import fresh_score_comparison
 from ...education.latex_evidence import latex_evidence_fields
+from ...education.current_compliance import public_scan_issues
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -2078,7 +2079,12 @@ async def remediate_scan(
     issues = []
     if scan.result:
         try:
-            issues = _extract_validated_remediation_issues(scan.result.issues)
+            source_issues = (
+                public_scan_issues(scan, scan.result)
+                if scan.scan_type in {ScanType.VIDEO, ScanType.MULTIMEDIA}
+                else scan.result.issues
+            )
+            issues = _extract_validated_remediation_issues(source_issues)
         except _InvalidScanResultError:
             db.rollback()
             try:
