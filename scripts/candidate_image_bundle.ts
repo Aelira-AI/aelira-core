@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 /** Validate and bind a native CI OCI archive before it is loaded. No extraction. */
 import { createHash } from 'node:crypto';
-import { open, readFile, writeFile, stat } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { open, readFile, writeFile, lstat } from 'node:fs/promises';
+import { createReadStream, constants } from 'node:fs';
 import { basename } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const REPO = 'Aelira-AI/aelira-core';
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const hexPattern = /^[0-9a-f]{40}$/;
+const MAX_METADATA_BYTES = 16 * 1024 * 1024;
 const args = new Map<string, string>();
 for (let i = 3; i < process.argv.length; i += 2) {
   if (!process.argv[i]?.startsWith('--') || !process.argv[i + 1]) throw new Error('Expected --key value arguments');
@@ -24,7 +25,7 @@ function insist(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 function parseJson(bytes: Buffer, label: string): any {
-  insist(bytes.length <= 16 * 1024 * 1024, `${label} is too large`);
+  insist(bytes.length <= MAX_METADATA_BYTES, `${label} is too large`);
   return JSON.parse(bytes.toString('utf8'));
 }
 type Entry = { size: number; hash: string; offset: number; bytes?: Buffer };
@@ -33,9 +34,12 @@ type Entry = { size: number; hash: string; offset: number; bytes?: Buffer };
 // layouts need only regular files. Refusing extensions and links also prevents
 // path traversal or extraction surprises from untrusted downloads.
 async function readArchive(path: string) {
-  const file = await open(path, 'r');
+  const input = await lstat(path);
+  insist(input.isFile(), 'OCI archive must be a regular file');
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const archiveSize = (await file.stat()).size;
+    insist(Number.isSafeInteger(archiveSize) && archiveSize > 0, 'Invalid OCI archive size');
     const entries = new Map<string, Entry>();
     const whole = createHash('sha256');
     let offset = 0;
@@ -76,6 +80,7 @@ async function readArchive(path: string) {
       insist(!directory || size === 0, 'Directory has nonzero size');
       const hash = createHash('sha256');
       const capture = name === 'index.json' || name === 'oci-layout';
+      insist(!capture || size <= MAX_METADATA_BYTES, `${name} metadata is too large`);
       const parts: Buffer[] = [];
       let read = 0;
       while (read < size) {
@@ -108,7 +113,7 @@ async function readArchive(path: string) {
       const entry = entries.get(name);
       insist(entry && entry.size === descriptor.size && entry.hash === descriptor.digest.slice(7), `Missing or corrupt ${label} blob`);
       referenced.add(name);
-      insist(entry.size <= 16 * 1024 * 1024, `${label} metadata is too large`);
+      insist(entry.size <= MAX_METADATA_BYTES, `${label} metadata is too large`);
       return readAt(entry.offset, entry.size);
     }
     const manifestDescriptor = index.manifests[0];
@@ -132,11 +137,55 @@ async function readArchive(path: string) {
   } finally { await file.close(); }
 }
 async function hashFile(path: string) {
-  const file = await stat(path);
-  insist(file.isFile() && file.size > 0, 'Evidence must be a nonempty regular file');
+  const file = await lstat(path);
+  insist(file.isFile() && file.size > 0, 'Input must be a nonempty regular file');
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return { name: basename(path), bytes: file.size, sha256: hash.digest('hex') };
+}
+async function readJsonFile(path: string): Promise<any> {
+  const file = await lstat(path);
+  insist(file.isFile() && file.size > 0 && file.size <= 1024 * 1024, 'JSON metadata exceeds one MiB');
+  return JSON.parse(await readFile(path, 'utf8'));
+}
+function expectedZipMembers(kind: string): string[] {
+  insist(kind === 'api' || kind === 'dashboard', 'Invalid bundle kind');
+  return [`${kind}.evidence.txt`, `${kind}.oci.tar`, `${kind}.receipt.json`];
+}
+async function verifyZipDigest(zipPath: string, artifactJsonPath: string, artifactId: string, kind: string) {
+  const artifact = await readJsonFile(artifactJsonPath);
+  insist(Number.isSafeInteger(artifact.id) && artifact.id === Number(artifactId), 'Wrong immutable artifact ID');
+  insist(digestPattern.test(artifact.digest), 'Missing or invalid GitHub artifact digest');
+  insist(artifact.expired === false && Number.isSafeInteger(artifact.size_in_bytes) && artifact.size_in_bytes > 0, 'Unavailable artifact');
+  const zip = await hashFile(zipPath);
+  insist(`sha256:${zip.sha256}` === artifact.digest, 'Downloaded ZIP differs from GitHub artifact digest');
+  const list = spawnSync('unzip', ['-Z1', zipPath], { encoding: 'utf8', maxBuffer: 64 * 1024 });
+  insist(list.status === 0, 'Cannot inspect artifact ZIP members');
+  const names = list.stdout.trimEnd().split('\n').sort();
+  insist(JSON.stringify(names) === JSON.stringify(expectedZipMembers(kind).sort()), 'Unexpected ZIP members');
+  return artifact;
+}
+async function hashZipMember(zipPath: string, name: string) {
+  const child = spawn('unzip', ['-p', zipPath, name], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const hash = createHash('sha256');
+  let bytes = 0;
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => { hash.update(chunk); bytes += chunk.length; });
+  child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4096); });
+  const code = await new Promise<number>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (status) => resolve(status ?? -1));
+  });
+  insist(code === 0 && bytes > 0, `Cannot read ZIP member ${name}: ${stderr}`);
+  return { bytes, sha256: hash.digest('hex') };
+}
+async function verifyZipContents(zipPath: string, kind: string, archive: string, receipt: string, evidence: string) {
+  for (const [suffix, path] of [['oci.tar', archive], ['receipt.json', receipt], ['evidence.txt', evidence]]) {
+    const name = `${kind}.${suffix}`;
+    insist(basename(path) === name, 'Extracted bundle filename differs from ZIP member');
+    const [actual, zipped] = await Promise.all([hashFile(path), hashZipMember(zipPath, name)]);
+    insist(actual.bytes === zipped.bytes && actual.sha256 === zipped.sha256, `Extracted ${name} differs from its ZIP member`);
+  }
 }
 
 function sourceIdentity(receipt: any) {
@@ -179,7 +228,7 @@ async function verifyReceipt(receipt: any, archivePath: string, evidencePath?: s
 
 if (command === 'inspect') {
   const result = await readArchive(required('archive'));
-  insist(result.os === 'linux' && result.descriptor_platform === required('platform'), 'Wrong OCI platform');
+  insist(result.os === 'linux' && result.platform === required('platform') && result.descriptor_platform === required('platform'), 'Wrong OCI platform');
   console.log(JSON.stringify(result));
 } else if (command === 'check-docker') {
   const actual = await readArchive(required('archive'));
@@ -221,31 +270,38 @@ if (command === 'inspect') {
   checksComplete(receipt);
   await writeFile(required('output'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   console.log(JSON.stringify({ receipt: required('output'), bytes: actual.archive_bytes, sha256: actual.archive_sha256 }));
+} else if (command === 'verify-zip') {
+  const artifact = await verifyZipDigest(required('zip'), required('artifact-json'), required('artifact-id'), required('kind'));
+  console.log(JSON.stringify({ verified_zip: true, artifact_id: artifact.id, digest: artifact.digest }));
 } else if (command === 'verify') {
-  const receipt = JSON.parse(await readFile(required('receipt'), 'utf8'));
-  const actual = await verifyReceipt(receipt, required('archive'), required('evidence'));
+  const receipt = await readJsonFile(required('receipt'));
+  const peer = await readJsonFile(required('peer-receipt'));
+  sourceIdentity(receipt);
+  sourceIdentity(peer);
+  checksComplete(receipt);
+  checksComplete(peer);
   insist(receipt.checkout_commit === required('checkout-commit') && receipt.checkout_tree === required('checkout-tree'), 'Wrong checkout source or tree');
   insist(gitRevision(`${receipt.checkout_commit}^{tree}`) === receipt.checkout_tree, 'Checkout commit does not contain the recorded tree');
   insist(receipt.workflow_head_sha === receipt.checkout_commit, 'Ambiguous workflow source binding');
   insist(receipt.platform === required('platform') && receipt.kind === required('kind'), 'Wrong platform or kind');
-  const run = JSON.parse(await readFile(required('run-json'), 'utf8'));
+  insist(peer.kind !== receipt.kind && peer.platform === receipt.platform && peer.checkout_commit === receipt.checkout_commit && peer.checkout_tree === receipt.checkout_tree && peer.run_id === receipt.run_id && peer.run_attempt === receipt.run_attempt && peer.workflow_head_sha === receipt.workflow_head_sha, 'Mixed or incomplete API/dashboard pair');
+  const run = await readJsonFile(required('run-json'));
   insist(run.id === receipt.run_id && run.run_attempt === receipt.run_attempt && run.head_sha === receipt.checkout_commit, 'Wrong workflow run, attempt, or head');
   insist(run.event === 'workflow_dispatch' && run.status === 'completed' && run.conclusion === 'success' && run.name === 'CI', 'Workflow did not complete successfully');
   insist(run.repository?.full_name === REPO && /^(?:Aelira-AI\/aelira-core\/)?\.github\/workflows\/ci\.yml(?:@.+)?$/.test(run.path ?? ''), 'Wrong workflow repository or path');
-  async function verifyArtifact(jsonPath: string, idText: string, bound: any) {
-    const artifact = JSON.parse(await readFile(jsonPath, 'utf8'));
-    insist(artifact.id === Number(idText) && artifact.workflow_run?.id === run.id, 'Wrong immutable artifact ID or run');
-    insist(artifact.expired === false && artifact.name === `candidate-${bound.kind}-${bound.platform.slice(6)}-${bound.checkout_commit}-${bound.run_attempt}`, 'Wrong artifact name or expiry');
-    insist(artifact.size_in_bytes > 0, 'Empty artifact');
-    return artifact.id;
+  const artifact = await verifyZipDigest(required('zip'), required('artifact-json'), required('artifact-id'), receipt.kind);
+  const peerArtifact = await verifyZipDigest(required('peer-zip'), required('peer-artifact-json'), required('peer-artifact-id'), peer.kind);
+  for (const [metadata, bound] of [[artifact, receipt], [peerArtifact, peer]]) {
+    insist(metadata.workflow_run?.id === run.id, 'Artifact belongs to another workflow run');
+    insist(metadata.workflow_run?.head_sha === bound.checkout_commit, 'Artifact workflow head differs from checkout');
+    insist(metadata.name === `candidate-${bound.kind}-${bound.platform.slice(6)}-${bound.checkout_commit}-${bound.run_attempt}`, 'Artifact identity differs from receipt');
   }
-  const artifactId = await verifyArtifact(required('artifact-json'), required('artifact-id'), receipt);
-  const peer = JSON.parse(await readFile(required('peer-receipt'), 'utf8'));
+  insist(peerArtifact.id !== artifact.id, 'API and dashboard must have separate artifact IDs');
+  await verifyZipContents(required('zip'), receipt.kind, required('archive'), required('receipt'), required('evidence'));
+  await verifyZipContents(required('peer-zip'), peer.kind, required('peer-archive'), required('peer-receipt'), required('peer-evidence'));
+  const actual = await verifyReceipt(receipt, required('archive'), required('evidence'));
   await verifyReceipt(peer, required('peer-archive'), required('peer-evidence'));
-  insist(peer.kind !== receipt.kind && peer.platform === receipt.platform && peer.checkout_commit === receipt.checkout_commit && peer.checkout_tree === receipt.checkout_tree && peer.run_id === receipt.run_id && peer.run_attempt === receipt.run_attempt && peer.workflow_head_sha === receipt.workflow_head_sha, 'Mixed or incomplete API/dashboard pair');
-  const peerId = await verifyArtifact(required('peer-artifact-json'), required('peer-artifact-id'), peer);
-  insist(peerId !== artifactId, 'API and dashboard must have separate artifact IDs');
-  console.log(JSON.stringify({ verified: true, artifact_id: artifactId, peer_artifact_id: peerId, ...actual }));
+  console.log(JSON.stringify({ verified: true, artifact_id: artifact.id, peer_artifact_id: peerArtifact.id, ...actual }));
 } else {
-  throw new Error('Use inspect, check-docker, create, or verify');
+  throw new Error('Use inspect, check-docker, create, verify-zip, or verify');
 }

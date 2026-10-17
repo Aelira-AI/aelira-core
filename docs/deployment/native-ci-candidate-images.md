@@ -31,6 +31,7 @@ The artifact IDs are available from the successful run's artifact list. This
 example retrieves arm64; change `PLATFORM` and both IDs for amd64.
 
 ```bash
+set -euo pipefail
 RUN_ID=123456789
 API_ARTIFACT_ID=123456790
 DASHBOARD_ARTIFACT_ID=123456791
@@ -45,11 +46,16 @@ gh api "repos/Aelira-AI/aelira-core/actions/artifacts/$DASHBOARD_ARTIFACT_ID" > 
 gh api "repos/Aelira-AI/aelira-core/actions/artifacts/$API_ARTIFACT_ID/zip" > "$WORK/api.zip"
 gh api "repos/Aelira-AI/aelira-core/actions/artifacts/$DASHBOARD_ARTIFACT_ID/zip" > "$WORK/dashboard.zip"
 
-# Inspect the ZIP member lists before copying either untrusted archive to disk.
-test "$(unzip -Z1 "$WORK/api.zip" | LC_ALL=C sort)" = \
-  "$(printf '%s\n' api.evidence.txt api.oci.tar api.receipt.json | LC_ALL=C sort)"
-test "$(unzip -Z1 "$WORK/dashboard.zip" | LC_ALL=C sort)" = \
-  "$(printf '%s\n' dashboard.evidence.txt dashboard.oci.tar dashboard.receipt.json | LC_ALL=C sort)"
+# Verify each downloaded ZIP against its immutable artifact ID and the SHA-256
+# digest in GitHub's artifact API response. This also rejects unexpected ZIP members.
+bun scripts/candidate_image_bundle.ts verify-zip \
+  --zip "$WORK/api.zip" --artifact-json "$WORK/api-artifact.json" \
+  --artifact-id "$API_ARTIFACT_ID" --kind api
+bun scripts/candidate_image_bundle.ts verify-zip \
+  --zip "$WORK/dashboard.zip" --artifact-json "$WORK/dashboard-artifact.json" \
+  --artifact-id "$DASHBOARD_ARTIFACT_ID" --kind dashboard
+
+# Copy only the three named members after both ZIP digests pass.
 for kind in api dashboard; do
   for suffix in oci.tar receipt.json evidence.txt; do
     unzip -p "$WORK/$kind.zip" "$kind.$suffix" > "$WORK/$kind.$suffix"
@@ -57,6 +63,7 @@ for kind in api dashboard; do
 done
 
 bun scripts/candidate_image_bundle.ts verify \
+  --zip "$WORK/api.zip" --peer-zip "$WORK/dashboard.zip" \
   --archive "$WORK/api.oci.tar" --receipt "$WORK/api.receipt.json" \
   --evidence "$WORK/api.evidence.txt" \
   --peer-archive "$WORK/dashboard.oci.tar" \
@@ -70,10 +77,11 @@ bun scripts/candidate_image_bundle.ts verify \
   --platform "$PLATFORM" --kind api
 ```
 
-The verifier rejects missing or corrupted OCI blobs, archive and evidence hash
-mismatches, wrong source or tree, wrong platform, mixed attempts or artifact
-IDs, and incomplete or failed runs. It validates tar paths and entry types
-without extracting the OCI tar, and hashes the archive and blobs in bounded
+The full verifier rechecks both ZIP digests and compares every copied file to
+its member in that ZIP. It rejects missing or corrupted OCI blobs, archive
+and evidence hash mismatches, wrong source or tree, wrong platform, mixed
+attempts or artifact IDs, and incomplete or failed runs. It validates tar paths
+and entry types without extracting the OCI tar, and hashes the archive and blobs in bounded
 chunks. Run it **before** `docker load`. After a successful verification, load
 each tar and compare Docker's containerd platform descriptors again:
 
@@ -89,6 +97,8 @@ bun scripts/candidate_image_bundle.ts check-docker \
 ```
 
 Docker must use the containerd image store and report platform descriptors.
+The ZIP digest uses GitHub's documented
+[artifact API digest field](https://docs.github.com/en/rest/actions/artifacts#get-an-artifact).
 The opt-in CI job enables that store with Docker's
 [documented GitHub Actions setup](https://docs.docker.com/build/ci/github-actions/multi-platform/#build-and-load-multi-platform-images).
 The native CI job also checks each running container's `ImageManifestDescriptor`.
