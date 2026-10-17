@@ -173,11 +173,12 @@ export function IntegrationsSettings(): React.ReactElement {
         <div
           className="mb-6 p-4 rounded-lg flex items-center gap-3"
           style={{ backgroundColor: 'var(--status-error-bg)', color: 'var(--status-error-text)' }}
+          role="alert"
         >
           <X className="w-5 h-5" aria-hidden="true" />
           {error}
-          <button onClick={() => setError(null)} className="ml-auto">
-            <X className="w-4 h-4" />
+          <button onClick={() => setError(null)} className="ml-auto" aria-label="Dismiss error message">
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
       )}
@@ -186,8 +187,9 @@ export function IntegrationsSettings(): React.ReactElement {
         <div
           className="mb-6 p-4 rounded-lg flex items-center gap-3"
           style={{ backgroundColor: 'var(--status-success-bg)', color: 'var(--status-success-text)' }}
+          role="status"
         >
-          <Check className="w-5 h-5" />
+          <Check className="w-5 h-5" aria-hidden="true" />
           {success}
         </div>
       )}
@@ -200,19 +202,25 @@ export function IntegrationsSettings(): React.ReactElement {
         {/* Pause toggle */}
         <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: 'var(--border-primary)' }}>
           <div>
-            <h3 className="font-medium" style={{ color: 'var(--content-primary)' }}>
+            <h3 id="pause-alerts-label" className="font-medium" style={{ color: 'var(--content-primary)' }}>
               Pause All Alerts
             </h3>
-            <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>
+            <p id="pause-alerts-description" className="text-sm" style={{ color: 'var(--content-secondary)' }}>
               Temporarily stop all email notifications
             </p>
           </div>
           <button
+            type="button"
+            role="switch"
+            aria-checked={settings.is_paused}
+            aria-labelledby="pause-alerts-label"
+            aria-describedby="pause-alerts-description"
             onClick={togglePause}
-            className="relative w-12 h-6 rounded-full transition-colors"
+            className="relative w-12 h-6 rounded-full transition-colors shrink-0"
             style={{ backgroundColor: settings.is_paused ? 'var(--content-tertiary)' : 'var(--accent-solid)' }}
           >
             <span
+              aria-hidden="true"
               className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
                 settings.is_paused ? 'left-1' : 'left-7'
               }`}
@@ -284,16 +292,17 @@ export function IntegrationsSettings(): React.ReactElement {
             </h3>
             <div className="flex gap-4">
               <div className="flex-1">
-                <label className="block text-sm mb-1" style={{ color: 'var(--content-secondary)' }}>
+                <label htmlFor="weekly-summary-day" className="block text-sm mb-1" style={{ color: 'var(--content-secondary)' }}>
                   Day
                 </label>
                 <select
+                  id="weekly-summary-day"
                   value={settings.weekly_summary_day}
                   onChange={(e: ChangeEvent<HTMLSelectElement>) => setSettings(prev => ({ ...prev, weekly_summary_day: parseInt(e.target.value) }))}
                   className="w-full px-3 py-2 rounded-lg border"
                   style={{
                     backgroundColor: 'var(--surface-primary)',
-                    borderColor: 'var(--border-primary)',
+                    borderColor: 'var(--border-control)',
                     color: 'var(--content-primary)'
                   }}
                 >
@@ -303,16 +312,17 @@ export function IntegrationsSettings(): React.ReactElement {
                 </select>
               </div>
               <div className="flex-1">
-                <label className="block text-sm mb-1" style={{ color: 'var(--content-secondary)' }}>
+                <label htmlFor="weekly-summary-hour" className="block text-sm mb-1" style={{ color: 'var(--content-secondary)' }}>
                   Time (UTC)
                 </label>
                 <select
+                  id="weekly-summary-hour"
                   value={settings.weekly_summary_hour}
                   onChange={(e: ChangeEvent<HTMLSelectElement>) => setSettings(prev => ({ ...prev, weekly_summary_hour: parseInt(e.target.value) }))}
                   className="w-full px-3 py-2 rounded-lg border"
                   style={{
                     backgroundColor: 'var(--surface-primary)',
-                    borderColor: 'var(--border-primary)',
+                    borderColor: 'var(--border-control)',
                     color: 'var(--content-primary)'
                   }}
                 >
@@ -340,11 +350,12 @@ export function IntegrationsSettings(): React.ReactElement {
                 style={{ backgroundColor: 'var(--surface-primary)' }}
               >
                 <div className="flex items-center gap-2">
-                  <Mail className="w-4 h-4" style={{ color: 'var(--content-secondary)' }} />
+                  <Mail className="w-4 h-4" style={{ color: 'var(--content-secondary)' }} aria-hidden="true" />
                   <span style={{ color: 'var(--content-primary)' }}>{email}</span>
                 </div>
                 <button
                   onClick={() => handleRemoveEmail(email)}
+                  aria-label={`Remove ${email}`}
                   className="p-1 rounded hover:bg-opacity-50"
                   style={{ color: 'var(--status-error-text)' }}
                 >
@@ -356,19 +367,21 @@ export function IntegrationsSettings(): React.ReactElement {
             <div className="flex gap-2">
               <input
                 type="email"
+                aria-label="Email address to add"
                 value={newEmail}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setNewEmail(e.target.value)}
                 placeholder="Add email address"
                 className="flex-1 px-3 py-2 rounded-lg border"
                 style={{
                   backgroundColor: 'var(--surface-primary)',
-                  borderColor: 'var(--border-primary)',
+                  borderColor: 'var(--border-control)',
                   color: 'var(--content-primary)'
                 }}
                 onKeyDown={handleKeyDown}
               />
               <button
                 onClick={handleAddEmail}
+                aria-label="Add email address"
                 className="px-4 py-2 rounded-lg text-white"
                 style={{ backgroundColor: 'var(--accent-solid)' }}
               >

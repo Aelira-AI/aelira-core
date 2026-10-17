@@ -27,7 +27,7 @@ const BASE =
  *
  * Semantic variants using CSS tokens on soft surfaces.
  * Pill radius (rounded-full), mono label sizing.
- * Replaces hardcoded rainbow colors (text-green-400, bg-purple-500/10, etc.).
+ * Replaces hardcoded rainbow colors (fixed palette colors that failed contrast on light surfaces).
  */
 export function Badge({
   variant = 'neutral',

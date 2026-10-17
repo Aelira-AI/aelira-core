@@ -115,7 +115,7 @@
   /* Content Tokens (Text & Icons) */
   --content-primary: #1D1D1F;
   --content-secondary: #5E5E64;
-  --content-tertiary: #6A6A70;
+  --content-tertiary: #5E5E64;   /* AA fix: 4.58:1 on --surface-accent (#DCD6F0); was #6A6A70 (3.82) */
   --content-inverse: #FFFFFF;
   --content-accent: #2E2963;
   --content-accent-strong: #241F50;
@@ -181,6 +181,7 @@
   /* Border Tokens */
   --border-primary: #D9D9DE;
   --border-secondary: #C7C7CC;
+  --border-control: #86868B;              /* Form-control boundary: 3.1:1 or better on every surface (WCAG 1.4.11) */
   --border-accent: #2E2963;
   --border-subtle: rgba(29, 29, 31, 0.08);
   --border-color: #D9D9DE;                /* Legacy support */
@@ -360,6 +361,7 @@
   /* Border Tokens */
   --border-primary: #28282B;
   --border-secondary: #3A3A3D;
+  --border-control: #7A7A80;              /* Form-control boundary: 4.1:1 or better on every surface (WCAG 1.4.11) */
   --border-accent: #6A5EA6;
   --border-subtle: rgba(245, 245, 247, 0.06);
   --border-color: #28282B;                /* Legacy support */
@@ -570,7 +572,7 @@
   .input {
     background-color: var(--surface-primary);
     color: var(--content-primary);
-    border: 1px solid var(--border-primary);
+    border: 1px solid var(--border-control);
     border-radius: 0.75rem;
     padding: 0.5rem 1rem;
     width: 100%;

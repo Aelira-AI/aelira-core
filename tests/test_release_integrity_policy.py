@@ -353,6 +353,35 @@ def test_api_build_asserts_global_and_copied_venv_python_package_versions() -> N
     assert runtime.index(global_assertion) < runtime.index(venv_assertion)
 
 
+def test_api_runtime_omits_unused_packages_and_verifies_their_absence() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    runtime = api.split("# Stage 2: Runtime", 1)[1]
+    install, tail = runtime.split("&& update-language", 1)
+    purge = "&& dpkg --purge --force-depends xdg-utils"
+    cleanup = "&& rm -rf /var/lib/apt/lists/*"
+    copy_verifier = (
+        "COPY scripts/verify_final_os_packages.py "
+        "/app/scripts/verify_final_os_packages.py"
+    )
+    os_assertion = "/usr/local/bin/python /app/scripts/verify_final_os_packages.py"
+
+    # libxml2-utils is never installed; xdg-utils is a hard dependency of
+    # texlive-base, so it is purged in the same layer before apt state is cleaned.
+    assert "\n    libxml2-utils \\" not in install
+    assert "\n    xdg-utils \\" not in install
+    assert tail.count(purge) == 1
+    assert tail.index(purge) < tail.index(cleanup)
+    assert runtime.count(copy_verifier) == 1
+    assert runtime.count(os_assertion) == 1
+    assert runtime.index(copy_verifier) < runtime.index(os_assertion)
+    assert runtime.index(os_assertion) < runtime.index("# Set working directory")
+
+    ci_docker = (WORKFLOWS / "ci.yml").read_text().split("  docker:\n", 1)[1]
+    publish = (WORKFLOWS / "publish-docker.yml").read_text()
+    assert ci_docker.count("/app/scripts/verify_final_os_packages.py") == 1
+    assert publish.count("/app/scripts/verify_final_os_packages.py") == 1
+
+
 def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
     workflow = (WORKFLOWS / "ci.yml").read_text()
     docker_job = workflow.split("  docker:\n", 1)[1]
@@ -385,7 +414,7 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
     )
     assert workflow.count(pinned_cosign_install) == 2
     assert "format: spdx-json" in workflow
-    final_package_gate = "Verify final API image Python package state"
+    final_package_gate = "Verify final API image package state"
     assert workflow.count(final_package_gate) == 1
     assert "if: matrix.image == 'aelira-core-api'" in workflow
     assert 'docker pull "$IMAGE"' in workflow

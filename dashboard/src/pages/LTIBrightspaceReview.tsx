@@ -3,6 +3,7 @@ import DOMPurify from 'dompurify';
 import { ArrowLeft } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { LTILayout } from '../components/LTILayout';
+import { sanitizeOriginalHtml } from '../utils/originalHtmlPreview';
 import { useLTISession } from '../hooks/useLTISession';
 import { DocumentReviewPage } from './DocumentReviewPage';
 import {
@@ -89,7 +90,7 @@ function BrightspaceContentReview(): React.ReactElement {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <section className="rounded-lg border border-[var(--border-primary)] p-4">
               <h2 className="font-semibold mb-3">Original</h2>
-              <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(diff.original_html || '') }} />
+              <div dangerouslySetInnerHTML={{ __html: sanitizeOriginalHtml(diff.original_html || '') }} />
             </section>
             <section className="rounded-lg border border-[var(--border-primary)] p-4">
               <h2 className="font-semibold mb-3">Remediated</h2>

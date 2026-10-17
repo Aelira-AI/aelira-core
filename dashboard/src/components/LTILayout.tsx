@@ -42,9 +42,9 @@ export function LTILayout({ children, error, loading }: LTILayoutProps): React.R
     return (
       <div className="flex items-center justify-center min-h-screen"
            style={{ backgroundColor: 'var(--surface-primary)' }}>
-        <div className="text-center">
+        <div className="text-center" role="status">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-4"
-               style={{ borderColor: 'var(--accent)' }} />
+               style={{ borderColor: 'var(--accent)' }} aria-hidden="true" />
           <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>Loading...</p>
         </div>
       </div>

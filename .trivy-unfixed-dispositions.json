@@ -2,22 +2,6 @@
   "schemaVersion": 1,
   "dispositions": [
     {
-      "id": "CVE-2022-4055",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "xdg-utils",
-          "installedVersion": "1.2.1-2"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "reason": "xdg-utils mailto handling with Thunderbird. The image has no mail client and the application never runs xdg-open.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
       "id": "CVE-2025-69720",
       "osFamily": "debian",
       "packages": [
@@ -827,10 +811,6 @@
         {
           "name": "libxml2",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
       "status": "not_affected",
@@ -1022,10 +1002,6 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
@@ -1526,10 +1502,6 @@
         {
           "name": "libxml2",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
       "status": "affected",
@@ -1544,10 +1516,6 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
@@ -1564,10 +1532,6 @@
         {
           "name": "libxml2",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
       "status": "affected",
@@ -1582,10 +1546,6 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
@@ -1602,10 +1562,6 @@
         {
           "name": "libxml2",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
       "status": "affected",
@@ -1620,10 +1576,6 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        },
-        {
-          "name": "libxml2-utils",
           "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
         }
       ],
