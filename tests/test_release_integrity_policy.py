@@ -92,6 +92,136 @@ def test_api_image_builds_lxml_from_hash_verified_sources() -> None:
     assert script.count("curl ") == 1
 
 
+def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    script = (ROOT / "docker" / "build-pillow-wheel.sh").read_text()
+    builder = api.split("AS builder", 1)[1].split("AS pa11y-node", 1)[0]
+    runtime = api.split("AS runtime", 1)[1]
+
+    # The wheel is built from source in the builder, after lxml and before the
+    # lock is installed, so the pinned requirement is already satisfied.
+    assert "COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh" in builder
+    assert "sh /tmp/build-pillow-wheel.sh /tmp/pillow-wheel" in builder
+    assert "/tmp/pillow-wheel/pillow-12.3.0-*.whl" in builder
+    assert builder.index("build-lxml-wheel.sh /tmp/lxml-wheel") < builder.index(
+        "build-pillow-wheel.sh /tmp/pillow-wheel"
+    )
+    assert builder.index("build-pillow-wheel.sh /tmp/pillow-wheel") < builder.index(
+        "pip install --no-cache-dir -r requirements.txt"
+    )
+    assert "pillow==12.3.0" in (ROOT / "requirements.txt").read_text().splitlines()
+    # The build proves the libtiff that Pillow reports and that no wheel-private
+    # library directory exists.
+    assert "features.version('libtiff'); assert v == '4.7.2'" in builder
+    assert "pillow.libs" in builder
+    # pybind11 is a build requirement only and must not reach the image.
+    assert '"pybind11==3.1.0"' in builder
+    assert "pip uninstall --yes pybind11" in builder
+
+    # Every archive is verified against a pinned digest before use.
+    assert "sha256sum --check --strict" in script
+    sources = {
+        "tiff-4.7.2.tar.xz": (
+            "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88"
+        ),
+        "pillow-12.3.0.tar.gz": (
+            "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce"
+        ),
+    }
+    for name, digest in sources.items():
+        assert name in script and digest in script
+    assert script.count("fetch https://") == len(sources)
+    assert script.count("curl ") == 1
+
+    # libtiff is linked statically from that build, never from the system, and
+    # the published wheel's codec and text-shaping features are required.
+    assert "--disable-shared --enable-static" in script
+    assert 'TIFF_ROOT="$prefix"' in script
+    assert "/usr/include/tiff.h" in script
+    for feature in (
+        "zlib",
+        "jpeg",
+        "tiff",
+        "freetype",
+        "raqm",
+        "lcms",
+        "webp",
+        "jpeg2000",
+        "xcb",
+        "avif",
+    ):
+        assert f"-C {feature}=enable" in script
+    for define in ("ZIP_SUPPORT", "JPEG_SUPPORT", "LZMA_SUPPORT", "ZSTD_SUPPORT"):
+        assert define in script
+    # Fixed build path, no debug information and mapped paths keep two builds
+    # of the image byte-identical.
+    assert "work=/tmp/pillow-build" in script
+    assert "-g0 -ffile-prefix-map=$work=." in script
+
+    # The shared libraries Pillow links are installed in the runtime image, the
+    # development packages only in the builder, and libtiff in neither.
+    for package in (
+        "libjpeg62-turbo",
+        "libfreetype6",
+        "libraqm0",
+        "liblcms2-2",
+        "libwebp7",
+        "libwebpdemux2",
+        "libwebpmux3",
+        "libopenjp2-7",
+        "libavif16",
+        "libxcb1",
+    ):
+        assert re.search(rf"^\s+{package} \\$", runtime, re.MULTILINE)
+    for package in (
+        "libjpeg-dev",
+        "libfreetype-dev",
+        "libraqm-dev",
+        "liblcms2-dev",
+        "libwebp-dev",
+        "libopenjp2-7-dev",
+        "libavif-dev",
+        "libxcb1-dev",
+    ):
+        assert re.search(rf"^\s+{package} \\$", builder, re.MULTILINE)
+    assert not re.search(r"^\s+libtiff\S* \\$", api, re.MULTILINE)
+
+
+def test_api_image_does_not_ship_pi_heif() -> None:
+    requirements = (ROOT / "requirements.txt").read_text().lower()
+
+    # ocrmypdf 17 does not depend on pi_heif and loads the optional pillow_heif
+    # module only when it is installed, so the bundled libheif and libde265 are
+    # unused.
+    assert "pi_heif" not in requirements and "pi-heif" not in requirements
+    assert "pillow_heif" not in requirements and "pillow-heif" not in requirements
+    assert (
+        '"pi-heif": None'
+        in (ROOT / "scripts" / "verify_final_python_packages.py").read_text()
+    )
+    assert (
+        "pi_heif"
+        not in (ROOT / "docs" / "DEPENDENCIES.md")
+        .read_text()
+        .split("### Transitive dependencies", 1)[1]
+    )
+
+
+def test_docker_ci_proves_the_image_libraries_and_ocr_in_the_built_image() -> None:
+    workflow = (WORKFLOWS / "ci.yml").read_text()
+    publish = (WORKFLOWS / "publish-docker.yml").read_text()
+
+    assert "scripts/smoke_image_libraries.py" in workflow
+    assert (
+        "--entrypoint /opt/venv/bin/python aelira-worker-isolation:test \\\n"
+        "            /app/scripts/smoke_image_libraries.py"
+    ) in workflow
+    # Both the CI-built and the published image run the venv package check that
+    # asserts the libtiff version and the absence of pillow.libs.
+    assert "/app/scripts/verify_final_python_packages.py venv" in workflow
+    assert "/app/scripts/verify_final_python_packages.py venv" in publish
+
+
 def test_api_image_builds_psycopg2_from_the_hash_verified_source_archive() -> None:
     script = (ROOT / "docker" / "build-psycopg2-wheel.sh").read_text()
     frozen_inputs = (
@@ -679,7 +809,7 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
     ]
 
     assert development_lines[0] == "-r requirements.txt"
-    assert len(runtime_requirements) == 151
+    assert len(runtime_requirements) == 150
     assert len(development_requirements) == 30
     assert (
         f"**{len(runtime_requirements)}** runtime dependency entries" in documentation

@@ -17,6 +17,19 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     xz-utils \
+    # Image libraries Pillow is compiled against. libtiff is deliberately not
+    # here: Pillow links the hash-verified libtiff that its build script builds.
+    libjpeg-dev \
+    zlib1g-dev \
+    libfreetype-dev \
+    libraqm-dev \
+    liblcms2-dev \
+    libwebp-dev \
+    libopenjp2-7-dev \
+    libavif-dev \
+    libxcb1-dev \
+    liblzma-dev \
+    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -25,13 +38,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy requirements and install Python dependencies. lxml is built first from
 # its pinned source release against hash-verified libxml2 2.15.4 and libxslt
-# 1.1.45; the published wheels bundle an older, affected libxml2. The pinned
-# requirement is then already satisfied by that build. psycopg2-binary follows
-# the same pattern: its published wheels bundle a private libpq, OpenSSL and
-# Kerberos copy that system updates never reach, so the pinned release is built
-# from its hash-verified source archive against Debian's libpq instead.
+# 1.1.45; the published wheels bundle an older, affected libxml2. Pillow is
+# built against hash-verified libtiff 4.7.2, and psycopg2-binary is built
+# against Debian's libpq. Their pinned requirements are then satisfied.
 COPY requirements.txt .
 COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
+COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh
 COPY docker/build-psycopg2-wheel.sh /tmp/build-psycopg2-wheel.sh
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
@@ -40,11 +52,18 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
     pip install --no-cache-dir --no-deps /tmp/lxml-wheel/lxml-6.1.3-*.whl && \
     rm -rf /tmp/lxml-wheel /tmp/build-lxml-wheel.sh && \
+    pip install --no-cache-dir "pybind11==3.1.0" && \
+    sh /tmp/build-pillow-wheel.sh /tmp/pillow-wheel && \
+    pip install --no-cache-dir --no-deps /tmp/pillow-wheel/pillow-12.3.0-*.whl && \
+    rm -rf /tmp/pillow-wheel /tmp/build-pillow-wheel.sh && \
+    python -m pip uninstall --yes pybind11 && \
     sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel && \
     pip install --no-cache-dir --no-deps /tmp/psycopg2-wheel/psycopg2_binary-2.9.13-*.whl && \
     rm -rf /tmp/psycopg2-wheel /tmp/build-psycopg2-wheel.sh && \
     pip install --no-cache-dir -r requirements.txt && \
     python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
+    python -c "from PIL import features; v = features.version('libtiff'); assert v == '4.7.2', v" && \
+    test ! -e "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pillow.libs" && \
     python -m pip uninstall --yes pip
 
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
@@ -105,6 +124,19 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     # Full accessible PDF pipeline: LaTeXML + accessibility packages
     latexml \
     libxslt1.1 \
+    # Shared libraries the source-built Pillow links at run time
+    libjpeg62-turbo \
+    libfreetype6 \
+    libraqm0 \
+    liblcms2-2 \
+    libwebp7 \
+    libwebpdemux2 \
+    libwebpmux3 \
+    libopenjp2-7 \
+    libavif16 \
+    libxcb1 \
+    liblzma5 \
+    libzstd1 \
     imagemagick \
     ghostscript \
     texlive-base \
