@@ -703,7 +703,7 @@
       ],
       "status": "not_affected",
       "justification": "inline_mitigations_already_exist",
-      "reason": "CAF demuxer. Media inputs are restricted to the supported container allowlist, which excludes CAF.",
+      "reason": "MACE audio decoding. Media inputs are restricted to the supported codec allowlist, which excludes mace3 and mace6 before decoder opening; CAF is also outside the container allowlist.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
