@@ -741,9 +741,11 @@ class ComplianceDashboard:
         # Calculate daily averages
         dates = sorted(scans_by_date.keys())
         avg_scores = [
-            round(sum(scores_by_date[date]) / len(scores_by_date[date]), 2)
-            if scores_by_date[date]
-            else None
+            (
+                round(sum(scores_by_date[date]) / len(scores_by_date[date]), 2)
+                if scores_by_date[date]
+                else None
+            )
             for date in dates
         ]
         scans_counts = [scans_by_date[date] for date in dates]

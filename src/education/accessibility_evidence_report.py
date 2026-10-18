@@ -229,9 +229,11 @@ class AccessibilityEvidenceReport:
         unresolved_total = (
             tracked_open
             if tracker_coverage == "complete"
-            else max(raw_total - tracked_closed, tracked_open)
-            if raw_total is not None
-            else None
+            else (
+                max(raw_total - tracked_closed, tracked_open)
+                if raw_total is not None
+                else None
+            )
         )
 
         if not results:

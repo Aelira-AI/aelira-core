@@ -161,6 +161,7 @@ static flags = {
       this.log('  - Change: Unavailable (one assessed point)\n')
       return
     }
+
     const change = lastScore - firstScore
     const arrow = change >= 0 ? '↑' : '↓'
     this.log(`  - Change: ${arrow} ${Math.abs(change).toFixed(1)} points\n`)

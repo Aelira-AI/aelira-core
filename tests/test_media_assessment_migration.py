@@ -13,7 +13,6 @@ from sqlalchemy.exc import DBAPIError
 
 from conftest import require_disposable_postgres_url
 
-
 pytestmark = pytest.mark.integration
 
 

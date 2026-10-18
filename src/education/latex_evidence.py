@@ -220,9 +220,11 @@ def public_scan_structure(value, scan_type):
             reason = assessment.get("reason") if isinstance(assessment, dict) else None
             safe["flashing_assessment"] = {
                 "state": "unassessed",
-                "reason": reason
-                if reason in {"detector_unavailable", "disabled", "analysis_failed"}
-                else "detector_unavailable",
+                "reason": (
+                    reason
+                    if reason in {"detector_unavailable", "disabled", "analysis_failed"}
+                    else "detector_unavailable"
+                ),
                 "version": "unassessed-v1",
             }
         output = safe.get("transcription_output")

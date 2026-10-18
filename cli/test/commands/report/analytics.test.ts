@@ -2,11 +2,13 @@ import { expect } from 'chai'
 
 import ReportAnalytics from '../../../src/commands/report/analytics.js'
 
-function renderTrend(points: Array<{ avg_compliance_score: number | null }>): string {
+function renderTrend(points: Array<{ avg_compliance_score: null | number }>): string {
   const lines: string[] = []
   const command = Object.create(ReportAnalytics.prototype) as ReportAnalytics
   command.log = (line = '') => { lines.push(line) }
+
   ;(command as any).renderHistoricalTrend(points)
+
   return lines.join('\n')
 }
 

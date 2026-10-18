@@ -182,11 +182,15 @@ def process_multimedia_background(
             "manual_review_required": True,
             "verification_limitations": [
                 "Source feature checks do not verify caption accuracy or audio-description applicability.",
-                "Whole-video flashing safety has not been assessed."
-                if result.media_type == "video"
-                else "Flashing assessment does not apply to audio-only media."
-                if result.media_type == "audio"
-                else "Media type and flashing safety could not be assessed.",
+                (
+                    "Whole-video flashing safety has not been assessed."
+                    if result.media_type == "video"
+                    else (
+                        "Flashing assessment does not apply to audio-only media."
+                        if result.media_type == "audio"
+                        else "Media type and flashing safety could not be assessed."
+                    )
+                ),
                 "Generated companion files have not undergone a comparable accessibility rescan.",
             ],
             "media_type": result.media_type,

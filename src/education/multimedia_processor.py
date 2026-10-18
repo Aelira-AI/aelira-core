@@ -298,9 +298,7 @@ class MultimediaProcessor:
                 reason=(
                     "analysis_failed"
                     if media_type == "unknown"
-                    else "detector_unavailable"
-                    if detect_flashing
-                    else "disabled"
+                    else "detector_unavailable" if detect_flashing else "disabled"
                 )
             )
 
