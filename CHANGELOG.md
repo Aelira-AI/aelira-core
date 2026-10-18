@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.13] - 2026-10-19
 
-This is a local release candidate. The native security change is merged; the
-media assessment change is present in this combined source tree but its PR is
-still open. Publication and final combined-artifact acceptance remain pending.
+This combined-source release candidate is represented by open draft
+[#682](https://github.com/Aelira-AI/aelira-core/pull/682). The native security
+change is merged; publication and final combined-artifact acceptance remain
+pending.
 See the [release notes](docs/releases/v0.9.13.md) for operator actions and
 evidence limits.
 
@@ -41,7 +42,7 @@ evidence limits.
 
 ### Fixed
 
-- The combined candidate retains unmeasured video as unassessed, withholds an overall score and unverified credit, and withholds mixed LMS averages when a scanned item lacks a measured score. A linked null-score Canvas scan is labelled “Unassessed”; an item without a linked scan is “Not scanned”. Numeric zero stays measured. This source comes from open [#681](https://github.com/Aelira-AI/aelira-core/pull/681), so final-image and provider acceptance remain pending.
+- Open [#681](https://github.com/Aelira-AI/aelira-core/pull/681) supplies the media assessment change: unmeasured video remains unassessed without an overall score or unverified credit, and mixed LMS averages are withheld when a scanned item lacks a measured score. Linked null-score Canvas scans show “Unassessed”; Canvas content without a linked scan shows “Not scanned”. Numeric zero stays measured. Draft [#682](https://github.com/Aelira-AI/aelira-core/pull/682) adds the completed null-score Brightspace row label “Unassessed”. Final-image and provider acceptance remain pending.
 - The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).
 - Canvas course scans can retain a file and another content item with the same native ID. The original cloud-file constraint rejected that valid pair despite the newer course/content identity index, causing the durable scan to fail. Uniqueness for other cloud providers remains enforced ([#650](https://github.com/Aelira-AI/aelira-core/issues/650)).
 
