@@ -34,8 +34,11 @@ The image gate compares the installed package version with the receipt,
 checks the installed library hash and real path loaded by Perl XML::LibXML,
 and checks every shipped image layer for a single matching system library
 payload. Native checks also require ordinary XML parsing, XSLT, LaTeXML
-MathML conversion, FFmpeg DASH XML parsing and ImageMagick's XML-backed MSVG
-decoder to work. An 11 MiB plain-text document must parse with
+MathML conversion, FFmpeg DASH XML parsing and ImageMagick's supported MSL
+XML reader to work. The MSL check reads a PNG, writes a PNG, verifies its
+dimensions and pixels, and confirms that ImageMagick loaded the same system
+libxml2 recorded in the receipt. It does not add SVG support to the image.
+An 11 MiB plain-text document must parse with
 `XML_PARSE_HUGE`; a high-amplification document must be rejected with that
 option enabled. The machine-readable CVE-2026-6653 disposition applies only
 to the exact rebuilt Debian package when these checks pass.

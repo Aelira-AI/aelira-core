@@ -19,7 +19,11 @@ function run(command: string, args: string[], outputFd?: number): string {
     stdio: outputFd === undefined ? ['ignore', 'pipe', 'pipe'] : ['ignore', outputFd, 'pipe'],
   });
   if (result.error || result.status !== 0) {
-    throw new Error(`${command} ${args[0] ?? ''} failed: ${result.error ?? result.stderr ?? result.status}`);
+    const detail = result.error?.message ??
+      (typeof result.stderr === 'string' && result.stderr.trim()
+        ? result.stderr.slice(-8192).trimEnd()
+        : `exit ${result.status ?? 'unknown'}`);
+    throw new Error(`${command} ${args[0] ?? ''} failed: ${detail}`);
   }
   return typeof result.stdout === 'string' ? result.stdout : '';
 }
@@ -123,32 +127,66 @@ function checkFullConsumers(image: string): void {
   const script = String.raw`
     set -eu
     export XDG_CACHE_HOME=/tmp/.cache TEXMFVAR=/tmp/texmf-var TEXMFCONFIG=/tmp/texmf-config
+    cd /tmp
+    run_logged() {
+      label=$1 log=$2
+      shift 2
+      if "$@" >"$log" 2>&1; then return 0; else status=$?; fi
+      printf '%s failed (exit %s); last 4096 log bytes:\n' "$label" "$status" >&2
+      tail -c 4096 "$log" >&2
+      exit "$status"
+    }
     cat > /tmp/consumer.tex <<'TEX'
 \documentclass{article}
 \begin{document}
 Accessible equation: \(x^2 + y^2 = z^2\).
 \end{document}
 TEX
-    latexml --destination=/tmp/consumer.xml /tmp/consumer.tex >/tmp/latexml.log 2>&1
-    latexmlpost --format=html5 --destination=/tmp/consumer.html /tmp/consumer.xml >/tmp/latexmlpost.log 2>&1
-    grep -q '<math' /tmp/consumer.html
-    ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=44100 -t 0.2 -c:a aac -f dash /tmp/consumer.mpd
-    ffprobe -v error -show_entries stream=codec_name -of default=noprint_wrappers=1 /tmp/consumer.mpd | grep -q codec_name=aac
-    cat > /tmp/consumer.svg <<'SVG'
-<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red"/></svg>
-SVG
+    run_logged LaTeXML /tmp/latexml.log latexml --destination=/tmp/consumer.xml /tmp/consumer.tex
+    run_logged LaTeXMLPost /tmp/latexmlpost.log latexmlpost --format=html5 --destination=/tmp/consumer.html /tmp/consumer.xml
+    if ! grep -q '<math' /tmp/consumer.html; then
+      echo 'LaTeXMLPost output lacks MathML; last 4096 log bytes:' >&2
+      tail -c 4096 /tmp/latexmlpost.log >&2
+      exit 1
+    fi
+    run_logged FFmpeg /tmp/ffmpeg.log ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=44100 -t 0.2 -c:a aac -f dash /tmp/consumer.mpd
+    run_logged FFprobe /tmp/ffprobe.log ffprobe -v error -show_entries stream=codec_name -of default=noprint_wrappers=1 /tmp/consumer.mpd
+    if ! grep -q codec_name=aac /tmp/ffprobe.log; then
+      echo 'FFprobe DASH output lacks AAC; last 4096 probe bytes:' >&2
+      tail -c 4096 /tmp/ffprobe.log >&2
+      exit 1
+    fi
+    cat > /tmp/control.msl <<'MSL'
+<?xml version="1.0" encoding="UTF-8"?>
+<image><read filename="/tmp/input.png"/><write filename="/tmp/output.png"/></image>
+MSL
     perl -MImage::Magick -MCwd=realpath -e '
       use strict; use warnings;
+      my $source = Image::Magick->new(size => "2x2");
+      my $error = $source->Read("xc:red");
+      die "ImageMagick control image creation failed: $error\n" if $error;
+      $error = $source->Write(filename => "/tmp/input.png");
+      die "ImageMagick control PNG write failed: $error\n" if $error;
       my $image = Image::Magick->new;
-      my $error = $image->Read("MSVG:/tmp/consumer.svg");
-      die "ImageMagick MSVG decode failed: $error\n" if $error;
-      die "ImageMagick SVG dimensions changed\n" unless $image->Get("width") == 2 && $image->Get("height") == 2;
+      $error = $image->Read(filename => "MSL:/tmp/control.msl");
+      die "ImageMagick MSL XML read failed: $error\n" if $error;
+      my $output = Image::Magick->new;
+      $error = $output->Read(filename => "/tmp/output.png");
+      die "ImageMagick MSL output read failed: $error\n" if $error;
+      die "ImageMagick MSL output dimensions changed\n" unless $output->Get("width") == 2 && $output->Get("height") == 2;
+      for my $x (0..1) {
+        for my $y (0..1) {
+          my @pixel = $output->GetPixel(x => $x, y => $y, normalize => 1);
+          die "ImageMagick MSL output pixel changed at $x,$y\n"
+            unless @pixel >= 3 && $pixel[0] > 0.99 && $pixel[1] < 0.01 && $pixel[2] < 0.01;
+        }
+      }
       open my $maps, "<", "/proc/self/maps" or die $!;
       my %loaded;
       while (<$maps>) {
         $loaded{realpath($1)} = 1 if m{(/usr/lib/[^ ]+/libxml2[.]so[.]2[.]9[.]14)};
       }
-      die "ImageMagick loaded unexpected libxml2\n" unless keys(%loaded) == 1 && $loaded{$ENV{LIBXML_EXPECTED_PATH}};
+      die "ImageMagick MSL loaded unexpected libxml2\n" unless keys(%loaded) == 1 && $loaded{$ENV{LIBXML_EXPECTED_PATH}};
     '
     echo full-native-xml-consumers-ok
   `;
