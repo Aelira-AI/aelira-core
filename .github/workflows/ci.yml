@@ -989,6 +989,8 @@ jobs:
           bun-version: "1.3.14"
       - name: Test complete image inventory gate
         run: bun test scripts/verify_trivy_inventory.test.ts
+      - name: Test pinned lxml source fetch recovery and refusal
+        run: bun test scripts/lxml_source_fetch.test.ts
       - name: Test upgrade rehearsal isolation and receipt gates
         run: bun test scripts/upgrade_rehearsal.test.ts
       - name: Audit Python runtime dependencies
