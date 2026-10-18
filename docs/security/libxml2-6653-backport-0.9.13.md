@@ -17,10 +17,14 @@ The pinned source archive has SHA-256
 `4fe913dec8b1ab89d13b489b419a8203176ea39e931eaa0d25b17eafb9c279e9`;
 the Debian packaging archive has SHA-256
 `3b6d265f482d6a8fbe3c056d2006fb3b563b4a838f7258b388ac5f0b29206921`;
-and the maintained patch has SHA-256
-`6c2b8a7b6fa470efcb1854e5c73bd7e1ae1663d8b111e27ce9232bbc1fe44f54`.
-These hashes matched the official HTTPS source manifests; the source
-signatures were not independently verified.
+and Canonical's parent packaging archive
+`libxml2_2.9.14+dfsg-1.3ubuntu3.10.debian.tar.xz` has SHA-256
+`d2d821830eb60edbcfcbe30e2827420e9e439e98c85c812352969cdda764d60b`.
+These source and packaging archive hashes matched official HTTPS manifests.
+The extracted patch's SHA-256,
+`6c2b8a7b6fa470efcb1854e5c73bd7e1ae1663d8b111e27ce9232bbc1fe44f54`,
+was computed locally; the extracted patch was byte-identical to the checked-in
+patch. Source signatures were not independently verified.
 The packaging script applies all 40 Debian patches first, then requires the
 backport to apply with zero fuzz and only its observed three-line parser
 offset. Debian's own build rules retain its configuration, hardening and

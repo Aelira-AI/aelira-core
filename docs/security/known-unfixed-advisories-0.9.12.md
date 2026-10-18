@@ -216,11 +216,13 @@ the reviewed source revision on both architectures.
 
 ### CVE-2026-6653 remains open
 
-The historical table's `not_affected` claim for distribution `libxml2` is not
-supported by the current image evidence. Its claim that the ImageMagick policy
-permits only GIF, JPEG, PNG and WebP does not hold in either native candidate
-image. The machine-readable exception has been removed. Trivy reports this
-`libxml2` finding as CRITICAL, so the inventory gate now fails closed on it.
-Resolution requires an independently verified repair or defensible
-cross-consumer reachability assessment for distribution `libxml2`; the three
-component-absence dispositions above do not resolve it.
+The historical table's `not_affected` claim for distribution `libxml2` is
+withdrawn. Its claim that the ImageMagick policy permits only GIF, JPEG, PNG
+and WebP does not hold in either native candidate image. The old
+machine-readable exception was removed, and stock Debian `libxml2` remains
+blocked by the CRITICAL Trivy inventory gate. The subsequent `+aelira1`
+backport has a [conditional repair disposition](libxml2-6653-backport-0.9.13.md):
+acceptance requires the rebuilt package, native consumer checks and shipped
+layer checks to pass for the exact image. The other `libxml2` advisories remain
+affected and disclosed; the three component-absence dispositions above do not
+resolve them.
