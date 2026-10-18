@@ -1715,6 +1715,8 @@ jobs:
           path: test-results/api-image-inventory/
           if-no-files-found: warn
           retention-days: 14
+      - name: Verify native ImageMagick encoders and CUPS backend absence
+        run: bun run scripts/verify_native_media_components.ts aelira-worker-isolation:test
       - name: Reject unresolved HIGH and CRITICAL API image findings
         run: |
           set -euo pipefail

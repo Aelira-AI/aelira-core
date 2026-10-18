@@ -309,6 +309,22 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-55453",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcups2t64",
+          "installedVersion": "2.4.10-3+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "CUPS ipp backend is a separately built executable; the reviewed native image contains the client library but no ipp backend or CUPS server.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-16",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
       "id": "CVE-2026-58049",
       "osFamily": "debian",
       "packages": [
@@ -784,22 +800,6 @@
       "status": "not_affected",
       "justification": "inline_mitigations_already_exist",
       "reason": "PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-6653",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1753,6 +1753,86 @@
       "reason": "libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-93589",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "ImageMagick FLIF encoder is behind MAGICKCORE_FLIF_DELEGATE and is absent from the reviewed native image; the FLIF coder is not registered.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-16",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-93590",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "ImageMagick UHDR encoder is behind MAGICKCORE_UHDR_DELEGATE and is absent from the reviewed native image; the UHDR coder is not registered.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-16",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {

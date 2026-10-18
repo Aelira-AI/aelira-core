@@ -185,3 +185,39 @@ release.
 The bundled versions were read from the library files inside the published
 wheels for both architectures. The historical `pi_heif` gap and its removal are tracked in
 [#583](https://github.com/Aelira-AI/aelira-core/issues/583).
+
+### New scanner findings in the subsequent 0.9.13 candidate
+
+The native amd64 and arm64 candidate images retain ImageMagick
+`8:7.1.1.43+dfsg1-1+deb13u12` and `libcups2t64 2.4.10-3+deb13u2`.
+The following exact package versions have review-bound `not_affected`
+dispositions through 2027-01-16. The scanner findings remain visible.
+
+| Advisory | Affected scanner packages | Why the vulnerable component is absent |
+| --- | --- | --- |
+| CVE-2026-93589 | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | The FLIF writer and registration in ImageMagick 7.1.1-43 are guarded by `MAGICKCORE_FLIF_DELEGATE`. The native image does not provide the FLIF encoder. |
+| CVE-2026-93590 | The same seven ImageMagick packages | The UHDR writer and registration in ImageMagick 7.1.1-43 are guarded by `MAGICKCORE_UHDR_DELEGATE`. The native image does not provide the UHDR encoder. |
+| CVE-2026-55453 | `libcups2t64` | The vulnerable IPP backend is built separately from the CUPS client library. The native image has the client library but no IPP backend executable. |
+
+The [ImageMagick FLIF source](https://raw.githubusercontent.com/ImageMagick/ImageMagick/7.1.1-43/coders/flif.c),
+[UHDR source](https://raw.githubusercontent.com/ImageMagick/ImageMagick/7.1.1-43/coders/uhdr.c),
+[CUPS backend build](https://raw.githubusercontent.com/OpenPrinting/cups/v2.4.10/backend/Makefile),
+and [CUPS advisory](https://github.com/OpenPrinting/cups/security/advisories/GHSA-7hqf-mfhx-7r3v)
+identify the affected components. Debian tracks the ImageMagick findings as
+[CVE-2026-93589](https://security-tracker.debian.org/tracker/CVE-2026-93589)
+and [CVE-2026-93590](https://security-tracker.debian.org/tracker/CVE-2026-93590).
+The native-image CI check asserts the exact package versions, missing
+capabilities and backend paths, successful PNG/JPEG controls, and absence of
+the component names throughout the shipped layers. A changed package version
+or newly installed component requires a fresh assessment.
+
+### CVE-2026-6653 remains open
+
+The historical table's `not_affected` claim for distribution `libxml2` is not
+supported by the current image evidence. Its claim that the ImageMagick policy
+permits only GIF, JPEG, PNG and WebP does not hold in either native candidate
+image. The machine-readable exception has been removed. Trivy reports this
+`libxml2` finding as CRITICAL, so the inventory gate now fails closed on it.
+Resolution requires an independently verified repair or defensible
+cross-consumer reachability assessment for distribution `libxml2`; the three
+component-absence dispositions above do not resolve it.
