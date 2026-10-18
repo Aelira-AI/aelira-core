@@ -309,27 +309,6 @@ async def shutdown_event():
         logger.error("Error closing LLM provider manager: (%s)", type(e).__name__)
 
 
-# CORS middleware - properly configured
-# Note: Cannot use ["*"] with credentials=True (CORS spec violation)
-# Using explicit origins list for both dev and prod
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=settings.cors_allow_credentials,
-    allow_methods=settings.cors_allow_methods,
-    allow_headers=settings.cors_allow_headers,
-    expose_headers=settings.cors_expose_headers,
-)
-
-# Security Headers middleware (CSP, HSTS, X-Frame-Options, etc.)
-if settings.enable_security_headers:
-    app.add_middleware(
-        SecurityHeadersMiddleware,
-        enable_hsts=settings.enable_hsts and settings.env == "production",
-        hsts_max_age=settings.hsts_max_age,
-    )
-    logger.info("Security headers middleware enabled")
-
 # CSRF Protection middleware
 if settings.enable_csrf:
     app.add_middleware(
@@ -348,6 +327,28 @@ if settings.enable_csrf:
         enabled=settings.env == "production",  # Only enforce in production
     )
     logger.info("CSRF protection middleware enabled")
+
+# Starlette runs the last registered middleware first. CORS must wrap CSRF
+# so browser clients can read CSRF refusals. Security headers and metrics
+# remain outside CORS so preflight responses retain those controls.
+# Note: Cannot use ["*"] with credentials=True (CORS spec violation).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=settings.cors_allow_methods,
+    allow_headers=settings.cors_allow_headers,
+    expose_headers=settings.cors_expose_headers,
+)
+
+# Security Headers middleware (CSP, HSTS, X-Frame-Options, etc.)
+if settings.enable_security_headers:
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        enable_hsts=settings.enable_hsts and settings.env == "production",
+        hsts_max_age=settings.hsts_max_age,
+    )
+    logger.info("Security headers middleware enabled")
 
 
 # Prometheus metrics middleware for request tracking
