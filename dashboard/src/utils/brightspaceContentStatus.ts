@@ -15,6 +15,19 @@ export interface BrightspaceContentStatusBadge {
   variant: BrightspaceStatusBadgeVariant;
 }
 
+export function getBrightspaceContentAssessmentLabels(item: {
+  compliance_score: number | null;
+  scan_status: string | null;
+}): { score: string; fallbackStatus: string } {
+  if (item.compliance_score !== null) {
+    return { score: `${item.compliance_score.toFixed(0)}%`, fallbackStatus: 'Scanned' };
+  }
+  if (item.scan_status === 'COMPLETED') {
+    return { score: 'Unassessed', fallbackStatus: 'Unassessed' };
+  }
+  return { score: 'Not scanned', fallbackStatus: 'Pending' };
+}
+
 const APPROVABLE_WRITEBACK_STATUSES = new Set<string | null>([
   null,
   'remediated',

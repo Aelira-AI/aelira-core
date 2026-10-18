@@ -37,7 +37,10 @@ import {
   brightspaceApprovalSummary,
   brightspaceWritebackSummary,
 } from '../utils/brightspaceBatchSelection';
-import { resolveBrightspaceContentStatus } from '../utils/brightspaceContentStatus';
+import {
+  getBrightspaceContentAssessmentLabels,
+  resolveBrightspaceContentStatus,
+} from '../utils/brightspaceContentStatus';
 import { scannedAverage } from '../utils/scannedAverage';
 import { apiClient } from '../api/client';
 import { Badge } from '../components/ui/Badge';
@@ -970,7 +973,7 @@ export default function BrightspaceContentPage({
                         {!isCollapsed &&
                           items.map((item, idx) => {
                             const scoreBadgeVariant = getComplianceBadgeVariant(item.compliance_score);
-                            const scoreBadgeLabel = getComplianceBadgeLabel(item.compliance_score);
+                            const assessmentLabels = getBrightspaceContentAssessmentLabels(item);
                             const statusBadge = resolveBrightspaceContentStatus(item);
 
                             return (
@@ -1016,7 +1019,7 @@ export default function BrightspaceContentPage({
                                       item.compliance_score < 70 && (
                                         <AlertTriangle className="w-3 h-3" />
                                       )}
-                                    {scoreBadgeLabel}
+                                    {assessmentLabels.score}
                                   </Badge>
                                 </td>
 
@@ -1044,10 +1047,8 @@ export default function BrightspaceContentPage({
                                       )}
                                       {statusBadge.label}
                                     </Badge>
-                                  ) : item.compliance_score !== null ? (
-                                    <Badge variant="neutral">Scanned</Badge>
                                   ) : (
-                                    <Badge variant="neutral">Pending</Badge>
+                                    <Badge variant="neutral">{assessmentLabels.fallbackStatus}</Badge>
                                   )}
                                 </td>
 
