@@ -210,11 +210,85 @@ def test_current_membership_changes_recompute_without_mutating_prior_rollup():
 @pytest.mark.parametrize(
     "invalid_score", [None, "not-a-score", float("nan"), float("inf"), -1, 101]
 )
-def test_invalid_verified_scores_fail_closed(invalid_score):
+def test_invalid_scores_keep_document_coverage_without_fabricating_a_score(
+    invalid_score,
+):
+    rollup = aggregate_institution_compliance(
+        "Example University",
+        [_department_rollup("dept-a", "A", [invalid_score])],
+    )
+
+    assert rollup.coverage.enrolled == 1
+    assert rollup.coverage.scanned == 1
+    assert rollup.coverage.verified == 0
+    assert rollup.coverage.total_coverage_percent == 0
+    assert rollup.document_weighted_score is None
+    assert rollup.flat_department_mean is None
+    assert rollup.departments[0].coverage == rollup.coverage
+    assert rollup.departments[0].document_weighted_score is None
+    assert rollup.departments[0].score_numerator == 0
+
+
+def test_valid_boundaries_and_invalid_scores_preserve_document_weighting():
+    rollup = aggregate_institution_compliance(
+        "Example University",
+        [
+            _department_rollup("dept-a", "A", [None, 0, 100]),
+            _department_rollup("dept-b", "B", [80, float("nan"), float("inf"), -1]),
+        ],
+    )
+
+    assert rollup.coverage.enrolled == 7
+    assert rollup.coverage.scanned == 7
+    assert rollup.coverage.verified == 3
+    assert rollup.coverage.total_coverage_percent == pytest.approx(42.86)
+    assert rollup.document_weighted_score == 60
+    assert rollup.flat_department_mean == 65
+    assert [
+        department.document_weighted_score for department in rollup.departments
+    ] == [50, 80]
+    assert [department.score_numerator for department in rollup.departments] == [
+        100,
+        80,
+    ]
+    assert [department.coverage.verified for department in rollup.departments] == [
+        2,
+        1,
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid_score", [None, "not-a-score", float("nan"), float("inf"), -1, 101]
+)
+def test_corrupt_projection_claiming_invalid_score_is_verified_fails_closed(
+    invalid_score,
+):
+    # Model a broken projection that promotes a raw result past verification.
+    class CorruptVerifiedProjection(CurrentComplianceProjection):
+        @property
+        def verified_documents(self):
+            return self.current_documents
+
+    scan = _scan("invalid", department_id="dept-a", file_hash="a" * 64)
+    projection = CorruptVerifiedProjection(
+        historical_scans=(scan,),
+        current_documents=(
+            CurrentDocumentState(
+                identity="dept-a:sha256:" + "a" * 64,
+                source_kind="standalone_upload",
+                scan=scan,
+                result=_result(scan.id, invalid_score),
+                latest_attempt=scan,
+            ),
+        ),
+    )
+    assert not projection.current_documents[0].verified
+    assert projection.verified_document_count == 1
+
     with pytest.raises(InvalidComplianceStateError):
         aggregate_institution_compliance(
             "Example University",
-            [_department_rollup("dept-a", "A", [invalid_score])],
+            [DepartmentCurrentCompliance("dept-a", "A", projection)],
         )
 
 
