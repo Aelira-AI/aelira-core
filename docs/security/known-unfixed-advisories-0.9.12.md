@@ -7,8 +7,9 @@ updating packages. Each one is reviewed, listed here, and accepted by the
 release gate only while its review is current
 (`.trivy-unfixed-dispositions.json`, reviewed 2026-10-15, expires 2027-01-12).
 Every finding stays in the published scan reports. This historical table
-records the v0.9.12 assessment; the Expat rationale that proved wrong is
-corrected under [Corrections after publication](#corrections-after-publication).
+records the v0.9.12 assessment; the Expat rationale and CVE-2026-6653
+disposition that proved wrong are corrected under
+[Corrections after publication](#corrections-after-publication).
 
 **Not affected** means the vulnerable code cannot be reached in this image, for
 the stated reason. **Affected** means the vulnerable library processes content
@@ -89,7 +90,7 @@ handled directly:
 | CVE-2026-66040 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PNG decoding in FFmpeg. Media inputs are restricted to the supported codec allowlist, which excludes PNG; FFmpeg only writes PNG frames. |
 | CVE-2026-66041 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | PGS/SUP subtitle decoder. Media inputs are restricted to the supported container and codec allowlists, which exclude PGS. |
 | CVE-2026-66046 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses a separate bundled Expat 2.8.5; its advisory status is assessed independently below. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
-| CVE-2026-6653 | libxml2 | `vulnerable_code_cannot_be_controlled_by_adversary` | libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4. |
+| CVE-2026-6653 | libxml2 | **Withdrawn** (formerly `vulnerable_code_cannot_be_controlled_by_adversary`) | The v0.9.12 assessment claimed submitted content could not reach distribution libxml2 as a parsed document prolog, in part because ImageMagick supposedly permitted only GIF, JPEG, PNG and WebP. That format-policy claim was disproved in native candidate images. The exception was removed; see the [current open assessment](#cve-2026-6653-remains-open). |
 | CVE-2026-67215 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON JSON Patch handling. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-67216 | libcjson1 | `vulnerable_code_not_in_execute_path` | cJSON object comparison. cJSON's only consumer is librist, used solely by FFmpeg's RIST protocol, which media input restrictions exclude. |
 | CVE-2026-70628 | ffmpeg, libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libpostproc58, libswresample5, libswscale8 | `inline_mitigations_already_exist` | WTV demuxer and DVB subtitle parsing. Media inputs are restricted to the supported container and codec allowlists, which exclude both. |
@@ -188,16 +189,16 @@ wheels for both architectures. The historical `pi_heif` gap and its removal are 
 
 ### New scanner findings in the subsequent 0.9.13 candidate
 
-The native amd64 and arm64 candidate images retain ImageMagick
-`8:7.1.1.43+dfsg1-1+deb13u12` and `libcups2t64 2.4.10-3+deb13u2`.
-The following exact package versions have review-bound `not_affected`
-dispositions through 2027-01-16. The scanner findings remain visible.
+The following review-bound `not_affected` dispositions target ImageMagick
+`8:7.1.1.43+dfsg1-1+deb13u12` and `libcups2t64 2.4.10-3+deb13u2` on
+native amd64 and arm64 candidates through 2027-01-16. The scanner findings
+remain visible.
 
-| Advisory | Affected scanner packages | Why the vulnerable component is absent |
+| Advisory | Affected scanner packages | Basis to verify in each candidate image |
 | --- | --- | --- |
-| CVE-2026-93589 | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | The FLIF writer and registration in ImageMagick 7.1.1-43 are guarded by `MAGICKCORE_FLIF_DELEGATE`. The native image does not provide the FLIF encoder. |
-| CVE-2026-93590 | The same seven ImageMagick packages | The UHDR writer and registration in ImageMagick 7.1.1-43 are guarded by `MAGICKCORE_UHDR_DELEGATE`. The native image does not provide the UHDR encoder. |
-| CVE-2026-55453 | `libcups2t64` | The vulnerable IPP backend is built separately from the CUPS client library. The native image has the client library but no IPP backend executable. |
+| CVE-2026-93589 | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | ImageMagick 7.1.1-43 compiles the FLIF reader and writer only with `MAGICKCORE_FLIF_DELEGATE` and assigns the decoder and encoder handlers only under that guard. The format registration itself remains unconditional. The candidate image must have no FLIF encoder. |
+| CVE-2026-93590 | The same seven ImageMagick packages | ImageMagick 7.1.1-43 compiles the UHDR reader and writer only with `MAGICKCORE_UHDR_DELEGATE` and assigns the decoder and encoder handlers only under that guard. The format registration itself remains unconditional. The candidate image must have no UHDR encoder. |
+| CVE-2026-55453 | `libcups2t64` | The vulnerable IPP backend is built separately from the CUPS client library. The candidate image must have the client library without the IPP backend executable. |
 
 The [ImageMagick FLIF source](https://raw.githubusercontent.com/ImageMagick/ImageMagick/7.1.1-43/coders/flif.c),
 [UHDR source](https://raw.githubusercontent.com/ImageMagick/ImageMagick/7.1.1-43/coders/uhdr.c),
@@ -206,10 +207,12 @@ and [CUPS advisory](https://github.com/OpenPrinting/cups/security/advisories/GHS
 identify the affected components. Debian tracks the ImageMagick findings as
 [CVE-2026-93589](https://security-tracker.debian.org/tracker/CVE-2026-93589)
 and [CVE-2026-93590](https://security-tracker.debian.org/tracker/CVE-2026-93590).
-The native-image CI check asserts the exact package versions, missing
-capabilities and backend paths, successful PNG/JPEG controls, and absence of
-the component names throughout the shipped layers. A changed package version
-or newly installed component requires a fresh assessment.
+The native-image CI check is configured to assert the exact package versions,
+missing capabilities and backend paths, successful PNG/JPEG controls, and
+absence of the component names throughout the shipped layers. A changed
+package version or newly installed component requires a fresh assessment.
+Acceptance requires matching candidate-image evidence and a passing CI run for
+the reviewed source revision on both architectures.
 
 ### CVE-2026-6653 remains open
 
