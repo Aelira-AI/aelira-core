@@ -17,22 +17,49 @@ export const cupsVersion = '2.4.10-3+deb13u2';
 export function forbiddenLayerMember(raw: string): boolean {
   const path = raw.replace(/^\.\//, '').replace(/^\//, '').toLowerCase();
   const base = path.split('/').at(-1) ?? '';
-  return /(?:^|[/.])(?:flif|uhdr|ultrahdr)(?:[/.]|$)/.test(path) ||
+  return /(?:flif|uhdr|ultrahdr)/.test(base) ||
+    /(?:^|\/)(?:flif|uhdr|ultrahdr)(?:\/|$)/.test(path) ||
     /(?:^|\/)cups\/(?:backend|apple)(?:\/|$)/.test(path) ||
     /^(?:ipp|ipps|cupsd|\.wh\.(?:ipp|ipps|cupsd))$/.test(base) &&
       /(?:^|\/)(?:cups|sbin|bin|backend)\//.test(path);
 }
 
+export function checkLayerPaths(paths: string[]): void {
+  const hit = paths.find(forbiddenLayerMember);
+  if (hit) throw new Error(`vulnerable component path occurs in shipped layer: ${hit}`);
+}
+
 export function checkPackages(output: string): void {
-  const installed = new Map(output.trim().split('\n').map((line) => {
+  const rows = output.trim().split('\n').map((line) => {
     const fields = line.split('\t');
     if (fields.length !== 2) throw new Error(`malformed package row: ${line}`);
     return [fields[0], fields[1]];
-  }));
+  });
+  const installed = new Map(rows);
+  if (installed.size !== rows.length) throw new Error('duplicate package inventory row');
   for (const name of imageMagickPackages) {
     if (installed.get(name) !== imageMagickVersion) throw new Error(`${name} differs from reviewed version`);
   }
   if (installed.get('libcups2t64') !== cupsVersion) throw new Error('libcups2t64 differs from reviewed version');
+}
+
+export function checkCapabilities(formats: string, modules: string): void {
+  const rows = new Map<string, string>();
+  for (const line of formats.split('\n')) {
+    const match = /^\s*([A-Za-z0-9]+)\*?\s+[A-Za-z0-9]+\s+([r-][w-][+\-])\s+/.exec(line);
+    if (match) rows.set(match[1].toUpperCase(), match[2]);
+  }
+  for (const name of ['PNG', 'JPEG']) {
+    if (!rows.get(name)?.includes('w')) throw new Error(`${name} write capability is unavailable`);
+  }
+  const moduleNames = new Set(modules.split('\n').map((line) => line.trim().toUpperCase()));
+  for (const name of ['PNG', 'JPEG']) {
+    if (!moduleNames.has(name)) throw new Error(`${name} coder module is unavailable`);
+  }
+  for (const name of ['FLIF', 'UHDR']) {
+    if (rows.has(name)) throw new Error(`${name} format is registered`);
+    if (moduleNames.has(name)) throw new Error(`${name} coder module is registered`);
+  }
 }
 
 function run(command: string, args: string[], outputFd?: number): string {
@@ -48,23 +75,34 @@ function run(command: string, args: string[], outputFd?: number): string {
 }
 
 function nativeCheck(image: string): void {
+  const packages = run('docker', [
+    'run', '--rm', '--network', 'none', '--read-only', '--user', 'aelira',
+    '--entrypoint', 'dpkg-query', image, '-W', '-f=${Package}\t${Version}\n',
+    ...imageMagickPackages, 'libcups2t64',
+  ]);
+  checkPackages(packages);
+  const magickArgs = [
+    'run', '--rm', '--network', 'none', '--read-only', '--user', 'aelira',
+    '--entrypoint', 'magick', image, '-list',
+  ];
+  checkCapabilities(
+    run('docker', [...magickArgs, 'format']),
+    run('docker', [...magickArgs, 'module']),
+  );
   const script = `
     set -eu
-    for p in imagemagick imagemagick-7-common imagemagick-7.q16 libimage-magick-perl libimage-magick-q16-perl libmagickcore-7.q16-10 libmagickwand-7.q16-10; do
-      test "$(dpkg-query -W -f='\${Version}' "$p")" = '8:7.1.1.43+dfsg1-1+deb13u12'
-    done
-    test "$(dpkg-query -W -f='\${Version}' libcups2t64)" = '2.4.10-3+deb13u2'
     test -f /usr/lib/*/libcups.so.2
     for p in /usr/lib/cups/backend /usr/libexec/cups/backend /usr/lib/cups/apple /usr/libexec/cups/apple; do test ! -e "$p"; done
     for p in /usr/sbin/cupsd /usr/lib/cups/backend/ipp /usr/lib/cups/backend/ipps; do test ! -e "$p"; done
     for f in FLIF UHDR; do
-      if magick -list format | awk -v f="$f" '$1 == f { found=1 } END { exit !found }'; then exit 21; fi
-      if magick -list module | awk -v f="$f" '$1 == f { found=1 } END { exit !found }'; then exit 22; fi
-      if magick -size 1x1 xc:red "$f:/tmp/forbidden" >/dev/null 2>&1; then exit 23; fi
+      lower=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
+      if magick -size 1x1 xc:red "/tmp/forbidden.$lower" >/dev/null 2>&1; then exit 23; fi
     done
     magick -size 1x1 xc:red png:/tmp/control.png
     magick /tmp/control.png jpeg:/tmp/control.jpg
     magick identify /tmp/control.png /tmp/control.jpg >/dev/null
+    perl -MImage::Magick -e 'for my $f (qw(PNG JPEG)) { my @q=Image::Magick->QueryFormat($f); die "missing $f format\\n" unless @q && grep { defined($_) && length($_) } @q; } for my $f (qw(FLIF UHDR)) { my @q=Image::Magick->QueryFormat($f); die "unexpected $f format\\n" if grep { defined($_) && length($_) } @q; }'
+    perl -MImage::Magick -e 'for my $ext (qw(png jpg)) { my $i=Image::Magick->new(size=>"2x2"); my $e=$i->Read("xc:red"); die $e if $e; $e=$i->Write(filename=>"/tmp/perl-control.$ext"); die $e if $e; my $r=Image::Magick->new; $e=$r->Read("/tmp/perl-control.$ext"); die $e if $e; die "bad readback\\n" unless $r->Get("width")==2 && $r->Get("height")==2; }'
     echo native-media-components-ok
   `;
   const output = run('docker', [
@@ -100,12 +138,11 @@ async function layerCheck(image: string): Promise<void> {
       const readFd = openSync(layerFile, 'r');
       try { readSync(readFd, magic, 0, 2, 0); } finally { closeSync(readFd); }
       const names = run('tar', magic[0] === 0x1f && magic[1] === 0x8b ? ['-tzf', layerFile] : ['-tf', layerFile]).split('\n').filter(Boolean);
-      const hit = names.find(forbiddenLayerMember);
-      if (hit) throw new Error(`vulnerable component occurs in shipped layer ${layer}: ${hit}`);
+      checkLayerPaths(names);
       const verbose = run('tar', magic[0] === 0x1f && magic[1] === 0x8b ? ['-tvzf', layerFile] : ['-tvf', layerFile]);
       for (const line of verbose.split('\n')) {
         const link = line.match(/(?: -> | link to )(.+)$/)?.[1];
-        if (link && forbiddenLayerMember(link)) throw new Error(`vulnerable link target occurs in shipped layer ${layer}: ${link}`);
+        if (link) checkLayerPaths([link]);
       }
     }
   } finally { rmSync(work, { recursive: true, force: true }); }
