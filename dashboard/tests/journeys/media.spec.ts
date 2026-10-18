@@ -31,6 +31,8 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   await expect(page.getByText('teaching-clip.mp4', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /^Scan 1 file/ }).click();
   await expect(page.getByText('teaching-clip.mp4 scan complete', { exact: true })).toBeVisible({ timeout: 240_000 });
+  await expect(page.getByText('Overall compliance unassessed.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download Report' })).toHaveCount(0);
   await assertNoBlockingViolations(page, 'media-scan-complete', testInfo);
   await page.getByRole('link', { name: 'View Full Report' }).click();
   await expect(page.getByRole('heading', { name: 'Rule-based findings (2)' })).toBeVisible();

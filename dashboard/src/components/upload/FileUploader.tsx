@@ -16,6 +16,7 @@ import { Link } from 'react-router-dom';
 import { scansApi } from '../../api/scans';
 import { unwrapResponse } from '../../utils/apiUnwrap';
 import { trackEvent } from '../../utils/analytics';
+import { canDownloadComplianceReport } from '../../utils/reportAvailability';
 import { RemediationStatusLink } from '../results/RemediationStatusLink';
 
 // ============================================================================
@@ -1227,33 +1228,35 @@ export function FileUploader({
                   <ExternalLink className="w-4 h-4" />
                   <span>View Full Report</span>
                 </Link>
-                <button
-                  onClick={async () => {
-                    try {
-                      trackEvent('dash-download-report', {});
-                      const blob = await scansApi.downloadReport(scan.scanId);
-                      const url = window.URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `${scan.filename.replace(/\.[^/.]+$/, '')}_report.pdf`;
-                      document.body.appendChild(a);
-                      a.click();
-                      window.URL.revokeObjectURL(url);
-                      document.body.removeChild(a);
-                    } catch (error) {
-                      console.error('Download failed:', error);
-                      const typedError = error as ApiError;
-                      alert(
-                        'Failed to download report: ' +
-                          (typedError.response?.data?.detail || typedError.message)
-                      );
-                    }
-                  }}
-                  className="btn-secondary flex items-center space-x-2"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download Report</span>
-                </button>
+                {canDownloadComplianceReport(scan.result.compliance_score) && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        trackEvent('dash-download-report', {});
+                        const blob = await scansApi.downloadReport(scan.scanId);
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${scan.filename.replace(/\.[^/.]+$/, '')}_report.pdf`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                      } catch (error) {
+                        console.error('Download failed:', error);
+                        const typedError = error as ApiError;
+                        alert(
+                          'Failed to download report: ' +
+                            (typedError.response?.data?.detail || typedError.message)
+                        );
+                      }
+                    }}
+                    className="btn-secondary flex items-center space-x-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Report</span>
+                  </button>
+                )}
                 {['pdf', 'word', 'powerpoint', 'excel', 'latex'].includes(config.apiType) && (
                   <RemediationStatusLink scanId={scan.scanId} refreshKey={scan.isRemediating} startUnconfirmed={scan.remediationStartFailed} />
                 )}

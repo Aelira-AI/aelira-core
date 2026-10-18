@@ -25,7 +25,7 @@ interface Upload {
 async function scanThroughTheUi(
   page: Page,
   testInfo: TestInfo,
-  options: { card: RegExp; file: string; name: string; keyboard: boolean },
+  options: { card: RegExp; file: string; name: string; keyboard: boolean; verifyReportDownload?: boolean },
 ): Promise<Upload> {
   const { card, file, name, keyboard } = options;
   await page.goto('/upload');
@@ -48,6 +48,13 @@ async function scanThroughTheUi(
   await assertNoBlockingViolations(page, `upload-file-chosen-${name}`, testInfo);
   await press(page.getByRole('button', { name: /^Scan 1 file/ }));
   await expect(page.getByText(`${name} scan complete`, { exact: true })).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByRole('button', { name: 'Download Report' })).toBeVisible();
+  if (options.verifyReportDownload) {
+    const pendingReport = page.waitForEvent('download');
+    await press(page.getByRole('button', { name: 'Download Report' }));
+    const report = await pendingReport;
+    expect((await readFile(await report.path())).subarray(0, 4).toString()).toBe('%PDF');
+  }
   await assertNoBlockingViolations(page, `upload-scan-complete-${name}`, testInfo);
   await press(page.getByRole('link', { name: 'View Full Report' }));
   await expect(page.getByRole('heading', { name })).toBeVisible();
@@ -144,6 +151,7 @@ test.describe('document journeys', () => {
       file: source,
       name: 'metadata.pdf',
       keyboard: true,
+      verifyReportDownload: true,
     });
     const scanned = await findingsShownInReport(page, testInfo, upload.scanId, 'metadata.pdf');
     expect(scanned.issues.map(issueText)).toEqual(
