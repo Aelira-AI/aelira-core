@@ -1564,6 +1564,8 @@ jobs:
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
           bun run scripts/verify_opencv_layers.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
+          bun run scripts/verify_libxml2_6653.ts \
+            "$(docker compose -f docker-compose.quickstart.yml images -q api)" --dev
       - name: Verify quickstart scene codec decoding
         run: |
           docker run --rm --network none \
@@ -1666,7 +1668,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       - name: Verify candidate bundle refusal controls
-        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts
+        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts scripts/verify_libxml2_6653.test.ts
       - name: Load the reproducible API candidate for runtime checks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
         run: |
@@ -1734,6 +1736,7 @@ jobs:
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py
           bun run scripts/verify_python_expat_layers.ts aelira-worker-isolation:test
           bun run scripts/verify_opencv_layers.ts aelira-worker-isolation:test
+          bun run scripts/verify_libxml2_6653.ts aelira-worker-isolation:test
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
       - name: Verify PyAV decodes and resamples the transcription WAV
         run: |

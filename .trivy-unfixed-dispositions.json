@@ -805,6 +805,22 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-6653",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "The exact Debian source package is rebuilt with the reviewed entity amplification patch. Inventory acceptance additionally requires the matching source and patch receipt, rebuilt package version, loaded native library path and hash; stock Debian libxml2 remains unresolved.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-12",
+      "disclosure": "docs/security/libxml2-6653-backport-0.9.13.md"
+    },
+    {
       "id": "CVE-2026-67215",
       "osFamily": "debian",
       "packages": [
@@ -986,7 +1002,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1437,7 +1453,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1452,7 +1468,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1467,7 +1483,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1482,7 +1498,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1497,7 +1513,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1512,7 +1528,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",

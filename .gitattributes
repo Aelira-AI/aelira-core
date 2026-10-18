@@ -4,3 +4,7 @@ tests/fixtures/document_stack/metadata.pdf binary
 # Keep the frozen Windows comparison inputs and source hashes byte-identical.
 runtime-security/gnutls-upn-observation/** -text
 .github/workflows/gnutls-upn-observation.yml text eol=lf
+
+# Keep the reviewed Canonical patch byte-identical, including its original
+# context indentation. Build-time SHA-256 verification depends on these bytes.
+docker/libxml2-6653/CVE-2026-6653.patch -text -whitespace

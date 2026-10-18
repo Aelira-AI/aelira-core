@@ -101,6 +101,7 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/python "$IMAGE" \
             /app/scripts/verify_final_os_packages.py
           bun run scripts/verify_python_expat_layers.ts "$IMAGE"
+          bun run scripts/verify_libxml2_6653.ts "$IMAGE"
 
       - name: Generate SPDX JSON SBOM for immutable image
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
