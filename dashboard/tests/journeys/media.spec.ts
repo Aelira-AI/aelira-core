@@ -149,4 +149,25 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   expect(job.download_available).toBe(false);
   expect(job.artifact_id).toBeNull();
   expect(job.fixed_count).toBe(0);
+
+  await page.goto('/dashboard');
+  const recentRow = page.getByRole('table', { name: 'Recent scans' }).getByRole('row').filter({ hasText: 'teaching-clip.mp4' });
+  await expect(recentRow).toContainText('Unverified');
+  await expect(recentRow.getByRole('button', { name: 'View teaching-clip.mp4' })).toBeVisible();
+  await expect(recentRow.getByRole('button', { name: 'Remediate teaching-clip.mp4' })).toBeVisible();
+  await expect(recentRow.getByRole('button', { name: 'Download report for teaching-clip.mp4' })).toHaveCount(0);
+
+  await page.goto('/history');
+  const historyRow = page.getByRole('table', { name: /Scan history showing/ }).getByRole('row').filter({ hasText: 'teaching-clip.mp4' });
+  await expect(historyRow).toContainText('Unverified');
+  await expect(historyRow.getByRole('button', { name: 'View details for teaching-clip.mp4' })).toBeVisible();
+  await expect(historyRow.getByRole('button', { name: 'Open remediation review for teaching-clip.mp4' })).toBeVisible();
+  await expect(historyRow.getByRole('button', { name: 'Download PDF report for teaching-clip.mp4' })).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileCard = page.locator('.lg\\:hidden .card').filter({ hasText: 'teaching-clip.mp4' });
+  await expect(mobileCard).toContainText('Unverified');
+  await expect(mobileCard.getByRole('button', { name: 'View details for teaching-clip.mp4' })).toBeVisible();
+  await expect(mobileCard.getByRole('button', { name: 'Open remediation review for teaching-clip.mp4' })).toBeVisible();
+  await expect(mobileCard.getByRole('button', { name: 'Download report for teaching-clip.mp4' })).toHaveCount(0);
 });

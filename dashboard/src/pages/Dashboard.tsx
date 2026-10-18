@@ -802,19 +802,21 @@ export function Dashboard(): React.ReactElement {
                             >
                               <Wrench className="w-4 h-4" aria-hidden="true" />
                             </button>
-                            <button
-                              onClick={() => handleDownloadReport(scan.id, scan.filename)}
-                              disabled={downloadingReport === scan.id}
-                              className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-accent)] hover:bg-[var(--surface-secondary)] transition-colors disabled:opacity-50"
-                              aria-label={`Download report for ${scan.filename}`}
-                              title="Download report"
-                            >
-                              {downloadingReport === scan.id ? (
-                                <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
-                              ) : (
-                                <Download className="w-4 h-4" aria-hidden="true" />
-                              )}
-                            </button>
+                            {scan.compliance_score != null && (
+                              <button
+                                onClick={() => handleDownloadReport(scan.id, scan.filename)}
+                                disabled={downloadingReport === scan.id}
+                                className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-accent)] hover:bg-[var(--surface-secondary)] transition-colors disabled:opacity-50"
+                                aria-label={`Download report for ${scan.filename}`}
+                                title="Download report"
+                              >
+                                {downloadingReport === scan.id ? (
+                                  <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <Download className="w-4 h-4" aria-hidden="true" />
+                                )}
+                              </button>
+                            )}
                           </span>
                         ),
                       },

@@ -190,6 +190,20 @@ test.describe('document journeys', () => {
     expect(rescan.compliance_score).toBe(job.remediated_score);
     expect(rescan.issues.length).toBe(job.remaining_count);
     expect(rescan.issues.map(issueText).join(' ')).not.toMatch(/title not set|language not set/i);
+
+    await page.goto('/dashboard');
+    const recentRow = page.getByRole('table', { name: 'Recent scans' }).getByRole('row').filter({ has: page.getByText('metadata.pdf', { exact: true }) });
+    await expect(recentRow.getByRole('button', { name: 'Download report for metadata.pdf' })).toBeVisible();
+    const dashboardReportPending = page.waitForEvent('download');
+    await pressWithKeyboard(page, recentRow.getByRole('button', { name: 'Download report for metadata.pdf' }));
+    expect((await readFile(await (await dashboardReportPending).path())).subarray(0, 4).toString()).toBe('%PDF');
+
+    await page.goto('/history');
+    const historyRow = page.getByRole('table', { name: /Scan history showing/ }).getByRole('row').filter({ has: page.getByText('metadata.pdf', { exact: true }) });
+    await expect(historyRow.getByRole('button', { name: 'Download PDF report for metadata.pdf' })).toBeVisible();
+    const historyReportPending = page.waitForEvent('download');
+    await pressWithKeyboard(page, historyRow.getByRole('button', { name: 'Download PDF report for metadata.pdf' }));
+    expect((await readFile(await (await historyReportPending).path())).subarray(0, 4).toString()).toBe('%PDF');
   });
 
   test('DOCX: scan, issues, remediation, review and approval survive a reload, same bytes', async ({ page }, testInfo) => {
