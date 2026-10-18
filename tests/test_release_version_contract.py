@@ -160,7 +160,8 @@ def test_current_alembic_head_and_release_migration_chain():
             parents = values.get("down_revision")
             descendants.update(parents if isinstance(parents, tuple) else [parents])
 
-    assert set(revisions) - descendants == {"20261017_canvas_scope"}
+    assert set(revisions) - descendants == {"20261018_media_truth"}
+    assert revisions["20261018_media_truth"] == "20261017_canvas_scope"
     assert revisions["20261017_canvas_scope"] == "20260928_pdf_edit_pub"
     assert revisions["20260928_pdf_edit_pub"] == "20260917_unknown_confidence"
     assert revisions["20260917_unknown_confidence"] == "20260905_visual_analysis"

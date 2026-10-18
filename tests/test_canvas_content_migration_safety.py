@@ -22,7 +22,7 @@ MIGRATION_PATH = (
 ROOT = Path(__file__).parents[1]
 PRIOR_REVISION = "2026_03_19_lti_auth"
 TARGET_REVISION = "2026_08_18_canvas_content"
-EXPECTED_HEAD = "20261017_canvas_scope"
+EXPECTED_HEAD = "20261018_media_truth"
 MIGRATION_DATABASE_URL = os.getenv("TEST_MIGRATION_DATABASE_URL")
 DOWNGRADE_REFUSAL = (
     "Downgrade from 2026_08_18_canvas_content is refused: "
@@ -99,7 +99,11 @@ def test_canvas_revision_is_on_the_single_linear_head_chain():
     scripts = ScriptDirectory.from_config(config)
 
     assert scripts.get_heads() == [EXPECTED_HEAD]
-    assert scripts.get_revision(EXPECTED_HEAD).down_revision == "20260928_pdf_edit_pub"
+    assert scripts.get_revision(EXPECTED_HEAD).down_revision == "20261017_canvas_scope"
+    assert (
+        scripts.get_revision("20261017_canvas_scope").down_revision
+        == "20260928_pdf_edit_pub"
+    )
     canvas_revision = scripts.get_revision(TARGET_REVISION)
     assert canvas_revision is not None
     assert canvas_revision.down_revision == PRIOR_REVISION
