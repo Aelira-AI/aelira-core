@@ -1,4 +1,4 @@
-"""Release metadata and operator notices must agree for v0.9.12."""
+"""Release metadata and operator notices must agree for v0.9.13."""
 
 import ast
 import hashlib
@@ -8,13 +8,13 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.9.12"
-RELEASE_HEADING = "## [0.9.12] - 2026-10-15"
-RELEASE_BODY = ROOT / "docs/releases/v0.9.12.md"
-PREVIOUS_HEADING = "## [0.9.11] - 2026-09-12"
+VERSION = "0.9.13"
+RELEASE_HEADING = "## [0.9.13] - 2026-10-19"
+RELEASE_BODY = ROOT / "docs/releases/v0.9.13.md"
+PREVIOUS_HEADING = "## [0.9.12] - 2026-10-15"
 
 
-def test_authoritative_release_versions_are_0_9_12():
+def test_authoritative_release_versions_are_0_9_13():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -23,8 +23,7 @@ def test_authoritative_release_versions_are_0_9_12():
     cli_readme = (ROOT / "cli/README.md").read_text()
     compose = (ROOT / "docker-compose.prod.yml").read_text()
 
-    assert f"**Status: {VERSION} beta.**" in readme
-    assert "Release publication: pending" not in readme
+    assert f"**Status: {VERSION} beta candidate.**" in readme
     assert "A future release may include them" not in readme
     assert f'api_version: str = "{VERSION}"' in settings
     assert project["project"]["version"] == VERSION
@@ -52,8 +51,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.9\.12\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.9\.11\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.9\.13\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.9\.12\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -64,29 +63,32 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_dates_v0_9_12_and_preserves_history():
+def test_changelog_dates_v0_9_13_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
     assert "Changes after v0.9.12" not in changelog
     assert "## [0.9.12] - 2026-10-11" not in changelog
-    assert "Pending publication" not in changelog
+    assert "## [0.9.13] - 2026-10-11" not in changelog
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
     pending = changelog[unreleased + len("## [Unreleased]") : release].strip()
     # Unreleased is empty or holds only Keep a Changelog subsections.
     assert pending == "" or pending.startswith("### ")
     previous = changelog.index(PREVIOUS_HEADING)
+    v0911 = changelog.index("## [0.9.11] - 2026-09-12")
     historical = changelog.index("## [0.9.8] - 2026-09-08")
-    assert unreleased < release < previous < historical
+    assert unreleased < release < previous < v0911 < historical
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
     for phrase in (
-        "20260917_unknown_confidence",
+        "20261018_media_truth",
+        "20261017_canvas_scope",
         "20260928_pdf_edit_pub",
         "coordinated backup",
         "alembic upgrade head",
-        "pending human review",
-        "Publication approval remains separate",
+        "human approval",
+        "Use matching API, worker and dashboard images",
+        "Roll back with the matched pre-upgrade database",
     ):
         assert phrase in current_notes
 
@@ -98,19 +100,25 @@ def test_historical_v0_9_11_release_body_is_unchanged():
     )
 
 
+def test_historical_v0_9_12_release_body_is_unchanged():
+    body = (ROOT / "docs/releases/v0.9.12.md").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "555d4a67be94d7cb221174a73050824f524986621e101170ef4f0c27cc6afd63"
+    )
+
+
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
     assert body.startswith(f"# Aelira v{VERSION}\n")
-    assert "draft notes" not in body
-    assert "Publication is pending" not in body
     for phrase in (
-        "20260917_unknown_confidence",
+        "20261018_media_truth",
+        "20261017_canvas_scope",
         "20260928_pdf_edit_pub",
         "database migration",
         "pause new intake",
         "Drain",
-        "coordinated",
+        "coordinated backup",
         "PostgreSQL",
         "uploads",
         "artifacts",
@@ -121,7 +129,7 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "external writebacks",
         "working file",
         "human approval",
-        "unsafe or unsupported output is withheld",
+        "Unsafe or unsupported output is withheld",
         "linux/amd64",
         "linux/arm64",
         "signed annotated tag",
@@ -132,6 +140,12 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "npm trusted publishing",
         "seven-file SBOM",
         "consumed verbatim",
+        "Seven other libxml2 advisories remain affected",
+        "[#665]",
+        "[#373]",
+        "[#376]",
+        "[#375]",
+        "[#377]",
     ):
         assert phrase in body
     assert "No database migration" not in body

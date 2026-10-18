@@ -1,6 +1,6 @@
 # Aelira CLI command reference
 
-**Version:** v0.9.12 · **CLI Version:** v0.9.12
+**Version:** v0.9.13 · **CLI Version:** v0.9.13
 
 Use `aelira --help` to list installed commands and, for example, `aelira scan pdf --help` for a command's arguments, flags, defaults, and accepted values. Help is generated from the [command definitions](../src/commands/). Flags are command-specific; an option accepted by one scanner may be rejected by another.
 
