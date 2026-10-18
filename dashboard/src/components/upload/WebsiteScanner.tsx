@@ -158,11 +158,12 @@ export function WebsiteScanner({ onScanComplete }: WebsiteScannerProps): React.R
     <div className="space-y-6">
       {/* URL Input */}
       <div>
-        <label className="block text-sm font-medium text-primary mb-2">Website URL</label>
+        <label htmlFor="website-url" className="block text-sm font-medium text-primary mb-2">Website URL</label>
         <div className="flex space-x-2">
           <div className="flex-1 relative">
             <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 text-secondary w-5 h-5" />
             <input
+              id="website-url"
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}

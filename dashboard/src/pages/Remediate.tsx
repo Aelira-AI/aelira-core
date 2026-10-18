@@ -489,11 +489,14 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                 Recorded Results
               </h2>
               <p className="mt-1 text-sm text-tertiary">
-                Applied changes and unresolved findings are counted separately. An improved score does not approve the document for publication.
+                {job.issue_outcomes?.length && job.issue_outcomes.every(outcome => outcome.source_index_scope === 'accepted_pptx_order')
+                  ? 'These results count accepted slide order requests. The original scan findings below have no new per-finding outcome from this job.'
+                  : 'Applied changes and unresolved findings are counted separately. An improved score does not approve the document for publication.'}
               </p>
             </div>
             <AggregateResults job={job} rows={issueRows} />
             {job.issue_outcomes?.some(outcome => outcome.source_index_scope === 'approved_subset') && <p className="text-sm text-secondary">This run reports the selected reviewed changes. Findings outside that selection are shown below without a new per-finding outcome; the remaining count comes from checking the whole saved file.</p>}
+            {job.issue_outcomes?.some(outcome => outcome.source_index_scope === 'accepted_pptx_order') && <p className="text-sm text-secondary">This run reports reviewer-accepted PowerPoint slide order requests. Their indices refer to submitted slide orders, not scan findings. Review the saved deck in PowerPoint with assistive technology before approval.</p>}
             {canDownload && <p className="text-sm text-secondary">The working file includes delivered automatic improvements. Review changes before publishing to an LMS or cloud storage; remaining manual work can be completed from this file.</p>}
             <ScoreComparison job={job} scan={scan} />
           </section>

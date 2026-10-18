@@ -525,7 +525,11 @@ def test_revision_migration_is_reversible_and_single_head(monkeypatch):
     engine.dispose()
 
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert scripts.get_heads() == ["20260928_pdf_edit_pub"]
+    assert scripts.get_heads() == ["20261017_canvas_scope"]
+    assert (
+        scripts.get_revision("20261017_canvas_scope").down_revision
+        == "20260928_pdf_edit_pub"
+    )
     assert migration.down_revision == "20260828_visual_contracts"
 
 

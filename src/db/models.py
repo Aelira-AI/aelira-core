@@ -1450,6 +1450,15 @@ class CloudFile(Base):
                 "provider = 'canvas' AND provider_parent_id IS NOT NULL"
             ),
         ),
+        Index(
+            "uq_cloud_files_non_canvas_file_identity",
+            "department_id",
+            "provider",
+            "provider_file_id",
+            unique=True,
+            postgresql_where=text("provider <> 'canvas'"),
+            sqlite_where=text("provider <> 'canvas'"),
+        ),
     )
 
     # Provider-specific IDs

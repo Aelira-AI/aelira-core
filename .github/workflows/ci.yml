@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      retain_native_images:
+        description: Retain verified native API and dashboard OCI candidates for this successful CI run
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -37,6 +43,8 @@ jobs:
       - document-stack
       - dashboard
       - e2e-release
+      - user-journeys
+      - user-journeys-lms
       - cli
       - quickstart
       - docker
@@ -46,10 +54,18 @@ jobs:
       - name: Require every CI job to pass
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
+          # Canvas credentials are unavailable to fork and Dependabot pull requests.
+          # The Canvas journey is then skipped, never passed, and says so below.
+          LMS_JOURNEY_RUNS: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'true' || 'false' }}
         run: |
-          printf '%s\n' "$JOB_RESULTS" | jq -e '
-            length == 19 and all(.[]; .result == "success")
+          printf '%s\n' "$JOB_RESULTS" | jq -e --arg lms "$LMS_JOURNEY_RUNS" '
+            length == 21 and all(to_entries[];
+              .value.result == "success"
+              or (.key == "user-journeys-lms" and .value.result == "skipped" and $lms == "false"))
           '
+          if [ "$LMS_JOURNEY_RUNS" = false ]; then
+            echo "::notice title=Canvas LMS journey::NOT RUN: Canvas credentials unavailable on fork and Dependabot pull requests. The other journeys ran."
+          fi
 
   expat-native-acceptance:
     name: Native Expat acceptance (${{ matrix.arch }})
@@ -1375,6 +1391,121 @@ jobs:
           VITE_API_URL: http://localhost:8000
         run: ./node_modules/.bin/playwright test tests/a11y-audit.spec.ts --project=chromium --workers=2
 
+  user-journeys:
+    name: Browser user journeys (documents, web, media)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start the real stack
+        uses: ./.github/actions/journey-stack
+      - name: Run the journeys through the dashboard
+        working-directory: dashboard
+        env:
+          CI: 'true'
+        run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=journeys
+      - name: Summarise accessibility results
+        if: always()
+        run: python scripts/journeys/summarise_axe.py dashboard/journey-results/axe-summary.jsonl >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain traces, screenshots and service logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: user-journeys-failure
+          path: |
+            dashboard/journey-results/artifacts/
+            ${{ runner.temp }}/journey-api.log
+            ${{ runner.temp }}/journey-worker.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  user-journeys-lms:
+    name: Canvas LMS user journey
+    # Skipped, not passed, when the credentials cannot be exposed to the run.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Every run writes to the same synthetic Canvas course; hold the lock for
+    # the whole job so setup, journey writeback, and cleanup cannot overlap.
+    concurrency:
+      group: canvas-lms-synthetic-course
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require every Canvas credential
+        env:
+          AELIRA_JOURNEY_CANVAS_URL: ${{ secrets.AELIRA_JOURNEY_CANVAS_URL }}
+          AELIRA_JOURNEY_CANVAS_COURSE_ID: ${{ secrets.AELIRA_JOURNEY_CANVAS_COURSE_ID }}
+          AELIRA_JOURNEY_LTI_CLIENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_CLIENT_ID }}
+          AELIRA_JOURNEY_LTI_DEPLOYMENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
+          AELIRA_JOURNEY_LTI_PRIVATE_KEY: ${{ secrets.AELIRA_JOURNEY_LTI_PRIVATE_KEY }}
+          AELIRA_JOURNEY_OAUTH_CLIENT_ID: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_ID }}
+          AELIRA_JOURNEY_OAUTH_CLIENT_SECRET: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_SECRET }}
+          AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
+          AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
+        run: |
+          missing=0
+          for name in CANVAS_URL CANVAS_COURSE_ID LTI_CLIENT_ID LTI_DEPLOYMENT_ID LTI_PRIVATE_KEY \
+                      OAUTH_CLIENT_ID OAUTH_CLIENT_SECRET CANVAS_TEACHER_LOGIN CANVAS_TEACHER_PASSWORD; do
+            full="AELIRA_JOURNEY_$name"
+            [ -n "${!full}" ] || { echo "::error::$full is empty"; missing=1; }
+          done
+          exit "$missing"
+      - name: Start the real stack with the Canvas tool configured
+        uses: ./.github/actions/journey-stack
+        with:
+          canvas-url: ${{ secrets.AELIRA_JOURNEY_CANVAS_URL }}
+          canvas-lti-client-id: ${{ secrets.AELIRA_JOURNEY_LTI_CLIENT_ID }}
+          canvas-lti-deployment-id: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
+          canvas-lti-private-key: ${{ secrets.AELIRA_JOURNEY_LTI_PRIVATE_KEY }}
+          canvas-oauth-client-id: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_ID }}
+          canvas-oauth-client-secret: ${{ secrets.AELIRA_JOURNEY_OAUTH_CLIENT_SECRET }}
+      - name: Run the Canvas journey through the dashboard
+        working-directory: dashboard
+        env:
+          CI: 'true'
+          JOURNEY_LMS_REQUIRED: 'true'
+          JOURNEY_CANVAS_URL: ${{ secrets.AELIRA_JOURNEY_CANVAS_URL }}
+          JOURNEY_CANVAS_COURSE_ID: ${{ secrets.AELIRA_JOURNEY_CANVAS_COURSE_ID }}
+          JOURNEY_LTI_CLIENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_CLIENT_ID }}
+          JOURNEY_LTI_DEPLOYMENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
+          JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
+          JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
+        run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=lms
+      - name: Show the scan lines of the worker log for a failed run
+        if: failure()
+        run: |
+          grep -E 'ERROR|WARNING|Traceback|Error|canvas|Canvas|scan' "$RUNNER_TEMP/journey-worker.log" \
+            | sed -E 's/\?[^ "]*//g' | tail -60 || true
+      - name: Show database errors for a failed run
+        # Only the error and detail lines; statements can carry course content.
+        if: failure()
+        run: docker logs journeys-postgres 2>&1 | grep -E 'ERROR:|DETAIL:' | tail -20 || true
+      - name: Show the LTI and Canvas lines of the API log for a failed run
+        # Job logs of a public repository are public: query strings and tokens are dropped.
+        if: failure()
+        run: |
+          grep -E 'LTI|lti|Canvas|canvas' "$RUNNER_TEMP/journey-api.log" \
+            | sed -E 's/\?[^ "]*//g; s/(token|code|state|login_hint|lti_message_hint)=[^& "]*/\1=<redacted>/g' \
+            | tail -60 || true
+      - name: Remove the tool key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/lti-private.pem" "$RUNNER_TEMP/lti-public.pem" "$RUNNER_TEMP/journey.env"
+      - name: Summarise accessibility results
+        if: always()
+        run: python scripts/journeys/summarise_axe.py dashboard/journey-results/axe-summary.jsonl >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain traces and screenshots of a failed run
+        # Canvas pages and service logs can name course content, and the browser
+        # trace records page URLs: keep only screenshots here.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: user-journeys-lms-failure
+          path: dashboard/journey-results/artifacts/**/*.png
+          if-no-files-found: warn
+          retention-days: 7
+
   cli:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1418,6 +1549,51 @@ jobs:
         # A fresh runner exercises Dockerfile.dev and its non-root Pa11y gate.
         # --wait also requires both the API and durable worker to be healthy.
         run: docker compose -f docker-compose.quickstart.yml up -d --build --wait --wait-timeout 180
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+      - name: Verify quickstart native packages and image layers
+        run: |
+          docker compose -f docker-compose.quickstart.yml exec -T api \
+            /usr/local/bin/python /app/scripts/verify_final_python_packages.py expat
+          docker compose -f docker-compose.quickstart.yml exec -T api \
+            /usr/local/bin/python /app/scripts/verify_final_python_packages.py quickstart
+          bun run scripts/verify_python_expat_layers.ts \
+            "$(docker compose -f docker-compose.quickstart.yml images -q api)"
+          bun run scripts/verify_opencv_layers.ts \
+            "$(docker compose -f docker-compose.quickstart.yml images -q api)"
+      - name: Verify quickstart scene codec decoding
+        run: |
+          docker run --rm --network none \
+            --volume "$PWD/tests/test_multimedia_decode_acceptance.py:/tmp/test_multimedia_decode_acceptance.py:ro" \
+            --volume "$PWD/tests/fixtures/scene_codecs:/tmp/scene-codecs:ro" \
+            --entrypoint /usr/local/bin/python \
+            "$(docker compose -f docker-compose.quickstart.yml images -q api)" -c '
+            from pathlib import Path
+            from runpy import run_path
+            tests = run_path("/tmp/test_multimedia_decode_acceptance.py")
+            fixtures = Path("/tmp/scene-codecs")
+            tests["check_source_opencv_decodes_scene_codecs_and_real_cuts"](fixtures)
+            tests["test_opencv_distinguishes_single_scene_from_zero_frames"](fixtures)
+            print("quickstart OpenCV scene codecs verified")
+          '
+      - name: Verify quickstart PyAV WAV decoding and Pillow image OCR
+        run: |
+          docker run --rm --network none \
+            --volume "$PWD/tests/test_multimedia_decode_acceptance.py:/tmp/test_multimedia_decode_acceptance.py:ro" \
+            --entrypoint /usr/local/bin/python \
+            "$(docker compose -f docker-compose.quickstart.yml images -q api)" -c '
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+            from runpy import run_path
+            with TemporaryDirectory() as directory:
+                run_path("/tmp/test_multimedia_decode_acceptance.py")["test_pyav_decodes_and_resamples_audio_for_transcription"](Path(directory))
+            print("quickstart PyAV WAV decode and resample verified")
+          '
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,mode=1777 \
+            --entrypoint /usr/local/bin/python \
+            "$(docker compose -f docker-compose.quickstart.yml images -q api)" \
+            /app/scripts/smoke_image_libraries.py
       - name: Verify Pa11y in the running quickstart API
         run: docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_pa11y_runtime.py
       - name: Verify Piper using the baked quickstart voice
@@ -1441,25 +1617,61 @@ jobs:
     name: Docker (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
+    permissions:
+      contents: read
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
+            arch: amd64
             runner: ubuntu-24.04
           - platform: linux/arm64
+            arch: arm64
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify production Compose environment contract
         if: matrix.platform == 'linux/amd64'
         run: scripts/check-production-compose.sh
+      - name: Enable containerd image descriptors for retained candidates
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5
+        with:
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+      - name: Require containerd image store for retained candidates
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        run: |
+          docker info --format '{{json .DriverStatus}}' |
+            jq -e 'any(.[]; .[0] == "driver-type" and .[1] == "io.containerd.snapshotter.v1")'
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build and verify reproducible API image
+        env:
+          AELIRA_RETAIN_ARCHIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images && format('{0}/candidate-native/api.oci.tar', runner.temp) || '' }}
+          AELIRA_RETAIN_IMAGE_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images && 'aelira-worker-isolation:test' || '' }}
         run: scripts/verify_reproducible_image.sh . Dockerfile ${{ matrix.platform }}
       - name: Load API image for runtime checks
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.retain_native_images) }}
         run: docker buildx build --load --tag aelira-worker-isolation:test --file Dockerfile .
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+      - name: Verify candidate bundle refusal controls
+        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts
+      - name: Load the reproducible API candidate for runtime checks
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        run: |
+          docker load --input "$RUNNER_TEMP/candidate-native/api.oci.tar"
+          bun scripts/candidate_image_bundle.ts check-docker \
+            --archive "$RUNNER_TEMP/candidate-native/api.oci.tar" \
+            --platform '${{ matrix.platform }}' --image aelira-worker-isolation:test
       - name: Record installed API image packages and require the fixed Expat library
         run: |
           set -euo pipefail
@@ -1503,10 +1715,6 @@ jobs:
           path: test-results/api-image-inventory/
           if-no-files-found: warn
           retention-days: 14
-      - name: Install the inventory verifier runtime
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: "1.3.14"
       - name: Reject unresolved HIGH and CRITICAL API image findings
         run: |
           set -euo pipefail
@@ -1520,7 +1728,94 @@ jobs:
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py
+          bun run scripts/verify_python_expat_layers.ts aelira-worker-isolation:test
+          bun run scripts/verify_opencv_layers.ts aelira-worker-isolation:test
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
+      - name: Verify PyAV decodes and resamples the transcription WAV
+        run: |
+          docker run --rm --network none \
+            --volume "$PWD/tests/test_multimedia_decode_acceptance.py:/tmp/test_multimedia_decode_acceptance.py:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test -c '
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+            from runpy import run_path
+            with TemporaryDirectory() as directory:
+                run_path("/tmp/test_multimedia_decode_acceptance.py")["test_pyav_decodes_and_resamples_audio_for_transcription"](Path(directory))
+            print("PyAV WAV decode and 8 kHz to 16 kHz resample verified")
+          '
+      - name: Verify OpenCV codecs, real scene cuts and Pillow image decoding
+        run: |
+          docker run --rm --network none \
+            --volume "$PWD/tests/test_multimedia_decode_acceptance.py:/tmp/test_multimedia_decode_acceptance.py:ro" \
+            --volume "$PWD/tests/fixtures/scene_codecs:/tmp/scene-codecs:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test -c '
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+            from runpy import run_path
+            tests = run_path("/tmp/test_multimedia_decode_acceptance.py")
+            fixtures = Path("/tmp/scene-codecs")
+            tests["check_source_opencv_decodes_scene_codecs_and_real_cuts"](fixtures)
+            tests["test_opencv_distinguishes_single_scene_from_zero_frames"](fixtures)
+            with TemporaryDirectory() as directory:
+                tests["test_pillow_keeps_image_decode_without_opencv_image_backends"](Path(directory))
+            print("seven codecs, scene cuts, zero-frame fallback and Pillow verified")
+          '
+      - name: Prove the native gate rejects the published OpenCV wheel
+        run: |
+          wheel_dir="$(mktemp -d)"
+          docker run --rm --volume "$wheel_dir:/wheel" \
+            --entrypoint /usr/local/bin/python \
+            python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 \
+            -m pip download --index-url https://pypi.org/simple \
+            --no-deps --only-binary=:all: --dest /wheel 'opencv-python==5.0.0.93'
+          mkdir "$wheel_dir/unpacked"
+          unzip -q "$wheel_dir"/opencv_python-5.0.0.93-*.whl -d "$wheel_dir/unpacked"
+          chmod a+rx "$wheel_dir"
+          chmod -R a+rX "$wheel_dir/unpacked"
+          docker run --rm --network none \
+            --volume "$wheel_dir/unpacked:/tmp/published-opencv:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test -c '
+            from pathlib import Path
+            from scripts.verify_final_python_packages import validate_opencv_native
+            errors = validate_opencv_native(
+                purelib=Path("/tmp/published-opencv"),
+                version=lambda _name: "5.0.0.93",
+                build_information="FFMPEG: YES",
+            )
+            assert any("bundled OpenCV library directory" in error for error in errors), errors
+            assert any("cv2 does not resolve" in error for error in errors), errors
+            print("published OpenCV wheel rejected by native binding gate")
+          '
+      - name: Prove the native gate rejects the published PyAV wheel
+        run: |
+          wheel_dir="$(mktemp -d)"
+          docker run --rm --volume "$wheel_dir:/wheel" \
+            --entrypoint /usr/local/bin/python \
+            python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 \
+            -m pip download --index-url https://pypi.org/simple \
+            --no-deps --only-binary=:all: --dest /wheel 'av==18.1.0'
+          mkdir "$wheel_dir/unpacked"
+          unzip -q "$wheel_dir"/av-18.1.0-*.whl -d "$wheel_dir/unpacked"
+          chmod a+rx "$wheel_dir"
+          chmod -R a+rX "$wheel_dir/unpacked"
+          docker run --rm --network none \
+            --volume "$wheel_dir/unpacked:/tmp/published-av:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test -c '
+            from pathlib import Path
+            from scripts.verify_final_python_packages import PYAV_LIBRARIES, validate_pyav_native
+            errors = validate_pyav_native(
+                purelib=Path("/tmp/published-av"),
+                version=lambda _name: "18.1.0",
+                library_versions=PYAV_LIBRARIES,
+            )
+            assert any("bundled av library directory" in error for error in errors), errors
+            assert any(
+                "expected /opt/ffmpeg9/lib/" in error
+                or "unexpected FFmpeg library" in error
+                for error in errors
+            ), errors
+            print("published PyAV wheel rejected by native binding gate")
+          '
       - name: Verify real faster-whisper download and offline load through huggingface-hub
         run: |
           hf_cache="$(mktemp -d)"
@@ -1557,41 +1852,23 @@ jobs:
             fi
             echo "no psycopg2*.libs directory exists anywhere in the image"
           '
-      - name: Run the psycopg2 database smoke test against PostgreSQL 16
+      - name: Verify psycopg2 TLS evidence and Docker cleanup guards
+        env:
+          AELIRA_DOCKER_LIFECYCLE_TEST: "1"
+        run: bun test scripts/smoke_psycopg2_tls.test.ts
+      - name: Verify final-image psycopg2 TLS and database behavior against PostgreSQL 16
+        id: psycopg2_tls
         run: |
           set -euo pipefail
-          mkdir -p test-results/psycopg2-runtime
-          docker network create psycopg2-smoke
-          docker run --detach --name psycopg2-smoke-db --network psycopg2-smoke \
-            --env POSTGRES_USER=aelira --env POSTGRES_PASSWORD=smoke-test-only \
-            --env POSTGRES_DB=aelira_smoke \
-            --health-cmd "pg_isready --host=127.0.0.1 --username=aelira --dbname=aelira_smoke" \
-            --health-interval 2s --health-timeout 5s --health-retries 30 \
-            postgres:16
-          for attempt in $(seq 1 60); do
-            state=$(docker inspect --format '{{.State.Health.Status}}' psycopg2-smoke-db)
-            [ "$state" = healthy ] && break
-            sleep 2
-          done
-          test "$state" = healthy
-          docker run --rm --network psycopg2-smoke \
-            --env DATABASE_URL=postgresql://aelira:smoke-test-only@psycopg2-smoke-db:5432/aelira_smoke \
-            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
-            /app/scripts/smoke_psycopg2_runtime.py | tee test-results/psycopg2-runtime/report.json
-      - name: Remove the psycopg2 smoke database
-        if: always()
-        run: |
-          mkdir -p test-results/psycopg2-runtime
-          docker logs psycopg2-smoke-db > test-results/psycopg2-runtime/postgres.log 2>&1 || true
-          docker rm --force psycopg2-smoke-db || true
-          docker network rm psycopg2-smoke || true
+          bun run scripts/smoke_psycopg2_tls.ts \
+            test-results/psycopg2-runtime "${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}"
       - name: Retain psycopg2 runtime evidence
-        if: always()
+        if: steps.psycopg2_tls.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: psycopg2-runtime-${{ matrix.runner }}
           path: test-results/psycopg2-runtime/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
       - name: Enforce 0.75-CPU worker isolation under representative saturation
         if: matrix.platform == 'linux/amd64'
@@ -1678,4 +1955,98 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Build and verify reproducible dashboard image
+        env:
+          AELIRA_RETAIN_ARCHIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images && format('{0}/candidate-native/dashboard.oci.tar', runner.temp) || '' }}
+          AELIRA_RETAIN_IMAGE_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images && 'aelira-dashboard-candidate:test' || '' }}
         run: scripts/verify_reproducible_image.sh dashboard dashboard/Dockerfile ${{ matrix.platform }}
+      - name: Import and start both retained native candidates
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load --input "$RUNNER_TEMP/candidate-native/dashboard.oci.tar"
+          owner=$(cat /proc/sys/kernel/random/uuid)
+          network_name="aelira-candidate-$owner"
+          finish() {
+            local original=$?
+            trap - EXIT
+            if ! bash scripts/cleanup_candidate_smoke.sh "$owner"; then
+              echo '::error::Retained-candidate smoke cleanup failed' >&2
+              if [ "$original" -eq 0 ]; then original=1; fi
+            fi
+            exit "$original"
+          }
+          trap finish EXIT
+          docker network create --label "aelira.candidate.owner=$owner" "$network_name"
+          api_cid=$(docker create --label "aelira.candidate.owner=$owner" \
+            --name "aelira-candidate-api-$owner" --network "$network_name" --network-alias api \
+            --entrypoint /bin/sleep aelira-worker-isolation:test 600)
+          docker start "$api_cid"
+          bun scripts/candidate_image_bundle.ts check-docker \
+            --archive "$RUNNER_TEMP/candidate-native/api.oci.tar" \
+            --platform '${{ matrix.platform }}' --image aelira-worker-isolation:test \
+            --container "$api_cid"
+          dashboard_cid=$(docker create --label "aelira.candidate.owner=$owner" \
+            --name "aelira-candidate-dashboard-$owner" --network "$network_name" \
+            --publish 127.0.0.1::80 aelira-dashboard-candidate:test)
+          docker start "$dashboard_cid"
+          bun scripts/candidate_image_bundle.ts check-docker \
+            --archive "$RUNNER_TEMP/candidate-native/dashboard.oci.tar" \
+            --platform '${{ matrix.platform }}' --image aelira-dashboard-candidate:test \
+            --container "$dashboard_cid"
+          endpoint=$(docker port "$dashboard_cid" 80/tcp)
+          curl --fail --silent --show-error --retry 12 --retry-connrefused --retry-delay 1 \
+            "http://$endpoint/health" | tee "$RUNNER_TEMP/candidate-native/dashboard-health.txt"
+          test "$(cat "$RUNNER_TEMP/candidate-native/dashboard-health.txt")" = healthy
+          stat --format '%n %s bytes' "$RUNNER_TEMP/candidate-native/"*.oci.tar
+          df -h "$RUNNER_TEMP"
+      - name: Bind candidate receipts to the completed native checks
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_commit=$(git rev-parse HEAD)
+          checkout_tree=$(git rev-parse 'HEAD^{tree}')
+          sha256sum test-results/psycopg2-runtime/report.json \
+            test-results/latex-runtime/report.json \
+            test-results/latex-metadata/report.json \
+            test-results/latex-semantics/report.json \
+            test-results/latex-projects/report.json \
+            test-results/latex-compatibility/report.json \
+            > "$RUNNER_TEMP/candidate-native/api.evidence.txt"
+          cp "$RUNNER_TEMP/candidate-native/dashboard-health.txt" \
+            "$RUNNER_TEMP/candidate-native/dashboard.evidence.txt"
+          for kind in api dashboard; do
+            bun scripts/candidate_image_bundle.ts create \
+              --archive "$RUNNER_TEMP/candidate-native/$kind.oci.tar" \
+              --evidence "$RUNNER_TEMP/candidate-native/$kind.evidence.txt" \
+              --output "$RUNNER_TEMP/candidate-native/$kind.receipt.json" \
+              --kind "$kind" --platform '${{ matrix.platform }}' \
+              --checkout-commit "$checkout_commit" --checkout-tree "$checkout_tree" \
+              --run-head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT"
+          done
+      - name: Retain verified API candidate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: candidate-api-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/candidate-native/api.oci.tar
+            ${{ runner.temp }}/candidate-native/api.receipt.json
+            ${{ runner.temp }}/candidate-native/api.evidence.txt
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Retain verified dashboard candidate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: candidate-dashboard-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/candidate-native/dashboard.oci.tar
+            ${{ runner.temp }}/candidate-native/dashboard.receipt.json
+            ${{ runner.temp }}/candidate-native/dashboard.evidence.txt
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0

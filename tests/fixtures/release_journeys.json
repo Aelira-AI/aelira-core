@@ -36,6 +36,14 @@
           "mocked": [],
           "ci": null,
           "limitations": "Walkthrough instructions only; no execution or screenshot receipt is supplied by this inventory."
+        },
+        {
+          "id": "document-browser-journey",
+          "level": "browser_real_stack",
+          "sources": ["dashboard/playwright.journeys.config.ts", "dashboard/tests/journeys/auth.setup.ts", "dashboard/tests/journeys/support/stack.ts", "dashboard/tests/journeys/support/a11y.ts", "dashboard/tests/journeys/support/scans.ts", ".github/actions/journey-stack/action.yml", "dashboard/tests/journeys/documents.spec.ts", "dashboard/tests/journeys/support/files.ts", "dashboard/tests/journeys/support/keyboard.ts", "tests/fixtures/document_stack/metadata.pdf", "tests/fixtures/document_stack/course.docx", "tests/fixtures/powerpoint/image_heavy.pptx", "tests/journeys/fixtures/picture-without-alt.docx", "scripts/generate_journey_docx_fixture.py"],
+          "mocked": [],
+          "ci": {"job": "user-journeys", "step": "Run the journeys through the dashboard", "run_contains": "npx playwright test -c playwright.journeys.config.ts"},
+          "limitations": "Real dashboard, API, PostgreSQL, Redis and durable worker with no AI provider. A PDF is taken from upload to download using only the keyboard; a DOCX goes through review, approval and a reload; a DOCX with a picture and no vision model is delivered with the picture still unresolved. Downloaded bytes are compared with the recorded receipt, read back with poppler and unzip, and uploaded again as a new scan. An image-heavy PPTX must be withheld with every picture left for review and no description written. axe runs on every page visited and fails on serious or critical violations. One PDF, one DOCX and one PPTX only; no cloud storage or LMS publish-back, no assistive-technology review, no semantic fidelity or accessibility conformance proof."
         }
       ],
       "missing": [
@@ -62,6 +70,14 @@
           "mocked": ["API and Canvas state in local testbed", "scan and remediation results"],
           "ci": {"job": "e2e-release", "step": "Run release smoke", "run_contains": "npm run test:e2e:release"},
           "limitations": "Actual dashboard controls against a deterministic simulated service. It does not prove live provider or real worker behavior."
+        },
+        {
+          "id": "canvas-browser-journey",
+          "level": "browser_real_stack",
+          "sources": ["dashboard/playwright.journeys.config.ts", "dashboard/tests/journeys/auth.setup.ts", "dashboard/tests/journeys/support/stack.ts", "dashboard/tests/journeys/support/a11y.ts", "dashboard/tests/journeys/support/scans.ts", ".github/actions/journey-stack/action.yml", "dashboard/tests/journeys/lms.spec.ts"],
+          "mocked": [],
+          "ci": {"job": "user-journeys-lms", "step": "Run the Canvas journey through the dashboard", "run_contains": "npx playwright test -c playwright.journeys.config.ts"},
+          "limitations": "Environment-bound: needs the Canvas test instance and its credentials, so it is skipped on fork and Dependabot pull requests and reports that it did not run. Course copy, Teacher and two developer keys exist only for this suite; separate from the simulated release smoke."
         }
       ],
       "missing": [
@@ -79,6 +95,14 @@
           "mocked": [],
           "ci": null,
           "limitations": "Environment-gated scanner cases use generated file URLs; RUN_E2E_TESTS is required. No execution is asserted here, and no reviewed code change or rendered application journey is covered."
+        },
+        {
+          "id": "web-browser-journey",
+          "level": "browser_real_stack",
+          "sources": ["dashboard/playwright.journeys.config.ts", "dashboard/tests/journeys/auth.setup.ts", "dashboard/tests/journeys/support/stack.ts", "dashboard/tests/journeys/support/a11y.ts", "dashboard/tests/journeys/support/scans.ts", ".github/actions/journey-stack/action.yml", "dashboard/tests/journeys/web.spec.ts", "tests/journeys/site/index.html", "tests/journeys/site/syllabus.html", "tests/journeys/stack.compose.yml"],
+          "mocked": [],
+          "ci": {"job": "user-journeys", "step": "Run the journeys through the dashboard", "run_contains": "npx playwright test -c playwright.journeys.config.ts"},
+          "limitations": "Real dashboard, API and worker scan a two-page static site served on its own address inside the runner; every finding is traced to markup in the fixture and recorded as a pending review row. No AI provider is configured, so no code change is proposed, and website remediation reports that it cannot start. No rendered-result validation and no third-party site."
         }
       ],
       "missing": [
@@ -96,6 +120,14 @@
           "mocked": ["Whisper transcription", "ffmpeg and ffprobe subprocesses"],
           "ci": {"job": "test", "step": "Run tests", "run_contains": "pytest tests/"},
           "limitations": "Mocked processor behavior and caption serialization. The filename does not establish real transcription, media encoding or an application download journey."
+        },
+        {
+          "id": "media-browser-journey",
+          "level": "browser_real_stack",
+          "sources": ["dashboard/playwright.journeys.config.ts", "dashboard/tests/journeys/auth.setup.ts", "dashboard/tests/journeys/support/stack.ts", "dashboard/tests/journeys/support/a11y.ts", "dashboard/tests/journeys/support/scans.ts", ".github/actions/journey-stack/action.yml", "dashboard/tests/journeys/media.spec.ts", "tests/journeys/fixtures/teaching-clip.mp4", "scripts/generate_journey_media_fixture.sh"],
+          "mocked": [],
+          "ci": {"job": "user-journeys", "step": "Run the journeys through the dashboard", "run_contains": "npx playwright test -c playwright.journeys.config.ts"},
+          "limitations": "Real dashboard, API and worker run the cached Whisper base model on a synthetic spoken clip; the transcript must equal the spoken words and the WebVTT and SRT captions must be well formed and fit the clip. The score and findings describe the upload, audio description is reported as unavailable without a vision model, the dashboard offers a PDF report, and remediation reports that it cannot caption media and offers no file. The dashboard shows no transcript or caption download."
         }
       ],
       "missing": [

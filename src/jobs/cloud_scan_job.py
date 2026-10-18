@@ -6,6 +6,7 @@ using existing processors, and stores results.
 """
 
 import asyncio
+import hashlib
 import logging
 import math
 import tempfile
@@ -46,6 +47,15 @@ _DETERMINISTIC_SCAN_METADATA = {
 }
 
 _SCAN_FAILURE_MESSAGE = "Accessibility scan failed"
+
+
+def _source_file_sha256(path: str) -> str:
+    """Fingerprint the downloaded bytes without loading large media into memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class ScanJobFailed(RuntimeError):
@@ -159,9 +169,17 @@ class CloudScanJob:
 
             # Get the actual downloaded file path
             actual_path = export_result.get("local_path", local_path)
+            try:
+                source_sha256 = await asyncio.to_thread(
+                    _source_file_sha256, actual_path
+                )
+            except OSError as exc:
+                raise ScanJobFailed("SOURCE_FILE_UNAVAILABLE") from exc
 
             # Scan the file using appropriate processor
-            scan_result = await self._scan_file(actual_path, db)
+            scan_result = await self._scan_file(
+                actual_path, db, source_sha256=source_sha256
+            )
             if not scan_result.get("success"):
                 raise ScanJobFailed(
                     scan_result.get("error_code", "SCAN_PROCESSING_FAILED")
@@ -406,7 +424,9 @@ class CloudScanJob:
         finally:
             await client.close()
 
-    async def _scan_file(self, file_path: str, db: Session) -> Dict[str, Any]:
+    async def _scan_file(
+        self, file_path: str, db: Session, *, source_sha256: str | None = None
+    ) -> Dict[str, Any]:
         """
         Scan file for accessibility issues using appropriate processor.
 
@@ -606,6 +626,16 @@ class CloudScanJob:
                 }
 
             result = _normalize_processor_result(result)
+            if source_sha256 is not None:
+                # A processor must not change the source after we measured it.
+                # The scan and later remediation must bind to the same bytes.
+                if (
+                    await asyncio.to_thread(_source_file_sha256, file_path)
+                    != source_sha256
+                ):
+                    return await self._persist_failed_scan(
+                        db, file_type, "SOURCE_CHANGED_DURING_SCAN"
+                    )
 
             # Map file_type to valid ScanType enum
             _file_type_to_scan_type = {
@@ -660,6 +690,7 @@ class CloudScanJob:
                 user_id=scan_user_id,
                 file_name=self.cloud_file.file_name,
                 file_size_bytes=self.cloud_file.file_size_bytes or 0,
+                file_hash=source_sha256,
                 status="COMPLETED" if result["success"] else "FAILED",
                 error_message=None if result["success"] else result["error_code"],
             )

@@ -26,6 +26,7 @@ import logging
 import os
 import hashlib
 import time
+from urllib.parse import urlparse
 
 from src.integrations.canvas_lti import (
     get_canvas_lti_service,
@@ -236,6 +237,17 @@ def _render_lti_error_page(
 # =============================================================================
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _tool_launch_uri(uri: str) -> str:
+    """Send a plain-HTTP launch URL over HTTPS unless it points at this machine."""
+    parsed = urlparse(uri)
+    if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
+        return uri.replace("http://", "https://", 1)
+    return uri
+
+
 @router.post("/login")
 @router.get("/login")
 async def lti_login(
@@ -259,9 +271,12 @@ async def lti_login(
     else:
         params = dict(request.query_params)
 
-    # Determine target launch URL — force HTTPS (internal request is HTTP behind Traefik)
+    # Determine target launch URL. Behind a TLS-terminating proxy the internal
+    # request is HTTP, so a non-loopback launch URL is forced to HTTPS. A loopback
+    # URL is kept as given: the platform has the same URL registered, and
+    # rewriting it would send a redirect URI it does not recognise.
     target_link_uri = params.get("target_link_uri", str(request.url_for("lti_launch")))
-    target_link_uri = target_link_uri.replace("http://", "https://", 1)
+    target_link_uri = _tool_launch_uri(target_link_uri)
 
     try:
         # Create cookie service for this request

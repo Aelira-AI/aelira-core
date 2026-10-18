@@ -187,6 +187,30 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     assert not re.search(r"^\s+libtiff\S* \\$", api, re.MULTILINE)
 
 
+def test_api_and_quickstart_build_pyav_from_verified_sources() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    dev = (ROOT / "Dockerfile.dev").read_text()
+    script = (ROOT / "docker" / "build-pyav-wheel.sh").read_text()
+
+    for dockerfile in (api, dev):
+        source = "sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel"
+        assert source in dockerfile
+        assert dockerfile.index(source) < dockerfile.index(
+            "pip install --no-cache-dir -r requirements"
+        )
+        assert "/tmp/pyav-wheel/av-18.1.0-*.whl" in dockerfile
+        assert '"Cython==3.2.9"' in dockerfile
+        assert "LD_LIBRARY_PATH" not in dockerfile
+
+    assert "COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib" in api
+    assert "sha256sum --check --strict" in script
+    assert "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" in script
+    assert "47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28" in script
+    assert "--enable-shared --disable-static" in script
+    assert "--disable-autodetect" in script
+    assert "-Wl,--disable-new-dtags,-rpath,$prefix/lib" in script
+
+
 def test_api_image_does_not_ship_pi_heif() -> None:
     requirements = (ROOT / "requirements.txt").read_text().lower()
 
@@ -250,7 +274,7 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
         "python:3.14-slim@sha256:"
         "a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170"
     )
-    assert api.count(f"FROM {python_base}") == 2
+    assert api.count(f"FROM {python_base}") == 3
     assert "pip install --no-cache-dir piper-tts" not in api
     assert "npm ci --omit=dev --no-audit --no-fund" in api
     assert {name: digest for name, _, digest in VOICE_ASSETS} == {
@@ -280,6 +304,59 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     assert runtime.count(openssl_upgrade) == 1
     assert "&& rm -f /var/log/apk.log" in runtime
     assert runtime.index(openssl_upgrade) < runtime.index("COPY --from=builder")
+
+
+def test_api_images_replace_only_the_matching_python_expat_extensions() -> None:
+    build_script = (ROOT / "docker" / "build-python-expat-modules.sh").read_text()
+    verifier = (ROOT / "scripts" / "verify_final_python_packages.py").read_text()
+    layer_gate = (ROOT / "scripts" / "verify_python_expat_layers.ts").read_text()
+    debian_base = (
+        "debian:trixie-slim@sha256:"
+        "a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f"
+    )
+    for name in ("Dockerfile", "Dockerfile.dev"):
+        dockerfile = (ROOT / name).read_text()
+        assert f"FROM {debian_base} AS python-expat-base" in dockerfile
+        assert "FROM python-expat-base AS runtime" in dockerfile
+        assert "libexpat1=${EXPAT_DEB_VERSION}" in dockerfile
+        assert "libexpat1-dev=${EXPAT_DEB_VERSION}" in dockerfile
+        assert "COPY --from=python-expat-clean /usr/local/ /usr/local/" in dockerfile
+        assert (
+            "COPY --from=python-expat-modules /tmp/python-expat-modules/ "
+            "/usr/local/lib/python3.14/lib-dynload/"
+        ) in dockerfile
+        assert dockerfile.index("RUN ldconfig") < dockerfile.index(
+            "FROM python-expat-base AS runtime"
+        )
+        for module in ("pyexpat", "_elementtree"):
+            assert (
+                f"/usr/local/lib/python3.14/lib-dynload/{module}.cpython-314-*.so"
+                in dockerfile
+            )
+        assert (
+            "sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules"
+            in dockerfile
+        )
+
+    assert (
+        "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73"
+        in build_script
+    )
+    assert "sha256sum --check --strict" in build_script
+    assert "--with-system-expat" in build_script
+    assert 'make -j2 "Modules/pyexpat' in build_script
+    assert '"Modules/_elementtree' in build_script
+    assert 'EXPAT_REPORTED_VERSION = "expat_2.9.0"' in verifier
+    assert "libexpat.so.1" in verifier
+    assert '"docker", ["save", "--output", archive, image]' in layer_gate
+    assert 'found.has("pyexpat")' in layer_gate
+    assert 'found.has("_elementtree")' in layer_gate
+
+    ci = (WORKFLOWS / "ci.yml").read_text()
+    publish = (WORKFLOWS / "publish-docker.yml").read_text()
+    assert ci.count("verify_python_expat_layers.ts") == 2
+    assert publish.count("verify_python_expat_layers.ts") == 1
+    assert "/app/scripts/verify_final_python_packages.py expat" in ci
 
 
 def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:

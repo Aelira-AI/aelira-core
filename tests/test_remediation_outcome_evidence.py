@@ -49,6 +49,29 @@ def test_false_and_unknown_evidence_remain_distinct_through_public_boundary():
     assert "needs_review" not in public[1]
 
 
+def test_reviewed_pptx_order_scope_survives_public_serialization_without_scan_attribution():
+    result = SimpleNamespace(
+        fixed_issues=[{"issue_id": "pptx-reading-order-0", "needs_review": True}]
+    )
+    accounting = outcome_accounting(
+        [{"id": "pptx-reading-order-0"}],
+        result,
+        published=True,
+        source_index_scope="accepted_pptx_order",
+    )
+    public = public_job_result(JobSuccess(accounting).result)
+    assert public["issue_outcomes"] == [
+        {
+            "source_index": 0,
+            "source_index_scope": "accepted_pptx_order",
+            "issue_id": "pptx-reading-order-0",
+            "status": "fixed",
+            "needs_review": True,
+        }
+    ]
+    assert public_job_result(public) == public
+
+
 @pytest.mark.parametrize(
     "reason,code",
     [

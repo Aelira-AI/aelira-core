@@ -255,6 +255,7 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                 ) in {
                     "original_scan",
                     "approved_subset",
+                    "accepted_pptx_order",
                 }:
                     outcome["source_index_scope"] = record["source_index_scope"]
                 identifier = record.get("issue_id")

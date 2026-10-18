@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
+import csv
+import hashlib
+import importlib.metadata
 
 import pytest
 
 from scripts.verify_final_python_packages import (
+    PYAV_LIBRARIES,
+    required_opencv_version,
     required_msgpack_version,
     required_piper_version,
+    required_pyav_version,
     required_psycopg2_version,
     required_urllib3_version,
     validate,
+    validate_opencv_native,
     validate_pillow,
+    validate_pyav_native,
     validate_psycopg2_native,
+    psycopg2_record_receipt,
 )
 
 PIPER_VERSION = required_piper_version()
@@ -33,6 +43,37 @@ def _versions(installed: dict[str, str]):
             raise MissingPackage(package) from exc
 
     return version
+
+
+def _installed_pip_vendor(root: Path) -> Path:
+    (root / "pip-26.2.1.dist-info").mkdir()
+    vendor = root / "pip" / "_vendor"
+    urllib3 = vendor / "urllib3"
+    urllib3.mkdir(parents=True)
+    # Frozen independently from the published pip 26.2.1 wheel's vendor.txt.
+    (vendor / "vendor.txt").write_text(
+        "CacheControl==0.14.4\n"
+        "distlib==0.4.2\n"
+        "distro==1.9.0\n"
+        "msgpack==1.1.2\n"
+        "packaging==26.2\n"
+        "platformdirs==4.10.0\n"
+        "pyproject-hooks==1.2.0\n"
+        "requests==2.34.2\n"
+        "    certifi==2026.6.17\n"
+        "    idna==3.18\n"
+        "    urllib3==2.7.0\n"
+        "rich==14.2.0\n"
+        "    pygments==2.20.0\n"
+        "resolvelib==1.2.1\n"
+        "setuptools==70.3.0\n"
+        "tomli==2.4.1\n"
+        "tomli-w==1.2.0\n"
+        "truststore==0.10.4\n"
+    )
+    (urllib3 / "__init__.py").write_text("from ._version import __version__\n")
+    (urllib3 / "_version.py").write_text("__version__ = version = '2.7.0'\n")
+    return vendor
 
 
 def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
@@ -63,6 +104,92 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         )
         == []
     )
+
+
+def test_final_package_verifier_accepts_quickstart_with_pip(tmp_path: Path) -> None:
+    _installed_pip_vendor(tmp_path)
+    assert (
+        validate(
+            "quickstart",
+            version=_versions(
+                {
+                    "msgpack": MSGPACK_VERSION,
+                    "setuptools": "84.0.0",
+                    "pip": "26.2.1",
+                    "piper-tts": PIPER_VERSION,
+                    "urllib3": URLLIB3_VERSION,
+                }
+            ),
+            package_not_found=MissingPackage,
+            purelib=tmp_path,
+        )
+        == []
+    )
+
+
+def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> None:
+    _installed_pip_vendor(tmp_path)
+    errors = validate(
+        "quickstart",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "pip": "26.2.0",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert "quickstart: pip is 26.2.0; expected 26.2.1" in errors
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("missing_manifest", "unable to read pip vendor manifest"),
+        ("old_manifest", "pip vendor manifest differs from pip 26.2.1"),
+        ("extra_vendor", "pip vendor manifest differs from pip 26.2.1"),
+        ("old_code", "pip-vendored urllib3 is not 2.7.0"),
+        ("missing_code", "unable to read pip-vendored urllib3"),
+    ],
+)
+def test_quickstart_refuses_unreviewed_pip_vendor_tree(
+    tmp_path: Path, change: str, expected: str
+) -> None:
+    vendor = _installed_pip_vendor(tmp_path)
+    manifest = vendor / "vendor.txt"
+    code = vendor / "urllib3" / "_version.py"
+    if change == "missing_manifest":
+        manifest.unlink()
+    elif change == "old_manifest":
+        manifest.write_text(
+            manifest.read_text().replace("urllib3==2.7.0", "urllib3==2.6.3")
+        )
+    elif change == "extra_vendor":
+        manifest.write_text(manifest.read_text() + "unreviewed==1.0.0\n")
+    elif change == "old_code":
+        code.write_text("__version__ = version = '2.6.3'\n")
+    elif change == "missing_code":
+        code.unlink()
+
+    errors = validate(
+        "quickstart",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "pip": "26.2.1",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert any(expected in error for error in errors)
 
 
 @pytest.mark.parametrize(
@@ -162,15 +289,49 @@ def test_final_package_verifier_rejects_stale_metadata_names(
     assert any("forbidden stale metadata present" in error for error in errors)
 
 
-def test_final_package_verifier_rejects_pip_vendor_tree(tmp_path: Path) -> None:
-    (tmp_path / "pip" / "_vendor" / "urllib3").mkdir(parents=True)
+@pytest.mark.parametrize("scope", ["global", "venv"])
+def test_final_package_verifier_rejects_pip_vendor_tree(
+    tmp_path: Path, scope: str
+) -> None:
+    _installed_pip_vendor(tmp_path)
+    installed = {"msgpack": MSGPACK_VERSION}
+    if scope == "venv":
+        installed.update(
+            {
+                "setuptools": "84.0.0",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
+            }
+        )
     errors = validate(
-        "global",
-        version=_versions({"msgpack": MSGPACK_VERSION}),
+        scope,
+        version=_versions(installed),
         package_not_found=MissingPackage,
         purelib=tmp_path,
     )
     assert any("pip-vendored urllib3 remains" in error for error in errors)
+
+
+def test_quickstart_keeps_top_level_urllib3_guards(tmp_path: Path) -> None:
+    _installed_pip_vendor(tmp_path)
+    (tmp_path / "urllib3-2.7.0.dist-info").mkdir()
+    errors = validate(
+        "quickstart",
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "pip": "26.2.1",
+                "piper-tts": PIPER_VERSION,
+                "urllib3": "2.7.0",
+            }
+        ),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert "quickstart: urllib3 is 2.7.0; expected 2.8.0" in errors
+    assert any("forbidden stale metadata present" in error for error in errors)
+    assert not any("pip vendor manifest" in error for error in errors)
 
 
 def test_final_package_verifier_follows_canonical_urllib3_pin(tmp_path: Path) -> None:
@@ -421,7 +582,7 @@ def test_final_package_verifier_requires_each_codec_and_text_feature(
     assert f"venv: Pillow feature {feature} is unavailable" in errors
 
 
-@pytest.mark.parametrize("package", ["pi-heif", "pybind11"])
+@pytest.mark.parametrize("package", ["pi-heif", "pybind11", "Cython"])
 def test_final_package_verifier_rejects_packages_the_image_must_not_ship(
     tmp_path: Path, package: str
 ) -> None:
@@ -552,6 +713,95 @@ def test_psycopg2_verifier_requires_one_extension_module(tmp_path: Path) -> None
     assert "expected exactly one psycopg2 extension module" in errors[0]
 
 
+def _installed_psycopg2_fixture(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    package = root / "psycopg2"
+    package.mkdir()
+    extension = package / "_psycopg.cpython-314-x86_64-linux-gnu.so"
+    extension.write_bytes(b"native extension bytes")
+    (package / "__init__.py").write_text("version = 'fixture'\n")
+    metadata = root / "psycopg2_binary-2.9.13.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: psycopg2-binary\nVersion: 2.9.13\n")
+    rows = []
+    for path in (extension, package / "__init__.py", metadata / "METADATA"):
+        data = path.read_bytes()
+        digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+        )
+        rows.append((str(path.relative_to(root)), f"sha256={digest}", str(len(data))))
+    rows.append((str((metadata / "RECORD").relative_to(root)), "", ""))
+    record = metadata / "RECORD"
+    with record.open("w", newline="") as output:
+        csv.writer(output).writerows(rows)
+    monkeypatch.setattr(
+        importlib.metadata,
+        "distribution",
+        lambda _: importlib.metadata.PathDistribution(metadata),
+    )
+    return extension, record
+
+
+def test_installed_psycopg2_record_covers_native_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    receipt = psycopg2_record_receipt(tmp_path)
+    assert receipt["record_hashes_verified"] == 3
+    assert (
+        receipt["extension_sha256"]
+        == hashlib.sha256(extension.read_bytes()).hexdigest()
+    )
+    assert b"\r\n" in record.read_bytes()
+    assert receipt["record_sha256"] == hashlib.sha256(record.read_bytes()).hexdigest()
+
+
+def test_installed_psycopg2_record_rejects_mutated_native_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension, _ = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    extension.write_bytes(b"modified")
+    with pytest.raises(ValueError, match="installed bytes differ"):
+        psycopg2_record_receipt(tmp_path)
+
+
+def test_installed_psycopg2_record_requires_native_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    rows = list(csv.reader(record.read_text().splitlines()))
+    rows[0][1:] = ["", ""]
+    with record.open("w", newline="") as output:
+        csv.writer(output).writerows(rows)
+    with pytest.raises(ValueError, match="unhashed installed file"):
+        psycopg2_record_receipt(tmp_path)
+
+
+def test_installed_psycopg2_record_rejects_malformed_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, record = _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    record.write_text("psycopg2/_psycopg.so,sha256=bad\n")
+    with pytest.raises(ValueError, match="three fields"):
+        psycopg2_record_receipt(tmp_path)
+
+
+def test_installed_psycopg2_record_requires_the_reviewed_pin_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _installed_psycopg2_fixture(tmp_path, monkeypatch)
+    requirements = tmp_path / "requirements.txt"
+    with pytest.raises(FileNotFoundError):
+        psycopg2_record_receipt(tmp_path, requirements)
+    requirements.write_text("psycopg2-binary==2.9.12\n")
+    with pytest.raises(ValueError, match="distribution version differs"):
+        psycopg2_record_receipt(tmp_path, requirements)
+    requirements.write_text("psycopg2-binary>=2.9.13\n")
+    with pytest.raises(ValueError, match="one exact psycopg2-binary pin"):
+        psycopg2_record_receipt(tmp_path, requirements)
+
+
 def test_psycopg2_verifier_follows_the_canonical_pin(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("psycopg2-binary==2.9.14 # reviewed pin\n")
@@ -608,3 +858,248 @@ def test_dockerfile_builds_psycopg2_from_source_before_requirements() -> None:
     assert f"psycopg2_binary-{PSYCOPG2_VERSION}-*.whl" in dependency_install
     script = (root / "docker" / "build-psycopg2-wheel.sh").read_text()
     assert f"psycopg2_binary-{PSYCOPG2_VERSION}.tar.gz" in script
+
+
+def test_quickstart_builds_all_native_pins_before_dev_requirements() -> None:
+    source = (Path(__file__).resolve().parents[1] / "Dockerfile.dev").read_text()
+    builds = (
+        "sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel",
+        "sh /tmp/build-pillow-wheel.sh /tmp/pillow-wheel",
+        "sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel",
+        "sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel",
+        "sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel",
+        "pip install --no-cache-dir -r requirements-dev.txt",
+    )
+    assert list(map(source.index, builds)) == sorted(map(source.index, builds))
+    for wheel in (
+        "lxml-6.1.3-*.whl",
+        "pillow-12.3.0-*.whl",
+        "psycopg2_binary-2.9.13-*.whl",
+        "av-18.1.0-*.whl",
+        "opencv_python-5.0.0.93-*.whl",
+    ):
+        assert source.index(wheel) < source.index(builds[-1])
+    assert "libpq-dev" in source
+    assert "libavif-dev" in source
+    assert "libraqm-dev" in source
+    assert "libtiff-dev" not in source
+
+
+PYAV_VERSION = required_pyav_version()
+
+
+def _pyav_tree(root: Path) -> Path:
+    package = root / "av"
+    package.mkdir()
+    (package / "_core.cpython-314-aarch64-linux-gnu.so").write_bytes(b"")
+    return root
+
+
+def _pyav_ldd(path_prefix: str = "/opt/ffmpeg9/lib") -> str:
+    return "\n".join(
+        f"{stem}.so.{numbers[0]} => {path_prefix}/{stem}.so.{numbers[0]} (0x1234)"
+        for stem, numbers in PYAV_LIBRARIES.items()
+    )
+
+
+def _validate_pyav(root: Path, ldd_output: str | None = None, **overrides):
+    options = {
+        "version": _versions({"av": PYAV_VERSION}),
+        "package_not_found": MissingPackage,
+        "purelib": root,
+        "ldd": lambda _extension: ldd_output or _pyav_ldd(),
+        "realpath": lambda path: path,
+        "library_versions": PYAV_LIBRARIES,
+    }
+    options.update(overrides)
+    return validate_pyav_native(**options)
+
+
+def test_pyav_verifier_accepts_all_seven_source_linked_libraries(
+    tmp_path: Path,
+) -> None:
+    assert _validate_pyav(_pyav_tree(tmp_path)) == []
+
+
+def test_pyav_verifier_rejects_published_wheel_private_libraries(
+    tmp_path: Path,
+) -> None:
+    root = _pyav_tree(tmp_path)
+    (root / "av.libs").mkdir()
+    errors = _validate_pyav(root, _pyav_ldd(str(root / "av.libs")))
+    assert any("bundled av library directory" in error for error in errors)
+    assert any("expected /opt/ffmpeg9/lib/" in error for error in errors)
+
+
+@pytest.mark.parametrize("path", ["/usr/lib/aarch64-linux-gnu", "/tmp/ffmpeg"])
+def test_pyav_verifier_rejects_wrong_library_prefix(tmp_path: Path, path: str) -> None:
+    errors = _validate_pyav(_pyav_tree(tmp_path), _pyav_ldd(path))
+    assert (
+        len([error for error in errors if "expected /opt/ffmpeg9/lib/" in error]) >= 7
+    )
+
+
+def test_pyav_verifier_rejects_missing_or_old_ffmpeg_library(tmp_path: Path) -> None:
+    root = _pyav_tree(tmp_path)
+    good = _pyav_ldd()
+    old = good.replace("libavcodec.so.63", "libavcodec.so.61")
+    errors = _validate_pyav(root, old)
+    assert any("expected libavcodec.so.63" in error for error in errors)
+    assert any("does not resolve libavcodec" in error for error in errors)
+
+
+def test_pyav_verifier_rejects_tls_and_wrong_native_version(tmp_path: Path) -> None:
+    root = _pyav_tree(tmp_path)
+    linked = (
+        _pyav_ldd()
+        + "\nlibssl-deadbeef.so.3 => /tmp/av.libs/libssl-deadbeef.so.3 (0x1234)"
+    )
+    versions = {**PYAV_LIBRARIES, "libavcodec": (61, 1, 102)}
+    errors = _validate_pyav(root, linked, library_versions=versions)
+    assert any("loads TLS library libssl-deadbeef.so.3" in error for error in errors)
+    assert any("reports libavcodec (61, 1, 102)" in error for error in errors)
+
+
+def test_dockerfile_builds_pyav_before_installing_requirements() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile").read_text()
+    builder = dockerfile.split("AS builder", 1)[1].split("AS pa11y-node", 1)[0]
+    source = "sh /tmp/build-pyav-wheel.sh /tmp/pyav-wheel"
+    assert source in builder
+    assert builder.index(source) < builder.index(
+        "pip install --no-cache-dir -r requirements.txt"
+    )
+    assert f"/tmp/pyav-wheel/av-{PYAV_VERSION}-*.whl" in builder
+    assert "COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib" in dockerfile
+
+
+OPENCV_VERSION = required_opencv_version()
+
+
+def _opencv_tree(root: Path) -> Path:
+    package = root / "cv2"
+    package.mkdir()
+    (package / "cv2.cpython-314-aarch64-linux-gnu.so").write_bytes(b"")
+    return root
+
+
+def _opencv_ldd(path_prefix: str = "/opt/ffmpeg9/lib") -> str:
+    return "\n".join(
+        [
+            *(
+                f"{stem}.so.{PYAV_LIBRARIES[stem][0]} => {path_prefix}/{stem}.so.{PYAV_LIBRARIES[stem][0]} (0x1234)"
+                for stem in (
+                    "libavcodec",
+                    "libavformat",
+                    "libavutil",
+                    "libswscale",
+                    "libswresample",
+                )
+            ),
+            "libdav1d.so.7 => /usr/lib/aarch64-linux-gnu/libdav1d.so.7 (0x1234)",
+        ]
+    )
+
+
+def _validate_opencv(root: Path, ldd_output: str | None = None, **overrides):
+    options = {
+        "version": _versions({"opencv-python": OPENCV_VERSION}),
+        "package_not_found": MissingPackage,
+        "purelib": root,
+        "ldd": lambda _extension: ldd_output or _opencv_ldd(),
+        "realpath": lambda path: path,
+        "build_information": "  FFMPEG: YES\n  TIFF: NO\n",
+    }
+    options.update(overrides)
+    return validate_opencv_native(**options)
+
+
+def test_opencv_verifier_accepts_shared_ffmpeg_and_debian_dav1d(tmp_path: Path):
+    assert _validate_opencv(_opencv_tree(tmp_path)) == []
+
+
+def test_opencv_verifier_rejects_published_private_wheel(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    (root / "opencv_python.libs").mkdir()
+    errors = _validate_opencv(root, _opencv_ldd(str(root / "opencv_python.libs")))
+    assert any("bundled OpenCV library directory" in error for error in errors)
+    assert any("expected /opt/ffmpeg9/lib/" in error for error in errors)
+
+
+def test_opencv_verifier_rejects_missing_cpu_av1_and_tiff(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        _opencv_ldd().replace("libdav1d.so.7", "libdav1d.so.6")
+        + "\nlibssl-deadbeef.so.3 => /tmp/opencv_python.libs/libssl-deadbeef.so.3 (0x1234)",
+        build_information="FFMPEG: YES\nTIFF: build (4.7.1)\n",
+    )
+    assert any("lacks Debian libdav1d.so.7" in error for error in errors)
+    assert any("optional TIFF image backend" in error for error in errors)
+    assert any("loads TLS library" in error for error in errors)
+
+
+def test_opencv_verifier_rejects_versioned_image_libraries(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        _opencv_ldd()
+        + "\nlibpng16.so.16 => /usr/lib/aarch64-linux-gnu/libpng16.so.16 (0x1234)"
+        + "\nlibavif.so.16 => /usr/lib/aarch64-linux-gnu/libavif.so.16 (0x1234)",
+    )
+    assert any("disabled image codec libpng16.so.16" in error for error in errors)
+    assert any("disabled image codec libavif.so.16" in error for error in errors)
+
+
+def test_opencv_verifier_rejects_nonprefix_indirect_ffmpeg(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        _opencv_ldd().replace(
+            "/opt/ffmpeg9/lib/libswresample.so.7",
+            "/usr/lib/aarch64-linux-gnu/libswresample.so.7",
+        ),
+    )
+    assert any(
+        "libswresample.so.7" in error and "expected /opt/ffmpeg9/lib/" in error
+        for error in errors
+    )
+
+
+def test_opencv_verifier_rejects_built_optional_image_backends(tmp_path: Path):
+    root = _opencv_tree(tmp_path)
+    errors = _validate_opencv(
+        root,
+        build_information=(
+            "FFMPEG: YES\n"
+            "AVIF: /usr/lib/libavif.so\n"
+            "JPEG: build (libjpeg-turbo)\n"
+            "PNG: build (ver 1.6.0)\n"
+            "WEBP: /usr/lib/libwebp.so\n"
+        ),
+    )
+    for backend in ("AVIF", "JPEG", "PNG", "WEBP"):
+        assert any(f"optional {backend} image backend" in error for error in errors)
+
+
+def test_dockerfiles_build_opencv_before_requirements():
+    root = Path(__file__).resolve().parents[1]
+    for name, requirements in (
+        ("Dockerfile", "requirements.txt"),
+        ("Dockerfile.dev", "requirements-dev.txt"),
+    ):
+        source = (root / name).read_text()
+        build = "sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel /tmp/opencv-ffmpeg9-pr29533.diff"
+        install = f"/tmp/opencv-wheel/opencv_python-{OPENCV_VERSION}-*.whl"
+        requirements_install = f"pip install --no-cache-dir -r {requirements}"
+        assert source.index("sh /tmp/build-pyav-wheel.sh") < source.index(build)
+        assert source.index(build) < source.index(install)
+        assert source.index(install) < source.index(requirements_install)
+
+
+def test_opencv_source_disables_optional_image_discovery():
+    source = (
+        Path(__file__).resolve().parents[1] / "docker/build-opencv-wheel.sh"
+    ).read_text()
+    for backend in ("AVIF", "JPEG", "PNG", "SPNG", "TIFF", "WEBP", "GDCM", "GDAL"):
+        assert f"-DWITH_{backend}=OFF" in source

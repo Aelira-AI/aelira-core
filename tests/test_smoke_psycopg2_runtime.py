@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.smoke_psycopg2_runtime import (
     check_loaded_libraries,
+    classify_tls_refusal,
+    database_library_paths,
+    library_receipt,
     mapped_libraries,
+    require_tls_refusal,
+    trusted_interpreter_extensions,
 )
+import scripts.smoke_psycopg2_runtime as runtime
 
 SYSTEM = {
     "libpq.so.5.17": "/usr/lib/x86_64-linux-gnu/libpq.so.5.17",
@@ -60,3 +67,274 @@ def test_mapped_libraries_reads_resolved_shared_objects(tmp_path: Path) -> None:
         "libpq.so.5.17": "/usr/lib/x86_64-linux-gnu/libpq.so.5.17",
         "libssl.so.3": "/usr/lib/x86_64-linux-gnu/libssl.so.3",
     }
+
+
+def test_mapped_libraries_retains_distinct_extensions_with_same_basename(
+    tmp_path: Path,
+) -> None:
+    maps = tmp_path / "maps"
+    basename = "_util_cy.cpython-314-aarch64-linux-gnu.so"
+    first = f"/opt/venv/lib/python3.14/site-packages/sqlalchemy/util/{basename}"
+    second = f"/opt/venv/lib/python3.14/site-packages/sqlalchemy/engine/{basename}"
+    maps.write_text(
+        f"7f00-7f10 r-xp 00000000 08:01 12 {first}\n"
+        f"7f10-7f20 r-xp 00000000 08:01 13 {second}\n"
+        f"7f20-7f30 r--p 00000000 08:01 12 {first}\n"
+    )
+    assert mapped_libraries(maps) == {
+        f"{basename} [{first}]": first,
+        f"{basename} [{second}]": second,
+    }
+
+
+def test_duplicate_tls_basename_keeps_private_copy_for_rejection(
+    tmp_path: Path,
+) -> None:
+    maps = tmp_path / "maps"
+    system_ssl = "/usr/lib/x86_64-linux-gnu/libssl.so.3"
+    private_ssl = "/opt/venv/lib/private/libssl.so.3"
+    maps.write_text(
+        f"7f00-7f10 r-xp 00000000 08:01 12 {system_ssl}\n"
+        f"7f10-7f20 r-xp 00000000 08:01 13 {private_ssl}\n"
+        "7f20-7f30 r-xp 00000000 08:01 14 /usr/lib/libpq.so.5\n"
+        "7f30-7f40 r-xp 00000000 08:01 15 /usr/lib/libcrypto.so.3\n"
+    )
+    libraries = mapped_libraries(maps)
+    assert {system_ssl, private_ssl} <= set(libraries.values())
+    with pytest.raises(RuntimeError, match="not /usr/lib/"):
+        check_loaded_libraries(libraries)
+
+
+def test_database_closure_includes_static_and_connection_loaded_libraries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    dynamic = tmp_path / "libldap.so.2"
+    dynamic.write_bytes(b"ldap")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    monkeypatch.setattr(runtime, "SYSTEM_LIBRARY_PREFIX", str(tmp_path) + "/")
+    observed = {
+        "_psycopg.so": str(extension),
+        "libpq.so.5": str(static),
+        "libldap.so.2": str(dynamic),
+    }
+    assert database_library_paths(extension, {}, observed, set()) == {
+        "libpq.so.5": str(static),
+        "libldap.so.2": str(dynamic),
+    }
+
+
+def test_database_closure_rejects_an_unmapped_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="absent from process maps"):
+        database_library_paths(extension, {}, {"_psycopg.so": str(extension)}, set())
+
+
+def test_database_closure_excludes_preexisting_unrelated_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    unrelated = tmp_path / "libunrelated.so.1"
+    unrelated.write_bytes(b"other")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    monkeypatch.setattr(runtime, "SYSTEM_LIBRARY_PREFIX", str(tmp_path) + "/")
+    observed = {
+        "_psycopg.so": str(extension),
+        "libpq.so.5": str(static),
+        "libunrelated.so.1": str(unrelated),
+    }
+    assert database_library_paths(
+        extension, {"libunrelated.so.1": str(unrelated)}, observed, set()
+    ) == {"libpq.so.5": str(static)}
+
+
+def test_database_closure_rejects_new_unexplained_off_prefix_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "_psycopg.so"
+    extension.write_bytes(b"native")
+    static = tmp_path / "libpq.so.5"
+    static.write_bytes(b"pq")
+    unexpected = tmp_path / "private.so"
+    unexpected.write_bytes(b"untrusted")
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=f"libpq.so.5 => {static} (0x1)\n"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="unexplained off-prefix"):
+        database_library_paths(
+            extension,
+            {},
+            {
+                "_psycopg.so": str(extension),
+                "libpq.so.5": str(static),
+                "private.so": str(unexpected),
+            },
+            set(),
+        )
+
+
+def test_only_actual_stdlib_extension_module_is_trusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "lib-dynload" / "_decimal.so"
+    extension.parent.mkdir()
+    extension.write_bytes(b"stdlib")
+    unrelated = tmp_path / "third-party" / "other.so"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"other")
+    monkeypatch.setattr(
+        runtime.sysconfig, "get_config_var", lambda _: str(extension.parent)
+    )
+    monkeypatch.setitem(
+        runtime.sys.modules, "fixture_stdlib", SimpleNamespace(__file__=str(extension))
+    )
+    monkeypatch.setitem(
+        runtime.sys.modules,
+        "fixture_third_party",
+        SimpleNamespace(__file__=str(unrelated)),
+    )
+    trusted = trusted_interpreter_extensions()
+    assert str(extension) in trusted
+    assert str(unrelated) not in trusted
+
+
+def test_database_library_receipt_rejects_off_prefix() -> None:
+    with pytest.raises(RuntimeError, match="outside /usr/lib"):
+        library_receipt({"libpq.so.5": "/opt/private/libpq.so.5"})
+
+
+def test_database_library_receipt_requires_one_debian_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
+    monkeypatch.setattr(
+        runtime.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+    )
+    with pytest.raises(RuntimeError, match="missing or ambiguous Debian owner"):
+        library_receipt({"libpq.so.5": "/usr/lib/libpq.so.5"})
+
+
+def test_database_library_receipt_records_binary_and_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"mapped bytes")
+    replies = iter(
+        [
+            "libpq5:amd64: /usr/lib/libpq.so.5\n",
+            "libpq5:amd64\t17.11-0+deb13u1\tpostgresql-17\t17.11-0+deb13u1",
+        ]
+    )
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=next(replies)),
+    )
+    receipt = library_receipt({"libpq.so.5": "/usr/lib/libpq.so.5"})
+    assert receipt["libpq.so.5"]["source_package"] == "postgresql-17"
+    assert (
+        receipt["libpq.so.5"]["sha256"]
+        == runtime.hashlib.sha256(b"mapped bytes").hexdigest()
+    )
+
+
+def test_database_library_receipt_requires_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
+    replies = iter(
+        [
+            "libpq5:amd64: /usr/lib/libpq.so.5\n",
+            "libpq5:amd64\t17.11-0+deb13u1\t\t",
+        ]
+    )
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=next(replies)),
+    )
+    with pytest.raises(RuntimeError, match="incomplete Debian package identity"):
+        library_receipt({"libpq.so.5": "/usr/lib/libpq.so.5"})
+
+
+@pytest.mark.parametrize(
+    ("control", "detail"),
+    [
+        ("wrong-host", 'server certificate does not match host name "wrong.invalid"'),
+        ("untrusted-ca", "SSL error: certificate verify failed"),
+    ],
+)
+def test_certificate_refusals_have_expected_reason(control: str, detail: str) -> None:
+    assert classify_tls_refusal(control, RuntimeError(detail)) == control
+
+
+@pytest.mark.parametrize(
+    ("control", "detail"),
+    [
+        ("wrong-host", "could not translate host name wrong.invalid"),
+        ("wrong-host", "connection timed out"),
+        ("wrong-host", "certificate verify failed"),
+        ("untrusted-ca", "connection refused"),
+        ("untrusted-ca", "server certificate does not match host name"),
+    ],
+)
+def test_other_failures_cannot_pass_as_certificate_refusals(
+    control: str, detail: str
+) -> None:
+    with pytest.raises(RuntimeError, match="certificate"):
+        classify_tls_refusal(control, RuntimeError(detail))
+
+
+def test_refusal_failure_does_not_expose_connection_detail() -> None:
+    private_detail = "connection timed out password=synthetic-secret"
+    with pytest.raises(RuntimeError) as failure:
+        classify_tls_refusal("wrong-host", RuntimeError(private_detail))
+    assert "synthetic-secret" not in str(failure.value)
+    assert failure.value.__cause__ is None
+
+
+def test_accepted_negative_peer_fails_and_is_closed() -> None:
+    class AcceptedPeer:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    peer = AcceptedPeer()
+    with pytest.raises(RuntimeError, match="peer was accepted"):
+        require_tls_refusal(lambda **_args: peer, "wrong-host", {})
+    assert peer.closed

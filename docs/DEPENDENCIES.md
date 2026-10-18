@@ -16,7 +16,7 @@ the production roles that keep each one in the shipped environment.
 ### Coupled Python pins
 
 Exact transitive pins must satisfy the parent package's published requirements.
-`pydantic==2.13.5` requires `pydantic_core==2.46.5`; `sympy==1.14.0`
+`pydantic==2.14.1` requires `pydantic_core==2.50.1`; `sympy==1.14.0`
 requires `mpmath>=1.1.0,<1.4`, for which the pinned version is `1.3.0`.
 Independent minor updates of these transitive packages can make the entire
 runtime and development installation unsatisfiable.
@@ -181,6 +181,28 @@ Installed by the Docker images / quickstart, or by you when running bare:
 | Pandoc | Document format conversion |
 | FFmpeg | Audio/video decoding for captioning |
 
+### CPython Expat in API images
+
+Production and quickstart images keep the pinned official CPython 3.14.8
+interpreter, ABI, headers, configuration, and unrelated `/usr/local` files.
+Their fresh Debian Trixie runtime installs `libexpat1=2.9.0-1~deb13u1`.
+Only `pyexpat` and its matching `_elementtree` C-API consumer are rebuilt
+from the [official CPython 3.14.8 source
+archive](https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz)
+(SHA-256 `c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73`)
+with CPython's supported `--with-system-expat` configure option. The source
+archive's `LICENSE` covers CPython; Debian ships Expat's copyright and
+license record at `/usr/share/doc/libexpat1/copyright`.
+
+The old bundled modules are removed before the official tree is copied into
+the Debian-rooted runtime. `scripts/verify_final_python_packages.py` checks
+the imported pair, normal XML consumers, Debian package version, loader path,
+and libpython cache; `scripts/verify_python_expat_layers.ts` checks every
+exported image layer. Both gates run for final images in CI. The exact Debian
+package pin fails the build or final check if the mutable archive supersedes
+this version; a saved Debian package or snapshot is needed for long-term
+replay of all apt inputs.
+
 ## The rest of the dependency inventories
 
 Every package resolved in the supported runtime and contributor environments is
@@ -204,26 +226,95 @@ the resolver's latest-version choice.
 
 ### Libraries built from source
 
-The published `lxml` and `Pillow` wheels bundle native libraries that Debian
-and the vulnerability scanner do not see, and that lag upstream security
-releases. The API image therefore builds both from their pinned source
-releases in the builder stage, then installs the resulting wheels before the
-locked requirements, which are then already satisfied.
+The published `lxml`, `Pillow`, `psycopg2-binary`, `av`, and `opencv-python`
+wheels bundle native libraries that Debian and the vulnerability scanner do
+not see, and that lag upstream security releases. Both the production API and
+quickstart images build the five exact distributions from their pinned source
+releases, then install the resulting wheels before the locked requirements,
+which are then already satisfied. The quickstart keeps pip for developer use;
+its source builds and temporary build tools finish in the same image layer.
 
 | Package | Build script | What it links |
 |---|---|---|
 | `lxml` 6.1.3 | `docker/build-lxml-wheel.sh` | libxml2 2.15.4, libxslt 1.1.45, zlib and libiconv, statically, from hash-verified archives |
 | `Pillow` 12.3.0 | `docker/build-pillow-wheel.sh` | libtiff 4.7.2 (JPEG, Deflate, LZMA and Zstandard codecs) statically, from a hash-verified archive; JPEG, JPEG 2000, WebP, AVIF, FreeType, Raqm with FriBidi and HarfBuzz, LittleCMS, zlib and XCB from Debian packages |
+| `psycopg2-binary` 2.9.13 | `docker/build-psycopg2-wheel.sh` | Debian `libpq` and its system TLS libraries, with no wheel-private `psycopg2_binary.libs` |
+| `av` 18.1.0 | `docker/build-pyav-wheel.sh` | FFmpeg 9.0.2 shared libraries under `/opt/ffmpeg9/lib`, built from a hash-verified official release archive; no wheel-private `av.libs` or TLS libraries |
+| `opencv-python` 5.0.0.93 | `docker/build-opencv-wheel.sh` | The same FFmpeg 9.0.2 libraries and Debian `libdav1d7` 1.5.1-1 for CPU AV1 decoding; no `opencv_python.libs` or optional OpenCV image-codec backends |
 
-Raising either pin means changing the requirement, the build script's version
-and digests, and the policy test together. `pi_heif` is intentionally absent:
+The [PyAV source archive](https://pypi.org/project/av/18.1.0/#files) has SHA-256
+`47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28`.
+The [official FFmpeg archive](https://ffmpeg.org/download.html) has SHA-256
+`8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`;
+its official release signature was verified against FFmpeg release signer
+`FCF986EA15E6E293A5644F10B4322F04D67658D8`. The PyAV build pins Cython
+3.2.9 and the existing setuptools 84.0.0, disables build isolation, and checks
+both archive hashes before unpacking. The final image carries the FFmpeg and
+PyAV license texts with the seven required shared libraries. PyAV's extension
+modules and the FFmpeg siblings use an embedded RPATH to that prefix.
+The [OpenCV 5.0.0.93 source archive](https://pypi.org/project/opencv-python/5.0.0.93/#files)
+has SHA-256 `66aac3e5b5faa48d4025816592f3af19e4bfc2c68dec067bae2dbb4ca10aa9e2`.
+Its exact [upstream merged FFmpeg 9 compatibility diff](https://github.com/opencv/opencv/compare/49c8d21f16e205647fb77535b3d182f14b2debfe...c0166c617d765ac707dde6b9acd8cfcd49751049.diff)
+has SHA-256 `ee7c145e51c7988325296ea2cc1dc70b42ecd6e27b49386370b926c2211ff6f4`.
+Both hashes are checked before the OpenCV build. Its temporary build environment
+pins NumPy 2.3.2, setuptools 69.5.1 and wheel 0.45.1 as required by the
+sdist's legacy build backend on Python
+3.14; the final application keeps NumPy 2.5.4 and setuptools 84.0.0. FFmpeg's
+development headers and linker symlinks are removed after both wheels exist.
+The final-image verifier checks the installed PyAV version, native FFmpeg
+version tuples, every resolved FFmpeg SONAME and path, and the absence of
+`av.libs` and linked TLS libraries.
+
+This FFmpeg build disables autodetected optional components, including TLS/HTTPS.
+It explicitly enables Debian's `libdav1d` software AV1 decoder and disables
+FFmpeg's hardware-only native AV1 decoder so OpenCV selects the CPU decoder by
+codec ID. PyAV still decodes the local PCM WAV that `multimedia_processor.py`
+generates for `faster-whisper==1.2.1`. The system `ffmpeg` CLI remains a
+separate Debian media path.
+
+The OpenCV wheel retains the exact `opencv-python` distribution identity that
+PySceneDetect 0.7.2 requires. Its compiled scope is scene video capture and
+processing; OpenCV's optional JPEG, PNG, TIFF, WebP, JPEG 2000, GIF, AVIF and
+other optional image-codec backends are disabled even when the production and
+quickstart builders have `libavif-dev` for Pillow. OpenCV's built-in BMP codec remains
+registered. The unused Protobuf and Flatbuffers backends are disabled.
+With the production builder's image-development packages present, OpenCV
+links Debian `libz.so.1` (zlib 1.3.1) rather than its in-tree zlib. Its
+remaining internal ittnotify, libclapack, and HAL components are retained
+support code, not additional linked media, image-codec, or TLS shared
+libraries. Pillow handles application image decoding and keeps its own verified
+format support. Native acceptance checks normal H.264, HEVC, VP8, VP9,
+MPEG-4, MJPEG and AV1 input, 90 decoded frames and scene starts at
+0, 3 and 6 seconds, plus a true single-scene input. These checks cover the
+listed CPU inputs and do not establish every media profile or clear broader
+dependency findings tracked by #583, #578 and #377.
+
+Raising any source-built pin means changing the requirement, the build script's
+version and digests, and the policy test together. `pi_heif` is intentionally absent:
 `ocrmypdf` does not depend on it and nothing in the application imports it. The
 final image check (`scripts/verify_final_python_packages.py venv`) requires
 Pillow's libtiff to be at least 4.7.2, the required codec and text-shaping
 features to be present, no
-`pillow.libs` directory and no `pi_heif` or `pybind11` distribution.
-The published wheel reports `zlib_ng` as its zlib implementation; this build
-uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
+`pillow.libs` directory and no `pi_heif`, `pybind11` or `Cython`
+distribution.
+The quickstart runs the same native binding and image-feature checks through
+`scripts/verify_final_python_packages.py quickstart`, with its retained pinned
+pip checked separately. Its CI image smoke also exercises PyAV WAV resampling,
+Pillow's formats and text shaping, and real OCR.
+The published Pillow wheel reports `zlib_ng` as its zlib implementation; this
+build uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
+
+The developer image keeps pip 26.2.1 as an installer. Its published wheel
+(SHA-256 `71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e`)
+vendors CacheControl 0.14.4, distlib 0.4.2, distro 1.9.0, msgpack 1.1.2,
+packaging 26.2, platformdirs 4.10.0, pyproject-hooks 1.2.0, requests 2.34.2,
+certifi 2026.6.17, idna 3.18, urllib3 2.7.0, rich 14.2.0, pygments 2.20.0,
+resolvelib 1.2.1, setuptools 70.3.0, tomli 2.4.1, tomli-w 1.2.0 and
+truststore 0.10.4. The quickstart verifier requires this exact vendor manifest
+and urllib3 code version; production still requires pip and its vendor tree to
+be absent. The separately installed application urllib3 remains pinned to
+2.8.0. This native-library change does not resolve findings in pip's bundled
+pure-Python dependencies; broader dependency work remains open under #578.
 
 ### Transitive dependencies, grouped by what pulls them in
 
