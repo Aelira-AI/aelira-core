@@ -26,7 +26,15 @@ import uuid
 from src.api.main import app
 from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
-from src.db.models import CloudProvider, ScanType, UserRole
+from src.db.models import (
+    CloudFile,
+    CloudProvider,
+    Department,
+    Scan,
+    ScanResult,
+    ScanType,
+    UserRole,
+)
 from src.services.lms_content_approval import approve_lms_content
 
 pytestmark = pytest.mark.integration
@@ -176,6 +184,73 @@ def _make_writeback_log(cloud_file_id, *, rolled_back=False):
     log.rolled_back_at = datetime.now(timezone.utc) if rolled_back else None
     log.created_at = datetime.now(timezone.utc)
     return log
+
+
+def _course_evidence_db(rows):
+    """Use stored scan evidence for course routes, including partial findings."""
+    files = []
+    scans = []
+    results = []
+    for file_id, file_type, score, issue_count in rows:
+        scan_id = f"scan-{file_id}"
+        cloud_file = _make_cloud_file(
+            cloud_file_id=file_id,
+            content_source=None,
+            file_name=f"{file_id}.{file_type}",
+            compliance_score=score,
+            last_scan_id=scan_id,
+        )
+        cloud_file.file_type = file_type
+        cloud_file.mime_type = "video/mp4" if file_type == "mp4" else "application/pdf"
+        cloud_file.provider_metadata = {
+            "course_name": "Course 101",
+            "course_code": "C101",
+        }
+        files.append(cloud_file)
+        scans.append(
+            SimpleNamespace(
+                id=scan_id,
+                department_id=cloud_file.department_id,
+                document_id=file_id,
+                scan_type=ScanType.VIDEO if file_type == "mp4" else ScanType.PDF,
+            )
+        )
+        results.append(
+            SimpleNamespace(
+                scan_id=scan_id,
+                compliance_score=score,
+                issues=[{"severity": "critical", "rule": "WCAG 1.2.2"}] * issue_count,
+                critical_issues=issue_count,
+                high_issues=0,
+                medium_issues=0,
+                low_issues=0,
+                structure=(
+                    {
+                        "media_type": "video",
+                        "flashing_assessment": {
+                            "state": "unassessed",
+                            "reason": "detector_unavailable",
+                            "version": "unassessed-v1",
+                        },
+                    }
+                    if file_type == "mp4"
+                    else None
+                ),
+            )
+        )
+    db = MagicMock()
+    records = {CloudFile: files, Scan: scans, ScanResult: results}
+
+    def query(model):
+        response = MagicMock()
+        if model is Department:
+            response.filter.return_value.first.return_value = None
+        else:
+            response.filter.return_value.all.return_value = records[model]
+        return response
+
+    db.query.side_effect = query
+    return db
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +624,70 @@ class TestCourseContentStatus:
         data = response.json()
         assert data["course_id"] == "999"
         assert data["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_assessment_course_has_no_complete_average_or_compliant_status():
+    from src.api import canvas_content_routes
+
+    db = _course_evidence_db(
+        [("assessed-pdf", "pdf", 100.0, 0), ("partial-video", "mp4", None, 1)]
+    )
+    principal = SimpleNamespace(department_id="test-dept-456", auth_method="api_key")
+    with patch.object(canvas_content_routes, "require_feature", new=AsyncMock()):
+        overview = await canvas_content_routes.get_course_overview(db, principal)
+        status = await canvas_content_routes.get_course_content_status(
+            "course-101", db, principal
+        )
+
+    assert overview.total_courses == 1
+    assert overview.total_items == 2
+    assert overview.total_scanned == 2
+    assert overview.total_issues == 1
+    assert overview.avg_compliance is None
+    course = overview.courses[0]
+    assert course.total_items == 2
+    assert course.scanned_items == 2
+    assert course.total_issues == 1
+    assert course.avg_compliance is None
+    assert course.status == "unassessed"
+
+    assert status.overall_compliance is None
+    assert len(status.items) == 2
+    items = {item.cloud_file_id: item for item in status.items}
+    assert items["assessed-pdf"].compliance_score == 100
+    assert items["partial-video"].scan_id == "scan-partial-video"
+    assert items["partial-video"].compliance_score is None
+    assert items["partial-video"].issue_count == 1
+    assert status.by_type[0].total == 2
+    assert status.by_type[0].scanned == 2
+    assert status.by_type[0].average_compliance is None
+    assert status.by_type[0].issues == 1
+
+
+@pytest.mark.parametrize(
+    ("score", "expected_status"), [(0.0, "critical"), (100.0, "compliant")]
+)
+@pytest.mark.asyncio
+async def test_fully_assessed_course_retains_zero_and_full_scores(
+    score, expected_status
+):
+    from src.api import canvas_content_routes
+
+    db = _course_evidence_db([("assessed-pdf", "pdf", score, 0)])
+    principal = SimpleNamespace(department_id="test-dept-456", auth_method="api_key")
+    with patch.object(canvas_content_routes, "require_feature", new=AsyncMock()):
+        overview = await canvas_content_routes.get_course_overview(db, principal)
+        status = await canvas_content_routes.get_course_content_status(
+            "course-101", db, principal
+        )
+
+    assert overview.avg_compliance == score
+    assert overview.courses[0].avg_compliance == score
+    assert overview.courses[0].status == expected_status
+    assert status.overall_compliance == score
+    assert status.by_type[0].average_compliance == score
+    assert status.items[0].compliance_score == score
 
 
 # ---------------------------------------------------------------------------

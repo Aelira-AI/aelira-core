@@ -1228,6 +1228,151 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
     )
 
 
+@pytest.mark.parametrize(
+    ("file_type", "expected_scan_type"),
+    [
+        ("mp4", "VIDEO"),
+        ("avi", "VIDEO"),
+        ("mov", "VIDEO"),
+        ("webm", "VIDEO"),
+        ("mp3", "VIDEO"),
+        ("wav", "VIDEO"),
+        ("ogg", "VIDEO"),
+        ("m4a", "MULTIMEDIA"),
+        ("flac", "MULTIMEDIA"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cloud_unassessed_media_keeps_media_scan_provenance_and_findings(
+    file_type, expected_scan_type
+):
+    from src.db.models import ScanStatus, ScanType
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    finding = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    cloud_file = SimpleNamespace(
+        id=f"media-{file_type}",
+        file_type=file_type,
+        file_name=f"source.{file_type}",
+        file_size_bytes=10,
+        last_scan_id=None,
+        last_scanned_at=None,
+        last_compliance_score=None,
+        needs_rescan=True,
+    )
+    credential = SimpleNamespace(department_id="dept-1")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    processor = MagicMock()
+    processor.process_media.return_value = {
+        "success": True,
+        "media_type": "unknown",
+        "compliance_score": None,
+        "issues": [finding],
+        "flashing_analysis": {
+            "state": "unassessed",
+            "reason": "analysis_failed",
+            "version": "unassessed-v1",
+        },
+    }
+
+    with (
+        patch(
+            "src.education.multimedia_processor.MultimediaProcessor",
+            return_value=processor,
+        ),
+        patch("src.jobs.email_alert_job.trigger_scan_alerts", new=AsyncMock()),
+    ):
+        response = await CloudScanJob(credential, cloud_file, MagicMock())._scan_file(
+            f"/tmp/source.{file_type}", db
+        )
+
+    scan = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "Scan"
+    )
+    saved = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "ScanResult"
+    )
+    assert response["success"] is True
+    assert response["compliance_score"] is None
+    assert response["issues_found"] == 1
+    assert scan.status == ScanStatus.COMPLETED
+    assert scan.scan_type == ScanType[expected_scan_type]
+    assert saved.compliance_score is None
+    assert saved.issues == [finding]
+    assert saved.structure["flashing_assessment"]["state"] == "unassessed"
+    assert cloud_file.last_scan_id == scan.id
+    assert cloud_file.last_compliance_score is None
+
+
+@pytest.mark.parametrize(
+    ("file_type", "expected_scan_type"),
+    [
+        ("mp4", "VIDEO"),
+        ("avi", "VIDEO"),
+        ("mov", "VIDEO"),
+        ("webm", "VIDEO"),
+        ("mp3", "VIDEO"),
+        ("wav", "VIDEO"),
+        ("ogg", "VIDEO"),
+        ("m4a", "MULTIMEDIA"),
+        ("flac", "MULTIMEDIA"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_failed_cloud_media_scan_keeps_media_type_without_score(
+    file_type, expected_scan_type
+):
+    from src.db.models import ScanStatus, ScanType
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    cloud_file = SimpleNamespace(
+        id=f"failed-{file_type}",
+        file_type=file_type,
+        file_name=f"source.{file_type}",
+        file_size_bytes=10,
+        last_scan_id="old-scan",
+        last_scanned_at=None,
+        last_compliance_score=80.0,
+        needs_rescan=False,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    processor = MagicMock()
+    processor.process_media.side_effect = RuntimeError("processor unavailable")
+    with patch(
+        "src.education.multimedia_processor.MultimediaProcessor",
+        return_value=processor,
+    ):
+        response = await CloudScanJob(
+            SimpleNamespace(department_id="dept-1"), cloud_file, MagicMock()
+        )._scan_file(f"/tmp/source.{file_type}", db)
+
+    scan = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "Scan"
+    )
+    assert response["success"] is False
+    assert response["compliance_score"] is None
+    assert scan.status == ScanStatus.FAILED
+    assert scan.scan_type == ScanType[expected_scan_type]
+    assert cloud_file.last_scan_id == "old-scan"
+    assert cloud_file.last_compliance_score == 80.0
+    assert cloud_file.needs_rescan is True
+    assert not any(
+        type(call.args[0]).__name__ == "ScanResult" for call in db.add.call_args_list
+    )
+
+
 @pytest.mark.asyncio
 async def test_scan_worker_types_sanitized_handler_failure_before_terminalizing(caplog):
     from src.jobs.cloud_scan_job import CloudScanJob

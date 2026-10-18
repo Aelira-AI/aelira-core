@@ -119,11 +119,7 @@ def _standalone_identity(scan: Any) -> tuple[str, str] | None:
 def _is_verified(scan: Any | None, result: Any | None) -> bool:
     if scan is None or result is None:
         return False
-    if (
-        _enum_value(getattr(scan, "scan_type", ""))
-        in {ScanType.VIDEO.value.lower(), ScanType.MULTIMEDIA.value.lower()}
-        and public_compliance_score(scan, result) is None
-    ):
+    if public_compliance_score(scan, result) is None:
         return False
     if _enum_value(getattr(scan, "status", "")) == ScanStatus.COMPLETED.value.lower():
         return True

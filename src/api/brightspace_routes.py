@@ -2503,7 +2503,7 @@ async def get_brightspace_content_status(
         score = scores[cf.id]
         if latest_scan is not None:
             scanned_count += 1
-        if score is not None:
+        if latest_scan is not None and score is not None:
             assessed_count += 1
             total_score += score
 
@@ -2559,7 +2559,9 @@ async def get_brightspace_content_status(
         )
 
     average_compliance = (
-        round(total_score / assessed_count, 1) if assessed_count > 0 else None
+        round(total_score / assessed_count, 1)
+        if assessed_count > 0 and assessed_count == scanned_count
+        else None
     )
 
     return {

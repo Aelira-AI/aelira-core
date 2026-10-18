@@ -24,6 +24,7 @@ from src.education.current_compliance import (
     public_cloud_file_score,
     public_cloud_file_scores,
     public_cloud_file_issue_totals,
+    public_issue_total,
     retired_media_flash_scan_ids,
     public_scan_job_results,
     public_compliance_score,
@@ -115,6 +116,59 @@ def test_legacy_and_partial_media_never_become_verified_credit():
         "flashing_assessment": {"state": "not_applicable", "version": "unassessed-v1"},
     }
     assert public_compliance_score(audio, audio_result) == 80
+
+
+def test_completed_pdf_without_assessed_score_is_coverage_with_findings_not_credit():
+    unknown = _scan("unknown", file_hash="d" * 64)
+    unknown_result = _result("unknown", None, 1)
+    measured_zero = _scan("measured-zero", file_hash="e" * 64)
+    zero_result = _result("measured-zero", 0, 2)
+
+    projection = project_current_documents(
+        [unknown, measured_zero], [unknown_result, zero_result], []
+    )
+
+    assert public_compliance_score(unknown, unknown_result) is None
+    assert public_issue_total(unknown, unknown_result) == 1
+    assert projection.historical_scan_count == 2
+    assert projection.scanned_document_count == 2
+    assert projection.verified_document_count == 1
+    assert projection.unverified_document_count == 1
+    assert projection.average_compliance_score == 0
+    assert projection.minimum_compliance_score == 0
+    assert projection.maximum_compliance_score == 0
+    assert projection.compliance_band_counts(compliant_at=95, needs_work_at=70) == (
+        0,
+        0,
+        1,
+    )
+    assert projection.total_issues == 2
+
+
+def test_invalid_completed_document_scores_never_enter_current_aggregates():
+    invalid_scores = [None, float("nan"), float("inf"), -1, 101, True, "75"]
+    scans = [
+        _scan(f"invalid-{index}", file_hash=f"{index + 1:064x}")
+        for index in range(len(invalid_scores))
+    ]
+    results = [_result(scan.id, score, 1) for scan, score in zip(scans, invalid_scores)]
+    projection = project_current_documents(scans, results, [])
+
+    assert all(
+        public_compliance_score(scan, result) is None
+        for scan, result in zip(scans, results)
+    )
+    assert projection.scanned_document_count == len(scans)
+    assert projection.verified_document_count == 0
+    assert projection.unverified_document_count == len(scans)
+    assert projection.average_compliance_score is None
+    assert projection.minimum_compliance_score is None
+    assert projection.maximum_compliance_score is None
+    assert projection.compliance_band_counts(compliant_at=95, needs_work_at=70) == (
+        0,
+        0,
+        0,
+    )
 
 
 def test_cached_provider_score_cannot_restore_legacy_video_credit():
@@ -242,7 +296,7 @@ def test_canvas_course_status_keeps_partial_scans_without_score_credit():
             )
         )
     assert response.scanned_files == 2
-    assert response.average_compliance == 80
+    assert response.average_compliance is None
     assert response.files[0].compliance_score is None
     assert response.files[0].issues_count == 1
 

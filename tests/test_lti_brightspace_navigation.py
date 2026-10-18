@@ -16,7 +16,15 @@ from src.api.brightspace_routes import (
     list_brightspace_courses,
 )
 from src.auth.dependencies import AuthenticatedPrincipal
-from src.db.models import CloudOAuthCredentials, UserRole
+from src.db.models import (
+    CloudFile,
+    CloudOAuthCredentials,
+    Scan,
+    ScanResult,
+    ScanStatus,
+    ScanType,
+    UserRole,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -223,6 +231,94 @@ async def test_lti_brightspace_status_returns_persisted_remediation_origin():
     )
 
     assert result["items"][0]["remediation_origin"] == "automatic"
+
+
+@pytest.mark.asyncio
+async def test_brightspace_mixed_assessment_does_not_report_complete_course_average():
+    files = []
+    scans = []
+    results = []
+    for file_id, file_type, score, issue_count in [
+        ("pdf", "pdf", 100.0, 0),
+        ("video", "mp4", None, 1),
+    ]:
+        scan_id = f"scan-{file_id}"
+        files.append(
+            SimpleNamespace(
+                id=file_id,
+                department_id="dept-1",
+                provider_file_id=file_id,
+                file_name=f"{file_id}.{file_type}",
+                file_type=file_type,
+                mime_type="video/mp4" if file_type == "mp4" else "application/pdf",
+                last_compliance_score=score,
+                last_scan_id=scan_id,
+                provider_metadata={},
+                writeback_status=None,
+                last_scanned_at=None,
+                has_remediated_version=False,
+                remediation_origin=None,
+                needs_rescan=False,
+            )
+        )
+        scans.append(
+            SimpleNamespace(
+                id=scan_id,
+                department_id="dept-1",
+                document_id=file_id,
+                scan_type=ScanType.VIDEO if file_type == "mp4" else ScanType.PDF,
+                status=ScanStatus.COMPLETED,
+            )
+        )
+        results.append(
+            SimpleNamespace(
+                scan_id=scan_id,
+                compliance_score=score,
+                issues=[{"severity": "critical", "rule": "WCAG 1.2.2"}] * issue_count,
+                critical_issues=issue_count,
+                high_issues=0,
+                medium_issues=0,
+                low_issues=0,
+                structure=(
+                    {
+                        "media_type": "video",
+                        "flashing_assessment": {
+                            "state": "unassessed",
+                            "reason": "detector_unavailable",
+                            "version": "unassessed-v1",
+                        },
+                    }
+                    if file_type == "mp4"
+                    else None
+                ),
+            )
+        )
+    db = MagicMock()
+    records = {CloudFile: files, Scan: scans, ScanResult: results}
+
+    def query(model):
+        response = MagicMock()
+        response.filter.return_value.all.return_value = records[model]
+        return response
+
+    db.query.side_effect = query
+
+    with patch(
+        "src.api.brightspace_routes._brightspace_approval_eligibility",
+        return_value=SimpleNamespace(eligible=False),
+    ):
+        response = await get_brightspace_content_status(
+            org_unit_id=101, principal=_principal(), db=db
+        )
+
+    assert response["total_items"] == 2
+    assert response["scanned_items"] == 2
+    assert response["average_compliance"] is None
+    items = {item["cloud_file_id"]: item for item in response["items"]}
+    assert items["pdf"]["compliance_score"] == 100
+    assert items["video"]["compliance_score"] is None
+    assert items["video"]["issue_count"] == 1
+    assert items["video"]["scan_status"] == ScanStatus.COMPLETED.value
 
 
 @pytest.mark.asyncio

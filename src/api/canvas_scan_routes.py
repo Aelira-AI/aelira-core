@@ -631,7 +631,9 @@ async def get_course_scan_status(
         )
 
     average_compliance = (
-        round(total_compliance / assessed_count, 1) if assessed_count > 0 else None
+        round(total_compliance / assessed_count, 1)
+        if assessed_count > 0 and assessed_count == scanned_count
+        else None
     )
 
     return CourseScanStatusResponse(

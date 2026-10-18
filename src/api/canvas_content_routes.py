@@ -646,15 +646,18 @@ async def get_course_content_status(
     by_type: List[ContentTypeStatus] = []
     public_scores = public_cloud_file_scores(db, cloud_files)
     all_scores: List[float] = []
+    has_unassessed_scan = False
 
     for ct, files in type_map.items():
         scanned = [f for f in files if f.last_scan_id is not None]
         scores = [score for f in scanned if (score := public_scores[f.id]) is not None]
+        unassessed = len(scores) != len(scanned)
+        has_unassessed_scan |= unassessed
         counts = [issue_counts[f.id] for f in files]
         type_issues = (
             sum(counts) if all(value is not None for value in counts) else None
         )
-        avg = round(sum(scores) / len(scores), 1) if scores else None
+        avg = round(sum(scores) / len(scores), 1) if scores and not unassessed else None
         all_scores.extend(scores)
         by_type.append(
             ContentTypeStatus(
@@ -666,7 +669,11 @@ async def get_course_content_status(
             )
         )
 
-    overall = round(sum(all_scores) / len(all_scores), 1) if all_scores else None
+    overall = (
+        round(sum(all_scores) / len(all_scores), 1)
+        if all_scores and not has_unassessed_scan
+        else None
+    )
 
     items = [
         ContentItemStatus(
@@ -802,15 +809,21 @@ async def get_course_overview(
     total_scanned = 0
     total_issues = 0
     all_scores = []
+    has_unassessed_scan = False
 
     for course_id, files in courses_map.items():
         items = len(files)
-        scanned = sum(1 for f in files if f.last_scan_id is not None)
+        scanned_files = [f for f in files if f.last_scan_id is not None]
+        scanned = len(scanned_files)
         counts = [issue_counts[f.id] for f in files]
         issues = sum(counts) if all(value is not None for value in counts) else None
         written = sum(1 for f in files if f.writeback_status == "written_back")
-        scores = [score for f in files if (score := public_scores[f.id]) is not None]
-        avg = sum(scores) / len(scores) if scores else None
+        scores = [
+            score for f in scanned_files if (score := public_scores[f.id]) is not None
+        ]
+        unassessed = len(scores) != scanned
+        has_unassessed_scan |= unassessed
+        avg = sum(scores) / len(scores) if scores and not unassessed else None
 
         # Determine status
         if scanned == 0:
@@ -854,7 +867,11 @@ async def get_course_overview(
         if avg is not None:
             all_scores.append(avg)
 
-    overall_avg = round(sum(all_scores) / len(all_scores), 1) if all_scores else None
+    overall_avg = (
+        round(sum(all_scores) / len(all_scores), 1)
+        if all_scores and not has_unassessed_scan
+        else None
+    )
 
     # Sort: critical first, then at_risk, on_track, compliant, not_started
     status_order = {

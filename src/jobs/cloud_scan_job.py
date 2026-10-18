@@ -46,6 +46,34 @@ _DETERMINISTIC_SCAN_METADATA = {
     "ai_used": False,
 }
 
+_SCAN_TYPE_BY_FILE_TYPE = {
+    "pdf": ScanType.PDF,
+    "docx": ScanType.WORD,
+    "doc": ScanType.WORD,
+    "pptx": ScanType.POWERPOINT,
+    "ppt": ScanType.POWERPOINT,
+    "xlsx": ScanType.EXCEL,
+    "xls": ScanType.EXCEL,
+    "html": ScanType.CANVAS_CONTENT,
+    "htm": ScanType.CANVAS_CONTENT,
+    "mp4": ScanType.VIDEO,
+    "avi": ScanType.VIDEO,
+    "mov": ScanType.VIDEO,
+    "webm": ScanType.VIDEO,
+    "mp3": ScanType.VIDEO,
+    "wav": ScanType.VIDEO,
+    "ogg": ScanType.VIDEO,
+    "m4a": ScanType.MULTIMEDIA,
+    "flac": ScanType.MULTIMEDIA,
+    "jpg": ScanType.IMAGE,
+    "jpeg": ScanType.IMAGE,
+    "png": ScanType.IMAGE,
+    "gif": ScanType.IMAGE,
+    "bmp": ScanType.IMAGE,
+    "webp": ScanType.IMAGE,
+    "svg": ScanType.IMAGE,
+}
+
 _SCAN_FAILURE_MESSAGE = "Accessibility scan failed"
 
 
@@ -232,20 +260,6 @@ class CloudScanJob:
         self, db: Session, file_type: str, error_code: str
     ) -> Dict[str, Any]:
         """Persist a failed processor/runtime outcome without a false score."""
-        scan_types = {
-            "docx": ScanType.WORD,
-            "doc": ScanType.WORD,
-            "pptx": ScanType.POWERPOINT,
-            "ppt": ScanType.POWERPOINT,
-            "xlsx": ScanType.EXCEL,
-            "xls": ScanType.EXCEL,
-            "html": ScanType.CANVAS_CONTENT,
-            "htm": ScanType.CANVAS_CONTENT,
-            "mp4": ScanType.VIDEO,
-            "mp3": ScanType.VIDEO,
-            "wav": ScanType.VIDEO,
-            "pdf": ScanType.PDF,
-        }
         dept_user = (
             db.query(User.id)
             .filter(
@@ -259,7 +273,7 @@ class CloudScanJob:
             department_id=self.credential.department_id,
             document_id=self.cloud_file.id,
             document_source="cloud_file",
-            scan_type=scan_types.get(file_type, ScanType.PDF),
+            scan_type=_SCAN_TYPE_BY_FILE_TYPE.get(file_type, ScanType.PDF),
             user_id=dept_user.id if dept_user else "system",
             file_name=self.cloud_file.file_name,
             file_size_bytes=getattr(self.cloud_file, "file_size_bytes", 0) or 0,
@@ -475,35 +489,7 @@ class CloudScanJob:
         # Detect actual file type from extension if file_type is generic
         if file_type in ("file", "unknown", "html"):
             ext = os.path.splitext(file_path)[1].lower().lstrip(".")
-            _known_extensions = {
-                "html",
-                "htm",
-                "docx",
-                "doc",
-                "pptx",
-                "ppt",
-                "xlsx",
-                "xls",
-                "pdf",
-                "jpg",
-                "jpeg",
-                "png",
-                "gif",
-                "bmp",
-                "webp",
-                "svg",
-                "tiff",
-                "mp4",
-                "mp3",
-                "wav",
-                "avi",
-                "mov",
-                "webm",
-                "ogg",
-                "m4a",
-                "flac",
-            }
-            if ext in _known_extensions:
+            if ext in _SCAN_TYPE_BY_FILE_TYPE or ext == "tiff":
                 file_type = ext
             else:
                 # Check if file content looks like HTML
@@ -670,33 +656,7 @@ class CloudScanJob:
                         db, file_type, "SOURCE_CHANGED_DURING_SCAN"
                     )
 
-            # Map file_type to valid ScanType enum
-            _file_type_to_scan_type = {
-                "pdf": ScanType.PDF,
-                "docx": ScanType.WORD,
-                "doc": ScanType.WORD,
-                "pptx": ScanType.POWERPOINT,
-                "ppt": ScanType.POWERPOINT,
-                "xlsx": ScanType.EXCEL,
-                "xls": ScanType.EXCEL,
-                "html": ScanType.CANVAS_CONTENT,
-                "htm": ScanType.CANVAS_CONTENT,
-                "mp4": ScanType.VIDEO,
-                "mp3": ScanType.VIDEO,
-                "wav": ScanType.VIDEO,
-                "avi": ScanType.VIDEO,
-                "mov": ScanType.VIDEO,
-                "webm": ScanType.VIDEO,
-                "ogg": ScanType.VIDEO,
-                "jpg": ScanType.IMAGE,
-                "jpeg": ScanType.IMAGE,
-                "png": ScanType.IMAGE,
-                "gif": ScanType.IMAGE,
-                "bmp": ScanType.IMAGE,
-                "webp": ScanType.IMAGE,
-                "svg": ScanType.IMAGE,
-            }
-            scan_type = _file_type_to_scan_type.get(file_type, ScanType.PDF)
+            scan_type = _SCAN_TYPE_BY_FILE_TYPE.get(file_type, ScanType.PDF)
 
             # Find a user_id for this department (cloud scans are system-initiated)
             dept_user = (
