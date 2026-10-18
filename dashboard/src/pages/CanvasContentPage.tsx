@@ -45,11 +45,13 @@ import { remediateAllAccounting } from '../utils/remediateAllAccounting';
 // Helpers
 // ============================================================================
 
-function getComplianceBadgeVariant(score: number | null): {
+function getComplianceBadgeVariant(score: number | null, scanned: boolean): {
   label: string;
   variant: 'neutral' | 'success' | 'warning' | 'danger';
 } {
-  if (score === null) return { label: 'Not scanned', variant: 'neutral' };
+  if (score === null) {
+    return { label: scanned ? 'Unassessed' : 'Not scanned', variant: 'neutral' };
+  }
   if (score >= 90) return { label: `${score.toFixed(0)}%`, variant: 'success' };
   if (score >= 70) return { label: `${score.toFixed(0)}%`, variant: 'warning' };
   return { label: `${score.toFixed(0)}%`, variant: 'danger' };
@@ -813,7 +815,10 @@ export default function CanvasContentPage(): React.ReactElement {
               </thead>
               <tbody>
                 {mergedByType.map((typeStatus, idx) => {
-                  const badge = getComplianceBadgeVariant(typeStatus.average_compliance);
+                  const badge = getComplianceBadgeVariant(
+                    typeStatus.average_compliance,
+                    typeStatus.scanned > 0
+                  );
                   return (
                     <tr
                       key={typeStatus.content_type}
@@ -969,7 +974,10 @@ export default function CanvasContentPage(): React.ReactElement {
                   </tr>
                 )}
                 {filteredAndSortedItems.map((item, idx) => {
-                  const badge = getComplianceBadgeVariant(item.compliance_score);
+                  const badge = getComplianceBadgeVariant(
+                    item.compliance_score,
+                    item.scan_status === 'scanned'
+                  );
                   const state = contentItemState(item);
 
                   return (
