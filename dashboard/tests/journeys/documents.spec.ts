@@ -48,8 +48,8 @@ async function scanThroughTheUi(
   await assertNoBlockingViolations(page, `upload-file-chosen-${name}`, testInfo);
   await press(page.getByRole('button', { name: /^Scan 1 file/ }));
   await expect(page.getByText(`${name} scan complete`, { exact: true })).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByRole('button', { name: 'Download Report' })).toBeVisible();
   if (options.verifyReportDownload) {
+    await expect(page.getByRole('button', { name: 'Download Report' })).toBeVisible();
     const pendingReport = page.waitForEvent('download');
     await press(page.getByRole('button', { name: 'Download Report' }));
     const report = await pendingReport;

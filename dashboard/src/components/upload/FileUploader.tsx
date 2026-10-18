@@ -16,7 +16,6 @@ import { Link } from 'react-router-dom';
 import { scansApi } from '../../api/scans';
 import { unwrapResponse } from '../../utils/apiUnwrap';
 import { trackEvent } from '../../utils/analytics';
-import { canDownloadComplianceReport } from '../../utils/reportAvailability';
 import { RemediationStatusLink } from '../results/RemediationStatusLink';
 
 // ============================================================================
@@ -1228,7 +1227,7 @@ export function FileUploader({
                   <ExternalLink className="w-4 h-4" />
                   <span>View Full Report</span>
                 </Link>
-                {canDownloadComplianceReport(scan.result.compliance_score) && (
+                {scan.result.compliance_score != null && (
                   <button
                     onClick={async () => {
                       try {
