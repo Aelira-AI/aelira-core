@@ -122,7 +122,7 @@ export function checkInstalled(image: string, dev: boolean): Map<string, string>
 function checkFullConsumers(image: string): void {
   const script = String.raw`
     set -eu
-    export HOME=/tmp XDG_CACHE_HOME=/tmp/.cache TEXMFVAR=/tmp/texmf-var
+    export XDG_CACHE_HOME=/tmp/.cache TEXMFVAR=/tmp/texmf-var TEXMFCONFIG=/tmp/texmf-config
     cat > /tmp/consumer.tex <<'TEX'
 \documentclass{article}
 \begin{document}
