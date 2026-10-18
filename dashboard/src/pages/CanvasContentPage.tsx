@@ -976,7 +976,7 @@ export default function CanvasContentPage(): React.ReactElement {
                 {filteredAndSortedItems.map((item, idx) => {
                   const badge = getComplianceBadgeVariant(
                     item.compliance_score,
-                    item.scan_status === 'scanned'
+                    item.scan_id !== null
                   );
                   const state = contentItemState(item);
 
