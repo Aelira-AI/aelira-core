@@ -8,6 +8,7 @@ import { Badge, BadgeProps } from '../components/ui/Badge';
 import { ScoreChip } from '../components/ui/ScoreChip';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { apiClient } from '../api/client';
+import { scannedAverage } from '../utils/scannedAverage';
 
 interface CourseOverviewProps {
   isLTI?: boolean;  // When true, renders without AppLayout chrome
@@ -128,16 +129,15 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
         };
       })
     );
-    const scores = courses
-      .map((course) => course.avg_compliance)
-      .filter((score): score is number => score !== null);
     return {
       total_courses: courses.length,
       total_items: courses.reduce((sum, course) => sum + course.total_items, 0),
       total_scanned: courses.reduce((sum, course) => sum + course.scanned_items, 0),
-      avg_compliance: scores.length
-        ? scores.reduce((sum, score) => sum + score, 0) / scores.length
-        : null,
+      avg_compliance: scannedAverage(
+        courses,
+        (course) => course.scanned_items > 0,
+        (course) => course.avg_compliance
+      ),
       total_issues: courses.some((course) => course.total_issues === null)
         ? null
         : courses.reduce((sum, course) => sum + (course.total_issues ?? 0), 0),

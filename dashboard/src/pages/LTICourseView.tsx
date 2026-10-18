@@ -356,15 +356,8 @@ export function LTICourseView(): React.ReactElement {
   // button and CanvasContentPage's Remediate All.
   const remediableItems = useMemo(() => mergedItems.filter(isRemediable), [mergedItems]);
 
-  // Overall compliance
-  const overallCompliance = useMemo(() => {
-    if (courseMeta.compliance_percentage !== null) return courseMeta.compliance_percentage;
-    const scores = scanStatuses
-      .map((s) => s.compliance_score)
-      .filter((s): s is number => s !== null);
-    if (scores.length === 0) return null;
-    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-  }, [scanStatuses, courseMeta.compliance_percentage]);
+  // The course API's null score is authoritative when a scan is unassessed.
+  const overallCompliance = courseMeta.compliance_percentage;
 
   // useLTISession sets the LTI launch token on the shared apiClient.
   useEffect(() => {
@@ -1392,9 +1385,11 @@ export function LTICourseView(): React.ReactElement {
                 </span>
               </p>
             )}
-            {overallCompliance === null && stats.total > 0 && (
+            {overallCompliance === null && (stats.total > 0 || contentStats.total > 0) && (
               <p className="text-sm ml-8" style={{ color: 'var(--content-secondary)' }}>
-                No files scanned yet
+                {stats.scanned > 0 || contentStats.scanned > 0
+                  ? 'Overall assessment unavailable'
+                  : 'No files scanned yet'}
               </p>
             )}
           </div>

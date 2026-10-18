@@ -308,8 +308,18 @@ describe('groupContentByType', () => {
       mergedItem({ provider_file_id: 'p-2', compliance_score: null, issue_count: null }),
     ]);
     assert.equal(result[0].scanned, 2);
-    assert.equal(result[0].average_compliance, 100);
+    assert.equal(result[0].average_compliance, null);
     assert.equal(result[0].issues, null);
+  });
+
+  it('keeps measured zero when other rows have never been scanned', () => {
+    const result = groupContentByType([
+      mergedItem({ compliance_score: 0, issue_count: 1 }),
+      mergedItem({ scan_id: null, scan_status: 'unscanned', compliance_score: null, issue_count: 0 }),
+    ]);
+    assert.equal(result[0].scanned, 1);
+    assert.equal(result[0].average_compliance, 0);
+    assert.equal(result[0].issues, 1);
   });
 
   it('retains a known caption finding on an unassessed scan', () => {

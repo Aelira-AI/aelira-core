@@ -14,6 +14,8 @@
  * LTICourseView) fetch the two sources themselves and pass them in.
  */
 
+import { scannedAverage } from './scannedAverage.ts';
+
 export interface StatusContentItem {
   cloud_file_id: string;
   provider_file_id: string | null;
@@ -336,10 +338,8 @@ export interface ContentTypeSummary {
  * "by type" breakdown tables can never drift from each other's counting
  * rules — used to be computed inline, separately, in each component.
  *
- * Unscanned rows (compliance_score: null) count toward `total` but are
- * excluded from `scanned` and from the average_compliance calculation —
- * they have no scan or score to average in. An unassessed scan counts as a
- * scan but contributes no score.
+ * Unscanned rows count toward `total` but are excluded from the average.
+ * A scanned row without a score leaves the type average unassessed.
  */
 export function groupContentByType(items: MergedContentItem[]): ContentTypeSummary[] {
   const groups = new Map<string, MergedContentItem[]>();
@@ -353,13 +353,12 @@ export function groupContentByType(items: MergedContentItem[]): ContentTypeSumma
   }
 
   return Array.from(groups.entries()).map(([content_type, groupItems]) => {
-    const scannedItems = groupItems.filter((i) => i.compliance_score !== null);
     const scannedCount = groupItems.filter((i) => i.scan_id !== null).length;
-    const average_compliance =
-      scannedItems.length > 0
-        ? scannedItems.reduce((sum, i) => sum + (i.compliance_score ?? 0), 0) /
-          scannedItems.length
-        : null;
+    const average_compliance = scannedAverage(
+      groupItems,
+      (item) => item.scan_id !== null,
+      (item) => item.compliance_score
+    );
     return {
       content_type,
       total: groupItems.length,

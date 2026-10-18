@@ -38,6 +38,7 @@ import {
   brightspaceWritebackSummary,
 } from '../utils/brightspaceBatchSelection';
 import { resolveBrightspaceContentStatus } from '../utils/brightspaceContentStatus';
+import { scannedAverage } from '../utils/scannedAverage';
 import { apiClient } from '../api/client';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -798,16 +799,11 @@ export default function BrightspaceContentPage({
                 {Array.from(groupedItems.entries()).map(
                   ([modulePath, items], idx) => {
                     const scannedCount = items.filter((i) => i.scan_status !== null).length;
-                    const scannedItems = items.filter(
-                      (i) => i.compliance_score !== null
+                    const avgScore = scannedAverage(
+                      items,
+                      (item) => item.scan_status !== null,
+                      (item) => item.compliance_score
                     );
-                    const avgScore =
-                      scannedItems.length > 0
-                        ? scannedItems.reduce(
-                            (sum, i) => sum + (i.compliance_score ?? 0),
-                            0
-                          ) / scannedItems.length
-                        : null;
                     const totalIssues = items.some((item) => item.issue_count === null)
                       ? null
                       : items.reduce((sum, item) => sum + (item.issue_count ?? 0), 0);
@@ -842,7 +838,9 @@ export default function BrightspaceContentPage({
                         </td>
                         <td className="px-6 py-3 text-right">
                           <Badge variant={getComplianceBadgeVariant(avgScore)}>
-                            {getComplianceBadgeLabel(avgScore)}
+                            {avgScore === null && scannedCount > 0
+                              ? 'Unassessed'
+                              : getComplianceBadgeLabel(avgScore)}
                           </Badge>
                         </td>
                         <td className="px-6 py-3 text-right">
