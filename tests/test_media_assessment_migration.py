@@ -12,14 +12,17 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import DBAPIError
 
 from conftest import require_disposable_postgres_url
+from src.database_url import engine_url
 
 pytestmark = pytest.mark.integration
 
 
 def test_nullable_score_upgrade_and_guarded_downgrade_preserve_rows(monkeypatch):
-    url = os.getenv("TEST_MIGRATION_DATABASE_URL")
+    url = os.getenv("TEST_MEDIA_MIGRATION_DATABASE_URL") or os.getenv(
+        "TEST_MIGRATION_DATABASE_URL"
+    )
     if not url:
-        pytest.skip("requires an explicit disposable TEST_MIGRATION_DATABASE_URL")
+        pytest.skip("requires an explicit disposable media migration database URL")
     require_disposable_postgres_url(url, destructive=False)
 
     path = (
@@ -33,7 +36,7 @@ def test_nullable_score_upgrade_and_guarded_downgrade_preserve_rows(monkeypatch)
     assert migration.down_revision == "20261017_canvas_scope"
 
     schema = f"media_truth_{uuid4().hex}"
-    engine = create_engine(url)
+    engine = create_engine(engine_url(url))
     try:
         with engine.connect() as connection:
             transaction = connection.begin()
