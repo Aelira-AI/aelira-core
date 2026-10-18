@@ -309,6 +309,22 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-55453",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libcups2t64",
+          "installedVersion": "2.4.10-3+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "CUPS ipp backend is a separately built executable; the reviewed native image contains the client library but no ipp backend or CUPS server.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-16",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
       "id": "CVE-2026-58049",
       "osFamily": "debian",
       "packages": [
@@ -687,7 +703,7 @@
       ],
       "status": "not_affected",
       "justification": "inline_mitigations_already_exist",
-      "reason": "CAF demuxer. Media inputs are restricted to the supported container allowlist, which excludes CAF.",
+      "reason": "MACE audio decoding. Media inputs are restricted to the supported codec allowlist, which excludes mace3 and mace6 before decoder opening; CAF is also outside the container allowlist.",
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -789,36 +805,20 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
-      "id": "CVE-2026-66046",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
       "id": "CVE-2026-6653",
       "osFamily": "debian",
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "libxml2 document type declaration parsing. Submitted content does not reach the distribution libxml2 as a parsed document prolog: FFmpeg accepts only the listed media container formats, LaTeXML reads only its own conversion directory, where submitted content cannot produce a parsed XML prolog, and the ImageMagick policy permits only GIF, JPEG, PNG and WebP. The application's lxml uses its own libxml2 2.15.4.",
-      "reviewed": "2026-10-15",
+      "justification": "vulnerable_code_not_present",
+      "reason": "The exact Debian source package is rebuilt with the reviewed entity amplification patch. Inventory acceptance additionally requires the matching source and patch receipt, rebuilt package version, loaded native library path and hash; stock Debian libxml2 remains unresolved.",
+      "reviewed": "2026-10-18",
       "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+      "disclosure": "docs/security/libxml2-6653-backport-0.9.13.md"
     },
     {
       "id": "CVE-2026-67215",
@@ -1002,7 +1002,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1252,54 +1252,6 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
-      "id": "CVE-2026-76956",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-76957",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-77214",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
       "id": "CVE-2026-78408",
       "osFamily": "debian",
       "packages": [
@@ -1501,7 +1453,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1516,7 +1468,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1531,7 +1483,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1546,7 +1498,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1561,7 +1513,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1576,7 +1528,7 @@
       "packages": [
         {
           "name": "libxml2",
-          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1"
         }
       ],
       "status": "affected",
@@ -1820,19 +1772,83 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
-      "id": "CVE-2026-93990",
+      "id": "CVE-2026-93589",
       "osFamily": "debian",
       "packages": [
         {
-          "name": "libexpat1",
-          "installedVersion": "2.8.3-1~deb13u1"
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
         }
       ],
       "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "The application Python uses its own bundled Expat 2.8.5, which includes the fixes. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration.",
-      "reviewed": "2026-10-15",
-      "expires": "2027-01-12",
+      "justification": "vulnerable_code_not_present",
+      "reason": "ImageMagick FLIF encoder is behind MAGICKCORE_FLIF_DELEGATE and is absent from the reviewed native image; the FLIF coder is not registered.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-16",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-93590",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "ImageMagick UHDR encoder is behind MAGICKCORE_UHDR_DELEGATE and is absent from the reviewed native image; the UHDR coder is not registered.",
+      "reviewed": "2026-10-18",
+      "expires": "2027-01-16",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {

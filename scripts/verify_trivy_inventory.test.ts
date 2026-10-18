@@ -21,7 +21,7 @@ function clean(architecture: 'amd64' | 'arm64' = 'arm64') {
   };
 }
 const finding = (Severity: string, FixedVersion?: string) => ({
-  VulnerabilityID: 'CVE-2026-6653', PkgName: 'libxml2', InstalledVersion: '2.9.14',
+  VulnerabilityID: 'CVE-2026-6999', PkgName: 'libxml2', InstalledVersion: '2.9.14',
   Severity, ...(FixedVersion === undefined ? {} : { FixedVersion }),
 });
 
@@ -123,7 +123,7 @@ test('CLI returns a nonzero exit for findings, malformed JSON and missing inputs
 describe('reviewed dispositions for unfixed distribution findings', () => {
   const today = '2026-10-15';
   const entry = {
-    id: 'CVE-2026-6653', osFamily: 'ubuntu', packages: [{ name: 'libxml2', installedVersion: '2.9.14' }],
+    id: 'CVE-2026-6999', osFamily: 'ubuntu', packages: [{ name: 'libxml2', installedVersion: '2.9.14' }],
     status: 'affected', reason: 'No distribution fix exists', reviewed: '2026-10-15', expires: '2027-01-15',
     disclosure: 'docs/releases/example.md',
   };
@@ -196,9 +196,9 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
   test('rejects expired, future, overlong, duplicate and malformed dispositions', () => {
     const check = (dispositionList: unknown[]) =>
       verifyDispositions({ schemaVersion: 1, dispositions: dispositionList }, today).errors;
-    expect(check([{ ...entry, expires: '2026-10-15' }])).toContain('Disposition expired: CVE-2026-6653');
-    expect(check([{ ...entry, reviewed: '2026-10-16' }])).toContain('Disposition reviewed in the future: CVE-2026-6653');
-    expect(check([{ ...entry, expires: '2027-03-01' }])).toContain('Disposition review window exceeds 120 days: CVE-2026-6653');
+    expect(check([{ ...entry, expires: '2026-10-15' }])).toContain('Disposition expired: CVE-2026-6999');
+    expect(check([{ ...entry, reviewed: '2026-10-16' }])).toContain('Disposition reviewed in the future: CVE-2026-6999');
+    expect(check([{ ...entry, expires: '2027-03-01' }])).toContain('Disposition review window exceeds 120 days: CVE-2026-6999');
     expect(check([entry, entry]).join(' ')).toContain('Duplicate disposition');
     for (const bad of [{ ...entry, reason: '' }, { ...entry, id: 'GHSA-xxxx' }, { ...entry, expires: '2027-02-30' },
       { ...entry, disclosure: undefined }, { ...entry, packages: [] }, { ...entry, packages: [{ name: 'libxml2' }] },
@@ -232,6 +232,38 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
     } finally {
       rmSync(directory, { recursive: true });
     }
+  });
+});
+
+describe('CVE-2026-6653 repaired package gate', () => {
+  const rebuilt = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1';
+  const entry = {
+    id: 'CVE-2026-6653', osFamily: 'debian',
+    packages: [{ name: 'libxml2', installedVersion: rebuilt }],
+    status: 'not_affected' as const, justification: 'vulnerable_code_not_present',
+    reason: 'Exact backport and loaded-library receipt are required',
+    reviewed: '2026-10-18', expires: '2027-01-12',
+    disclosure: 'docs/security/libxml2-6653-backport-0.9.13.md',
+  };
+  const inventory = (installedVersion: string) => {
+    const base = clean();
+    return { ...base,
+      Metadata: { ...base.Metadata, OS: { Family: 'debian', Name: '13' } },
+      Results: [{ ...base.Results[0], Type: 'debian', Vulnerabilities: [{
+        VulnerabilityID: 'CVE-2026-6653', PkgName: 'libxml2', InstalledVersion: installedVersion,
+        Severity: 'CRITICAL',
+      }] }],
+    };
+  };
+  test('requires native package and loaded-library proof for the exact rebuilt version', () => {
+    const value = inventory(rebuilt);
+    expect(verifyInventory(value, image, 'arm64', [entry])).toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+    expect(verifyInventory(value, image, 'arm64', [entry], true)).toEqual([]);
+    expect(verifyInventory(inventory('2.12.7+dfsg+really2.9.14-2.1+deb13u3'), image, 'arm64', [entry], true))
+      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+    const stockEntry = { ...entry, packages: [{ name: 'libxml2', installedVersion: '2.12.7+dfsg+really2.9.14-2.1+deb13u3' }] };
+    expect(verifyInventory(inventory(stockEntry.packages[0].installedVersion), image, 'arm64', [stockEntry], true))
+      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
   });
 });
 

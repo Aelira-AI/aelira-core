@@ -1,6 +1,7 @@
 /** Fail closed on an incomplete, mismatched or non-clean image inventory. */
 import { readFile, stat } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
+import { checkInstalled as checkLibxml2Installed } from './verify_libxml2_6653';
 
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue =>
@@ -85,8 +86,9 @@ export function verifyInventory(
   image: string,
   architecture: 'amd64' | 'arm64',
   dispositions: Disposition[] = [],
+  libxml2Cve6653Verified = false,
 ): string[] {
-  return inspectInventory(value, image, architecture, dispositions).errors;
+  return inspectInventory(value, image, architecture, dispositions, libxml2Cve6653Verified).errors;
 }
 
 export function inspectInventory(
@@ -94,6 +96,7 @@ export function inspectInventory(
   image: string,
   architecture: 'amd64' | 'arm64',
   dispositions: Disposition[] = [],
+  libxml2Cve6653Verified = false,
 ): InventoryReport {
   const report = (errors: string[], accepted: Disposition[] = []) =>
     ({ errors: [...new Set(errors)], accepted: [...new Set(accepted)] });
@@ -160,6 +163,10 @@ export function inspectInventory(
       const match = result.Class === 'os-pkgs' && result.Type === os.Family && unfixed
         ? dispositions.find((entry) => entry.id === finding.VulnerabilityID &&
           entry.osFamily === os.Family &&
+          (entry.id !== 'CVE-2026-6653' ||
+            (libxml2Cve6653Verified && entry.osFamily === 'debian' &&
+              finding.PkgName === 'libxml2' &&
+              finding.InstalledVersion === '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1')) &&
           (finding.Severity === 'HIGH' || entry.status === 'not_affected') &&
           entry.packages.some((item) =>
             item.name === finding.PkgName && item.installedVersion === finding.InstalledVersion))
@@ -212,7 +219,19 @@ if (import.meta.main) {
       dispositions = checked.dispositions;
       errors.push(...checked.errors);
     }
-    const result = inspectInventory(inventory, values.image, values.architecture, dispositions);
+    const needsLibxml2Proof = dispositions.some((entry) => entry.id === 'CVE-2026-6653') &&
+      isRecord(inventory) && Array.isArray(inventory.Results) &&
+      inventory.Results.some((result) =>
+        isRecord(result) && Array.isArray(result.Vulnerabilities) &&
+        result.Vulnerabilities.some((finding: unknown) => isRecord(finding) &&
+          finding.VulnerabilityID === 'CVE-2026-6653' && finding.PkgName === 'libxml2' &&
+          finding.InstalledVersion === '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1'));
+    let libxml2Verified = false;
+    if (needsLibxml2Proof) {
+      checkLibxml2Installed(values.image, false);
+      libxml2Verified = true;
+    }
+    const result = inspectInventory(inventory, values.image, values.architecture, dispositions, libxml2Verified);
     errors.push(...result.errors);
     for (const entry of result.accepted) {
       let disclosure = '';

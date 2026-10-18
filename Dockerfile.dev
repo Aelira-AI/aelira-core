@@ -1,4 +1,11 @@
 # Use the same repaired official CPython tree and system Expat as production.
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS libxml2-deb-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential debhelper liblzma-dev pkg-config quilt rename zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/libxml2-6653/ /tmp/libxml2-input/
+RUN sh /tmp/libxml2-input/build-debs.sh
+
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-clean
 RUN rm /usr/local/lib/python3.14/lib-dynload/pyexpat.cpython-314-*.so \
        /usr/local/lib/python3.14/lib-dynload/_elementtree.cpython-314-*.so
@@ -41,6 +48,7 @@ RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 FROM python-expat-base AS runtime
 ARG SOURCE_DATE_EPOCH=0
+COPY --from=libxml2-deb-builder /tmp/libxml2-debs/ /tmp/libxml2-debs/
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 
 # Install system dependencies + LaTeXML stack
@@ -108,6 +116,17 @@ RUN apt-get update && apt-get install -y \
     texlive-lang-german \
     # Pandoc for LaTeX to HTML conversion
     pandoc \
+    # Install all system libxml2 packages from the same rebuilt source before
+    # this apt RUN commits, including the development headers and utilities.
+    && apt-get install -y --no-install-recommends /tmp/libxml2-debs/libxml2_*.deb \
+        /tmp/libxml2-debs/libxml2-dev_*.deb /tmp/libxml2-debs/libxml2-utils_*.deb \
+    && test "$(dpkg-query -W -f='${Version}' libxml2)" = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1' \
+    && test "$(dpkg-query -W -f='${Version}' libxml2-dev)" = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1' \
+    && test "$(dpkg-query -W -f='${Version}' libxml2-utils)" = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1' \
+    && sha256sum --check --strict /tmp/libxml2-debs/libxml2.sha256 \
+    && mkdir -p /usr/share/doc/aelira-libxml2-6653 \
+    && cp /tmp/libxml2-debs/receipt.txt /tmp/libxml2-debs/libxml2.sha256 /usr/share/doc/aelira-libxml2-6653/ \
+    && rm -rf /tmp/libxml2-debs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py expat
