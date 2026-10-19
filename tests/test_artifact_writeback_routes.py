@@ -99,3 +99,33 @@ def test_batch_queues_only_explicit_authorized_artifacts(monkeypatch):
         for call in enqueue.call_args_list
     )
     db.commit.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"mime_type": "text/vtt", "scan_type": "VIDEO"},
+        {"mime_type": "text/vtt", "scan_type": "MULTIMEDIA"},
+    ],
+)
+def test_caption_artifacts_are_never_written_back_over_media(monkeypatch, fields):
+    db = MagicMock()
+    first, second = _item(1), _item(2)
+    enqueue = MagicMock()
+    monkeypatch.setattr(routes, "_queue_upload_job", enqueue)
+
+    def authorize(_db, *, scan_id, artifact_id, principal):
+        scan, cloud, artifact = _authority(
+            first if scan_id == first.scan_id else second
+        )
+        if scan_id == second.scan_id:
+            artifact = SimpleNamespace(**vars(artifact), **fields)
+        return scan, cloud, artifact
+
+    monkeypatch.setattr(routes, "_managed_artifact_authority", authorize)
+    with pytest.raises(HTTPException) as error:
+        routes._queue_selected_writebacks(db, _principal(), [first, second])
+
+    assert error.value.status_code == 409
+    assert "caption" in error.value.detail.lower()
+    enqueue.assert_not_called()

@@ -2119,7 +2119,7 @@ class RemediationArtifact(Base):
         ),
         CheckConstraint(
             "scan_type IN ('PDF', 'POWERPOINT', 'WORD', 'EXCEL', 'LATEX', "
-            "'IMAGE', 'WEBSITE', 'CANVAS_CONTENT')",
+            "'IMAGE', 'WEBSITE', 'CANVAS_CONTENT', 'VIDEO', 'MULTIMEDIA')",
             name="ck_remediation_artifacts_scan_type",
         ),
         CheckConstraint(

@@ -62,7 +62,7 @@ For document work, scan an original file, apply supported changes, and review an
 | **LaTeX** | Remediates and returns `.tex` source directly, converts supported equations to MathML/ARIA descriptions, and can optionally produce PDF/HTML |
 | **General STEM visuals** | Uses source-bound, specialist-specific contracts for printed, multi-equation, vector, and handwritten mathematics; chemical formulas and molecular structures; commutative diagrams; and mixed visuals. Saved-file verification and exact-candidate human approval remain mandatory. |
 | **Web pages** | axe-core and Pa11y detection, with generated code fixes |
-| **Video and audio** | Transcription and WebVTT captions |
+| **Video and audio** | Transcription, with generated WebVTT captions delivered as a separate file for human review; structure is checked, accuracy is not |
 | **Images** | Context-aware alt text, not filename echoes |
 
 MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable. Capabilities, dependencies, evidence level, and review limits for every document format are in the [document remediation hub](docs/document-remediation/README.md); the [General STEM guide](docs/document-remediation/general-stem.md) documents the visual trust pipeline and its limits.

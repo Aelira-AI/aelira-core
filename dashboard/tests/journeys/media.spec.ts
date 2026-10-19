@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { assertNoBlockingViolations } from './support/a11y';
 import { apiGet, scanIdFromUrl } from './support/scans';
@@ -135,20 +136,35 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
     detail: 'A compliance PDF is unavailable for an unassessed scan; partial findings remain in scan details.',
   });
 
-  // Remediation cannot caption media; it must say so and offer no file.
+  // Remediation delivers the generated captions as a separate file flagged for review.
+  // Their structure is checked against the transcription; their accuracy is not.
   await page.getByRole('link', { name: 'Open Remediation Review' }).click();
   await page.getByRole('button', { name: 'Start Remediation' }).click();
-  await expect(page.getByText('Manual review required')).toBeVisible({ timeout: 180_000 });
-  await expect(page.getByRole('button', { name: /Download/ })).toHaveCount(0);
-  await assertNoBlockingViolations(page, 'media-remediation-unsupported', testInfo);
-  const job = await apiGet<{ status: string; download_available: boolean; artifact_id: string | null; fixed_count: number }>(
-    page.request,
-    `/education/scans/${scanId}/remediation/latest`,
-  );
-  expect(job.status).toBe('failed');
-  expect(job.download_available).toBe(false);
-  expect(job.artifact_id).toBeNull();
-  expect(job.fixed_count).toBe(0);
+  await expect(page.getByText('Output needs review')).toBeVisible({ timeout: 180_000 });
+  await assertNoBlockingViolations(page, 'media-remediation-captions', testInfo);
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download improved working file' }).click();
+  const download = await pending;
+  expect(download.suggestedFilename(), 'captions never take the media name').toBe('teaching-clip-captions.vtt');
+  const delivered = (await readFile(await download.path())).toString('utf8');
+  expect(delivered.startsWith('WEBVTT\n')).toBe(true);
+  const deliveredSpeech = delivered
+    .split('\n')
+    .filter((line) => line && line !== 'WEBVTT' && !/^\d+$/.test(line) && !line.includes('-->'))
+    .join(' ');
+  expect(words(deliveredSpeech)).toEqual(words(spoken));
+  const job = await apiGet<{
+    status: string;
+    download_available: boolean;
+    artifact_id: string | null;
+    fixed_count: number;
+    human_review_required: boolean;
+  }>(page.request, `/education/scans/${scanId}/remediation/latest`);
+  expect(job.status).toBe('completed');
+  expect(job.download_available).toBe(true);
+  expect(job.artifact_id).not.toBeNull();
+  expect(job.fixed_count).toBe(1);
+  expect(job.human_review_required, 'generated captions always need human review').toBe(true);
 
   await page.goto('/dashboard');
   const recentRow = page.getByRole('table', { name: 'Recent scans' }).getByRole('row').filter({ hasText: 'teaching-clip.mp4' });

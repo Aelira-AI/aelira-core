@@ -203,7 +203,11 @@ def test_cvd_storage_is_nullable_and_migration_is_the_single_head():
     assert ScanResult.__table__.c.cvd_analysis.nullable is True
 
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert scripts.get_heads() == ["20261018_media_truth"]
+    assert scripts.get_heads() == ["20261020_media_captions"]
+    assert (
+        scripts.get_revision("20261020_media_captions").down_revision
+        == "20261018_media_truth"
+    )
     assert (
         scripts.get_revision("20261018_media_truth").down_revision
         == "20261017_canvas_scope"

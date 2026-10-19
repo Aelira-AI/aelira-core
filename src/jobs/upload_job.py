@@ -37,6 +37,7 @@ from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     ArtifactError,
     RemediationArtifactService,
+    is_companion_artifact,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,12 @@ async def process_upload_job(
             "success": False,
             "uploaded": False,
             "error": "managed_artifact_unavailable",
+        }
+    if is_companion_artifact(artifact):
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "companion_artifact_not_writable",
         }
     if (
         artifact.department_id != job_data.get("department_id")

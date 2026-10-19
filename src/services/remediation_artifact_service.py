@@ -141,6 +141,9 @@ _MIME_BY_SCAN_TYPE = {
     "CANVAS_CONTENT": {".html": "text/html", ".htm": "text/html"},
     "WEBSITE": {".html": "text/html", ".htm": "text/html"},
     "IMAGE": {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"},
+    # Media remediation publishes generated captions, never the media itself.
+    "VIDEO": {".vtt": "text/vtt"},
+    "MULTIMEDIA": {".vtt": "text/vtt"},
 }
 _SCAN_TYPE_ALIASES = {
     **{scan_type.value: scan_type.value for scan_type in ScanType},
@@ -154,6 +157,21 @@ _MIME_BY_EXTENSION = {
     for extensions in _MIME_BY_SCAN_TYPE.values()
     for extension, mime in extensions.items()
 }
+# Companion outputs accompany their source; they never replace it at a provider.
+_COMPANION_MIME_TYPES = frozenset({"text/vtt"})
+_COMPANION_SCAN_TYPES = frozenset({"VIDEO", "MULTIMEDIA"})
+
+
+def is_companion_artifact(artifact: Any) -> bool:
+    """True for generated files such as captions that must not overwrite media."""
+    scan_type = getattr(artifact, "scan_type", None)
+    scan_type = str(getattr(scan_type, "value", scan_type) or "").upper()
+    return (
+        getattr(artifact, "mime_type", None) in _COMPANION_MIME_TYPES
+        or scan_type in _COMPANION_SCAN_TYPES
+    )
+
+
 _COPY_CHUNK_BYTES = 64 * 1024
 _DIRECTORY_FLAGS = (
     os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -382,6 +400,17 @@ def _validate_filename(filename: str) -> tuple[str, str]:
     return filename, extension
 
 
+def _is_utf8_prefix(data: bytes) -> bool:
+    """True when bytes read from the start of a file are UTF-8, allowing a cut character."""
+    for cut in range(4):
+        try:
+            data[: len(data) - cut].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        return True
+    return False
+
+
 def _sniff_mime(fd: int) -> str:
     os.lseek(fd, 0, os.SEEK_SET)
     head = os.read(fd, 4096)
@@ -409,6 +438,13 @@ def _sniff_mime(fd: int) -> str:
         if any(name.startswith("xl/") for name in names):
             return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return "application/zip"
+    captions = head.removeprefix(b"\xef\xbb\xbf")
+    if (
+        captions.startswith(b"WEBVTT")
+        and captions[6:7] in (b"", b" ", b"\t", b"\n", b"\r")
+        and _is_utf8_prefix(captions)
+    ):
+        return "text/vtt"
     stripped = head.lstrip().lower()
     if stripped.startswith((b"<!doctype html", b"<html")):
         return "text/html"
@@ -2285,7 +2321,9 @@ class RemediationArtifactService:
                 raise ArtifactAuthorizationError(
                     "artifact is not the exact current output"
                 )
-            cloud_file.writeback_status = "approved"
+            if not is_companion_artifact(artifact):
+                # Companion files are download-only; never mark them for write-back.
+                cloud_file.writeback_status = "approved"
             cloud_file.has_remediated_version = True
             cloud_file.remediation_origin = "manual"
         db.add(

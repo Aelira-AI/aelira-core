@@ -80,6 +80,7 @@ from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     ArtifactError,
     RemediationArtifactService,
+    is_companion_artifact,
 )
 from ..services.lms_content_approval import (
     LMSContentApprovalError,
@@ -1259,7 +1260,9 @@ async def approve_content(
                 approved_by_id=user_id,
                 approved_by_ref=f"{principal.auth_method}:{user_id}",
             )
-            cf.writeback_status = "approved"
+            download_only = is_companion_artifact(artifact)
+            if not download_only:
+                cf.writeback_status = "approved"
             db.commit()
         except ArtifactError:
             db.rollback()
@@ -1267,10 +1270,13 @@ async def approve_content(
                 status_code=400, detail="Artifact cannot be approved"
             ) from None
         logger.info(
-            "Managed artifact approved for write-back",
+            "Managed artifact approved",
             extra={"cloud_file_id": cf.id, "artifact_id": artifact.id},
         )
-        return ApproveRejectResponse(cloud_file_id=cf.id, writeback_status="approved")
+        return ApproveRejectResponse(
+            cloud_file_id=cf.id,
+            writeback_status="download_only" if download_only else "approved",
+        )
 
     if not cf.remediated_body:
         raise HTTPException(status_code=400, detail="No remediated content to approve")

@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ...db.database import get_db_dependency
 from ...jobs.remediation_job import _queue_upload_job
-from ...services.remediation_artifact_service import ArtifactError
+from ...services.remediation_artifact_service import (
+    ArtifactError,
+    is_companion_artifact,
+)
 from .remediation_routes import _managed_artifact_authority
 
 router = APIRouter()
@@ -61,6 +64,11 @@ def _queue_selected_writebacks(
         raise HTTPException(
             status_code=501,
             detail="Artifact write-back is unsupported for this provider; use download",
+        )
+    if any(is_companion_artifact(artifact) for _, _, artifact in authorities):
+        raise HTTPException(
+            status_code=409,
+            detail="Caption files accompany the media and cannot replace it; use download",
         )
     results = []
     try:

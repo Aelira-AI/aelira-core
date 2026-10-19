@@ -81,6 +81,7 @@ def test_changelog_dates_v0_9_13_and_preserves_history():
     assert unreleased < release < previous < v0911 < historical
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
     for phrase in (
+        "20261020_media_captions",
         "20261018_media_truth",
         "20261017_canvas_scope",
         "20260928_pdf_edit_pub",
@@ -112,6 +113,7 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
 
     assert body.startswith(f"# Aelira v{VERSION}\n")
     for phrase in (
+        "20261020_media_captions",
         "20261018_media_truth",
         "20261017_canvas_scope",
         "20260928_pdf_edit_pub",
@@ -174,7 +176,8 @@ def test_current_alembic_head_and_release_migration_chain():
             parents = values.get("down_revision")
             descendants.update(parents if isinstance(parents, tuple) else [parents])
 
-    assert set(revisions) - descendants == {"20261018_media_truth"}
+    assert set(revisions) - descendants == {"20261020_media_captions"}
+    assert revisions["20261020_media_captions"] == "20261018_media_truth"
     assert revisions["20261018_media_truth"] == "20261017_canvas_scope"
     assert revisions["20261017_canvas_scope"] == "20260928_pdf_edit_pub"
     assert revisions["20260928_pdf_edit_pub"] == "20260917_unknown_confidence"

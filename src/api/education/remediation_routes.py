@@ -51,6 +51,7 @@ from ...services.remediation_artifact_service import (
     ArtifactIntegrityError,
     ArtifactPublicationResult,
     RemediationArtifactService,
+    is_companion_artifact,
 )
 from ...services.scan_fix_service import (
     artifact_review_blockers as scan_fix_review_blockers,
@@ -295,6 +296,7 @@ async def get_managed_artifact_metadata(
         writeback_provider is not None
         and cloud_file is not None
         and artifact.review_status == "approved"
+        and not is_companion_artifact(artifact)
     ):
         try:
             service.resolve_record(
