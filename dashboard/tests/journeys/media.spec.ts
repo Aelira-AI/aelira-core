@@ -140,7 +140,7 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   // Their structure is checked against the transcription; their accuracy is not.
   await page.getByRole('link', { name: 'Open Remediation Review' }).click();
   await page.getByRole('button', { name: 'Start Remediation' }).click();
-  await expect(page.getByText('Output needs review')).toBeVisible({ timeout: 180_000 });
+  await expect(page.getByRole('heading', { name: 'Output needs review' })).toBeVisible({ timeout: 180_000 });
   await assertNoBlockingViolations(page, 'media-remediation-captions', testInfo);
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download improved working file' }).click();
