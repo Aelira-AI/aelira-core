@@ -1293,7 +1293,7 @@ class BaseRemediator(ABC):
             return
 
         # Check if this category is enabled for fixing
-        if not self._is_category_enabled(issue.category):
+        if not self._is_issue_enabled(issue):
             self._add_manual_issue(
                 issue,
                 reason="Category disabled in configuration",
@@ -1337,6 +1337,10 @@ class BaseRemediator(ABC):
                 }
             )
             self.result.failed_count += 1
+
+    def _is_issue_enabled(self, issue: RemediationIssue) -> bool:
+        """Check if an issue is enabled for fixing; subclasses may narrow by issue."""
+        return self._is_category_enabled(issue.category)
 
     def _is_category_enabled(self, category: IssueCategory) -> bool:
         """Check if a category is enabled for fixing."""

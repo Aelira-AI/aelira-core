@@ -166,6 +166,20 @@ class MultimediaRemediator(BaseRemediator):
             "audio_descriptions": self._audio_description_file,
         }
 
+    def _is_issue_enabled(self, issue: RemediationIssue) -> bool:
+        """
+        Captions and transcripts come from local speech recognition, not an AI
+        provider. WCAG 1.2.x findings map to the alt-text category, whose switch
+        tracks AI client availability, so they must not inherit that gate.
+        Audio descriptions still do.
+        """
+        description_lower = issue.description.lower()
+        if any(
+            term in description_lower for term in ("caption", "subtitle", "transcript")
+        ):
+            return True
+        return super()._is_issue_enabled(issue)
+
     def can_auto_fix(self, issue: RemediationIssue) -> bool:
         """
         Determine if a multimedia issue can be automatically fixed.
