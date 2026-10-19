@@ -104,7 +104,7 @@ image on both architectures.
 | `beautifulsoup4` / `lxml` | HTML parsing for web remediation |
 | `defusedxml` | XXE-safe XML parsing (sitemaps) |
 | `faster-whisper` / `ctranslate2` | Speech-to-text for captions and transcripts |
-| `av` / `scenedetect` | Video decoding and flashing/scene analysis |
+| `av` / `scenedetect` | Video decoding and scene extraction |
 | `piper-tts` | Text-to-speech generation (fully local) |
 
 ### AI providers

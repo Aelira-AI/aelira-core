@@ -46,6 +46,34 @@ _DETERMINISTIC_SCAN_METADATA = {
     "ai_used": False,
 }
 
+_SCAN_TYPE_BY_FILE_TYPE = {
+    "pdf": ScanType.PDF,
+    "docx": ScanType.WORD,
+    "doc": ScanType.WORD,
+    "pptx": ScanType.POWERPOINT,
+    "ppt": ScanType.POWERPOINT,
+    "xlsx": ScanType.EXCEL,
+    "xls": ScanType.EXCEL,
+    "html": ScanType.CANVAS_CONTENT,
+    "htm": ScanType.CANVAS_CONTENT,
+    "mp4": ScanType.VIDEO,
+    "avi": ScanType.VIDEO,
+    "mov": ScanType.VIDEO,
+    "webm": ScanType.VIDEO,
+    "mp3": ScanType.VIDEO,
+    "wav": ScanType.VIDEO,
+    "ogg": ScanType.VIDEO,
+    "m4a": ScanType.MULTIMEDIA,
+    "flac": ScanType.MULTIMEDIA,
+    "jpg": ScanType.IMAGE,
+    "jpeg": ScanType.IMAGE,
+    "png": ScanType.IMAGE,
+    "gif": ScanType.IMAGE,
+    "bmp": ScanType.IMAGE,
+    "webp": ScanType.IMAGE,
+    "svg": ScanType.IMAGE,
+}
+
 _SCAN_FAILURE_MESSAGE = "Accessibility scan failed"
 
 
@@ -79,16 +107,49 @@ def _normalize_processor_result(result: Any) -> Dict[str, Any]:
     valid_score = False
     if isinstance(compliance_score, Real) and not isinstance(compliance_score, bool):
         numeric_score = cast(Any, compliance_score)
-        valid_score = 0 <= numeric_score <= 100 and math.isfinite(numeric_score)
+        valid_score = (
+            normalized.get("media_type") not in {"video", "unknown"}
+            and 0 <= numeric_score <= 100
+            and math.isfinite(numeric_score)
+        )
+    assessment = normalized.get("flashing_analysis")
+    valid_partial_media = (
+        normalized.get("media_type") in {"video", "unknown"}
+        and compliance_score is None
+        and isinstance(normalized.get("issues"), list)
+        and isinstance(assessment, dict)
+        and assessment.get("state") == "unassessed"
+        and assessment.get("reason")
+        in {"detector_unavailable", "disabled", "analysis_failed"}
+        and assessment.get("version") == "unassessed-v1"
+        and all(
+            assessment.get(field) is None
+            for field in (
+                "has_flashing",
+                "flash_count",
+                "max_flash_frequency",
+                "red_flash_detected",
+                "red_flash_count",
+                "severity",
+            )
+        )
+    )
+    valid_result = valid_score or valid_partial_media
     success_is_explicit = "success" in normalized
     explicit_success = normalized.get("success")
     if success_is_explicit and type(explicit_success) is bool:
-        success = explicit_success and not normalized.get("error") and valid_score
+        success = explicit_success and not normalized.get("error") and valid_result
     elif success_is_explicit:
         success = False
     else:
-        success = not normalized.get("error") and valid_score
+        success = not normalized.get("error") and valid_result
     normalized["success"] = success
+    if valid_partial_media:
+        normalized["flashing_analysis"] = {
+            "state": "unassessed",
+            "reason": assessment["reason"],
+            "version": "unassessed-v1",
+        }
     if not success:
         normalized["compliance_score"] = None
         normalized["error"] = _SCAN_FAILURE_MESSAGE
@@ -199,20 +260,6 @@ class CloudScanJob:
         self, db: Session, file_type: str, error_code: str
     ) -> Dict[str, Any]:
         """Persist a failed processor/runtime outcome without a false score."""
-        scan_types = {
-            "docx": ScanType.WORD,
-            "doc": ScanType.WORD,
-            "pptx": ScanType.POWERPOINT,
-            "ppt": ScanType.POWERPOINT,
-            "xlsx": ScanType.EXCEL,
-            "xls": ScanType.EXCEL,
-            "html": ScanType.CANVAS_CONTENT,
-            "htm": ScanType.CANVAS_CONTENT,
-            "mp4": ScanType.VIDEO,
-            "mp3": ScanType.VIDEO,
-            "wav": ScanType.VIDEO,
-            "pdf": ScanType.PDF,
-        }
         dept_user = (
             db.query(User.id)
             .filter(
@@ -226,7 +273,7 @@ class CloudScanJob:
             department_id=self.credential.department_id,
             document_id=self.cloud_file.id,
             document_source="cloud_file",
-            scan_type=scan_types.get(file_type, ScanType.PDF),
+            scan_type=_SCAN_TYPE_BY_FILE_TYPE.get(file_type, ScanType.PDF),
             user_id=dept_user.id if dept_user else "system",
             file_name=self.cloud_file.file_name,
             file_size_bytes=getattr(self.cloud_file, "file_size_bytes", 0) or 0,
@@ -442,35 +489,7 @@ class CloudScanJob:
         # Detect actual file type from extension if file_type is generic
         if file_type in ("file", "unknown", "html"):
             ext = os.path.splitext(file_path)[1].lower().lstrip(".")
-            _known_extensions = {
-                "html",
-                "htm",
-                "docx",
-                "doc",
-                "pptx",
-                "ppt",
-                "xlsx",
-                "xls",
-                "pdf",
-                "jpg",
-                "jpeg",
-                "png",
-                "gif",
-                "bmp",
-                "webp",
-                "svg",
-                "tiff",
-                "mp4",
-                "mp3",
-                "wav",
-                "avi",
-                "mov",
-                "webm",
-                "ogg",
-                "m4a",
-                "flac",
-            }
-            if ext in _known_extensions:
+            if ext in _SCAN_TYPE_BY_FILE_TYPE or ext == "tiff":
                 file_type = ext
             else:
                 # Check if file content looks like HTML
@@ -637,33 +656,7 @@ class CloudScanJob:
                         db, file_type, "SOURCE_CHANGED_DURING_SCAN"
                     )
 
-            # Map file_type to valid ScanType enum
-            _file_type_to_scan_type = {
-                "pdf": ScanType.PDF,
-                "docx": ScanType.WORD,
-                "doc": ScanType.WORD,
-                "pptx": ScanType.POWERPOINT,
-                "ppt": ScanType.POWERPOINT,
-                "xlsx": ScanType.EXCEL,
-                "xls": ScanType.EXCEL,
-                "html": ScanType.CANVAS_CONTENT,
-                "htm": ScanType.CANVAS_CONTENT,
-                "mp4": ScanType.VIDEO,
-                "mp3": ScanType.VIDEO,
-                "wav": ScanType.VIDEO,
-                "avi": ScanType.VIDEO,
-                "mov": ScanType.VIDEO,
-                "webm": ScanType.VIDEO,
-                "ogg": ScanType.VIDEO,
-                "jpg": ScanType.IMAGE,
-                "jpeg": ScanType.IMAGE,
-                "png": ScanType.IMAGE,
-                "gif": ScanType.IMAGE,
-                "bmp": ScanType.IMAGE,
-                "webp": ScanType.IMAGE,
-                "svg": ScanType.IMAGE,
-            }
-            scan_type = _file_type_to_scan_type.get(file_type, ScanType.PDF)
+            scan_type = _SCAN_TYPE_BY_FILE_TYPE.get(file_type, ScanType.PDF)
 
             # Find a user_id for this department (cloud scans are system-initiated)
             dept_user = (
@@ -761,6 +754,18 @@ class CloudScanJob:
                     ]
                 ),
                 issues=issues,
+                structure=(
+                    {
+                        "media_type": result.get("media_type"),
+                        "flashing_assessment": (
+                            result.get("flashing_analysis")
+                            if result.get("media_type") in {"video", "unknown"}
+                            else {"state": "not_applicable", "version": "unassessed-v1"}
+                        ),
+                    }
+                    if result.get("media_type") in {"video", "audio", "unknown"}
+                    else None
+                ),
             )
             db.add(scan_result)
 
@@ -779,20 +784,22 @@ class CloudScanJob:
                 f"issues={len(result.get('issues', []))}"
             )
 
-            # Trigger email alerts for completed scan
-            try:
-                from .email_alert_job import trigger_scan_alerts
+            # The existing completion alert requires a numeric score. Do not
+            # turn an unassessed video into a zero-score email.
+            if compliance_score is not None:
+                try:
+                    from .email_alert_job import trigger_scan_alerts
 
-                await self._checkpoint()
-                await trigger_scan_alerts(db, scan)
-            except LostJobOwnership:
-                db.rollback()
-                raise
-            except Exception as e:
-                # Don't fail the scan if email alerts fail
-                logger.warning(
-                    f"Failed to send email alerts for cloud file {self.cloud_file.id} (dept={self.credential.department_id}): {e}"
-                )
+                    await self._checkpoint()
+                    await trigger_scan_alerts(db, scan)
+                except LostJobOwnership:
+                    db.rollback()
+                    raise
+                except Exception as e:
+                    # Don't fail the scan if email alerts fail
+                    logger.warning(
+                        f"Failed to send email alerts for cloud file {self.cloud_file.id} (dept={self.credential.department_id}): {e}"
+                    )
 
             return {
                 "scan_id": scan.id,

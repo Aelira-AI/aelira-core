@@ -1358,3 +1358,72 @@ def test_delete_treats_absent_storage_tree_as_missing(tmp_path):
 
     assert not service.root.exists()
     assert service.delete_known(artifact) is False
+
+
+_CAPTIONS = b"WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\nWelcome to the lab.\n\n"
+
+
+@pytest.mark.parametrize("scan_type", [ScanType.VIDEO, ScanType.MULTIMEDIA])
+def test_media_scans_accept_generated_webvtt_captions(tmp_path, scan_type):
+    service = _service(tmp_path)
+    root = tmp_path / "trusted-vtt"
+    root.mkdir()
+    source = root / "lecture_remediated.vtt"
+    source.write_bytes(_CAPTIONS)
+    prepared = _prepare(
+        service,
+        source,
+        root,
+        scan_type=scan_type,
+        filename=source.name,
+        provider="local",
+    )
+    assert prepared.mime_type == "text/vtt"
+    assert prepared.sha256 == hashlib.sha256(_CAPTIONS).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("payload", "scan_type", "extension"),
+    [
+        (b"plain text that is not captions", ScanType.VIDEO, ".vtt"),
+        (b"WEBVTTX\n\ncue", ScanType.VIDEO, ".vtt"),
+        (b"%PDF-1.7\n%%EOF\n", ScanType.MULTIMEDIA, ".vtt"),
+        (_CAPTIONS, ScanType.PDF, ".vtt"),
+        (_CAPTIONS, ScanType.LATEX, ".tex"),
+        (_CAPTIONS, ScanType.VIDEO, ".mp4"),
+    ],
+)
+def test_webvtt_mapping_refuses_spoofs_and_wrong_scan_type(
+    tmp_path, payload, scan_type, extension
+):
+    service = _service(tmp_path)
+    root = tmp_path / "trusted-vtt"
+    root.mkdir()
+    source = root / ("captions" + extension)
+    source.write_bytes(payload)
+    with pytest.raises((module.ArtifactMimeError, module.ArtifactValidationError)):
+        _prepare(
+            service,
+            source,
+            root,
+            scan_type=scan_type,
+            filename=source.name,
+            provider="local",
+        )
+
+
+def test_webvtt_header_with_binary_body_is_not_captions(tmp_path):
+    service = _service(tmp_path)
+    root = tmp_path / "trusted-vtt"
+    root.mkdir()
+    source = root / "captions.vtt"
+    source.write_bytes(b"WEBVTT\n\n\xff\xfe\x00\x81binary")
+    with pytest.raises(module.ArtifactValidationError):
+        _prepare(
+            service,
+            source,
+            root,
+            scan_type=ScanType.VIDEO,
+            filename=source.name,
+            provider="local",
+        )

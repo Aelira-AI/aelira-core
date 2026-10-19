@@ -27,11 +27,42 @@ from ..db.models import (
     IssuePriority,
     Scan,
     ScanResult,
+    ScanType,
     User,
 )
 from ..security.audit_service import AuditService
+from .current_compliance import public_scan_issues, retired_media_flash_scan_ids
 
 logger = logging.getLogger(__name__)
+
+
+def _retired_flash_scan_ids(db: Session, department_id: str) -> set[str]:
+    """Resolve withdrawn source verdicts in two bounded, tenant-scoped reads."""
+    scans = (
+        db.query(Scan)
+        .filter(
+            Scan.department_id == department_id,
+            Scan.scan_type.in_((ScanType.VIDEO, ScanType.MULTIMEDIA)),
+        )
+        .all()
+    )
+    scan_ids = {scan.id for scan in scans}
+    if not scan_ids:
+        return set()
+    results = db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
+    return retired_media_flash_scan_ids(scans, results)
+
+
+def _active_tracker_condition(retired_scan_ids: set[str]):
+    """Exclude only unattributable generic rows on retired-flash media scans."""
+    if not retired_scan_ids:
+        return True
+    return ~and_(
+        IssueTracking.scan_id.in_(retired_scan_ids),
+        IssueTracking.issue_type == "unknown",
+        IssueTracking.description == "No description",
+        IssueTracking.wcag_criterion.is_(None),
+    )
 
 
 @dataclass
@@ -270,12 +301,13 @@ class IssueTrackingService:
         Returns:
             List of created IssueTracking objects
         """
-        if not result.issues:
+        source_issues = public_scan_issues(scan, result)
+        if not source_issues:
             return []
 
         tracked_issues = []
 
-        for issue_data in result.issues:
+        for issue_data in source_issues:
             try:
                 tracked = IssueTrackingService.create_tracked_issue(
                     db=db,
@@ -556,6 +588,9 @@ class IssueTrackingService:
         Returns:
             List of IssueSummary objects
         """
+        active_condition = _active_tracker_condition(
+            _retired_flash_scan_ids(db, department_id)
+        )
         query = (
             db.query(IssueTracking, Scan, User)
             .join(Scan, IssueTracking.scan_id == Scan.id)
@@ -569,6 +604,7 @@ class IssueTrackingService:
             .filter(
                 IssueTracking.department_id == department_id,
                 Scan.department_id == department_id,
+                active_condition,
             )
         )
 
@@ -639,10 +675,18 @@ class IssueTrackingService:
         Returns:
             IssueStats object with counts
         """
-        # Count by status
+        active_condition = _active_tracker_condition(
+            _retired_flash_scan_ids(db, department_id)
+        )
+        # Count only active, department-owned tracker rows by status.
         status_counts = (
             db.query(IssueTracking.status, func.count(IssueTracking.id))
-            .filter(IssueTracking.department_id == department_id)
+            .join(Scan, IssueTracking.scan_id == Scan.id)
+            .filter(
+                IssueTracking.department_id == department_id,
+                Scan.department_id == department_id,
+                active_condition,
+            )
             .group_by(IssueTracking.status)
             .all()
         )
@@ -659,11 +703,12 @@ class IssueTrackingService:
         # Count auto-fixable and auto-fixed
         auto_fixable = (
             db.query(func.count(IssueTracking.id))
+            .join(Scan, IssueTracking.scan_id == Scan.id)
             .filter(
-                and_(
-                    IssueTracking.department_id == department_id,
-                    IssueTracking.auto_fix_available,
-                )
+                IssueTracking.department_id == department_id,
+                Scan.department_id == department_id,
+                active_condition,
+                IssueTracking.auto_fix_available,
             )
             .scalar()
             or 0
@@ -671,11 +716,12 @@ class IssueTrackingService:
 
         auto_fixed = (
             db.query(func.count(IssueTracking.id))
+            .join(Scan, IssueTracking.scan_id == Scan.id)
             .filter(
-                and_(
-                    IssueTracking.department_id == department_id,
-                    IssueTracking.auto_fix_applied,
-                )
+                IssueTracking.department_id == department_id,
+                Scan.department_id == department_id,
+                active_condition,
+                IssueTracking.auto_fix_applied,
             )
             .scalar()
             or 0

@@ -1,17 +1,33 @@
 """Current compliance is a projection of documents, not scan attempts."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import UUID
 
-from src.db.models import Department, Scan, ScanStatus, ScanType, User
+from src.db.models import (
+    CloudFile,
+    Department,
+    Scan,
+    ScanResult,
+    ScanStatus,
+    ScanType,
+    User,
+)
 from src.db.scan_service import ScanService
 from src.api.user_management import get_department_stats as get_admin_department_stats
 from src.education.compliance_dashboard import ComplianceDashboard
 from src.education.current_compliance import (
     _provider_scan_ids,
+    public_cloud_file_score,
+    public_cloud_file_scores,
+    public_cloud_file_issue_totals,
+    public_issue_total,
+    retired_media_flash_scan_ids,
+    public_scan_job_results,
+    public_compliance_score,
     project_current_documents,
 )
 
@@ -63,6 +79,533 @@ def _cloud_file(file_id: str, last_scan_id: str | None):
         department_id="dept-a",
         last_scan_id=last_scan_id,
     )
+
+
+def test_legacy_and_partial_media_never_become_verified_credit():
+    legacy = _scan("legacy", file_hash="b" * 64)
+    legacy.scan_type = ScanType.MULTIMEDIA
+    stale_safe = _result("legacy", 100, 0)
+    stale_safe.structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    partial = _scan("partial", file_hash="b" * 64, created_offset=1)
+    partial.scan_type = ScanType.MULTIMEDIA
+    partial_result = _result("partial", None, 1)
+    partial_result.structure = {
+        "media_type": "video",
+        "flashing_assessment": {
+            "state": "unassessed",
+            "reason": "detector_unavailable",
+            "version": "unassessed-v1",
+        },
+    }
+    projection = project_current_documents(
+        [legacy, partial], [stale_safe, partial_result], []
+    )
+    assert public_compliance_score(legacy, stale_safe) is None
+    assert projection.verified_document_count == 0
+    assert projection.average_compliance_score is None
+    assert projection.historical_scan_count == 2
+
+    audio = _scan("audio", file_hash="c" * 64)
+    audio.scan_type = ScanType.MULTIMEDIA
+    audio_result = _result("audio", 80, 1)
+    audio_result.structure = {
+        "media_type": "audio",
+        "flashing_assessment": {"state": "not_applicable", "version": "unassessed-v1"},
+    }
+    assert public_compliance_score(audio, audio_result) == 80
+
+
+def test_completed_pdf_without_assessed_score_is_coverage_with_findings_not_credit():
+    unknown = _scan("unknown", file_hash="d" * 64)
+    unknown_result = _result("unknown", None, 1)
+    measured_zero = _scan("measured-zero", file_hash="e" * 64)
+    zero_result = _result("measured-zero", 0, 2)
+
+    projection = project_current_documents(
+        [unknown, measured_zero], [unknown_result, zero_result], []
+    )
+
+    assert public_compliance_score(unknown, unknown_result) is None
+    assert public_issue_total(unknown, unknown_result) == 1
+    assert projection.historical_scan_count == 2
+    assert projection.scanned_document_count == 2
+    assert projection.verified_document_count == 1
+    assert projection.unverified_document_count == 1
+    assert projection.average_compliance_score == 0
+    assert projection.minimum_compliance_score == 0
+    assert projection.maximum_compliance_score == 0
+    assert projection.compliance_band_counts(compliant_at=95, needs_work_at=70) == (
+        0,
+        0,
+        1,
+    )
+    assert projection.total_issues == 2
+
+
+def test_invalid_completed_document_scores_never_enter_current_aggregates():
+    invalid_scores = [None, float("nan"), float("inf"), -1, 101, True, "75"]
+    scans = [
+        _scan(f"invalid-{index}", file_hash=f"{index + 1:064x}")
+        for index in range(len(invalid_scores))
+    ]
+    results = [_result(scan.id, score, 1) for scan, score in zip(scans, invalid_scores)]
+    projection = project_current_documents(scans, results, [])
+
+    assert all(
+        public_compliance_score(scan, result) is None
+        for scan, result in zip(scans, results)
+    )
+    assert projection.scanned_document_count == len(scans)
+    assert projection.verified_document_count == 0
+    assert projection.unverified_document_count == len(scans)
+    assert projection.average_compliance_score is None
+    assert projection.minimum_compliance_score is None
+    assert projection.maximum_compliance_score is None
+    assert projection.compliance_band_counts(compliant_at=95, needs_work_at=70) == (
+        0,
+        0,
+        0,
+    )
+
+
+def test_cached_provider_score_cannot_restore_legacy_video_credit():
+    legacy = _scan("legacy")
+    legacy.scan_type = ScanType.MULTIMEDIA
+    result = _result("legacy", 100, 0)
+    result.structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+
+    db = MagicMock()
+
+    def query(model):
+        matches = MagicMock()
+        matches.filter.return_value.all.return_value = [
+            legacy if model is Scan else result
+        ]
+        return matches
+
+    db.query.side_effect = query
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        last_scan_id="legacy",
+        last_compliance_score=100,
+        file_type="file",
+        mime_type="video/mp4",
+    )
+    assert public_cloud_file_score(db, cloud_file) is None
+
+    cloud_file.last_scan_id = None
+    assert public_cloud_file_score(db, cloud_file) is None
+
+    cloud_file.file_type = "pdf"
+    cloud_file.mime_type = "application/pdf"
+    assert public_cloud_file_score(db, cloud_file) == 100
+
+    legacy.scan_type = ScanType.MULTIMEDIA
+    result.compliance_score = 80
+    result.structure = {
+        "media_type": "audio",
+        "flashing_assessment": {"state": "not_applicable", "version": "unassessed-v1"},
+    }
+    cloud_file.last_scan_id = "legacy"
+    cloud_file.file_type = "mp3"
+    cloud_file.mime_type = "audio/mpeg"
+    assert public_cloud_file_score(db, cloud_file) == 80
+
+
+def test_provider_scores_use_bounded_provenance_queries():
+    db = MagicMock()
+    legacy = _scan("legacy")
+    legacy.scan_type = ScanType.VIDEO
+    stale = _result("legacy", 100, 0)
+    stale.structure = {"media_type": "video", "flashing_analysis": {"severity": "safe"}}
+
+    def query(model):
+        matches = MagicMock()
+        matches.filter.return_value.all.return_value = (
+            [legacy] if model is Scan else [stale]
+        )
+        return matches
+
+    db.query.side_effect = query
+    files = [
+        SimpleNamespace(
+            id=f"file-{index}",
+            last_scan_id="legacy" if index == 0 else None,
+            last_compliance_score=100,
+            file_type="mp4" if index == 0 else "pdf",
+            mime_type="video/mp4" if index == 0 else "application/pdf",
+        )
+        for index in range(100)
+    ]
+    scores = public_cloud_file_scores(db, files)
+    assert scores["file-0"] is None
+    assert scores["file-99"] == 100
+    assert db.query.call_count == 2
+
+
+def test_canvas_course_status_keeps_partial_scans_without_score_credit():
+    from src.api.canvas_scan_routes import get_course_scan_status
+
+    video = _scan("video")
+    video.scan_type = ScanType.VIDEO
+    pdf = _scan("pdf")
+    legacy_result = _result("video", 100, 1)
+    legacy_result.structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    legacy_result.suggestions = {}
+    pdf_result = _result("pdf", 80, 2)
+    pdf_result.suggestions = {}
+    files = [
+        SimpleNamespace(
+            provider_file_id=str(index),
+            file_name=f"file-{index}",
+            file_type=file_type,
+            last_scan_id=scan_id,
+            has_remediated_version=False,
+            remediation_origin=None,
+        )
+        for index, file_type, scan_id in [(1, "mp4", "video"), (2, "pdf", "pdf")]
+    ]
+    queries = {}
+    for model, values in (
+        (CloudFile, files),
+        (Scan, [video, pdf]),
+        (ScanResult, [legacy_result, pdf_result]),
+    ):
+        query = MagicMock()
+        query.filter.return_value.all.return_value = values
+        query.filter.return_value.first.side_effect = values
+        queries[model] = query
+    db = MagicMock()
+    db.query.side_effect = lambda model: queries[model]
+    with patch("src.api.canvas_scan_routes.require_lti_course_access"):
+        response = asyncio.run(
+            get_course_scan_status(
+                "course-1",
+                file_ids="1,2",
+                db=db,
+                principal=SimpleNamespace(department_id="dept-a"),
+            )
+        )
+    assert response.scanned_files == 2
+    assert response.average_compliance is None
+    assert response.files[0].compliance_score is None
+    assert response.files[0].issues_count == 1
+
+
+def test_faculty_leaderboard_excludes_legacy_video_and_preserves_measured_zero():
+    users = [
+        SimpleNamespace(id=user_id, name=user_id, email=f"{user_id}@example.test")
+        for user_id in ("video", "zero", "perfect")
+    ]
+    scans = [
+        _scan("video-scan", file_hash="a" * 64),
+        _scan("zero-scan", file_hash="b" * 64),
+        _scan("perfect-scan", file_hash="c" * 64),
+    ]
+    scans[0].scan_type = ScanType.VIDEO
+    results = [
+        _result("video-scan", 100, 1),
+        _result("zero-scan", 0, 1),
+        _result("perfect-scan", 100, 0),
+    ]
+    results[0].structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    caption_issue = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired_flash = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+        "timestamps": [1.0],
+    }
+    results[0].issues = [caption_issue, retired_flash]
+    results[0].critical_issues = 2
+    scan_iter = iter(scans)
+    result_iter = iter(results)
+    db = MagicMock()
+
+    def query(model):
+        response = MagicMock()
+        if model is User:
+            response.filter.return_value.filter.return_value.all.return_value = users
+        elif model is Scan:
+            response.filter.return_value.filter.return_value.all.return_value = [
+                next(scan_iter)
+            ]
+        else:
+            response.filter.return_value.all.return_value = [next(result_iter)]
+        return response
+
+    db.query.side_effect = query
+    leaderboard = ComplianceDashboard.get_faculty_leaderboard(db, "dept-a")
+    assert [entry.user_id for entry in leaderboard] == ["perfect", "zero", "video"]
+    assert [entry.avg_compliance_score for entry in leaderboard] == [100, 0, None]
+    assert [entry.rank for entry in leaderboard] == [1, 2, None]
+    assert leaderboard[0].badge == "🏆 Accessibility Champion"
+    assert leaderboard[2].badge == "🚀 Getting Started"
+    assert all(entry.total_issues_fixed is None for entry in leaderboard)
+
+
+def test_cached_scan_jobs_mask_legacy_media_without_mutating_stored_blobs():
+    scans = [
+        _scan("legacy-video"),
+        _scan("pdf-zero"),
+        _scan("pdf-perfect"),
+        _scan("new-video"),
+        _scan("foreign"),
+    ]
+    for scan in scans:
+        scan.document_id = f"cf-{scan.id}"
+    scans[0].scan_type = ScanType.VIDEO
+    scans[3].scan_type = ScanType.VIDEO
+    scans[4].department_id = "foreign-dept"
+    results = [
+        _result("legacy-video", 100, 0),
+        _result("pdf-zero", 0, 1),
+        _result("pdf-perfect", 100, 0),
+        _result("new-video", None, 1),
+        _result("foreign", 88, 1),
+    ]
+    results[0].structure = {
+        "media_type": "video",
+        "flashing_analysis": {"severity": "safe"},
+    }
+    results[0].issues = [
+        {"rule": "WCAG 1.2.2", "severity": "critical", "message": "Missing captions"},
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "critical",
+            "message": "Dangerous flashing content detected (4.0 Hz)",
+            "timestamps": [1.0],
+        },
+    ]
+    results[0].critical_issues = 2
+    results[3].structure = {
+        "media_type": "video",
+        "flashing_assessment": {
+            "state": "unassessed",
+            "reason": "detector_unavailable",
+            "version": "unassessed-v1",
+        },
+    }
+    jobs = [
+        SimpleNamespace(
+            id=scan_id,
+            job_type="scan",
+            department_id="dept-a",
+            cloud_file_id=f"cf-{scan_id}",
+            result_data={
+                "scan_id": scan_id,
+                "compliance_score": cached,
+                "issues_found": 1,
+                "success": True,
+            },
+        )
+        for scan_id, cached in (
+            ("legacy-video", 100),
+            ("pdf-zero", 100),
+            ("pdf-perfect", 0),
+            ("new-video", None),
+            ("foreign", 88),
+            ("missing", 90),
+        )
+    ]
+    jobs.append(
+        SimpleNamespace(
+            id="remediation",
+            job_type="remediate",
+            department_id="dept-a",
+            cloud_file_id=None,
+            result_data={"compliance_score": 75, "success": True},
+        )
+    )
+    db = MagicMock()
+
+    def query(model):
+        response = MagicMock()
+        response.filter.return_value.all.return_value = (
+            scans if model is Scan else results
+        )
+        return response
+
+    db.query.side_effect = query
+    public = public_scan_job_results(db, jobs)
+    assert [public[job.id]["compliance_score"] for job in jobs] == [
+        None,
+        0,
+        100,
+        None,
+        None,
+        None,
+        75,
+    ]
+    assert [public[job.id].get("issues_found") for job in jobs] == [
+        1,
+        1,
+        0,
+        1,
+        None,
+        None,
+        None,
+    ]
+    assert jobs[0].result_data["compliance_score"] == 100
+    assert jobs[0].result_data["issues_found"] == 1
+    assert len(results[0].issues) == 2
+    assert db.query.call_count == 2
+
+
+def test_retired_media_flash_filter_keeps_other_source_findings():
+    from src.education.current_compliance import (
+        public_issue_counts,
+        public_issue_total,
+        public_scan_issues,
+    )
+
+    caption = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+        "timestamps": [1.0],
+    }
+    website = _scan("website")
+    website.scan_type = ScanType.WEBSITE
+    video = _scan("video")
+    video.scan_type = ScanType.VIDEO
+    result = _result("video", 100, 2)
+    result.issues = [caption, retired]
+    assert public_scan_issues(video, result) == [caption]
+    assert public_issue_counts(video, result)["critical"] == 1
+    assert public_issue_total(video, result) == 1
+    assert result.issues == [caption, retired]
+    assert public_scan_issues(website, result) == [caption, retired]
+    assert public_issue_total(website, result) == 2
+    result.issues = [retired]
+    result.critical_issues = 1
+    assert public_scan_issues(video, result) == []
+    assert public_issue_total(video, result) == 0
+    assert public_compliance_score(video, result) is None
+    result.issues = [
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "high",
+            "message": "Potentially problematic flashing detected (11 flashes)",
+        }
+    ]
+    result.critical_issues = 0
+    result.high_issues = 1
+    assert public_issue_total(video, result) == 0
+
+
+def test_provider_issue_totals_are_batched_and_preserve_caption_counts():
+    scans = [_scan("video"), _scan("website")]
+    scans[0].scan_type = ScanType.VIDEO
+    scans[0].document_id = "video-file"
+    scans[1].scan_type = ScanType.WEBSITE
+    scans[1].document_id = "website-file"
+    caption = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+    }
+    results = [_result("video", 100, 2), _result("website", 80, 1)]
+    results[0].issues = [caption, retired]
+    results[1].issues = [retired]
+    files = [
+        _cloud_file("video-file", "video"),
+        _cloud_file("website-file", "website"),
+        _cloud_file("unscanned", None),
+    ]
+    db = MagicMock()
+
+    def query(model):
+        response = MagicMock()
+        response.filter.return_value.all.return_value = (
+            scans if model is Scan else results
+        )
+        return response
+
+    db.query.side_effect = query
+    assert public_cloud_file_issue_totals(db, files) == {
+        "video-file": 1,
+        "website-file": 1,
+        "unscanned": None,
+    }
+    assert db.query.call_count == 2
+
+
+def test_retired_tracker_source_detection_accepts_legacy_issue_shapes_only_for_media():
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+    }
+    scans = [
+        _scan("media-list"),
+        _scan("media-json"),
+        _scan("media-details"),
+        _scan("website"),
+    ]
+    for scan in scans[:3]:
+        scan.scan_type = ScanType.VIDEO
+    scans[3].scan_type = ScanType.WEBSITE
+    results = [_result(scan.id, 100, 1) for scan in scans]
+    results[0].issues = [retired]
+    results[1].issues = json.dumps([retired])
+    results[2].issues = {"details": [retired]}
+    results[3].issues = [retired]
+
+    assert retired_media_flash_scan_ids(scans, results) == {
+        "media-list",
+        "media-json",
+        "media-details",
+    }
+
+
+def test_new_issue_tracking_import_excludes_retired_media_verdict():
+    from src.education.issue_tracking_service import IssueTrackingService
+
+    scan = _scan("legacy-video")
+    scan.scan_type = ScanType.VIDEO
+    result = _result("legacy-video", 100, 2)
+    result.issues = [
+        {"type": "missing_captions", "severity": "critical"},
+        {
+            "rule": "WCAG 2.3.1",
+            "severity": "critical",
+            "message": "Dangerous flashing content detected (4.0 Hz)",
+        },
+    ]
+    with patch.object(
+        IssueTrackingService, "create_tracked_issue", return_value="caption"
+    ) as create:
+        assert IssueTrackingService.create_issues_from_scan_result(
+            MagicMock(), scan, result
+        ) == ["caption"]
+    create.assert_called_once()
+    assert result.issues[1]["rule"] == "WCAG 2.3.1"
 
 
 def test_duplicate_uploads_and_rescans_use_one_latest_verified_state():

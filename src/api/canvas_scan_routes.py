@@ -36,6 +36,7 @@ from ..db.models import (
 )
 from ..integrations.canvas import CanvasAPIClient
 from ..education.canvas_content_scanner import CanvasContentScanner
+from ..education.current_compliance import public_compliance_score, public_issue_total
 from ..middleware.quota import require_feature
 from ..services.job_enqueue_service import enqueue_cloud_job
 from ..services.canvas_identity_service import (
@@ -110,7 +111,7 @@ class FileScanStatus(BaseModel):
     file_type: str
     scan_id: Optional[str] = None
     compliance_score: Optional[float] = None
-    issues_count: int = 0
+    issues_count: Optional[int] = None
     status: str = "pending"
     has_remediated_version: bool = False
     remediation_origin: Optional[str] = None
@@ -550,6 +551,7 @@ async def get_course_scan_status(
 
     files_status: List[FileScanStatus] = []
     scanned_count = 0
+    assessed_count = 0
     total_compliance = 0.0
 
     for file_id in requested_file_ids:
@@ -569,7 +571,7 @@ async def get_course_scan_status(
 
         # Get scan result if available
         scan_result = None
-        issues_count = 0
+        issues_count = None
         compliance_score = None
         status = "pending"
         has_remediated = cf.has_remediated_version or False
@@ -586,15 +588,12 @@ async def get_course_scan_status(
                     db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
                 )
                 if scan_result:
-                    compliance_score = scan_result.compliance_score
-                    issues_count = (
-                        (scan_result.critical_issues or 0)
-                        + (scan_result.high_issues or 0)
-                        + (scan_result.medium_issues or 0)
-                        + (scan_result.low_issues or 0)
-                    )
+                    compliance_score = public_compliance_score(scan, scan_result)
+                    issues_count = public_issue_total(scan, scan_result)
                     scanned_count += 1
-                    total_compliance += compliance_score
+                    if compliance_score is not None:
+                        assessed_count += 1
+                        total_compliance += compliance_score
                     # Check if remediation has been run (stored in suggestions)
                     remediation_data = scan_result.suggestions or {}
                     if remediation_data.get("remediation_available"):
@@ -632,7 +631,9 @@ async def get_course_scan_status(
         )
 
     average_compliance = (
-        round(total_compliance / scanned_count, 1) if scanned_count > 0 else None
+        round(total_compliance / assessed_count, 1)
+        if assessed_count > 0 and assessed_count == scanned_count
+        else None
     )
 
     return CourseScanStatusResponse(

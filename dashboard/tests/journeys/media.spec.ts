@@ -3,8 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { assertNoBlockingViolations } from './support/a11y';
 import { apiGet, scanIdFromUrl } from './support/scans';
-import { dismissCookieBanner } from './support/stack';
-import { pdfInfo } from './support/files';
+import { apiUrl, dismissCookieBanner } from './support/stack';
 
 const clip = resolve(import.meta.dirname, '../../../tests/journeys/fixtures/teaching-clip.mp4');
 const spoken = 'Welcome to the biology lab. Today we measure plant growth and record the results in a table.';
@@ -13,6 +12,12 @@ interface Cue {
   start_time: number;
   end_time: number;
   text: string;
+}
+
+interface FlashingAssessment {
+  state: 'unassessed';
+  reason: 'detector_unavailable' | 'disabled' | 'analysis_failed';
+  version: 'unassessed-v1';
 }
 
 /** Lower-case words only, so punctuation and capitalisation cannot decide the verdict. */
@@ -27,16 +32,24 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   await expect(page.getByText('teaching-clip.mp4', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /^Scan 1 file/ }).click();
   await expect(page.getByText('teaching-clip.mp4 scan complete', { exact: true })).toBeVisible({ timeout: 240_000 });
+  await expect(page.getByText('Overall compliance unassessed.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download Report' })).toHaveCount(0);
   await assertNoBlockingViolations(page, 'media-scan-complete', testInfo);
   await page.getByRole('link', { name: 'View Full Report' }).click();
   await expect(page.getByRole('heading', { name: 'Rule-based findings (2)' })).toBeVisible();
+  await expect(page.getByText('Unverified', { exact: true })).toBeVisible();
+  await expect(page.getByText(
+    'Overall compliance is unassessed. Available source findings are shown below; video flashing safety has not been established.',
+    { exact: true },
+  )).toBeVisible();
   const scanId = scanIdFromUrl(page.url());
 
   const record = await apiGet<{
     scan: {
       status: string;
       result: {
-        compliance_score: number;
+        compliance_score: number | null;
+        wcag_level: string | null;
         issues: { rule: string; message: string }[];
         structure: {
           duration: number;
@@ -45,7 +58,12 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
           has_captions: boolean;
           verification_passed: boolean;
           manual_review_required: boolean;
+          flashing_assessment: FlashingAssessment;
           transcription_output: {
+            compliance_score: number | null;
+            flashing_assessment: FlashingAssessment;
+            issues_count: number;
+            issues: { rule: string; message: string }[];
             transcription: { segments: Cue[]; full_text: string };
             captions: { webvtt: string; srt: string };
           };
@@ -55,6 +73,22 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   }>(page.request, `/education/scans/${scanId}`);
   expect(record.scan.status.toLowerCase()).toBe('completed');
   const { structure, issues } = record.scan.result;
+
+  // A finished transcription does not establish an overall video score or flashing safety.
+  expect(record.scan.result.compliance_score).toBeNull();
+  expect(record.scan.result.wcag_level).toBeNull();
+  expect(structure.flashing_assessment).toEqual({
+    state: 'unassessed', reason: 'detector_unavailable', version: 'unassessed-v1',
+  });
+  expect(structure.transcription_output.compliance_score).toBeNull();
+  expect(structure.transcription_output.flashing_assessment).toEqual(structure.flashing_assessment);
+  expect(structure).not.toHaveProperty('flashing_analysis');
+  expect(structure.transcription_output).not.toHaveProperty('flashing_analysis');
+  expect(structure.transcription_output.issues_count).toBe(2);
+  expect(structure.transcription_output.issues.map((issue) => issue.rule))
+    .toEqual(['WCAG 1.2.2', 'WCAG 1.2.3']);
+  expect([...issues, ...structure.transcription_output.issues].map((issue) => issue.message).join(' '))
+    .not.toMatch(/(?:dangerous|problematic) flashing (?:content )?detected/i);
 
   // Real speech recognition on the clip's real audio: the words that were spoken, in order.
   const transcript = structure.transcription_output.transcription;
@@ -94,27 +128,62 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   const ai = await apiGet<{ primary_provider: string | null }>(page.request, '/api/ai/health');
   expect(ai.primary_provider).toBeNull();
 
-  // The dashboard's own downloadable output for the scan is a PDF report of exactly these findings.
-  const pending = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Report', exact: true }).click();
-  const download = await pending;
-  const reportPath = resolve(import.meta.dirname, '../../journey-results/downloads/media-report.pdf');
-  await download.saveAs(reportPath);
-  expect((await readFile(reportPath)).subarray(0, 4).toString()).toBe('%PDF');
-  expect((await pdfInfo(reportPath)).Pages).toBe('1');
+  // Partial findings remain visible, but an unassessed scan cannot issue a compliance PDF.
+  await expect(page.getByRole('button', { name: 'Report', exact: true })).toHaveCount(0);
+  const reportResponse = await page.request.get(new URL(`/education/scans/${scanId}/report`, apiUrl).toString());
+  expect(reportResponse.status()).toBe(409);
+  expect(await reportResponse.json()).toEqual({
+    detail: 'A compliance PDF is unavailable for an unassessed scan; partial findings remain in scan details.',
+  });
 
-  // Remediation cannot caption media; it must say so and offer no file.
+  // Remediation delivers the generated captions as a separate file flagged for review.
+  // Their structure is checked against the transcription; their accuracy is not.
   await page.getByRole('link', { name: 'Open Remediation Review' }).click();
   await page.getByRole('button', { name: 'Start Remediation' }).click();
-  await expect(page.getByText('Manual review required')).toBeVisible({ timeout: 180_000 });
-  await expect(page.getByRole('button', { name: /Download/ })).toHaveCount(0);
-  await assertNoBlockingViolations(page, 'media-remediation-unsupported', testInfo);
-  const job = await apiGet<{ status: string; download_available: boolean; artifact_id: string | null; fixed_count: number }>(
-    page.request,
-    `/education/scans/${scanId}/remediation/latest`,
-  );
-  expect(job.status).toBe('failed');
-  expect(job.download_available).toBe(false);
-  expect(job.artifact_id).toBeNull();
-  expect(job.fixed_count).toBe(0);
+  await expect(page.getByRole('heading', { name: 'Output needs review' })).toBeVisible({ timeout: 180_000 });
+  await assertNoBlockingViolations(page, 'media-remediation-captions', testInfo);
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download improved working file' }).click();
+  const download = await pending;
+  expect(download.suggestedFilename(), 'captions never take the media name').toBe('teaching-clip-captions.vtt');
+  const delivered = (await readFile(await download.path())).toString('utf8');
+  expect(delivered.startsWith('WEBVTT\n')).toBe(true);
+  const deliveredSpeech = delivered
+    .split('\n')
+    .filter((line) => line && line !== 'WEBVTT' && !/^\d+$/.test(line) && !line.includes('-->'))
+    .join(' ');
+  expect(words(deliveredSpeech)).toEqual(words(spoken));
+  const job = await apiGet<{
+    status: string;
+    download_available: boolean;
+    artifact_id: string | null;
+    fixed_count: number;
+    human_review_required: boolean;
+  }>(page.request, `/education/scans/${scanId}/remediation/latest`);
+  expect(job.status).toBe('completed');
+  expect(job.download_available).toBe(true);
+  expect(job.artifact_id).not.toBeNull();
+  expect(job.fixed_count).toBe(1);
+  expect(job.human_review_required, 'generated captions always need human review').toBe(true);
+
+  await page.goto('/dashboard');
+  const recentRow = page.getByRole('table', { name: 'Recent scans' }).getByRole('row').filter({ hasText: 'teaching-clip.mp4' });
+  await expect(recentRow).toContainText('Unverified');
+  await expect(recentRow.getByRole('button', { name: 'View teaching-clip.mp4' })).toBeVisible();
+  await expect(recentRow.getByRole('button', { name: 'Remediate teaching-clip.mp4' })).toBeVisible();
+  await expect(recentRow.getByRole('button', { name: 'Download report for teaching-clip.mp4' })).toHaveCount(0);
+
+  await page.goto('/history');
+  const historyRow = page.getByRole('table', { name: /Scan history showing/ }).getByRole('row').filter({ hasText: 'teaching-clip.mp4' });
+  await expect(historyRow).toContainText('Unverified');
+  await expect(historyRow.getByRole('button', { name: 'View details for teaching-clip.mp4' })).toBeVisible();
+  await expect(historyRow.getByRole('button', { name: 'Open remediation review for teaching-clip.mp4' })).toBeVisible();
+  await expect(historyRow.getByRole('button', { name: 'Download PDF report for teaching-clip.mp4' })).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileCard = page.locator('.lg\\:hidden .card').filter({ hasText: 'teaching-clip.mp4' });
+  await expect(mobileCard).toContainText('Unverified');
+  await expect(mobileCard.getByRole('button', { name: 'View details for teaching-clip.mp4' })).toBeVisible();
+  await expect(mobileCard.getByRole('button', { name: 'Open remediation review for teaching-clip.mp4' })).toBeVisible();
+  await expect(mobileCard.getByRole('button', { name: 'Download report for teaching-clip.mp4' })).toHaveCount(0);
 });

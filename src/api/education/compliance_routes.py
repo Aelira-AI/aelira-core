@@ -249,7 +249,7 @@ async def get_compliance_trend(
         trend_points = [
             {
                 "date": dates[i] if i < len(dates) else None,
-                "avg_compliance_score": scores[i] if i < len(scores) else 0,
+                "avg_compliance_score": scores[i] if i < len(scores) else None,
                 "scan_count": scans[i] if i < len(scans) else 0,
             }
             for i in range(len(dates))

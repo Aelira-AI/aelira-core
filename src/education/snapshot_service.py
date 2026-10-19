@@ -24,15 +24,14 @@ import uuid
 
 from ..db.models import (
     Department,
-    Scan,
-    ScanResult,
-    ScanStatus,
     ComplianceSnapshot,
 )
 from .compliance_dashboard import ComplianceDashboard
 from .deadline_config import DeadlineService
 
 logger = logging.getLogger(__name__)
+
+CURRENT_STOCK_PROVENANCE = "current_document_stock_v1"
 
 
 @dataclass
@@ -122,6 +121,7 @@ class SnapshotService:
 
         # Update snapshot values
         snapshot.avg_compliance_score = stats.avg_compliance_score
+        snapshot.metric_provenance = CURRENT_STOCK_PROVENANCE
         snapshot.min_compliance_score = stats.min_compliance_score
         snapshot.max_compliance_score = stats.max_compliance_score
         snapshot.total_scans = stats.total_scans
@@ -177,9 +177,10 @@ class SnapshotService:
         db: Session, department_id: str, days: int = 30
     ) -> List[TrendPoint]:
         """
-        Get historical trend data from snapshots.
+        Read only snapshots captured from verified current document stock.
 
-        Falls back to computing from scans if no snapshots exist.
+        Historical rows without explicit provenance remain stored, but their
+        aggregates may include legacy video scores and cannot be trusted.
 
         Args:
             db: Database session
@@ -192,127 +193,31 @@ class SnapshotService:
         logger.info("Getting department historical trend")
 
         cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-        # Try to get from snapshots first
         snapshots = (
             db.query(ComplianceSnapshot)
             .filter(
                 and_(
                     ComplianceSnapshot.department_id == department_id,
                     ComplianceSnapshot.snapshot_date >= cutoff_date,
+                    ComplianceSnapshot.metric_provenance == CURRENT_STOCK_PROVENANCE,
                 )
             )
             .order_by(ComplianceSnapshot.snapshot_date.asc())
             .all()
         )
-
-        if snapshots:
-            logger.info(f"Found {len(snapshots)} snapshots")
-            return [
-                TrendPoint(
-                    date=s.snapshot_date.date().isoformat(),
-                    avg_compliance_score=s.avg_compliance_score,
-                    scan_count=s.total_scans,
-                    total_issues=s.total_issues,
-                    files_compliant=s.files_compliant,
-                    files_needs_work=s.files_needs_work,
-                    files_critical=s.files_critical,
-                )
-                for s in snapshots
-            ]
-
-        # Fallback: Compute from scans (slower but works without snapshots)
-        logger.info("No snapshots found, computing from scans")
-        return SnapshotService._compute_trend_from_scans(db, department_id, days)
-
-    @staticmethod
-    def _compute_trend_from_scans(
-        db: Session, department_id: str, days: int
-    ) -> List[TrendPoint]:
-        """
-        Compute trend data directly from scans table.
-
-        Used as fallback when no snapshots exist.
-        """
-        from collections import defaultdict
-
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-        # Get all scans in period
-        scans = (
-            db.query(Scan)
-            .filter(
-                and_(
-                    Scan.department_id == department_id,
-                    Scan.created_at >= cutoff_date,
-                    Scan.status == ScanStatus.COMPLETED,
-                )
+        return [
+            TrendPoint(
+                date=snapshot.snapshot_date.date().isoformat(),
+                avg_compliance_score=snapshot.avg_compliance_score,
+                scan_count=snapshot.total_scans,
+                total_issues=snapshot.total_issues,
+                files_compliant=snapshot.files_compliant,
+                files_needs_work=snapshot.files_needs_work,
+                files_critical=snapshot.files_critical,
             )
-            .all()
-        )
-
-        if not scans:
-            return []
-
-        # Get results
-        scan_ids = [s.id for s in scans]
-        results = db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
-        results_by_scan = {r.scan_id: r for r in results}
-
-        # Group by date
-        data_by_date = defaultdict(
-            lambda: {
-                "scores": [],
-                "issues": 0,
-                "compliant": 0,
-                "needs_work": 0,
-                "critical": 0,
-            }
-        )
-
-        for scan in scans:
-            date_key = scan.created_at.date().isoformat()
-            result = results_by_scan.get(scan.id)
-
-            if result and result.compliance_score is not None:
-                data_by_date[date_key]["scores"].append(result.compliance_score)
-                data_by_date[date_key]["issues"] += (
-                    result.critical_issues
-                    + result.high_issues
-                    + result.medium_issues
-                    + result.low_issues
-                )
-
-                if result.compliance_score >= 90:
-                    data_by_date[date_key]["compliant"] += 1
-                elif result.compliance_score >= 70:
-                    data_by_date[date_key]["needs_work"] += 1
-                else:
-                    data_by_date[date_key]["critical"] += 1
-
-        # Convert to TrendPoints
-        trend_points = []
-        for date_str in sorted(data_by_date.keys()):
-            data = data_by_date[date_str]
-            avg_score = (
-                sum(data["scores"]) / len(data["scores"]) if data["scores"] else None
-            )
-
-            trend_points.append(
-                TrendPoint(
-                    date=date_str,
-                    avg_compliance_score=(
-                        round(avg_score, 2) if avg_score is not None else None
-                    ),
-                    scan_count=len(data["scores"]),
-                    total_issues=data["issues"],
-                    files_compliant=data["compliant"],
-                    files_needs_work=data["needs_work"],
-                    files_critical=data["critical"],
-                )
-            )
-
-        return trend_points
+            for snapshot in snapshots
+            if snapshot.metric_provenance == CURRENT_STOCK_PROVENANCE
+        ]
 
     @staticmethod
     def analyze_trend(
@@ -335,43 +240,34 @@ class SnapshotService:
         """
         now = datetime.utcnow()
 
-        # Get current period data
         current_start = now - timedelta(days=current_period_days)
-        current_snapshots = (
-            db.query(ComplianceSnapshot)
-            .filter(
-                and_(
-                    ComplianceSnapshot.department_id == department_id,
-                    ComplianceSnapshot.snapshot_date >= current_start,
-                )
-            )
-            .all()
-        )
-
-        # Get previous period data
         previous_start = current_start - timedelta(days=comparison_period_days)
-        previous_snapshots = (
-            db.query(ComplianceSnapshot)
-            .filter(
-                and_(
-                    ComplianceSnapshot.department_id == department_id,
-                    ComplianceSnapshot.snapshot_date >= previous_start,
-                    ComplianceSnapshot.snapshot_date < current_start,
-                )
-            )
-            .all()
+        points = SnapshotService.get_historical_trend(
+            db, department_id, current_period_days + comparison_period_days
         )
+        current_points = [
+            point
+            for point in points
+            if date.fromisoformat(point.date) >= current_start.date()
+        ]
+        previous_points = [
+            point
+            for point in points
+            if previous_start.date()
+            <= date.fromisoformat(point.date)
+            < current_start.date()
+        ]
 
         # Calculate averages
         current_scores = [
-            s.avg_compliance_score
-            for s in current_snapshots
-            if s.avg_compliance_score is not None
+            point.avg_compliance_score
+            for point in current_points
+            if point.avg_compliance_score is not None
         ]
         previous_scores = [
-            s.avg_compliance_score
-            for s in previous_snapshots
-            if s.avg_compliance_score is not None
+            point.avg_compliance_score
+            for point in previous_points
+            if point.avg_compliance_score is not None
         ]
 
         current_avg = (
@@ -381,8 +277,8 @@ class SnapshotService:
             sum(previous_scores) / len(previous_scores) if previous_scores else None
         )
 
-        current_issues = sum(s.total_issues for s in current_snapshots)
-        previous_issues = sum(s.total_issues for s in previous_snapshots)
+        current_issues = sum(point.total_issues for point in current_points)
+        previous_issues = sum(point.total_issues for point in previous_points)
 
         # Calculate changes
         score_change = (

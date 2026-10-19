@@ -1,18 +1,20 @@
 """Tenant and authority boundaries for department-wide analytics."""
 
 import asyncio
+import csv
 from io import BytesIO
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import zipfile
+from openpyxl import load_workbook
 
 import pytest
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
-from sqlalchemy import CheckConstraint, MetaData, create_engine
+from sqlalchemy import CheckConstraint, MetaData, create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from pypdf import PdfReader
@@ -38,6 +40,7 @@ from src.db.models import (
     UserRole,
 )
 from src.education.accessibility_evidence_report import AccessibilityEvidenceReport
+from src.education.issue_tracking_service import IssueTrackingService
 
 DEPARTMENT = "department-one"
 OTHER_DEPARTMENT = "department-two"
@@ -533,6 +536,192 @@ def test_evidence_snapshot_is_tenant_bounded_and_not_a_conformance_decision(tena
     assert report["verification"]["status"] == "automated_evidence_only"
     assert "Other University" not in str(report)
     assert "missing_label" not in str(report)
+
+
+def test_legacy_media_flash_is_absent_from_evidence_and_all_exports(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    caption = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    retired = {
+        "rule": "WCAG 2.3.1",
+        "severity": "critical",
+        "message": "Dangerous flashing content detected (4.0 Hz)",
+        "timestamps": [1.0],
+    }
+    tenant_db.add(
+        Scan(
+            id="legacy-video",
+            scan_type=ScanType.MULTIMEDIA,
+            status=ScanStatus.COMPLETED,
+            file_name="lecture.mp4",
+            user_id="user-one",
+            department_id=DEPARTMENT,
+        )
+    )
+    tenant_db.flush()
+    tenant_db.add(
+        ScanResult(
+            id="legacy-video-result",
+            scan_id="legacy-video",
+            compliance_score=100,
+            critical_issues=2,
+            high_issues=0,
+            medium_issues=0,
+            low_issues=0,
+            issues=[caption, retired],
+            structure={
+                "media_type": "video",
+                "flashing_analysis": {"severity": "dangerous"},
+            },
+        )
+    )
+    tenant_db.add_all(
+        [
+            IssueTracking(
+                id="legacy-ambiguous-tracker",
+                scan_id="legacy-video",
+                department_id=DEPARTMENT,
+                issue_hash=IssueTrackingService.generate_issue_hash(
+                    "legacy-video", "unknown", "No description"
+                ),
+                issue_type="unknown",
+                description="No description",
+                severity=IssuePriority.CRITICAL,
+                status=IssueStatus.OPEN,
+            ),
+            IssueTracking(
+                id="human-media-tracker",
+                scan_id="legacy-video",
+                department_id=DEPARTMENT,
+                issue_hash="independent-human-finding",
+                issue_type="human_review",
+                description="Human observed a separate photosensitivity concern",
+                wcag_criterion="2.3.1",
+                severity=IssuePriority.HIGH,
+                status=IssueStatus.OPEN,
+            ),
+        ]
+    )
+    tenant_db.commit()
+
+    report = AccessibilityEvidenceReport.collect(tenant_db, DEPARTMENT)
+    assert report["score"]["average"] == 95
+    assert report["unresolved_findings"]["by_severity"]["critical"] == 1
+    assert report["unresolved_findings"]["total"] == 3
+    assert report["unresolved_findings"]["by_status"]["OPEN"] == 3
+    assert any(
+        "Ambiguous historical media tracker rows were excluded" in limitation
+        for limitation in report["limitations"]
+    )
+    assert tenant_db.get(IssueTracking, "legacy-ambiguous-tracker") is not None
+    assert tenant_db.get(IssueTracking, "human-media-tracker") is not None
+    assert "Dangerous flashing" not in str(report)
+
+    select_count = 0
+
+    def count_select(_connection, _cursor, statement, _parameters, _context, _many):
+        nonlocal select_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_count += 1
+
+    event.listen(tenant_db.bind, "before_cursor_execute", count_select)
+    try:
+        IssueTrackingService.get_department_issues(tenant_db, DEPARTMENT)
+        listing_queries = select_count
+        IssueTrackingService.get_issue_stats(tenant_db, DEPARTMENT)
+        stats_queries = select_count - listing_queries
+    finally:
+        event.remove(tenant_db.bind, "before_cursor_execute", count_select)
+    assert listing_queries <= 3
+    assert stats_queries <= 5
+
+    app.dependency_overrides[get_db_dependency] = lambda: tenant_db
+    app.dependency_overrides[get_authenticated_principal] = lambda: _principal(
+        UserRole.ADMIN
+    )
+    try:
+        client = TestClient(app)
+        listed = client.get(f"/analytics/issues/{DEPARTMENT}")
+        second_page = client.get(
+            f"/analytics/issues/{DEPARTMENT}", params={"limit": 1, "offset": 2}
+        )
+        exhausted_page = client.get(
+            f"/analytics/issues/{DEPARTMENT}", params={"limit": 1, "offset": 3}
+        )
+        issue_stats = client.get(f"/analytics/issues/{DEPARTMENT}/stats")
+        critical_only = client.get(
+            f"/analytics/issues/{DEPARTMENT}", params={"severity": "critical"}
+        )
+        exported_csv = client.get(f"/analytics/export/{DEPARTMENT}/csv")
+        with patch(
+            "src.education.compliance_dashboard.ComplianceDashboard.get_department_compliance",
+            return_value=SimpleNamespace(
+                total_scans=2,
+                total_files_scanned=1,
+                avg_compliance_score=95,
+                total_critical=1,
+                total_high=1,
+                total_medium=1,
+                total_low=0,
+            ),
+        ):
+            exported_excel = client.get(f"/analytics/export/{DEPARTMENT}/excel")
+        exported_bulk = client.get(
+            f"/analytics/export/{DEPARTMENT}/bulk",
+            params={"include_pdfs": "false", "include_certificate": "false"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db_dependency, None)
+        app.dependency_overrides.pop(get_authenticated_principal, None)
+
+    assert [
+        listed.status_code,
+        second_page.status_code,
+        exhausted_page.status_code,
+        issue_stats.status_code,
+        critical_only.status_code,
+        exported_csv.status_code,
+        exported_excel.status_code,
+        exported_bulk.status_code,
+    ] == [200] * 8
+    active_ids = {issue["id"] for issue in listed.json()["issues"]}
+    assert "legacy-ambiguous-tracker" not in active_ids
+    assert "human-media-tracker" in active_ids
+    assert len(active_ids) == 3
+    assert second_page.json()["count"] == 1
+    assert second_page.json()["issues"][0]["id"] in active_ids
+    assert exhausted_page.json()["count"] == 0
+    assert issue_stats.json()["stats"]["total_issues"] == 3
+    assert issue_stats.json()["stats"]["open_issues"] == 3
+    assert critical_only.json()["count"] == 0
+    csv_rows = list(csv.reader(exported_csv.text.splitlines()))
+    csv_video = next(row for row in csv_rows if row[0] == "legacy-video")
+    assert csv_video[5] == "Not assessed"
+    assert csv_video[6] == csv_video[10] == "1"
+    workbook = load_workbook(BytesIO(exported_excel.content), read_only=True)
+    excel_video = next(
+        row for row in workbook["All Scans"].values if row[0] == "legacy-video"
+    )
+    assert excel_video[5] == "Not assessed"
+    assert excel_video[6] == excel_video[10] == 1
+    issue_breakdown = {
+        row[0]: row[1]
+        for row in workbook["Issues Breakdown"].values
+        if isinstance(row[0], str)
+    }
+    assert issue_breakdown["Total Issues"] == 3
+    assert issue_breakdown["Open"] == 3
+    with zipfile.ZipFile(BytesIO(exported_bulk.content)) as archive:
+        bulk_rows = list(csv.reader(archive.read("summary.csv").decode().splitlines()))
+    bulk_video = next(row for row in bulk_rows if row[0] == "legacy-video")
+    assert bulk_video[5] == "Not assessed"
+    assert bulk_video[6] == bulk_video[10] == "1"
+    assert tenant_db.query(ScanResult).filter_by(
+        id="legacy-video-result"
+    ).one().issues == [caption, retired]
 
 
 def test_pending_human_review_blocks_recorded_review_status(tenant_db):

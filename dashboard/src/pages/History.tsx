@@ -319,18 +319,20 @@ export function History(): React.ReactElement {
                     >
                       <Eye className="w-4 h-4" aria-hidden="true" />
                     </button>
-                    <button
-                      onClick={() => handleDownloadReport(scan)}
-                      disabled={downloadingReport === scan.id}
-                      className="p-2 text-tertiary hover:text-accent transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
-                      aria-label={`Download report for ${scan.filename}`}
-                    >
-                      {downloadingReport === scan.id ? (
-                        <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <Download className="w-4 h-4" aria-hidden="true" />
-                      )}
-                    </button>
+                    {scan.compliance_score != null && (
+                      <button
+                        onClick={() => handleDownloadReport(scan)}
+                        disabled={downloadingReport === scan.id}
+                        className="p-2 text-tertiary hover:text-accent transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
+                        aria-label={`Download report for ${scan.filename}`}
+                      >
+                        {downloadingReport === scan.id ? (
+                          <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Download className="w-4 h-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    )}
                     <button
                       onClick={() => navigate(`/remediate/${scan.id}`)}
                       className="p-2 text-tertiary hover:text-[var(--content-success)] transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
@@ -423,18 +425,20 @@ export function History(): React.ReactElement {
                           >
                             <Eye className="w-5 h-5" aria-hidden="true" />
                           </button>
-                          <button
-                            onClick={() => handleDownloadReport(scan)}
-                            disabled={downloadingReport === scan.id}
-                            className="p-2 text-tertiary hover:text-accent transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
-                            aria-label={`Download PDF report for ${scan.filename}`}
-                          >
-                            {downloadingReport === scan.id ? (
-                              <Loader className="w-5 h-5 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <Download className="w-5 h-5" aria-hidden="true" />
-                            )}
-                          </button>
+                          {scan.compliance_score != null && (
+                            <button
+                              onClick={() => handleDownloadReport(scan)}
+                              disabled={downloadingReport === scan.id}
+                              className="p-2 text-tertiary hover:text-accent transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
+                              aria-label={`Download PDF report for ${scan.filename}`}
+                            >
+                              {downloadingReport === scan.id ? (
+                                <Loader className="w-5 h-5 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Download className="w-5 h-5" aria-hidden="true" />
+                              )}
+                            </button>
+                          )}
                           <button
                             onClick={() => navigate(`/remediate/${scan.id}`)}
                             className="p-2 text-tertiary hover:text-[var(--content-success)] transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"

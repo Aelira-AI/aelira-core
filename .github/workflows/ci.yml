@@ -1110,6 +1110,7 @@ jobs:
         id: main-tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          TEST_MEDIA_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test

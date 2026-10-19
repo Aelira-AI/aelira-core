@@ -81,9 +81,24 @@ async def test_diff_does_not_convert_legacy_perfect_score_into_verified_fixes():
         remediated_issues_remaining=None,
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
-        issues=[{"id": "image-alt"}, {"id": "label"}]
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="dept-1",
+        document_source="cloud_file",
+        document_id=cloud_file.id,
+        scan_type="WEBSITE",
     )
+    scan_result = SimpleNamespace(
+        issues=[
+            {"id": "image-alt", "severity": "medium"},
+            {"id": "label", "severity": "medium"},
+        ],
+        critical_issues=0,
+        high_issues=0,
+        medium_issues=2,
+        low_issues=0,
+    )
+    db.query.return_value.filter.return_value.first.side_effect = [scan, scan_result]
     with patch(
         "src.api.brightspace_routes._get_authorized_cloud_file_or_404",
         return_value=cloud_file,
@@ -91,6 +106,7 @@ async def test_diff_does_not_convert_legacy_perfect_score_into_verified_fixes():
         result = await get_content_diff(cloud_file.id, _principal(), db)
     assert result["issues_fixed"] == 0
     assert result["issues_remaining"] == 2
+    assert result["scan_id"] == scan.id
 
 
 def test_artifact_backed_document_is_approval_eligible_without_html_body():

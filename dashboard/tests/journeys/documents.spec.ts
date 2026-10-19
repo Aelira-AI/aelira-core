@@ -25,7 +25,7 @@ interface Upload {
 async function scanThroughTheUi(
   page: Page,
   testInfo: TestInfo,
-  options: { card: RegExp; file: string; name: string; keyboard: boolean },
+  options: { card: RegExp; file: string; name: string; keyboard: boolean; verifyReportDownload?: boolean },
 ): Promise<Upload> {
   const { card, file, name, keyboard } = options;
   await page.goto('/upload');
@@ -48,6 +48,13 @@ async function scanThroughTheUi(
   await assertNoBlockingViolations(page, `upload-file-chosen-${name}`, testInfo);
   await press(page.getByRole('button', { name: /^Scan 1 file/ }));
   await expect(page.getByText(`${name} scan complete`, { exact: true })).toBeVisible({ timeout: 120_000 });
+  if (options.verifyReportDownload) {
+    await expect(page.getByRole('button', { name: 'Download Report' })).toBeVisible();
+    const pendingReport = page.waitForEvent('download');
+    await press(page.getByRole('button', { name: 'Download Report' }));
+    const report = await pendingReport;
+    expect((await readFile(await report.path())).subarray(0, 4).toString()).toBe('%PDF');
+  }
   await assertNoBlockingViolations(page, `upload-scan-complete-${name}`, testInfo);
   await press(page.getByRole('link', { name: 'View Full Report' }));
   await expect(page.getByRole('heading', { name })).toBeVisible();
@@ -144,11 +151,25 @@ test.describe('document journeys', () => {
       file: source,
       name: 'metadata.pdf',
       keyboard: true,
+      verifyReportDownload: true,
     });
     const scanned = await findingsShownInReport(page, testInfo, upload.scanId, 'metadata.pdf');
     expect(scanned.issues.map(issueText)).toEqual(
       expect.arrayContaining([expect.stringMatching(/title not set/i), expect.stringMatching(/language not set/i)]),
     );
+
+    // An assessed scan still offers a compliance PDF through the keyboard-accessible Report action.
+    expect(scanned.compliance_score).not.toBeNull();
+    const reportPending = page.waitForEvent('download');
+    await resetFocus(page);
+    await pressWithKeyboard(page, page.getByRole('button', { name: 'Report', exact: true }));
+    const report = await reportPending;
+    const reportDirectory = resolve(downloads, upload.scanId);
+    await mkdir(reportDirectory, { recursive: true });
+    const reportPath = resolve(reportDirectory, 'metadata-scan-report.pdf');
+    await report.saveAs(reportPath);
+    expect((await readFile(reportPath)).subarray(0, 4).toString()).toBe('%PDF');
+    expect(Number((await pdfInfo(reportPath)).Pages)).toBeGreaterThan(0);
 
     await remediateInTheUi(page, testInfo, upload.scanId, true);
     const saved = await downloadWorkingFile(page, 'remediated-metadata.pdf', true);
@@ -169,6 +190,20 @@ test.describe('document journeys', () => {
     expect(rescan.compliance_score).toBe(job.remediated_score);
     expect(rescan.issues.length).toBe(job.remaining_count);
     expect(rescan.issues.map(issueText).join(' ')).not.toMatch(/title not set|language not set/i);
+
+    await page.goto('/dashboard');
+    const recentRow = page.getByRole('table', { name: 'Recent scans' }).getByRole('row').filter({ has: page.getByText('metadata.pdf', { exact: true }) });
+    await expect(recentRow.getByRole('button', { name: 'Download report for metadata.pdf' })).toBeVisible();
+    const dashboardReportPending = page.waitForEvent('download');
+    await pressWithKeyboard(page, recentRow.getByRole('button', { name: 'Download report for metadata.pdf' }));
+    expect((await readFile(await (await dashboardReportPending).path())).subarray(0, 4).toString()).toBe('%PDF');
+
+    await page.goto('/history');
+    const historyRow = page.getByRole('table', { name: /Scan history showing/ }).getByRole('row').filter({ has: page.getByText('metadata.pdf', { exact: true }) });
+    await expect(historyRow.getByRole('button', { name: 'Download PDF report for metadata.pdf' })).toBeVisible();
+    const historyReportPending = page.waitForEvent('download');
+    await pressWithKeyboard(page, historyRow.getByRole('button', { name: 'Download PDF report for metadata.pdf' }));
+    expect((await readFile(await (await historyReportPending).path())).subarray(0, 4).toString()).toBe('%PDF');
   });
 
   test('DOCX: scan, issues, remediation, review and approval survive a reload, same bytes', async ({ page }, testInfo) => {

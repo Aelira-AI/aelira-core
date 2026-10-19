@@ -4,21 +4,22 @@ Multimedia Accessibility Processor
 This module provides functionality to:
 1. Transcribe video/audio files using Whisper (via Ollama or OpenAI)
 2. Generate WebVTT/SRT caption files with timestamps
-3. Check multimedia WCAG 2.1 compliance
+3. Record source caption findings and an explicit partial video assessment
 4. Extract audio from video files for processing
 5. Generate AI-powered audio descriptions for visual content (WCAG 1.2.3, 1.2.5)
-6. Detect flashing content that could cause seizures (WCAG 2.3.1)
+6. Record that whole-video flashing safety is unassessed (WCAG 2.3.1)
 7. Enhanced captions with speaker identification and sound effects
 8. Full transcript generation combining audio and visual descriptions
 """
 
-from typing import List, Dict, Optional, Tuple
-from pydantic import BaseModel
+from typing import List, Dict, Literal, Optional, Tuple
+from pydantic import BaseModel, model_validator
 import subprocess
 import tempfile
 import os
 import re
 import logging
+import math
 from datetime import timedelta
 
 # Import speaker diarization module
@@ -62,19 +63,45 @@ class AudioDescription(BaseModel):
 
 
 class FlashingContentResult(BaseModel):
-    """Result of flashing content analysis for seizure safety (WCAG 2.3.1)"""
+    """Flashing assessment state. Unknown measurements must stay unknown."""
 
-    has_flashing: bool
-    flash_count: int
-    max_flash_frequency: float  # Hz
-    timestamps: List[float]  # Timestamps where flashing detected
-    # WCAG 2.3.1 Red Flash Threshold - separate detection for saturated red
-    red_flash_detected: bool = False  # True if saturated red flashing found
-    red_flash_count: int = 0  # Number of red flash transitions
-    red_flash_timestamps: List[float] = []  # Timestamps of red flash events
+    state: Literal["unassessed"] = "unassessed"
+    reason: Literal["detector_unavailable", "disabled", "analysis_failed"] = (
+        "detector_unavailable"
+    )
+    version: Literal["unassessed-v1"] = "unassessed-v1"
+    has_flashing: Optional[bool] = None
+    flash_count: Optional[int] = None
+    max_flash_frequency: Optional[float] = None
+    timestamps: Optional[List[float]] = None
+    # No red-flash measurements are available either.
+    red_flash_detected: Optional[bool] = None
+    red_flash_count: Optional[int] = None
+    red_flash_timestamps: Optional[List[float]] = None
     red_saturation_peak: Optional[float] = None  # Maximum red saturation (0-1)
-    severity: str  # "safe", "warning", "dangerous"
-    recommendation: str
+    severity: Optional[str] = None
+    recommendation: Literal["A whole-video flashing assessment is required."] = (
+        "A whole-video flashing assessment is required."
+    )
+
+    @model_validator(mode="after")
+    def reject_unmeasured_claims(self):
+        if any(
+            getattr(self, field) is not None
+            for field in (
+                "has_flashing",
+                "flash_count",
+                "max_flash_frequency",
+                "timestamps",
+                "red_flash_detected",
+                "red_flash_count",
+                "red_flash_timestamps",
+                "red_saturation_peak",
+                "severity",
+            )
+        ):
+            raise ValueError("Unassessed flashing cannot contain measurements")
+        return self
 
 
 class MultimediaProcessingResult(BaseModel):
@@ -82,7 +109,7 @@ class MultimediaProcessingResult(BaseModel):
 
     file_path: str
     file_name: str
-    media_type: str  # "video" or "audio"
+    media_type: str  # "video", "audio", or "unknown" when probing fails
     duration: float  # Seconds
     has_captions: bool
     transcription: Optional[List[TranscriptionSegment]] = None
@@ -93,14 +120,14 @@ class MultimediaProcessingResult(BaseModel):
     audio_descriptions_audio_path: Optional[str] = (
         None  # Path to combined spoken audio descriptions file
     )
-    flashing_analysis: Optional[FlashingContentResult] = None  # Seizure safety check
+    flashing_analysis: Optional[FlashingContentResult] = None  # Assessment state
     full_transcript: Optional[str] = (
         None  # Combined transcript with visual descriptions
     )
     remediated_video_path: Optional[str] = (
         None  # Path to fully accessible video with embedded subtitles + audio descriptions
     )
-    compliance_score: float
+    compliance_score: Optional[float]
     issues: List[Dict]
 
 
@@ -203,7 +230,7 @@ class MultimediaProcessor:
             generate_captions: Whether to generate captions/transcription
             generate_audio_descriptions: Whether to generate AI audio descriptions (WCAG 1.2.3, 1.2.5)
             generate_spoken_descriptions: Whether to convert text descriptions to spoken audio (TTS)
-            detect_flashing: Whether to check for seizure-triggering content (WCAG 2.3.1)
+            detect_flashing: Retained option; records unavailable or disabled state
             enhance_captions: Whether to add speaker ID and sound effect descriptions
             generate_transcript: Whether to generate full text transcript (WCAG 1.2.8)
 
@@ -262,14 +289,18 @@ class MultimediaProcessor:
                 except Exception as e:
                     logger.error(f"[MultimediaProcessor] Transcription failed: {e}")
 
-        # 4. Detect flashing content (video only) - WCAG 2.3.1
+        # 4. Record unavailable flashing assessment (video only) - WCAG 2.3.1
         flashing_analysis = None
-        if detect_flashing and media_type == "video":
-            report_progress(4, "Detecting seizure-triggering content (WCAG 2.3.1)...")
-            try:
-                flashing_analysis = self._detect_flashing_content(file_path, duration)
-            except Exception as e:
-                logger.error(f"[MultimediaProcessor] Flashing detection failed: {e}")
+        if media_type != "audio":
+            # The former first-30-seconds/frame-type heuristic did not measure
+            # luminance and could not establish whole-video WCAG 2.3.1 safety.
+            flashing_analysis = FlashingContentResult(
+                reason=(
+                    "analysis_failed"
+                    if media_type == "unknown"
+                    else "detector_unavailable" if detect_flashing else "disabled"
+                )
+            )
 
         # 5. Generate AI audio descriptions (video only) - WCAG 1.2.3, 1.2.5
         audio_descriptions = None
@@ -417,29 +448,45 @@ class MultimediaProcessor:
                 local_media_command(cmd), capture_output=True, text=True, timeout=30
             )
 
-            # Parse output
-            output = result.stdout
+            if result.returncode != 0 or not isinstance(result.stdout, str):
+                return "unknown", 0.0
+
+            stream_types: set[str] = set()
             duration = 0.0
-            has_video = "codec_type=video" in output
+            for line in result.stdout.splitlines():
+                if not line:
+                    continue
+                key, separator, value = line.partition("=")
+                if not separator:
+                    return "unknown", 0.0
+                if key == "codec_type" and value in {
+                    "audio",
+                    "video",
+                    "subtitle",
+                    "data",
+                    "attachment",
+                }:
+                    stream_types.add(value)
+                elif key == "duration":
+                    try:
+                        parsed = float(value)
+                    except ValueError:
+                        return "unknown", 0.0
+                    if not math.isfinite(parsed) or parsed < 0:
+                        return "unknown", 0.0
+                    duration = parsed
+                else:
+                    return "unknown", 0.0
 
-            # Extract duration
-            duration_match = re.search(r"duration=([\d.]+)", output)
-            if duration_match:
-                duration = float(duration_match.group(1))
+            if "video" in stream_types:
+                return "video", duration
+            if stream_types == {"audio"}:
+                return "audio", duration
+            return "unknown", duration
 
-            # Determine media type
-            media_type = "video" if has_video else "audio"
-
-            return media_type, duration
-
-        except Exception as e:
-            print(f"[MultimediaProcessor] Failed to get media info: {e}")
-            # Fallback: guess from extension
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext in [".mp4", ".avi", ".mov", ".mkv", ".webm"]:
-                return "video", 0.0
-            else:
-                return "audio", 0.0
+        except Exception as exc:
+            logger.warning("Media probe unavailable (%s)", type(exc).__name__)
+            return "unknown", 0.0
 
     def _check_existing_captions(self, video_path: str) -> bool:
         """
@@ -449,7 +496,10 @@ class MultimediaProcessor:
             video_path: Path to video file
 
         Returns:
-            True if captions found, False otherwise
+            True if subtitles found, False after a successful video-stream probe
+
+        Raises:
+            RuntimeError: Stream metadata could not establish caption presence
         """
         try:
             cmd = [
@@ -465,10 +515,23 @@ class MultimediaProcessor:
             result = subprocess.run(
                 local_media_command(cmd), capture_output=True, text=True, timeout=30
             )
-            return "codec_type=subtitle" in result.stdout
-        except Exception as e:
-            print(f"[MultimediaProcessor] Failed to check captions: {e}")
-            return False
+            if result.returncode != 0 or not isinstance(result.stdout, str):
+                raise ValueError("probe failed")
+            stream_types = []
+            for line in result.stdout.splitlines():
+                key, separator, value = line.partition("=")
+                if (
+                    not separator
+                    or key != "codec_type"
+                    or value not in {"audio", "video", "subtitle", "data", "attachment"}
+                ):
+                    raise ValueError("invalid stream metadata")
+                stream_types.append(value)
+            if "video" not in stream_types:
+                raise ValueError("video stream not observed")
+            return "subtitle" in stream_types
+        except Exception:
+            raise RuntimeError("Caption stream inspection unavailable") from None
 
     def _extract_audio(self, video_path: str) -> Optional[str]:
         """
@@ -1198,9 +1261,9 @@ class MultimediaProcessor:
         transcription: Optional[List[TranscriptionSegment]],
         audio_descriptions: Optional[List[AudioDescription]] = None,
         flashing_analysis: Optional[FlashingContentResult] = None,
-    ) -> Tuple[float, List[Dict]]:
+    ) -> Tuple[Optional[float], List[Dict]]:
         """
-        Check WCAG 2.1/2.2 compliance for multimedia
+        Record observed multimedia source findings and score audio-only media
 
         Returns:
             (score, issues)
@@ -1209,7 +1272,7 @@ class MultimediaProcessor:
 
         # WCAG 1.2.1: Audio-only and Video-only (Prerecorded) - Level A
         # WCAG 1.2.2: Captions (Prerecorded) - Level A
-        if not has_captions:
+        if media_type != "unknown" and not has_captions:
             issues.append(
                 {
                     "severity": "critical",
@@ -1232,32 +1295,6 @@ class MultimediaProcessor:
                 }
             )
 
-        # WCAG 2.3.1: Three Flashes or Below Threshold - Level A (CRITICAL for seizure safety)
-        if flashing_analysis:
-            if flashing_analysis.severity == "dangerous":
-                issues.append(
-                    {
-                        "severity": "critical",
-                        "rule": "WCAG 2.3.1",
-                        "message": f"Dangerous flashing content detected ({flashing_analysis.max_flash_frequency:.1f} Hz)",
-                        "impact": "Can trigger seizures in people with photosensitive epilepsy",
-                        "recommendation": flashing_analysis.recommendation,
-                        "timestamps": flashing_analysis.timestamps[
-                            :5
-                        ],  # First 5 timestamps
-                    }
-                )
-            elif flashing_analysis.severity == "warning":
-                issues.append(
-                    {
-                        "severity": "high",
-                        "rule": "WCAG 2.3.1",
-                        "message": f"Potentially problematic flashing detected ({flashing_analysis.flash_count} flashes)",
-                        "impact": "May cause discomfort or trigger seizures in sensitive individuals",
-                        "recommendation": flashing_analysis.recommendation,
-                    }
-                )
-
         # Check caption quality if we have transcription
         if transcription:
             for segment in transcription:
@@ -1272,7 +1309,12 @@ class MultimediaProcessor:
                         }
                     )
 
-        # Calculate score
+        # Findings above are source observations. Flashing is unassessed, so a
+        # video cannot receive an overall accessibility score.
+        if media_type != "audio":
+            return None, issues
+
+        # Audio-only media has no flashing criterion.
         critical_count = len([i for i in issues if i["severity"] == "critical"])
         high_count = len([i for i in issues if i["severity"] == "high"])
         medium_count = len([i for i in issues if i["severity"] == "medium"])
@@ -1288,504 +1330,14 @@ class MultimediaProcessor:
         return max(0.0, float(score)), issues
 
     # =========================================================================
-    # NEW FEATURE: Flashing Content Detection (WCAG 2.3.1)
+    # Flashing assessment containment (WCAG 2.3.1)
     # =========================================================================
 
     def _detect_flashing_content(
         self, video_path: str, duration: float
     ) -> FlashingContentResult:
-        """
-        Detect flashing content that could trigger seizures (WCAG 2.3.1)
-
-        WCAG 2.3.1 requires that content does not contain anything that flashes
-        more than 3 times per second, OR the flashing is below the general flash
-        and red flash thresholds.
-
-        This method checks BOTH:
-        1. General flash threshold (luminance changes)
-        2. Red flash threshold (saturated red transitions) - MORE RESTRICTIVE
-
-        Args:
-            video_path: Path to video file
-            duration: Video duration in seconds
-
-        Returns:
-            FlashingContentResult with analysis
-        """
-        try:
-            # Extract frames for analysis (sample every 0.1 seconds for first 30 seconds)
-            sample_duration = min(duration, 30.0)  # Analyze first 30 seconds
-            frame_interval = 0.1  # 10 fps sampling
-
-            # Extract brightness values from frames
-            brightness_values = self._extract_frame_brightness(
-                video_path, sample_duration, frame_interval
-            )
-
-            if not brightness_values:
-                return FlashingContentResult(
-                    has_flashing=False,
-                    flash_count=0,
-                    max_flash_frequency=0.0,
-                    timestamps=[],
-                    red_flash_detected=False,
-                    red_flash_count=0,
-                    red_flash_timestamps=[],
-                    red_saturation_peak=None,
-                    severity="safe",
-                    recommendation="Unable to analyze video frames",
-                )
-
-            # Detect general flashes (significant brightness changes)
-            flashes, timestamps = self._analyze_brightness_changes(
-                brightness_values, frame_interval
-            )
-
-            # Calculate maximum flash frequency
-            max_frequency = self._calculate_max_flash_frequency(
-                timestamps, window_size=1.0  # 1-second sliding window
-            )
-
-            # WCAG 2.3.1 Red Flash Threshold Detection
-            # Saturated red flashing is particularly dangerous and has stricter limits
-            red_detected, red_count, red_timestamps, red_saturation = (
-                self._detect_red_flashes(video_path, sample_duration, frame_interval)
-            )
-
-            # Calculate red flash frequency if detected
-            red_flash_frequency = 0.0
-            if red_timestamps:
-                red_flash_frequency = self._calculate_max_flash_frequency(
-                    red_timestamps, window_size=1.0
-                )
-
-            # Determine severity based on both general and red flash thresholds
-            severity = "safe"
-            recommendation = (
-                "No accessibility concerns detected for photosensitive users."
-            )
-
-            # Red flash is MORE dangerous - check first
-            if red_detected and red_flash_frequency > 3.0:
-                severity = "dangerous"
-                recommendation = (
-                    "CRITICAL: This video contains RED FLASHING content exceeding 3 Hz. "
-                    "Saturated red flashing is particularly dangerous for photosensitive users. "
-                    "IMMEDIATELY add a prominent seizure warning, desaturate the red content, "
-                    "or provide an alternative version without red flashing."
-                )
-            elif red_detected and red_count > 5:
-                # Even moderate red flashing is concerning
-                if severity != "dangerous":
-                    severity = "dangerous" if red_flash_frequency > 2.0 else "warning"
-                recommendation = (
-                    "WARNING: This video contains saturated red flashing content. "
-                    "Red flashing poses elevated seizure risk. Consider adding a "
-                    "photosensitivity warning and desaturating red elements."
-                )
-            elif max_frequency > 3.0:
-                severity = "dangerous"
-                recommendation = (
-                    "CRITICAL: This video contains flashing content exceeding 3 Hz, "
-                    "which can trigger seizures. Add a seizure warning, reduce flash frequency, "
-                    "or provide an alternative version."
-                )
-            elif flashes > 10 or max_frequency > 2.0:
-                severity = "warning"
-                recommendation = (
-                    "This video contains frequent brightness changes. Consider adding "
-                    "a photosensitivity warning or reducing contrast in flashing sections."
-                )
-
-            return FlashingContentResult(
-                has_flashing=flashes > 0,
-                flash_count=flashes,
-                max_flash_frequency=max_frequency,
-                timestamps=timestamps,
-                red_flash_detected=red_detected,
-                red_flash_count=red_count,
-                red_flash_timestamps=red_timestamps,
-                red_saturation_peak=red_saturation,
-                severity=severity,
-                recommendation=recommendation,
-            )
-
-        except Exception as e:
-            logger.error(f"[MultimediaProcessor] Flashing detection failed: {e}")
-            return FlashingContentResult(
-                has_flashing=False,
-                flash_count=0,
-                max_flash_frequency=0.0,
-                timestamps=[],
-                red_flash_detected=False,
-                red_flash_count=0,
-                red_flash_timestamps=[],
-                red_saturation_peak=None,
-                severity="safe",
-                recommendation=f"Flashing analysis failed: {e}",
-            )
-
-    def _extract_frame_brightness(
-        self, video_path: str, duration: float, interval: float
-    ) -> List[Tuple[float, float]]:
-        """
-        Extract brightness values from video frames
-
-        Args:
-            video_path: Path to video file
-            duration: Duration to analyze
-            interval: Time between samples
-
-        Returns:
-            List of (timestamp, brightness) tuples
-        """
-        try:
-            # Use ffmpeg to extract frames and calculate brightness
-            # This is more efficient than extracting actual images
-
-            cmd = [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "frame=pkt_pts_time,pict_type",
-                "-of",
-                "csv=p=0",
-                "-read_intervals",
-                f"%+{duration}",
-                video_path,
-            ]
-
-            result = subprocess.run(
-                local_media_command(cmd), capture_output=True, text=True, timeout=60
-            )
-
-            if result.returncode != 0:
-                # Fallback: use simpler frame extraction
-                return self._extract_frame_brightness_simple(
-                    video_path, duration, interval
-                )
-
-            # Parse frame data
-            brightness_values = []
-            lines = result.stdout.strip().split("\n")
-
-            for line in lines:
-                parts = line.split(",")
-                if len(parts) >= 1 and parts[0]:
-                    try:
-                        timestamp = float(parts[0])
-                        if timestamp <= duration:
-                            # Estimate brightness from frame type (simplified)
-                            # I-frames typically have different characteristics
-                            frame_type = parts[1] if len(parts) > 1 else "P"
-                            brightness = 0.5 + (0.1 if frame_type == "I" else 0)
-                            brightness_values.append((timestamp, brightness))
-                    except (ValueError, IndexError):
-                        continue
-
-            return brightness_values
-
-        except Exception as e:
-            logger.warning(f"[MultimediaProcessor] Frame extraction failed: {e}")
-            return []
-
-    def _extract_frame_brightness_simple(
-        self, video_path: str, duration: float, interval: float
-    ) -> List[Tuple[float, float]]:
-        """
-        Simple brightness extraction using ffmpeg thumbnail filter
-
-        Creates temporary thumbnails and analyzes their brightness.
-        """
-        try:
-
-            # Use ffmpeg to get frame statistics
-            cmd = [
-                "ffmpeg",
-                "-i",
-                video_path,
-                "-vf",
-                f"fps=1/{interval},showinfo",
-                "-f",
-                "null",
-                "-",
-                "-t",
-                str(duration),
-            ]
-
-            result = subprocess.run(
-                local_media_command(cmd), capture_output=True, text=True, timeout=120
-            )
-
-            # Parse showinfo output for frame data
-            brightness_values = []
-            timestamp = 0.0
-
-            for line in result.stderr.split("\n"):
-                if "showinfo" in line and "n:" in line:
-                    # Extract frame number
-                    match = re.search(r"n:\s*(\d+)", line)
-                    if match:
-                        frame_num = int(match.group(1))
-                        timestamp = frame_num * interval
-
-                        # Estimate brightness from frame stats if available
-                        # Default to 0.5 (mid-brightness)
-                        brightness = 0.5
-                        brightness_values.append((timestamp, brightness))
-
-            return brightness_values
-
-        except Exception as e:
-            logger.warning(f"[MultimediaProcessor] Simple extraction failed: {e}")
-            return []
-
-    def _analyze_brightness_changes(
-        self, brightness_values: List[Tuple[float, float]], interval: float
-    ) -> Tuple[int, List[float]]:
-        """
-        Analyze brightness changes to detect flashes
-
-        A flash is defined as a rapid change in relative luminance
-        (increase then decrease or vice versa).
-
-        Args:
-            brightness_values: List of (timestamp, brightness) tuples
-            interval: Time between samples
-
-        Returns:
-            Tuple of (flash_count, flash_timestamps)
-        """
-        if len(brightness_values) < 3:
-            return 0, []
-
-        flashes = 0
-        timestamps = []
-        threshold = 0.1  # 10% brightness change threshold
-
-        for i in range(1, len(brightness_values) - 1):
-            prev_time, prev_bright = brightness_values[i - 1]
-            curr_time, curr_bright = brightness_values[i]
-            next_time, next_bright = brightness_values[i + 1]
-
-            # Check for flash pattern: up-down or down-up
-            diff1 = curr_bright - prev_bright
-            diff2 = next_bright - curr_bright
-
-            # Flash detected if direction changes significantly
-            if abs(diff1) > threshold and abs(diff2) > threshold:
-                if (diff1 > 0 and diff2 < 0) or (diff1 < 0 and diff2 > 0):
-                    flashes += 1
-                    timestamps.append(curr_time)
-
-        return flashes, timestamps
-
-    def _calculate_max_flash_frequency(
-        self, timestamps: List[float], window_size: float = 1.0
-    ) -> float:
-        """
-        Calculate maximum flash frequency using sliding window
-
-        Args:
-            timestamps: List of flash timestamps
-            window_size: Window size in seconds
-
-        Returns:
-            Maximum flashes per second (Hz)
-        """
-        if len(timestamps) < 2:
-            return 0.0
-
-        max_frequency = 0.0
-
-        for i, start_time in enumerate(timestamps):
-            # Count flashes within window
-            count = 0
-            for j in range(i, len(timestamps)):
-                if timestamps[j] - start_time <= window_size:
-                    count += 1
-                else:
-                    break
-
-            frequency = count / window_size
-            max_frequency = max(max_frequency, frequency)
-
-        return max_frequency
-
-    def _detect_red_flashes(
-        self, video_path: str, duration: float, interval: float = 0.1
-    ) -> Tuple[bool, int, List[float], Optional[float]]:
-        """
-        Detect saturated red flashing per WCAG 2.3.1 Red Flash Threshold.
-
-        A "red flash" is a pair of opposing transitions involving a saturated red.
-        WCAG defines saturated red as: R/(R+G+B) >= 0.8 when R > 128 (on 0-255 scale).
-
-        This is a separate and more restrictive threshold than general flashing
-        because saturated red is particularly likely to trigger photosensitive seizures.
-
-        Args:
-            video_path: Path to video file
-            duration: Duration to analyze (seconds)
-            interval: Time between frame samples (seconds)
-
-        Returns:
-            Tuple of (red_flash_detected, red_flash_count, timestamps, max_saturation)
-        """
-        try:
-            import tempfile
-            import os
-
-            # Create temp directory for frame extraction
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Extract frames using ffmpeg
-                sample_duration = min(duration, 30.0)  # First 30 seconds
-                output_pattern = os.path.join(temp_dir, "frame_%04d.png")
-
-                cmd = [
-                    "ffmpeg",
-                    "-i",
-                    video_path,
-                    "-t",
-                    str(sample_duration),
-                    "-vf",
-                    f"fps=1/{interval}",
-                    "-f",
-                    "image2",
-                    output_pattern,
-                    "-y",  # Overwrite
-                    "-loglevel",
-                    "error",
-                ]
-
-                result = subprocess.run(
-                    local_media_command(cmd), capture_output=True, timeout=120
-                )
-                if result.returncode != 0:
-                    logger.warning(
-                        f"[MultimediaProcessor] Frame extraction failed: {result.stderr.decode()}"
-                    )
-                    return False, 0, [], None
-
-                # Analyze frames for red saturation
-                frame_files = sorted(
-                    [f for f in os.listdir(temp_dir) if f.startswith("frame_")]
-                )
-
-                if len(frame_files) < 3:
-                    return False, 0, [], None
-
-                red_flash_count = 0
-                red_flash_timestamps = []
-                max_saturation = 0.0
-                prev_is_saturated_red = False
-
-                for i, frame_file in enumerate(frame_files):
-                    frame_path = os.path.join(temp_dir, frame_file)
-                    timestamp = i * interval
-
-                    # Calculate red saturation for this frame
-                    is_saturated, saturation = self._check_frame_red_saturation(
-                        frame_path
-                    )
-                    max_saturation = max(max_saturation, saturation)
-
-                    # Detect transition to/from saturated red
-                    if i > 0:
-                        if is_saturated != prev_is_saturated_red:
-                            # Transition detected - check if this forms a flash
-                            # A red flash requires two opposing transitions
-                            if is_saturated:
-                                # Transition TO saturated red - mark for potential flash
-                                pass
-                            else:
-                                # Transition FROM saturated red - complete flash
-                                red_flash_count += 1
-                                red_flash_timestamps.append(timestamp)
-
-                    prev_is_saturated_red = is_saturated
-
-                red_flash_detected = red_flash_count > 0
-                return (
-                    red_flash_detected,
-                    red_flash_count,
-                    red_flash_timestamps,
-                    max_saturation if max_saturation > 0 else None,
-                )
-
-        except Exception as e:
-            logger.error(f"[MultimediaProcessor] Red flash detection failed: {e}")
-            return False, 0, [], None
-
-    def _check_frame_red_saturation(self, frame_path: str) -> Tuple[bool, float]:
-        """
-        Check if a frame contains significant saturated red content.
-
-        Per WCAG 2.3.1, saturated red is defined as:
-        - R/(R+G+B) >= 0.8 (red dominates the color)
-        - R > 128 (on 0-255 scale, meaning reasonably bright red)
-
-        We check if more than 10% of the frame area meets this criteria.
-
-        Args:
-            frame_path: Path to frame image file
-
-        Returns:
-            Tuple of (is_saturated_red, average_red_saturation)
-        """
-        try:
-            from PIL import Image
-            import numpy as np
-
-            with Image.open(frame_path) as img:
-                # Convert to RGB if necessary (new name: ImageFile vs Image
-                # differ under Pillow 12.3 typing, so keep a separate var)
-                rgb_img: Image.Image = img.convert("RGB") if img.mode != "RGB" else img
-
-                # Convert to numpy array
-                pixels = np.array(rgb_img, dtype=np.float32)
-
-                # Extract RGB channels
-                r = pixels[:, :, 0]
-                g = pixels[:, :, 1]
-                b = pixels[:, :, 2]
-
-                # Calculate red saturation: R / (R + G + B)
-                # Add small epsilon to avoid division by zero
-                total = r + g + b + 1e-6
-                red_saturation = r / total
-
-                # Check WCAG criteria: R/(R+G+B) >= 0.8 AND R > 128
-                saturated_red_mask = (red_saturation >= 0.8) & (r > 128)
-
-                # Calculate percentage of pixels that are saturated red
-                saturated_red_percentage = (
-                    np.sum(saturated_red_mask) / saturated_red_mask.size
-                )
-
-                # Calculate average red saturation for the entire frame
-                avg_saturation = float(np.mean(red_saturation))
-
-                # Consider frame as having saturated red if >10% of pixels qualify
-                is_saturated_red = saturated_red_percentage > 0.10
-
-                return is_saturated_red, avg_saturation
-
-        except ImportError:
-            logger.warning(
-                "[MultimediaProcessor] PIL/numpy not available for red flash detection"
-            )
-            return False, 0.0
-        except Exception as e:
-            logger.warning(f"[MultimediaProcessor] Frame analysis failed: {e}")
-            return False, 0.0
-
-    # =========================================================================
-    # NEW FEATURE: AI Audio Descriptions (WCAG 1.2.3, 1.2.5)
-    # =========================================================================
+        """The previous sampled heuristic cannot establish flashing safety."""
+        return FlashingContentResult(reason="detector_unavailable")
 
     def _generate_audio_descriptions(
         self, video_path: str, duration: float

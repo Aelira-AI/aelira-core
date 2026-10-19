@@ -1101,7 +1101,10 @@ async def test_canvas_axe_failure_is_failed_without_score_or_raw_error(caplog):
 
 @pytest.mark.asyncio
 async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_score_zero():
-    from src.education.multimedia_processor import MultimediaProcessingResult
+    from src.education.multimedia_processor import (
+        FlashingContentResult,
+        MultimediaProcessingResult,
+    )
     from src.jobs.cloud_scan_job import CloudScanJob
 
     credential = SimpleNamespace(department_id="dept-1")
@@ -1123,8 +1126,9 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
         media_type="video",
         duration=1.0,
         has_captions=True,
-        compliance_score=91.0,
-        issues=[],
+        compliance_score=None,
+        flashing_analysis=FlashingContentResult(),
+        issues=[{"severity": "critical", "rule": "WCAG 1.2.2"}],
     )
     processor = MagicMock()
     processor.process_media.return_value = model
@@ -1139,8 +1143,54 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
             "/tmp/video.mp4", db
         )
     assert result["success"] is True
-    assert cloud_file.last_compliance_score == 91.0
+    assert cloud_file.last_compliance_score is None
     assert cloud_file.needs_rescan is False
+    saved_result = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "ScanResult"
+    )
+    assert saved_result.compliance_score is None
+    assert saved_result.issues == model.issues
+    assert saved_result.structure["flashing_assessment"]["state"] == "unassessed"
+
+    unknown_model = model.model_copy(
+        update={
+            "media_type": "unknown",
+            "issues": [],
+            "flashing_analysis": FlashingContentResult(reason="analysis_failed"),
+        }
+    )
+    processor.process_media.return_value = unknown_model
+    unknown_file = SimpleNamespace(**cloud_file.__dict__)
+    unknown_file.id = "unknown-1"
+    with (
+        patch(
+            "src.education.multimedia_processor.MultimediaProcessor",
+            return_value=processor,
+        ),
+        patch("src.jobs.email_alert_job.trigger_scan_alerts", new=AsyncMock()),
+    ):
+        unknown_result = await CloudScanJob(
+            credential, unknown_file, MagicMock()
+        )._scan_file("/tmp/video.mp4", db)
+    assert unknown_result["success"] is True
+    assert unknown_file.last_compliance_score is None
+    unknown_saved = [
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "ScanResult"
+    ][-1]
+    assert unknown_saved.structure["media_type"] == "unknown"
+    assert unknown_saved.structure["flashing_assessment"]["reason"] == "analysis_failed"
+
+    from src.jobs.cloud_scan_job import _normalize_processor_result
+
+    fabricated_unknown = _normalize_processor_result(
+        {"media_type": "unknown", "compliance_score": 80, "issues": []}
+    )
+    assert fabricated_unknown["success"] is False
+    assert fabricated_unknown["compliance_score"] is None
 
     failed_file = SimpleNamespace(**cloud_file.__dict__)
     failed_file.id = "failed-1"
@@ -1175,6 +1225,151 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
     assert failed_file.needs_rescan is True
     assert not any(
         type(c.args[0]).__name__ == "ScanResult" for c in db.add.call_args_list
+    )
+
+
+@pytest.mark.parametrize(
+    ("file_type", "expected_scan_type"),
+    [
+        ("mp4", "VIDEO"),
+        ("avi", "VIDEO"),
+        ("mov", "VIDEO"),
+        ("webm", "VIDEO"),
+        ("mp3", "VIDEO"),
+        ("wav", "VIDEO"),
+        ("ogg", "VIDEO"),
+        ("m4a", "MULTIMEDIA"),
+        ("flac", "MULTIMEDIA"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cloud_unassessed_media_keeps_media_scan_provenance_and_findings(
+    file_type, expected_scan_type
+):
+    from src.db.models import ScanStatus, ScanType
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    finding = {
+        "rule": "WCAG 1.2.2",
+        "severity": "critical",
+        "message": "Missing captions",
+    }
+    cloud_file = SimpleNamespace(
+        id=f"media-{file_type}",
+        file_type=file_type,
+        file_name=f"source.{file_type}",
+        file_size_bytes=10,
+        last_scan_id=None,
+        last_scanned_at=None,
+        last_compliance_score=None,
+        needs_rescan=True,
+    )
+    credential = SimpleNamespace(department_id="dept-1")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    processor = MagicMock()
+    processor.process_media.return_value = {
+        "success": True,
+        "media_type": "unknown",
+        "compliance_score": None,
+        "issues": [finding],
+        "flashing_analysis": {
+            "state": "unassessed",
+            "reason": "analysis_failed",
+            "version": "unassessed-v1",
+        },
+    }
+
+    with (
+        patch(
+            "src.education.multimedia_processor.MultimediaProcessor",
+            return_value=processor,
+        ),
+        patch("src.jobs.email_alert_job.trigger_scan_alerts", new=AsyncMock()),
+    ):
+        response = await CloudScanJob(credential, cloud_file, MagicMock())._scan_file(
+            f"/tmp/source.{file_type}", db
+        )
+
+    scan = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "Scan"
+    )
+    saved = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "ScanResult"
+    )
+    assert response["success"] is True
+    assert response["compliance_score"] is None
+    assert response["issues_found"] == 1
+    assert scan.status == ScanStatus.COMPLETED
+    assert scan.scan_type == ScanType[expected_scan_type]
+    assert saved.compliance_score is None
+    assert saved.issues == [finding]
+    assert saved.structure["flashing_assessment"]["state"] == "unassessed"
+    assert cloud_file.last_scan_id == scan.id
+    assert cloud_file.last_compliance_score is None
+
+
+@pytest.mark.parametrize(
+    ("file_type", "expected_scan_type"),
+    [
+        ("mp4", "VIDEO"),
+        ("avi", "VIDEO"),
+        ("mov", "VIDEO"),
+        ("webm", "VIDEO"),
+        ("mp3", "VIDEO"),
+        ("wav", "VIDEO"),
+        ("ogg", "VIDEO"),
+        ("m4a", "MULTIMEDIA"),
+        ("flac", "MULTIMEDIA"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_failed_cloud_media_scan_keeps_media_type_without_score(
+    file_type, expected_scan_type
+):
+    from src.db.models import ScanStatus, ScanType
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    cloud_file = SimpleNamespace(
+        id=f"failed-{file_type}",
+        file_type=file_type,
+        file_name=f"source.{file_type}",
+        file_size_bytes=10,
+        last_scan_id="old-scan",
+        last_scanned_at=None,
+        last_compliance_score=80.0,
+        needs_rescan=False,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    processor = MagicMock()
+    processor.process_media.side_effect = RuntimeError("processor unavailable")
+    with patch(
+        "src.education.multimedia_processor.MultimediaProcessor",
+        return_value=processor,
+    ):
+        response = await CloudScanJob(
+            SimpleNamespace(department_id="dept-1"), cloud_file, MagicMock()
+        )._scan_file(f"/tmp/source.{file_type}", db)
+
+    scan = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if type(call.args[0]).__name__ == "Scan"
+    )
+    assert response["success"] is False
+    assert response["compliance_score"] is None
+    assert scan.status == ScanStatus.FAILED
+    assert scan.scan_type == ScanType[expected_scan_type]
+    assert cloud_file.last_scan_id == "old-scan"
+    assert cloud_file.last_compliance_score == 80.0
+    assert cloud_file.needs_rescan is True
+    assert not any(
+        type(call.args[0]).__name__ == "ScanResult" for call in db.add.call_args_list
     )
 
 
@@ -1266,7 +1461,10 @@ async def test_scan_worker_types_sanitized_handler_failure_before_terminalizing(
 
 def test_all_real_processor_models_without_success_are_normalized_from_score():
     from src.education.docx_processor import DocxProcessingResult
-    from src.education.multimedia_processor import MultimediaProcessingResult
+    from src.education.multimedia_processor import (
+        FlashingContentResult,
+        MultimediaProcessingResult,
+    )
     from src.education.pdf_checks.models import PDFProcessingResult
     from src.education.pptx_processor import PowerPointProcessingResult
     from src.education.xlsx_processor import XlsxProcessingResult
@@ -1333,14 +1531,53 @@ def test_all_real_processor_models_without_success_are_normalized_from_score():
             media_type="video",
             duration=1,
             has_captions=True,
-            compliance_score=84,
+            compliance_score=None,
+            flashing_analysis=FlashingContentResult(),
             issues=[],
         ),
     ]
 
     normalized = [_normalize_processor_result(model) for model in models]
     assert [item["success"] for item in normalized] == [True] * 5
-    assert [item["compliance_score"] for item in normalized] == [80, 81, 82, 83, 84]
+    assert [item["compliance_score"] for item in normalized] == [80, 81, 82, 83, None]
+
+
+def test_cloud_video_partial_requires_bounded_assessment_contract():
+    from src.jobs.cloud_scan_job import _normalize_processor_result
+
+    base = {
+        "media_type": "video",
+        "compliance_score": None,
+        "issues": [{"rule": "WCAG 1.2.2"}],
+    }
+    rejected = _normalize_processor_result(base)
+    assert rejected["success"] is False
+    assert rejected["error_code"] == "SCAN_PROCESSING_FAILED"
+
+    accepted = _normalize_processor_result(
+        {
+            **base,
+            "flashing_analysis": {
+                "state": "unassessed",
+                "reason": "analysis_failed",
+                "version": "unassessed-v1",
+                "has_flashing": None,
+                "flash_count": None,
+                "max_flash_frequency": None,
+                "red_flash_detected": None,
+                "red_flash_count": None,
+                "severity": None,
+                "recommendation": "private exception string must not persist",
+            },
+        }
+    )
+    assert accepted["success"] is True
+    assert accepted["issues"] == base["issues"]
+    assert accepted["compliance_score"] is None
+    assert "recommendation" not in accepted["flashing_analysis"]
+
+    numeric_video = _normalize_processor_result({**base, "compliance_score": 100})
+    assert numeric_video["success"] is False
 
 
 def test_scan_routes_delegate_execution_to_durable_enqueue():

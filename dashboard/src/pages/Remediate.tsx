@@ -24,6 +24,7 @@ import {
   pollRemediationJob,
 } from '../utils/remediationJob';
 import type { RemediationJobState } from '../utils/remediationJob';
+import { remediationDownloadName } from '../utils/remediationDownloadName';
 import { remediationScore } from '../utils/remediationScore';
 import { AggregateResults, RecordedOutcomeGroups } from "../components/results/RemediationOutcomeBreakdown";
 import { ScoreComparison } from '../components/ScoreComparison';
@@ -325,7 +326,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `remediated-${scan?.file_name || 'document'}`;
+      link.download = remediationDownloadName(scan?.file_name, blob.type);
       document.body.appendChild(link);
       link.click();
       link.remove();

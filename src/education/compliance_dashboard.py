@@ -29,7 +29,11 @@ from ..db.models import (
     ScanResult,
     ScanType,
 )
-from .current_compliance import get_department_current_compliance
+from .current_compliance import (
+    get_department_current_compliance,
+    public_compliance_score,
+    public_scan_issues,
+)
 from .cvd_metrics import aggregate_cvd_metrics
 
 logger = logging.getLogger(__name__)
@@ -181,7 +185,7 @@ class PriorityIssue:
     page_slide_number: Optional[int]
     created_at: datetime
     user_name: str
-    compliance_score: float
+    compliance_score: Optional[float]
     estimated_fix_time_minutes: int
 
 
@@ -194,11 +198,11 @@ class FacultyLeaderboard:
     user_email: str
 
     total_scans: int
-    avg_compliance_score: float
+    avg_compliance_score: Optional[float]
     total_files: int
-    total_issues_fixed: int
+    total_issues_fixed: Optional[int]
 
-    rank: int  # 1 = highest compliance
+    rank: Optional[int]  # Only assessed faculty receive a compliance rank
     badge: str  # "Accessibility Champion", "Making Progress", etc.
 
 
@@ -508,25 +512,12 @@ class ComplianceDashboard:
 
         for scan in scans:
             result = results_by_scan.get(scan.id)
-            if not result or not result.issues:
+            issues_data = public_scan_issues(scan, result)
+            if not issues_data:
                 continue
 
             user = users_by_id.get(scan.user_id) if scan.user_id else None
             user_name = user.name if user else "System scan"
-
-            # Extract issues from JSON (handle various formats)
-            issues_data = result.issues
-            if isinstance(issues_data, str):
-                # If issues is a JSON string, try to parse it
-                try:
-                    import json
-
-                    issues_data = json.loads(issues_data)
-                except (json.JSONDecodeError, TypeError):
-                    issues_data = []
-
-            if not isinstance(issues_data, list):
-                issues_data = []
 
             for issue in issues_data:
                 # Skip non-dict entries
@@ -554,7 +545,7 @@ class ComplianceDashboard:
                     page_slide_number=issue.get("page") or issue.get("slide"),
                     created_at=scan.created_at,
                     user_name=user_name,
-                    compliance_score=result.compliance_score,
+                    compliance_score=public_compliance_score(scan, result),
                     estimated_fix_time_minutes=fix_time,
                 )
                 priority_issues.append(priority_issue)
@@ -618,10 +609,10 @@ class ComplianceDashboard:
                         user_name=user.name or "Unknown",
                         user_email=user.email,
                         total_scans=0,
-                        avg_compliance_score=0.0,
+                        avg_compliance_score=None,
                         total_files=0,
                         total_issues_fixed=0,
-                        rank=0,
+                        rank=None,
                         badge="Not Started",
                     )
                 )
@@ -634,27 +625,31 @@ class ComplianceDashboard:
             )
 
             # Calculate avg compliance
-            scores = [r.compliance_score for r in results]
-            avg_score = sum(scores) / len(scores) if scores else 0
+            results_by_scan = {result.scan_id: result for result in results}
+            scores = [
+                score
+                for scan in scans
+                if (
+                    score := public_compliance_score(scan, results_by_scan.get(scan.id))
+                )
+                is not None
+            ]
+            avg_score = sum(scores) / len(scores) if scores else None
 
             # Count unique files
             unique_files = len(set(s.file_hash for s in scans if s.file_hash))
 
-            # Count issues (rough estimate of "fixed" issues)
-            # We assume high compliance = many issues fixed
-            total_issues_fixed = sum(
-                r.critical_issues + r.high_issues + r.medium_issues + r.low_issues
-                for r in results
-            )
+            # A source finding or high score does not establish a completed fix.
+            total_issues_fixed = None
 
             # Assign badge
-            if avg_score >= 95:
+            if avg_score is not None and avg_score >= 95:
                 badge = "🏆 Accessibility Champion"
-            elif avg_score >= 90:
+            elif avg_score is not None and avg_score >= 90:
                 badge = "⭐ Highly Compliant"
-            elif avg_score >= 80:
+            elif avg_score is not None and avg_score >= 80:
                 badge = "✅ Making Great Progress"
-            elif avg_score >= 70:
+            elif avg_score is not None and avg_score >= 70:
                 badge = "📈 Improving"
             elif len(scans) > 0:
                 badge = "🚀 Getting Started"
@@ -667,20 +662,29 @@ class ComplianceDashboard:
                     user_name=user.name or "Unknown",
                     user_email=user.email,
                     total_scans=len(scans),
-                    avg_compliance_score=round(avg_score, 2),
+                    avg_compliance_score=(
+                        round(avg_score, 2) if avg_score is not None else None
+                    ),
                     total_files=unique_files,
                     total_issues_fixed=total_issues_fixed,
-                    rank=0,  # Will be assigned after sorting
+                    rank=None,  # Assigned only for assessed scores
                     badge=badge,
                 )
             )
 
         # Sort by avg compliance score (highest first)
-        leaderboard.sort(key=lambda x: (-x.avg_compliance_score, -x.total_scans))
+        leaderboard.sort(
+            key=lambda x: (
+                x.avg_compliance_score is None,
+                -(x.avg_compliance_score if x.avg_compliance_score is not None else 0),
+                -x.total_scans,
+            )
+        )
 
         # Assign ranks
         for i, entry in enumerate(leaderboard[:limit], start=1):
-            entry.rank = i
+            if entry.avg_compliance_score is not None:
+                entry.rank = i
 
         return leaderboard[:limit]
 
@@ -730,13 +734,18 @@ class ComplianceDashboard:
             scans_by_date[date_key] += 1
 
             result = results_by_scan.get(scan.id)
-            if result:
-                scores_by_date[date_key].append(result.compliance_score)
+            score = public_compliance_score(scan, result)
+            if score is not None:
+                scores_by_date[date_key].append(score)
 
         # Calculate daily averages
-        dates = sorted(scores_by_date.keys())
+        dates = sorted(scans_by_date.keys())
         avg_scores = [
-            round(sum(scores_by_date[date]) / len(scores_by_date[date]), 2)
+            (
+                round(sum(scores_by_date[date]) / len(scores_by_date[date]), 2)
+                if scores_by_date[date]
+                else None
+            )
             for date in dates
         ]
         scans_counts = [scans_by_date[date] for date in dates]

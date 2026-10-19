@@ -52,6 +52,10 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..education.current_compliance import (
+    public_cloud_file_scores,
+    public_scan_job_results,
+)
 
 # Alias for test compatibility
 get_db = get_db_dependency
@@ -245,11 +249,13 @@ async def get_microsoft_credential(
             refresh_token = token_manager.decrypt_token(credential.refresh_token)
 
             # Refresh tokens
-            new_access, new_refresh, new_expires = (
-                await token_manager.refresh_microsoft_token(
-                    refresh_token,
-                    scopes=credential.scopes,
-                )
+            (
+                new_access,
+                new_refresh,
+                new_expires,
+            ) = await token_manager.refresh_microsoft_token(
+                refresh_token,
+                scopes=credential.scopes,
             )
 
             # Update credential
@@ -756,7 +762,7 @@ async def list_onedrive_files(
         )
 
         # Sync files to our database
-        response_files = []
+        tracked_files = []
         for file_info in file_infos:
             if file_info.is_folder:
                 continue
@@ -804,20 +810,24 @@ async def list_onedrive_files(
                     cloud_file.provider_modified_at = file_info.modified_at
                     cloud_file.needs_rescan = True
 
-            response_files.append(
-                MicrosoftFileResponse(
-                    id=cloud_file.id,
-                    provider_file_id=cloud_file.provider_file_id,
-                    file_name=cloud_file.file_name,
-                    file_type=cloud_file.file_type,
-                    mime_type=cloud_file.mime_type,
-                    file_size_bytes=cloud_file.file_size_bytes,
-                    web_view_link=cloud_file.web_view_link,
-                    last_scanned_at=cloud_file.last_scanned_at,
-                    last_compliance_score=cloud_file.last_compliance_score,
-                    needs_rescan=cloud_file.needs_rescan,
-                )
+            tracked_files.append(cloud_file)
+
+        scores = public_cloud_file_scores(db, tracked_files)
+        response_files = [
+            MicrosoftFileResponse(
+                id=cloud_file.id,
+                provider_file_id=cloud_file.provider_file_id,
+                file_name=cloud_file.file_name,
+                file_type=cloud_file.file_type,
+                mime_type=cloud_file.mime_type,
+                file_size_bytes=cloud_file.file_size_bytes,
+                web_view_link=cloud_file.web_view_link,
+                last_scanned_at=cloud_file.last_scanned_at,
+                last_compliance_score=scores[cloud_file.id],
+                needs_rescan=cloud_file.needs_rescan,
             )
+            for cloud_file in tracked_files
+        ]
 
         credential.last_sync_at = datetime.now(timezone.utc)
         db.commit()
@@ -1147,7 +1157,7 @@ async def get_job_status(
         status=job.status,
         progress=job.progress,
         progress_message=job.progress_message,
-        result_data=job.result_data,
+        result_data=public_scan_job_results(db, [job])[job.id],
         error_message=job.error_message,
         created_at=job.created_at,
         completed_at=job.completed_at,
@@ -1174,6 +1184,7 @@ async def list_jobs(
         query = query.filter(CloudJobQueue.status == status)
 
     jobs = query.order_by(CloudJobQueue.created_at.desc()).limit(limit).all()
+    results = public_scan_job_results(db, jobs)
 
     return [
         JobStatusResponse(
@@ -1181,7 +1192,7 @@ async def list_jobs(
             status=job.status,
             progress=job.progress,
             progress_message=job.progress_message,
-            result_data=job.result_data,
+            result_data=results[job.id],
             error_message=job.error_message,
             created_at=job.created_at,
             completed_at=job.completed_at,

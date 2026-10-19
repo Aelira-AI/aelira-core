@@ -71,6 +71,12 @@ from ..services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
 from ..jobs.brightspace_content_job import enqueue_brightspace_content_remediation
 from ..services.scan_fix_service import build_output_membership, persist_scan_fixes
 from ..education.remediation.score_reporting import score_fields
+from ..education.current_compliance import (
+    public_cloud_file_issue_totals,
+    public_cloud_file_scores,
+    public_issue_total,
+    public_scan_issues,
+)
 from ..services.lms_content_approval import (
     LMSContentApprovalError,
     approve_lms_content,
@@ -2481,38 +2487,24 @@ async def get_brightspace_content_status(
     )
 
     items = []
+    scores = public_cloud_file_scores(db, cloud_files)
+    issue_totals = public_cloud_file_issue_totals(db, cloud_files)
+    scan_ids = {cf.last_scan_id for cf in cloud_files if cf.last_scan_id}
+    scans = db.query(Scan).filter(Scan.id.in_(scan_ids)).all() if scan_ids else []
+    scans_by_id = {scan.id: scan for scan in scans}
     scanned_count = 0
+    assessed_count = 0
     total_score = 0.0
 
-    from ..db.models import ScanResult
-
     for cf in cloud_files:
-        # Get the latest scan for this file
-        latest_scan = (
-            db.query(Scan).filter(Scan.id == cf.last_scan_id).first()
-            if cf.last_scan_id
-            else None
-        )
-        # Get issue counts from scan result
-        scan_result = (
-            db.query(ScanResult).filter(ScanResult.scan_id == cf.last_scan_id).first()
-            if cf.last_scan_id
-            else None
-        )
-        issue_count = (
-            (
-                (scan_result.critical_issues or 0)
-                + (scan_result.high_issues or 0)
-                + (scan_result.medium_issues or 0)
-                + (scan_result.low_issues or 0)
-            )
-            if scan_result
-            else 0
-        )
+        latest_scan = scans_by_id.get(cf.last_scan_id)
+        issue_count = issue_totals[cf.id]
 
-        score = cf.last_compliance_score
-        if score is not None:
+        score = scores[cf.id]
+        if latest_scan is not None:
             scanned_count += 1
+        if latest_scan is not None and score is not None:
+            assessed_count += 1
             total_score += score
 
         metadata = cf.provider_metadata or {}
@@ -2567,7 +2559,9 @@ async def get_brightspace_content_status(
         )
 
     average_compliance = (
-        round(total_score / scanned_count, 1) if scanned_count > 0 else None
+        round(total_score / assessed_count, 1)
+        if assessed_count > 0 and assessed_count == scanned_count
+        else None
     )
 
     return {
@@ -2984,6 +2978,16 @@ async def get_content_diff(
     issues_fixed = 0
     issues_remaining = 0
     scan_result = None
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == cf.last_scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .first()
+        if cf.last_scan_id
+        else None
+    )
     remediated = cf.has_remediated_version or cf.remediated_body
     if remediated and cf.remediated_issues_fixed is not None:
         # Authoritative counts from the remediator
@@ -2995,11 +2999,11 @@ async def get_content_diff(
         )
         if scan_result and scan_result.issues:
             # A stored score does not attribute legacy findings to verified fixes.
-            issues_remaining = len(scan_result.issues)
+            issues_remaining = public_issue_total(scan, scan_result)
 
     issues = []
-    if scan_result is not None and isinstance(scan_result.issues, list):
-        for issue in scan_result.issues[:500]:
+    if scan_result is not None:
+        for issue in (public_scan_issues(scan, scan_result) or [])[:500]:
             if not isinstance(issue, dict):
                 continue
             nodes = issue.get("nodes")
@@ -3018,16 +3022,6 @@ async def get_content_diff(
                 }
             )
 
-    scan = (
-        db.query(Scan)
-        .filter(
-            Scan.id == cf.last_scan_id,
-            Scan.department_id == principal.department_id,
-        )
-        .first()
-        if cf.last_scan_id
-        else None
-    )
     scan_id = None
     scan_type = None
     if (

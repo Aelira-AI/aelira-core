@@ -201,8 +201,56 @@ def scan_structure(result):
 
 
 def public_scan_structure(value, scan_type):
-    """Downgrade legacy conversion-only booleans without rewriting stored scans."""
+    """Bound legacy media and LaTeX claims without rewriting stored scans."""
+    from .current_compliance import is_retired_media_flash_issue
+
     kind = getattr(scan_type, "value", scan_type)
+    if isinstance(kind, str) and kind.lower() in {"video", "multimedia"}:
+        safe = dict(value) if isinstance(value, dict) else {}
+        safe.pop("flashing_analysis", None)
+        media_type = safe.get("media_type")
+        prior_assessment = safe.get("flashing_assessment")
+        if media_type == "audio":
+            safe["flashing_assessment"] = {
+                "state": "not_applicable",
+                "version": "unassessed-v1",
+            }
+        else:
+            assessment = prior_assessment
+            reason = assessment.get("reason") if isinstance(assessment, dict) else None
+            safe["flashing_assessment"] = {
+                "state": "unassessed",
+                "reason": (
+                    reason
+                    if reason in {"detector_unavailable", "disabled", "analysis_failed"}
+                    else "detector_unavailable"
+                ),
+                "version": "unassessed-v1",
+            }
+        output = safe.get("transcription_output")
+        if isinstance(output, dict):
+            safe_output = dict(output)
+            safe_output.pop("flashing_analysis", None)
+            issues = safe_output.get("issues")
+            if isinstance(issues, list):
+                safe_issues = [
+                    issue
+                    for issue in issues
+                    if not is_retired_media_flash_issue(scan_type, issue)
+                ]
+                safe_output["issues"] = safe_issues
+                safe_output["issues_count"] = len(safe_issues)
+            elif safe_output.get("issues_count"):
+                safe_output["issues_count"] = None
+            if media_type != "audio" or not (
+                isinstance(prior_assessment, dict)
+                and prior_assessment.get("state") == "not_applicable"
+                and prior_assessment.get("version") == "unassessed-v1"
+            ):
+                safe_output["compliance_score"] = None
+            safe_output["flashing_assessment"] = safe["flashing_assessment"]
+            safe["transcription_output"] = safe_output
+        return safe
     if (
         not isinstance(kind, str)
         or kind.lower() != "latex"

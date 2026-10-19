@@ -158,6 +158,23 @@ def process_multimedia_background(
         processing_time = int((time.time() - start_time) * 1000)
         logger.info(f"[BACKGROUND] Multimedia processed in {processing_time}ms")
 
+        media_score = result.compliance_score if result.media_type == "audio" else None
+        assessment = (
+            {"state": "not_applicable", "version": "unassessed-v1"}
+            if result.media_type == "audio"
+            else {
+                "state": "unassessed",
+                "reason": (
+                    result.flashing_analysis.reason
+                    if result.flashing_analysis
+                    and result.flashing_analysis.reason
+                    in {"detector_unavailable", "disabled", "analysis_failed"}
+                    else "detector_unavailable"
+                ),
+                "version": "unassessed-v1",
+            }
+        )
+
         # Build result structure
         structure = {
             "score_scope": "source_automated_checks",
@@ -165,7 +182,15 @@ def process_multimedia_background(
             "manual_review_required": True,
             "verification_limitations": [
                 "Source feature checks do not verify caption accuracy or audio-description applicability.",
-                "Flashing detection samples the first 30 seconds when enabled.",
+                (
+                    "Whole-video flashing safety has not been assessed."
+                    if result.media_type == "video"
+                    else (
+                        "Flashing assessment does not apply to audio-only media."
+                        if result.media_type == "audio"
+                        else "Media type and flashing safety could not be assessed."
+                    )
+                ),
                 "Generated companion files have not undergone a comparable accessibility rescan.",
             ],
             "media_type": result.media_type,
@@ -184,7 +209,8 @@ def process_multimedia_background(
                 "media_type": result.media_type,
                 "duration": result.duration,
                 "has_captions": result.has_captions,
-                "compliance_score": result.compliance_score,
+                "compliance_score": media_score,
+                "flashing_assessment": assessment,
                 "issues_count": len(result.issues),
                 "issues": result.issues,
                 "transcription": (
@@ -212,12 +238,7 @@ def process_multimedia_background(
             },
         }
 
-        if result.flashing_analysis:
-            structure["flashing_analysis"] = {
-                "has_flashing": result.flashing_analysis.has_flashing,
-                "flash_count": result.flashing_analysis.flash_count,
-                "severity": result.flashing_analysis.severity,
-            }
+        structure["flashing_assessment"] = assessment
 
         # Update scan record
         scan.status = ScanStatus.COMPLETED
@@ -232,8 +253,8 @@ def process_multimedia_background(
         scan_result = ScanResult(
             **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
-            compliance_score=result.compliance_score,
-            wcag_level="AA",
+            compliance_score=media_score,
+            wcag_level=None if media_score is None else "AA",
             critical_issues=sum(
                 1 for i in result.issues if i.get("severity") == "critical"
             ),
@@ -293,7 +314,7 @@ async def scan_multimedia(
     - Transcription with speaker identification (Whisper)
     - AI audio descriptions for visual content (WCAG 1.2.3, 1.2.5)
     - Text-to-speech conversion for blind users (Piper TTS)
-    - Flashing content detection for seizure safety (WCAG 2.3.1)
+    - Explicit unassessed flashing state for video (WCAG 2.3.1)
     - Full transcript generation (WCAG 1.2.8)
 
     Args:
@@ -301,7 +322,7 @@ async def scan_multimedia(
         generate_captions: Generate captions/transcription (default: true)
         generate_audio_descriptions: Generate AI descriptions of visual content (default: true)
         generate_spoken_descriptions: Convert descriptions to spoken audio via TTS (default: false)
-        detect_flashing: Check for seizure-triggering content (default: true)
+        detect_flashing: Retained request option; video flashing remains unassessed
         generate_transcript: Generate combined text transcript (default: false)
         whisper_model: Whisper model size (base, small, medium, large)
     """
@@ -338,7 +359,7 @@ async def scan_multimedia(
     if len(content) > settings.max_file_size_video:
         raise HTTPException(
             status_code=400,
-            detail=f"File too large. Maximum size: {settings.max_file_size_video / (1024*1024):.0f}MB",
+            detail=f"File too large. Maximum size: {settings.max_file_size_video / (1024 * 1024):.0f}MB",
         )
 
     # Create scan record first to get scan_id

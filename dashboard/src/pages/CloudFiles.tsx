@@ -84,7 +84,7 @@ function ComplianceScore({ score }: ComplianceScoreProps): React.ReactElement {
   if (score === null || score === undefined) {
     return (
       <span className="text-sm" style={{ color: 'var(--content-secondary)' }}>
-        Not scanned
+        Unassessed
       </span>
     );
   }

@@ -187,11 +187,11 @@ export function Dashboard(): React.ReactElement {
         try {
           setTrendLoading(true);
           const trendResponse = await scansApi.getComplianceTrend(departmentId, 30);
-          interface RawTrendPoint { date: string; avg_compliance_score?: number; scan_count?: number }
+          interface RawTrendPoint { date: string; avg_compliance_score?: number | null; scan_count?: number }
           const trendArray = unwrapResponse<RawTrendPoint[]>(trendResponse, 'trend');
-          const chartData = trendArray.map((point) => ({
+          const chartData = trendArray.filter((point) => point.avg_compliance_score != null).map((point) => ({
             date: point.date,
-            score: point.avg_compliance_score || 0,
+            score: point.avg_compliance_score as number,
             scans: point.scan_count || 0,
           }));
           setTrendData(chartData);
@@ -802,19 +802,21 @@ export function Dashboard(): React.ReactElement {
                             >
                               <Wrench className="w-4 h-4" aria-hidden="true" />
                             </button>
-                            <button
-                              onClick={() => handleDownloadReport(scan.id, scan.filename)}
-                              disabled={downloadingReport === scan.id}
-                              className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-accent)] hover:bg-[var(--surface-secondary)] transition-colors disabled:opacity-50"
-                              aria-label={`Download report for ${scan.filename}`}
-                              title="Download report"
-                            >
-                              {downloadingReport === scan.id ? (
-                                <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
-                              ) : (
-                                <Download className="w-4 h-4" aria-hidden="true" />
-                              )}
-                            </button>
+                            {scan.compliance_score != null && (
+                              <button
+                                onClick={() => handleDownloadReport(scan.id, scan.filename)}
+                                disabled={downloadingReport === scan.id}
+                                className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-accent)] hover:bg-[var(--surface-secondary)] transition-colors disabled:opacity-50"
+                                aria-label={`Download report for ${scan.filename}`}
+                                title="Download report"
+                              >
+                                {downloadingReport === scan.id ? (
+                                  <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <Download className="w-4 h-4" aria-hidden="true" />
+                                )}
+                              </button>
+                            )}
                           </span>
                         ),
                       },

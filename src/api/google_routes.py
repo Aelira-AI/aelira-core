@@ -50,6 +50,10 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..education.current_compliance import (
+    public_cloud_file_scores,
+    public_scan_job_results,
+)
 from ..integrations.cloud_base import (
     CloudFileInfo,
     CloudIntegrationError,
@@ -242,9 +246,11 @@ async def get_google_credential(
             refresh_token = token_manager.decrypt_token(credential.refresh_token)
 
             # Refresh tokens
-            new_access, new_refresh, new_expires = (
-                await token_manager.refresh_google_token(refresh_token)
-            )
+            (
+                new_access,
+                new_refresh,
+                new_expires,
+            ) = await token_manager.refresh_google_token(refresh_token)
 
             # Update credential
             credential.access_token = token_manager.encrypt_token(new_access)
@@ -1005,13 +1011,15 @@ def _enqueue_google_scan(
     )
 
 
-def _google_job_response(job: CloudJobQueue) -> JobStatusResponse:
+def _google_job_response(
+    job: CloudJobQueue, result_data: Optional[Dict[str, Any]]
+) -> JobStatusResponse:
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
         progress=job.progress,
         progress_message=job.progress_message,
-        result_data=job.result_data,
+        result_data=result_data,
         error_message=job.error_message,
         created_at=job.created_at,
         completed_at=job.completed_at,
@@ -1043,6 +1051,7 @@ async def list_drive_files(
                 folder_id=folder_id, page_token=page_token, page_size=page_size
             )
         files = [_track_google_file(db, credential, info) for info in file_infos]
+        scores = public_cloud_file_scores(db, files)
         credential.last_sync_at = datetime.now(timezone.utc)
         db.commit()
         return GoogleFileListResponse(
@@ -1056,7 +1065,7 @@ async def list_drive_files(
                     file_size_bytes=file.file_size_bytes,
                     web_view_link=file.web_view_link,
                     last_scanned_at=file.last_scanned_at,
-                    last_compliance_score=file.last_compliance_score,
+                    last_compliance_score=scores[file.id],
                     needs_rescan=file.needs_rescan,
                 )
                 for file in files
@@ -1243,7 +1252,7 @@ async def get_job_status(
         )
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        return _google_job_response(job)
+        return _google_job_response(job, public_scan_job_results(db, [job])[job.id])
 
 
 @router.get("/jobs", response_model=List[JobStatusResponse])
@@ -1264,7 +1273,8 @@ async def list_jobs(
         if status:
             query = query.filter(CloudJobQueue.status == status)
         jobs = query.order_by(CloudJobQueue.created_at.desc()).limit(limit).all()
-        return [_google_job_response(job) for job in jobs]
+        results = public_scan_job_results(db, jobs)
+        return [_google_job_response(job, results[job.id]) for job in jobs]
 
 
 # ==================== Account Management ====================

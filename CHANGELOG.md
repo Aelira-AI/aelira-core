@@ -7,16 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-10-19
+
+This combined-source release candidate is represented by open draft
+[#682](https://github.com/Aelira-AI/aelira-core/pull/682). The native security
+change is merged; publication and final combined-artifact acceptance remain
+pending.
+See the [release notes](docs/releases/v0.9.13.md) for operator actions and
+evidence limits.
+
 ### Added
 
 - An isolated upgrade and restoration rehearsal automates the documented backup procedure, verifies persisted scan outcomes and artifact hashes, and records exact image manifests and platform identities in a validated receipt. It uses fresh local test resources and preserves the remaining publication, platform and prerelease checks as separate release gates ([#663](https://github.com/Aelira-AI/aelira-core/issues/663)).
+- Local PPTX uploads accept a complete, source-bound reviewer shape order through the API, queue the repair and verify the saved package before offering a working file. Unsupported shapes and cloud-backed requests remain refused ([#662](https://github.com/Aelira-AI/aelira-core/pull/662)).
+- Dashboard journeys exercise document, web, media and synthetic Canvas paths. Canvas cloud-file identities now retain course and content type without weakening other providers' uniqueness ([#646](https://github.com/Aelira-AI/aelira-core/pull/646)).
 
 ### Changed
 
+- Four merged dependency groups update five CLI packages and its installation lockfile, eight dashboard packages, Pydantic and its required core version, and selected native-fixture/font-corpus pins with SoupSieve selector consumers. Each passed CI at its reviewed head before merging ([#652](https://github.com/Aelira-AI/aelira-core/pull/652), [#653](https://github.com/Aelira-AI/aelira-core/pull/653), [#654](https://github.com/Aelira-AI/aelira-core/pull/654), [#655](https://github.com/Aelira-AI/aelira-core/pull/655)); coordination and release-note inclusion are tracked in [#665](https://github.com/Aelira-AI/aelira-core/issues/665). Embedded-library assessment has separate gates.
 - Hugging Face Hub is updated to 2.2.0 and Tokenizers to 0.23.3, which accepts Hub 2 and later. Hub 2 adds `httpx2`, `httpcore2` and `truststore` to the pinned runtime set. A real faster-whisper `tiny.en` download, transcription and `HF_HUB_OFFLINE=1` cached load now run in the built API image on both architectures ([#560](https://github.com/Aelira-AI/aelira-core/issues/560)).
 
 ### Security
 
+- Merged [#640](https://github.com/Aelira-AI/aelira-core/pull/640) rebuilds Debian libxml2 with the maintained CVE-2026-6653 patch and verifies the installed package, loaded native consumers and shipped image layers. Seven other libxml2 advisories remain affected and disclosed; broader advisory acceptance is still open.
+- Three MEDIUM scanner findings without a Debian fix are reviewed and disclosed in the [advisory record](docs/security/known-unfixed-advisories-0.9.12.md#medium-severity-advisories-reviewed-in-the-0913-candidate): CVE-2026-107161 (Cyrus SASL DIGEST-MD5, plugin not installed), CVE-2026-85091 (zlib, vulnerable code not present in Debian's 1.3.1) and CVE-2026-27171 (zlib `crc32_combine`, no caller in the image). The record also lists the zlib copies bundled in lxml, PyMuPDF and Node.js, including an older Chromium zlib build inside Node.js.
+- Source-built PyAV and OpenCV use hash-verified FFmpeg 9.0.2 instead of their published wheels' private stacks. Native checks cover library binding, audio decode, seven video codec families and scene boundaries; wider media and embedded-library assessment remains open ([#669](https://github.com/Aelira-AI/aelira-core/pull/669), [#675](https://github.com/Aelira-AI/aelira-core/pull/675)).
+- Python's matched `pyexpat` and `_elementtree` modules are rebuilt against Debian Expat 2.9.0 and checked in both native images. This does not close all scanner and disposition gates ([#671](https://github.com/Aelira-AI/aelira-core/pull/671)).
 - The API image builds Pillow 12.3.0 from its source release with libtiff 4.7.2 built from a hash-verified source archive and linked statically, replacing the libtiff 4.7.1 copy bundled in the published wheels, which carries CVE-2026-36849. JPEG, JPEG 2000, PNG, WebP, AVIF, TIFF, FreeType, LittleCMS and Raqm text shaping remain available, with their shared libraries supplied by Debian packages. The build and the final image check the libtiff version and the absence of the wheel-private library directory ([#644](https://github.com/Aelira-AI/aelira-core/issues/644), part of [#583](https://github.com/Aelira-AI/aelira-core/issues/583)).
 - `pi_heif` is no longer installed. ocrmypdf 17 does not depend on it, and its optional HEIF support loads a different package that is not installed, so the bundled libheif 1.23.0 and libde265 1.1.0 copies were never used. OCR of a PDF is exercised in the built image on both architectures ([#644](https://github.com/Aelira-AI/aelira-core/issues/644), part of [#583](https://github.com/Aelira-AI/aelira-core/issues/583)).
 - The API image no longer installs `libxml2-utils` (`xmllint`, `xmlcatalog`) and removes `xdg-utils` (`xdg-email`, `xdg-open`), which nothing in the application, the TeX and LaTeXML conversion paths or ImageMagick runs. `xdg-utils` is a hard dependency of `texlive-base`, so it is purged with dpkg in the same layer; a build-time and CI check asserts both packages and their executables stay absent. The CVE-2022-4055 disposition is removed. libX11, libXrender, cJSON and GnuTLS stay because Chromium, FFmpeg, Ghostscript, ImageMagick and poppler link them directly.
@@ -27,12 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Media remediation now delivers its generated WebVTT captions as a downloadable file for review. Previously the captions were generated and then discarded, because no saved-file check existed for them and remediation published only verified fixes. The saved file must be well-formed WebVTT whose cues match the generated transcription and fit the media; that checks structure, not accuracy, so the captions are always flagged for human review. Only the missing-captions finding counts as fixed; caption-quality findings about the source transcription stay manual, and speech recognition runs once per job. Cue text is escaped for WebVTT. Transcripts and audio descriptions are not included, audio descriptions still need an AI provider, and flashing safety remains unassessed. A new migration, `20261020_media_captions`, lets media scans hold caption artifacts. Caption files are download-only: write-back to cloud storage or a Canvas course is refused, and approving one does not mark the media for write-back. LMS-bound media jobs without an AI provider now also attempt captioning, which the alt-text switch had blocked.
+- Open [#681](https://github.com/Aelira-AI/aelira-core/pull/681) supplies the media assessment change: unmeasured video remains unassessed without an overall score or unverified credit, and mixed LMS averages are withheld when a scanned item lacks a measured score. Linked null-score Canvas scans show “Unassessed”; Canvas content without a linked scan shows “Not scanned”. Numeric zero stays measured. Draft [#682](https://github.com/Aelira-AI/aelira-core/pull/682) adds the completed null-score Brightspace row label “Unassessed”. Final-image and provider acceptance remain pending.
 - The PDF, DOCX and PPTX remediators no longer fall back to text-only image descriptions. When an image cannot be analysed from its own pixels the finding stays unresolved for human review. The v0.9.12 notes stated that text-only fallbacks were removed, which overstated the change for these three remediators ([#636](https://github.com/Aelira-AI/aelira-core/issues/636)).
 - Canvas course scans can retain a file and another content item with the same native ID. The original cloud-file constraint rejected that valid pair despite the newer course/content identity index, causing the durable scan to fail. Uniqueness for other cloud providers remains enforced ([#650](https://github.com/Aelira-AI/aelira-core/issues/650)).
 
 ### Operator action required
 
-- Before deploying these unreleased changes, back up PostgreSQL and run `alembic upgrade head`; verify the single head is `20261017_canvas_scope`. The migration changes the `cloud_files` uniqueness rule. Its downgrade refuses when stored Canvas items share a native ID across content types or courses; reconcile those rows before attempting to restore an older schema. Keep the API and worker on the same application revision.
+- Before deploying an approved candidate, pause intake and writers, drain jobs, stop API and worker, and verify a coordinated backup of PostgreSQL, uploads, managed artifacts, private configuration and encryption keys. Use matching API, worker and dashboard images, run `alembic upgrade head` explicitly, and verify the combined tree's single head `20261020_media_captions` after `20261018_media_truth`, `20261017_canvas_scope` and `20260928_pdf_edit_pub`. Keep valid Canvas identities; the Canvas downgrade can refuse duplicate native IDs across courses or content types. Roll back with the matched pre-upgrade database and files, not by forcing deletion. Reconcile external writebacks separately and require human approval of the exact working file before publication.
 
 ## [0.9.12] - 2026-10-15
 

@@ -22,6 +22,12 @@ import math
 from ..db.database import get_db_dependency
 from ..db.models import Department, UserRole
 from ..education.deadline_config import DeadlineService
+from ..education.current_compliance import (
+    public_compliance_score,
+    public_issue_counts,
+    public_issue_total,
+    public_scan_issues,
+)
 from ..education.snapshot_service import SnapshotService
 from ..education.institution_compliance import (
     InstitutionNotFoundError,
@@ -217,7 +223,8 @@ async def get_historical_trend(
     """
     Get historical compliance trend data from snapshots.
 
-    Falls back to computing from scans if no snapshots exist.
+    Only current-document stock snapshots with explicit provenance contribute
+    scores; older unversioned snapshots remain history without score credit.
 
     Args:
         days: Number of days to look back (7-365)
@@ -795,12 +802,13 @@ async def export_scans_csv(
             # Get scan result if exists
             result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
 
-            compliance_score = result.compliance_score if result else None
-            critical = result.critical_issues if result else 0
-            high = result.high_issues if result else 0
-            medium = result.medium_issues if result else 0
-            low = result.low_issues if result else 0
-            total_issues = critical + high + medium + low
+            compliance_score = public_compliance_score(scan, result)
+            issue_counts = public_issue_counts(scan, result)
+            critical = issue_counts["critical"]
+            high = issue_counts["high"]
+            medium = issue_counts["medium"]
+            low = issue_counts["low"]
+            total_issues = public_issue_total(scan, result)
 
             writer.writerow(
                 [
@@ -1021,16 +1029,13 @@ async def export_scans_excel(
         for row_idx, scan in enumerate(scans, 2):
             result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
 
-            compliance_score = (
-                result.compliance_score
-                if result and result.compliance_score is not None
-                else None
-            )
-            critical = result.critical_issues if result else 0
-            high = result.high_issues if result else 0
-            medium = result.medium_issues if result else 0
-            low = result.low_issues if result else 0
-            total_issues = critical + high + medium + low
+            compliance_score = public_compliance_score(scan, result)
+            issue_counts = public_issue_counts(scan, result)
+            critical = issue_counts["critical"]
+            high = issue_counts["high"]
+            medium = issue_counts["medium"]
+            low = issue_counts["low"]
+            total_issues = public_issue_total(scan, result)
 
             row_data = [
                 scan.id,
@@ -1238,11 +1243,12 @@ async def export_bulk_zip(
                 result = (
                     db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
                 )
-                compliance_score = result.compliance_score if result else None
-                critical = result.critical_issues if result else 0
-                high = result.high_issues if result else 0
-                medium = result.medium_issues if result else 0
-                low = result.low_issues if result else 0
+                compliance_score = public_compliance_score(scan, result)
+                issue_counts = public_issue_counts(scan, result)
+                critical = issue_counts["critical"]
+                high = issue_counts["high"]
+                medium = issue_counts["medium"]
+                low = issue_counts["low"]
 
                 writer.writerow(
                     [
@@ -1260,7 +1266,7 @@ async def export_bulk_zip(
                         high,
                         medium,
                         low,
-                        critical + high + medium + low,
+                        public_issue_total(scan, result),
                     ]
                 )
 
@@ -1291,7 +1297,11 @@ async def export_bulk_zip(
                             .filter(ScanResult.scan_id == scan.id)
                             .first()
                         )
-                        if result and result.issues:
+                        if (
+                            result
+                            and public_scan_issues(scan, result)
+                            and public_compliance_score(scan, result) is not None
+                        ):
                             report_bytes = (
                                 AccessibilityPDFReportGenerator.generate_report(
                                     scan_id=scan.id,
@@ -1301,8 +1311,10 @@ async def export_bulk_zip(
                                         if scan.scan_type
                                         else "unknown"
                                     ),
-                                    compliance_score=result.compliance_score or 0,
-                                    issues=result.issues or [],
+                                    compliance_score=public_compliance_score(
+                                        scan, result
+                                    ),
+                                    issues=public_scan_issues(scan, result) or [],
                                     suggestions=result.suggestions or [],
                                 )
                             )

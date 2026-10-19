@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as brightspaceStatus from '../../src/utils/brightspaceContentStatus.ts';
 
-const { resolveBrightspaceContentStatus } = brightspaceStatus;
+const { getBrightspaceContentAssessmentLabels, resolveBrightspaceContentStatus } = brightspaceStatus;
 
 function contentItem(overrides = {}) {
   return {
@@ -21,6 +21,38 @@ function contentItem(overrides = {}) {
 }
 
 describe('Brightspace persisted remediation status', () => {
+  it('shows a completed scan without a score as unassessed in both row badges', () => {
+    assert.deepEqual(
+      getBrightspaceContentAssessmentLabels(contentItem({ compliance_score: null, scan_status: 'COMPLETED' })),
+      { score: 'Unassessed', fallbackStatus: 'Unassessed' }
+    );
+  });
+
+  it('keeps never-scanned and incomplete scans distinct from completed unassessed scans', () => {
+    for (const scan_status of [null, 'PENDING', 'PROCESSING', 'FAILED']) {
+      assert.deepEqual(
+        getBrightspaceContentAssessmentLabels(contentItem({ compliance_score: null, scan_status })),
+        { score: 'Not scanned', fallbackStatus: 'Pending' },
+        `${scan_status ?? 'null'} must not be presented as unassessed`
+      );
+    }
+  });
+
+  it('preserves measured zero and other scores regardless of scan status', () => {
+    for (const [compliance_score, scan_status, score] of [[0, null, '0%'], [84.2, 'COMPLETED', '84%'], [100, 'COMPLETED', '100%']]) {
+      assert.deepEqual(
+        getBrightspaceContentAssessmentLabels(contentItem({ compliance_score, scan_status })),
+        { score, fallbackStatus: 'Scanned' }
+      );
+    }
+  });
+
+  it('keeps persisted writeback status ahead of an unassessed fallback', () => {
+    const item = contentItem({ compliance_score: null, scan_status: 'COMPLETED', writeback_status: 'written_back' });
+    assert.equal(getBrightspaceContentAssessmentLabels(item).fallbackStatus, 'Unassessed');
+    assert.deepEqual(resolveBrightspaceContentStatus(item), { label: 'Written back', variant: 'success' });
+  });
+
   it('renders an automatic pending-review row from persisted provenance', () => {
     assert.deepEqual(
       resolveBrightspaceContentStatus(
@@ -70,6 +102,9 @@ describe('Brightspace persisted remediation status', () => {
       'utf8'
     );
     assert.match(source, /resolveBrightspaceContentStatus\(item\)/);
+    assert.match(source, /getBrightspaceContentAssessmentLabels\(item\)/);
+    assert.match(source, /assessmentLabels\.score/);
+    assert.match(source, /assessmentLabels\.fallbackStatus/);
     assert.doesNotMatch(source, /remediation_origin\s*\?[^:]*content_type|content_type\s*\?[^:]*remediation_origin/);
   });
 

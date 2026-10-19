@@ -1,7 +1,12 @@
 """Scan history, progress, and report endpoints."""
 
 from ...education.latex_evidence import public_scan_structure
-import json as _json
+from ...education.current_compliance import (
+    public_compliance_score,
+    public_issue_counts,
+    public_issue_total,
+    public_scan_issues,
+)
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -99,19 +104,8 @@ async def get_scan_history(
                 "scan_type": scan.scan_type.value,
                 "status": scan.status.value,
                 "pages": scan.pages,
-                "compliance_score": (
-                    scan.result.compliance_score if scan.result else None
-                ),
-                "total_issues": (
-                    (
-                        scan.result.critical_issues
-                        + scan.result.high_issues
-                        + scan.result.medium_issues
-                        + scan.result.low_issues
-                    )
-                    if scan.result
-                    else None
-                ),
+                "compliance_score": (public_compliance_score(scan, scan.result)),
+                "total_issues": public_issue_total(scan, scan.result),
                 "created_at": scan.created_at.isoformat(),
                 "completed_at": (
                     scan.completed_at.isoformat() if scan.completed_at else None
@@ -147,48 +141,8 @@ async def get_scan_details(
 
     remediation_eligibility = document_remediation_eligibility(db, scan, principal)
 
-    # Debug logging to track issues data
-    if scan.result and scan.result.issues:
-        _debug_issues = scan.result.issues
-        if isinstance(_debug_issues, str):
-            try:
-                _debug_issues = _json.loads(_debug_issues)
-            except (ValueError, TypeError):
-                _debug_issues = {}
-        logger.info(
-            f"[GET SCAN] Scan {scan_id}: issues type={type(scan.result.issues)}, has_details={'details' in _debug_issues if isinstance(_debug_issues, dict) else 'N/A'}"
-        )
-        if isinstance(_debug_issues, dict) and "details" in _debug_issues:
-            logger.info(
-                f"[GET SCAN] Scan {scan_id}: details length={len(_debug_issues['details'])}"
-            )
-
-    issues_details = []
-    if scan.result:
-        raw_issues = scan.result.issues
-        if isinstance(raw_issues, str):
-            try:
-                raw_issues = _json.loads(raw_issues)
-            except (ValueError, TypeError):
-                logger.warning(
-                    f"[GET SCAN] Scan {scan_id}: Failed to parse issues JSON string, defaulting to []"
-                )
-                raw_issues = []
-
-        if isinstance(raw_issues, dict):
-            issues_details = raw_issues.get("details", [])
-            logger.info(
-                f"[GET SCAN] Scan {scan_id}: Extracted {len(issues_details)} issues from dict"
-            )
-        elif isinstance(raw_issues, list):
-            issues_details = raw_issues
-            logger.info(
-                f"[GET SCAN] Scan {scan_id}: Using {len(issues_details)} issues from list"
-            )
-        else:
-            logger.warning(
-                f"[GET SCAN] Scan {scan_id}: Unexpected issues type: {type(raw_issues)}"
-            )
+    issues_details = public_scan_issues(scan, scan.result) or []
+    issue_counts = public_issue_counts(scan, scan.result)
 
     return {
         "success": True,
@@ -207,20 +161,16 @@ async def get_scan_details(
             ),
             "result": (
                 {
-                    "compliance_score": scan.result.compliance_score,
-                    "wcag_level": scan.result.wcag_level,
+                    "compliance_score": public_compliance_score(scan, scan.result),
+                    "wcag_level": (
+                        scan.result.wcag_level
+                        if public_compliance_score(scan, scan.result) is not None
+                        else None
+                    ),
                     "issues": issues_details,
                     "summary": {
-                        "critical": scan.result.critical_issues,
-                        "high": scan.result.high_issues,
-                        "medium": scan.result.medium_issues,
-                        "low": scan.result.low_issues,
-                        "total": (
-                            scan.result.critical_issues
-                            + scan.result.high_issues
-                            + scan.result.medium_issues
-                            + scan.result.low_issues
-                        ),
+                        **issue_counts,
+                        "total": public_issue_total(scan, scan.result),
                     },
                     "structure": public_scan_structure(
                         scan.result.structure, scan.scan_type
@@ -397,6 +347,12 @@ async def download_scan_report(
 
         authorize_scan_access(db, scan, principal)
 
+        if public_compliance_score(scan, scan.result) is None:
+            raise HTTPException(
+                status_code=409,
+                detail="A compliance PDF is unavailable for an unassessed scan; partial findings remain in scan details.",
+            )
+
         logger.info(
             f"[REPORT] Scan status: {scan.status}, Has result: {scan.result is not None}"
         )
@@ -405,43 +361,16 @@ async def download_scan_report(
         from ...education.pdf_report_generator import AccessibilityPDFReportGenerator
 
         # Prepare scan data for report
-        # Handle both array format (PDF scans) and nested dict format (website scans).
-        # Guard against DB drivers returning JSON columns as raw strings.
-        issues_data = []
-        if scan.result and scan.result.issues:
-            raw_issues = scan.result.issues
-            if isinstance(raw_issues, str):
-                try:
-                    raw_issues = _json.loads(raw_issues)
-                except (ValueError, TypeError):
-                    raw_issues = []
-
-            if isinstance(raw_issues, list):
-                # PDF scans store issues as direct array
-                issues_data = raw_issues
-            elif isinstance(raw_issues, dict):
-                # Website scans store issues nested under 'details'
-                issues_data = raw_issues.get("details", [])
-            else:
-                issues_data = []
+        issues_data = public_scan_issues(scan, scan.result) or []
 
         scan_data = {
             "scan_id": scan.id,
             "url": scan.file_name,  # For websites, file_name contains the URL
             "created_at": scan.created_at.isoformat() if scan.created_at else None,
-            "compliance_score": scan.result.compliance_score if scan.result else 0,
+            "compliance_score": public_compliance_score(scan, scan.result),
             "issues": issues_data,
             "pages_scanned": scan.pages or 1,
-            "total_issues": (
-                (
-                    (scan.result.critical_issues or 0)
-                    + (scan.result.high_issues or 0)
-                    + (scan.result.medium_issues or 0)
-                    + (scan.result.low_issues or 0)
-                )
-                if scan.result
-                else 0
-            ),
+            "total_issues": public_issue_total(scan, scan.result),
         }
 
         logger.info(

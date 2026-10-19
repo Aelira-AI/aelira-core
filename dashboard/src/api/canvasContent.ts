@@ -39,7 +39,7 @@ export interface ContentTypeStatus {
   total: number;
   scanned: number;
   average_compliance: number | null;
-  issues: number;
+  issues: number | null;
 }
 
 export interface ContentItemStatus {
@@ -50,7 +50,7 @@ export interface ContentItemStatus {
   title: string;
   content_type: string;
   compliance_score: number | null;
-  issue_count: number;
+  issue_count: number | null;
   writeback_status: string | null;
   has_remediated_version: boolean;
   remediation_origin: 'automatic' | 'manual' | null;
@@ -149,9 +149,9 @@ export interface CourseOverviewItem {
   total_items: number;
   scanned_items: number;
   avg_compliance: number | null;
-  total_issues: number;
+  total_issues: number | null;
   written_back: number;
-  status: 'not_started' | 'critical' | 'at_risk' | 'on_track' | 'compliant';
+  status: 'not_started' | 'unassessed' | 'critical' | 'at_risk' | 'on_track' | 'compliant';
 }
 
 export interface CourseOverviewResponse {
@@ -159,7 +159,7 @@ export interface CourseOverviewResponse {
   total_items: number;
   total_scanned: number;
   avg_compliance: number | null;
-  total_issues: number;
+  total_issues: number | null;
   courses: CourseOverviewItem[];
   deadline: DeadlineInfo | null;
 }

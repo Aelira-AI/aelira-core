@@ -65,6 +65,7 @@ from ..services.remediation_artifact_service import (
 from ..services.scan_fix_service import build_output_membership, persist_scan_fixes
 from ..services.job_enqueue_service import enqueue_cloud_job
 from ..education.remediation.score_reporting import fresh_score_comparison, score_fields
+from ..education.current_compliance import public_scan_issues
 from ..education.remediation.pdf_recovery_plan import ReviewedPDFRecovery
 from ..education.remediation.latex_pdf_validation import (
     latex_result_fields,
@@ -1075,6 +1076,11 @@ async def process_remediation_job(
         # Managed artifacts supersede caller-visible backup paths.
 
         # 6. Parse issues into RemediationIssue objects
+        source_issues = (
+            public_scan_issues(scan, scan_result)
+            if scan.scan_type in {ScanType.VIDEO, ScanType.MULTIMEDIA}
+            else scan_result.issues
+        )
         issues = (
             [
                 {
@@ -1095,7 +1101,7 @@ async def process_remediation_job(
             else (
                 reviewed_pptx_issues
                 if reviewed_pptx_issues is not None
-                else (scan_result.issues or [])
+                else (source_issues or [])
             )
         )
         if (

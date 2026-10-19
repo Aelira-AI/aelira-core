@@ -14,10 +14,15 @@ Multimedia remediation is CRITICAL for video lectures in higher education.
 import logging
 import os
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .webvtt_verification import (
+    caption_file_problem,
+    cue_text,
+    is_missing_captions_finding,
+)
 from .base import (
     BaseRemediator,
     IssueCategory,
@@ -90,6 +95,7 @@ class MultimediaRemediator(BaseRemediator):
         self._caption_file: Optional[str] = None
         self._transcript_file: Optional[str] = None
         self._audio_description_file: Optional[str] = None
+        self._media_duration: Optional[float] = None
 
         # Track modifications
         self._modifications: List[str] = []
@@ -166,6 +172,17 @@ class MultimediaRemediator(BaseRemediator):
             "audio_descriptions": self._audio_description_file,
         }
 
+    def _is_issue_enabled(self, issue: RemediationIssue) -> bool:
+        """
+        Captions and transcripts come from local speech recognition, not an AI
+        provider. WCAG 1.2.x findings map to the alt-text category, whose switch
+        tracks AI client availability, so they must not inherit that gate.
+        Audio descriptions still do.
+        """
+        if is_missing_captions_finding(issue.description):
+            return True
+        return super()._is_issue_enabled(issue)
+
     def can_auto_fix(self, issue: RemediationIssue) -> bool:
         """
         Determine if a multimedia issue can be automatically fixed.
@@ -178,9 +195,12 @@ class MultimediaRemediator(BaseRemediator):
         """
         description_lower = issue.description.lower()
 
-        # Caption issues - we can auto-generate
-        if "caption" in description_lower or "subtitle" in description_lower:
+        # A missing caption track - we can generate one. Caption-quality findings
+        # describe the source transcription, which a generated file does not change.
+        if is_missing_captions_finding(issue.description):
             return True
+        if "caption" in description_lower or "subtitle" in description_lower:
+            return False
 
         # Transcript issues - we can auto-generate
         if "transcript" in description_lower:
@@ -213,7 +233,7 @@ class MultimediaRemediator(BaseRemediator):
         try:
             description_lower = issue.description.lower()
 
-            if "caption" in description_lower or "subtitle" in description_lower:
+            if is_missing_captions_finding(issue.description):
                 return self._generate_captions()
 
             elif "transcript" in description_lower:
@@ -230,6 +250,8 @@ class MultimediaRemediator(BaseRemediator):
 
     def _generate_captions(self) -> bool:
         """Generate captions/subtitles using speech-to-text."""
+        if self._caption_file and self._transcription:
+            return True  # One transcription per job; it can take minutes.
         processor = self._get_processor()
         if not processor:
             return False
@@ -247,6 +269,7 @@ class MultimediaRemediator(BaseRemediator):
             )
 
             if result and result.transcription:
+                self._media_duration = getattr(result, "duration", None)
                 self._transcription = [
                     {
                         "start": seg.start_time,
@@ -258,9 +281,7 @@ class MultimediaRemediator(BaseRemediator):
 
                 # Generate VTT caption file
                 vtt_content = self._generate_vtt(self._transcription)
-                self._caption_file = self._get_output_path().replace(
-                    self.file_ext, ".vtt"
-                )
+                self._caption_file = self._companion_path(".vtt")
 
                 with open(self._caption_file, "w", encoding="utf-8") as f:
                     f.write(vtt_content)
@@ -308,9 +329,7 @@ class MultimediaRemediator(BaseRemediator):
             if self._transcription:
                 # Generate plain text transcript
                 transcript_text = self._generate_transcript_text(self._transcription)
-                self._transcript_file = self._get_output_path().replace(
-                    self.file_ext, "_transcript.txt"
-                )
+                self._transcript_file = self._companion_path("_transcript.txt")
 
                 with open(self._transcript_file, "w", encoding="utf-8") as f:
                     f.write(transcript_text)
@@ -352,8 +371,8 @@ class MultimediaRemediator(BaseRemediator):
                 ad_content = self._generate_audio_description_text(
                     result.audio_descriptions
                 )
-                self._audio_description_file = self._get_output_path().replace(
-                    self.file_ext, "_audio_descriptions.txt"
+                self._audio_description_file = self._companion_path(
+                    "_audio_descriptions.txt"
                 )
 
                 with open(self._audio_description_file, "w", encoding="utf-8") as f:
@@ -372,14 +391,20 @@ class MultimediaRemediator(BaseRemediator):
 
         return False
 
+    def _companion_path(self, suffix: str) -> str:
+        """Name a companion file after the output stem, e.g. lecture_remediated.vtt."""
+        output = Path(self._get_output_path())
+        return str(output.with_name(output.stem + suffix))
+
     def _generate_vtt(self, segments: List[Dict]) -> str:
         """Generate WebVTT caption file content."""
         vtt = "WEBVTT\n\n"
+        # One cue line per segment; blank segments would make invalid cues.
+        cues = [(seg, text) for seg in segments if (text := cue_text(seg["text"]))]
 
-        for i, seg in enumerate(segments, 1):
+        for i, (seg, text) in enumerate(cues, 1):
             start = self._format_timestamp(seg["start"])
             end = self._format_timestamp(seg["end"])
-            text = seg["text"].strip()
 
             vtt += f"{i}\n"
             vtt += f"{start} --> {end}\n"
@@ -442,7 +467,7 @@ class MultimediaRemediator(BaseRemediator):
             Path to ZIP file or None if failed
         """
         try:
-            zip_path = self._get_output_path().replace(self.file_ext, "_accessible.zip")
+            zip_path = self._companion_path("_accessible.zip")
 
             files_to_include = []
 
@@ -538,10 +563,10 @@ class MultimediaRemediator(BaseRemediator):
 
     def _format_timestamp(self, seconds: float) -> str:
         """Format seconds to HH:MM:SS.mmm timestamp."""
-        td = timedelta(seconds=seconds)
-        hours, remainder = divmod(td.seconds, 3600)
+        total_ms = max(0, int(round(seconds * 1000)))
+        total_seconds, ms = divmod(total_ms, 1000)
+        hours, remainder = divmod(total_seconds, 3600)
         minutes, secs = divmod(remainder, 60)
-        ms = int((seconds % 1) * 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}.{ms:03d}"
 
     def _get_rule_based_fix(
@@ -561,30 +586,87 @@ class MultimediaRemediator(BaseRemediator):
         return None
 
     def _verify_fixes(self, output_path: str):
-        """Verify that companion files were generated correctly."""
-        issues = []
+        """
+        Keep generated captions as a reviewable fix only when the saved output is
+        the caption file and its cues are exactly the transcription. That proves
+        structure and provenance, not accuracy, so the fix always needs review.
+        Transcripts and audio descriptions are not in that output and stay manual.
+        """
+        from .base import VerificationResult
 
-        # Check caption file
-        if self._caption_file and os.path.exists(self._caption_file):
-            with open(self._caption_file, "r", encoding="utf-8") as f:
-                content = f.read()
-            if "WEBVTT" not in content:
-                issues.append("Caption file missing WEBVTT header")
-            if len(content) < 50:
-                issues.append("Caption file may be empty or incomplete")
+        originals = {issue.id: issue for issue in self.issues}
+        caption_ids = [
+            fixed.issue_id
+            for fixed in self.result.fixed_issues
+            if fixed.issue_id in originals
+            and self._is_caption_issue(originals[fixed.issue_id])
+        ]
+        problem = None
+        if not caption_ids:
+            problem = "no caption fix to verify"
+        elif not self._caption_file or os.path.realpath(
+            output_path
+        ) != os.path.realpath(self._caption_file):
+            problem = "the saved output is not the caption file"
+        else:
+            problem = caption_file_problem(
+                output_path, self._transcription or [], self._media_duration
+            )
+        if problem is not None:
+            if caption_ids:
+                self.result.warnings.append(
+                    f"Generated captions were not published: {problem}."
+                )
+            return super()._verify_fixes(output_path)
 
-        # Check transcript file
-        if self._transcript_file and os.path.exists(self._transcript_file):
-            if os.path.getsize(self._transcript_file) < 50:
-                issues.append("Transcript file may be empty")
-
-        if issues:
-            self.result.warnings.extend(issues)
-
+        manual_ids = {issue.issue_id for issue in self.result.manual_issues}
+        kept = []
+        for fixed in self.result.fixed_issues:
+            if fixed.issue_id in caption_ids:
+                fixed.verification_passed = True
+                fixed.needs_review = True
+                fixed.notes = (
+                    "Saved WebVTT structure and cue text match the generated "
+                    "transcription; caption accuracy and timing need human review."
+                )
+                kept.append(fixed)
+                continue
+            fixed.verification_passed = False
+            if fixed.issue_id in originals and fixed.issue_id not in manual_ids:
+                self._add_manual_issue(
+                    originals[fixed.issue_id],
+                    reason="This output is not included in the published caption file.",
+                    recommendation="Review and add this output manually.",
+                )
+                manual_ids.add(fixed.issue_id)
+        self.result.fixed_issues = kept
+        self.result.fixed_count = len(kept)
+        self.result.remediated_compliance_score = None
+        self.result.improvement = None
+        self.result.score_provenance = None
+        self.result.score_measurement = None
+        self.result.score_verification_reason = "incomplete_comparison"
         self.result.warnings.append(
-            "Generated companion files require content review; file presence is not an accessibility rescan."
+            "Generated captions passed structural checks only; review their "
+            "accuracy before publishing them with the media."
         )
-        return super()._verify_fixes(output_path)
+        fixed_ids = [fixed.issue_id for fixed in kept]
+        verification = VerificationResult(
+            passed=True,
+            issues_before=self.result.total_issues,
+            issues_after=len(self.issues) - len(fixed_ids),
+            issues_fixed=fixed_ids,
+            issues_remaining=[
+                issue.id for issue in self.issues if issue.id not in fixed_ids
+            ],
+        )
+        self.result.verification_passed = True
+        self.result.verification_result = verification
+        return verification
+
+    @staticmethod
+    def _is_caption_issue(issue: RemediationIssue) -> bool:
+        return is_missing_captions_finding(issue.description)
 
     def auto_remediate(self) -> bool:
         """

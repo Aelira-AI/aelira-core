@@ -56,6 +56,7 @@ from ..utils.sanitization import sanitize_for_postgres
 from ..services.remediation_artifact_service import (
     ArtifactError,
     RemediationArtifactService,
+    is_companion_artifact,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
 from ..services.canvas_identity_service import (
@@ -1627,6 +1628,14 @@ class CanvasContentScanner:
                 "stale": False,
                 "error": "Managed remediation artifact is unavailable",
                 "error_code": "artifact_unavailable",
+            }
+        if is_companion_artifact(artifact):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Caption files accompany the media and cannot replace it; download them instead",
+                "error_code": "companion_artifact_not_writable",
             }
         if cloud_file.needs_rescan:
             self.db.rollback()

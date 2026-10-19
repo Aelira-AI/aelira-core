@@ -28,7 +28,7 @@ const FORMAT_LABELS: Record<string, string> = {
   audio_descriptions: 'Audio Descriptions (.txt)',
 };
 
-const MULTI_FORMAT_SCAN_TYPES = ['LATEX', 'MULTIMEDIA', 'latex', 'multimedia'];
+const MULTI_FORMAT_SCAN_TYPES = ['LATEX', 'MULTIMEDIA', 'VIDEO', 'latex', 'multimedia', 'video'];
 
 // ============================================================================
 // Helpers

@@ -214,6 +214,30 @@ package version or newly installed component requires a fresh assessment.
 Acceptance requires matching candidate-image evidence and a passing CI run for
 the reviewed source revision on both architectures.
 
+### Medium-severity advisories reviewed in the 0.9.13 candidate
+
+The release gate covers HIGH and CRITICAL findings, so the scanner's MEDIUM
+findings are not listed in `.trivy-unfixed-dispositions.json`. Three of them
+concern the zlib and Cyrus SASL libraries that document conversion depends on,
+and were reviewed against the final candidate images on both architectures.
+None has a fix in Debian. The scanner findings remain visible.
+
+| Advisory | Scanner packages | Assessment |
+| --- | --- | --- |
+| [CVE-2026-107161](https://security-tracker.debian.org/tracker/CVE-2026-107161) | `libsasl2-2`, `libsasl2-modules-db` `2.1.28+dfsg1-9` | Not affected, `vulnerable_code_not_present`. The flaw is in the DIGEST-MD5 plugin (`plugins/digestmd5.c`). The images ship only the core library and the `sasldb` plugin; no DIGEST-MD5 plugin is present in any image layer. |
+| [CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091) | `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` | Not affected, `vulnerable_code_not_present`. The tracker's upstream range begins at 1.3.1.2, where the non-blocking `gzwrite` change was introduced. Debian's `gzwrite.c` is byte-identical to upstream 1.3.1 and lacks that code. This is a source comparison; the compiled library was not compared. |
+| [CVE-2026-27171](https://security-tracker.debian.org/tracker/CVE-2026-27171) | `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` | Not affected, `vulnerable_code_not_in_execute_path`. The flaw requires a negative length passed to `crc32_combine` or `crc32_combine_gen`, and is fixed in zlib 1.3.2. Debian's `crc32.c` matches vulnerable upstream 1.3.1. In each image, the only program importing these functions from the shared library is Perl's `Compress::Raw::Zlib`; no installed Perl code calls them, and LaTeXML's archive handling uses `Archive::Zip`, which does not. |
+
+The images also contain zlib copies the scanner does not see. lxml and
+PyMuPDF statically include zlib 1.3.2, which contains the CVE-2026-27171 fix.
+Both Node.js runtimes carry two Chromium zlib builds, `1.3.2.1-motley` and the
+older `1.3.0.1-motley`, which predates the fix, and export the combine
+functions for native add-ons. No native add-on in the images imports them, and
+the Node.js `zlib` API offers no combine function to JavaScript. Python's
+`zlib` module links the shared library without importing the combine
+functions. A changed zlib or SASL package, or new code calling these
+functions, requires a fresh assessment.
+
 ### CVE-2026-6653 remains open
 
 The historical table's `not_affected` claim for distribution `libxml2` is
