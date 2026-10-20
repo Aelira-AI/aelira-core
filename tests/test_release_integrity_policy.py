@@ -87,6 +87,16 @@ def test_api_image_builds_lxml_from_hash_verified_sources() -> None:
     # zlib.net removes superseded releases from its top level; the fossils
     # archive keeps every release at a permanent address.
     assert "fetch https://zlib.net/fossils/zlib-1.3.2.tar.gz" in script
+    # The zlib repository's release asset carries the same bytes and is only a
+    # fallback: it is passed to the same verifying helper with the same pin.
+    zlib_call = script.split("fetch https://zlib.net/fossils/zlib-1.3.2.tar.gz", 1)[
+        1
+    ].split("\nfetch ", 1)[0]
+    assert sources["zlib-1.3.2.tar.gz"] in zlib_call
+    assert (
+        "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz"
+        in zlib_call
+    )
     # Every download goes through the verifying helper.
     assert script.count("fetch https://") == len(sources)
     assert script.count("curl ") == 1
