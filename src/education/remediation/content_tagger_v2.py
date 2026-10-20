@@ -69,6 +69,10 @@ TABLE_TAGS = {"Table", "TR", "TH", "TD", "THead", "TBody", "TFoot"}
 # Structure types that describe a drawn image rather than a run of text.
 FIGURE_TAGS = {"Figure", "Formula"}
 
+# A structure element carrying a /BBox binds to a block when their rectangles
+# overlap at least this much (intersection over union, PDF coordinates).
+POSITION_MATCH_IOU = 0.7
+
 # Ligature expansion table for text normalization fallback
 _LIGATURES: Dict[str, str] = {
     "\ufb00": "ff",
@@ -891,7 +895,7 @@ class ContentTaggerV2:
             for run in decode_page_text_runs(self.pdf, page_idx, ops)
         }
         fitz_blocks = self._get_fitz_blocks(page_idx)
-        fitz_image_blocks = self._get_fitz_image_blocks(page_idx)
+        image_rects = _image_draw_rects(ops)
         used_elem_indices: set = set()
         matches: List[MatchedBlock] = []
 
@@ -934,16 +938,16 @@ class ContentTaggerV2:
             block_ops = ops[cb_start:cb_end]
             mcid = self._next_mcid
 
-            candidate_boxes = fitz_image_blocks if kind == "image" else fitz_blocks
             if kind == "text" and cb_start not in decoded:
                 raise FontTextBindingError()
             result = self._match_element_to_block(
                 elements,
                 block_ops,
-                candidate_boxes,
+                fitz_blocks,
                 used_elem_indices,
                 kind,
                 decoded_text=decoded.get(cb_start) if kind == "text" else None,
+                block_rect=image_rects.get(cb_start) if kind == "image" else None,
             )
 
             if result is not None:
@@ -1134,40 +1138,6 @@ class ContentTaggerV2:
             logger.warning(f"Page {page_idx}: fitz block extraction failed: {exc}")
         return blocks
 
-    def _get_fitz_image_blocks(
-        self, page_idx: int
-    ) -> List[Tuple[float, float, float, float, str]]:
-        """Get image rectangles from PyMuPDF, in PDF coordinate space.
-
-        get_text("blocks") only reports text, so image placement has to be
-        asked for separately before a Figure can be matched by position.
-        """
-        blocks: List[Tuple[float, float, float, float, str]] = []
-        try:
-            fitz_page = self.fitz_doc[page_idx]
-            page_height = fitz_page.rect.height
-
-            for img in fitz_page.get_images(full=True):
-                xref = img[0]
-                try:
-                    rects = fitz_page.get_image_rects(xref)
-                except Exception:
-                    continue
-                for rect in rects:
-                    # Convert fitz (top-left origin) to PDF (bottom-left origin)
-                    blocks.append(
-                        (
-                            float(rect.x0),
-                            float(page_height - rect.y1),
-                            float(rect.x1),
-                            float(page_height - rect.y0),
-                            "",
-                        )
-                    )
-        except Exception as exc:
-            logger.warning(f"Page {page_idx}: fitz image extraction failed: {exc}")
-        return blocks
-
     # ------------------------------------------------------------------
     # Content stream block finding
     # ------------------------------------------------------------------
@@ -1272,23 +1242,32 @@ class ContentTaggerV2:
         kind: str = "text",
         *,
         decoded_text: Optional[str] = None,
+        block_rect: Optional[Tuple[float, float, float, float]] = None,
     ) -> Optional[Tuple[Any, str, float]]:
         """Match a content block to a structure element.
 
-        Strategy:
+        Strategy for text:
         1. Position match: get element /A /BBox, compute IoU with fitz blocks.
            Accept if IoU >= 0.7 (confidence = 0.90).
         2. Text fallback: NFKD + ligature normalization (confidence = 0.75).
+
+        An image block takes ``_match_figure_to_image``, which compares a Figure
+        with the block's own rectangle only.
 
         Args:
             elements: Candidate structure elements for this page.
             block_ops: Operators for this content block.
             fitz_blocks: PyMuPDF text blocks (x0, y0, x1, y1, text) in PDF coords.
             used_indices: Set of already-matched element indices (by list position).
+            block_rect: For an image block, the draw's rectangle in default user
+                space, or None when it cannot be determined.
 
         Returns:
             (struct_elem, match_type, confidence) or None if no match found.
         """
+        if kind == "image":
+            return self._match_figure_to_image(elements, used_indices, block_rect)
+
         for elem_idx, elem in enumerate(elements):
             if elem_idx in used_indices:
                 continue
@@ -1301,13 +1280,10 @@ class ContentTaggerV2:
             if elem_type_raw in TABLE_TAGS:
                 continue
 
-            # Keep the two kinds apart: a text run must not consume the Figure
-            # that describes an image, and an image must not be handed a
+            # A text run must not consume the Figure that describes an image.
+            # Images take their own path, so an image is never handed a
             # paragraph element.
-            is_figure = elem_type_raw in FIGURE_TAGS
-            if kind == "image" and not is_figure:
-                continue
-            if kind == "text" and is_figure:
+            if elem_type_raw in FIGURE_TAGS:
                 continue
 
             if kind == "text" and self._order_generated_structure:
@@ -1336,7 +1312,7 @@ class ContentTaggerV2:
                     if iou > best_iou:
                         best_iou = iou
 
-                if best_iou >= 0.7:
+                if best_iou >= POSITION_MATCH_IOU:
                     used_indices.add(elem_idx)
                     return (elem, "position", 0.90)
 
@@ -1365,23 +1341,59 @@ class ContentTaggerV2:
                     used_indices.add(elem_idx)
                     return (elem, "text", 0.75)
 
-        # --- Ordinal fallback for images ---
-        # A Figure written by the alt-text pass may carry no /A /BBox, and an
-        # image block has no text to fall back on, so neither strategy above
-        # can fire. Binding the next unused Figure in document order keeps the
-        # generated alt text attached to the image it describes; creating a
-        # fresh Figure instead would orphan it.
-        if kind == "image":
-            for elem_idx, elem in enumerate(elements):
-                if elem_idx in used_indices:
-                    continue
-                if Name.S not in elem:
-                    continue
-                if str(elem[Name.S]).lstrip("/") not in FIGURE_TAGS:
-                    continue
-                used_indices.add(elem_idx)
-                return (elem, "ordinal", 0.50)
+        return None
 
+    def _match_figure_to_image(
+        self,
+        elements: List[Any],
+        used_indices: set,
+        block_rect: Optional[Tuple[float, float, float, float]],
+    ) -> Optional[Tuple[Any, str, float]]:
+        """Bind one image draw to the Figure written for exactly that image.
+
+        The alt-text pass records each Figure's position as a /BBox in default
+        user space. The block's own rectangle comes from the content stream, so
+        a Figure binds to a draw only where its box overlaps that draw's
+        rectangle and no other image's. The best overlap wins, and a draw whose
+        rectangle is unknown binds no positioned Figure.
+
+        A Figure that carries a /BBox is never paired by order. Its position
+        says which image it describes, so another image must not take it when
+        its own draw does not match. Only a Figure with no position at all can
+        be paired by order, which keeps a single image or a hand-built
+        structure working as before.
+        """
+        best: Optional[Tuple[float, int, Any]] = None
+        for elem_idx, elem in enumerate(elements):
+            if elem_idx in used_indices or Name.S not in elem:
+                continue
+            if str(elem[Name.S]).lstrip("/") not in FIGURE_TAGS:
+                continue
+            elem_bbox = self._get_element_bbox(elem)
+            if elem_bbox is None or block_rect is None:
+                continue
+            iou = self._compute_iou(elem_bbox, block_rect)
+            if iou >= POSITION_MATCH_IOU and (best is None or iou > best[0]):
+                best = (iou, elem_idx, elem)
+        if best is not None:
+            used_indices.add(best[1])
+            return (best[2], "position", 0.90)
+
+        # --- Ordinal fallback for images ---
+        # A Figure written without a position carries nothing but its place in
+        # document order, and an image block has no text to fall back on.
+        # Binding the next unused unpositioned Figure keeps the generated alt
+        # text attached to the image it describes; creating a fresh Figure
+        # instead would orphan it.
+        for elem_idx, elem in enumerate(elements):
+            if elem_idx in used_indices or Name.S not in elem:
+                continue
+            if str(elem[Name.S]).lstrip("/") not in FIGURE_TAGS:
+                continue
+            if self._get_element_bbox(elem) is not None:
+                continue
+            used_indices.add(elem_idx)
+            return (elem, "ordinal", 0.50)
         return None
 
     def _get_element_bbox(
@@ -1666,6 +1678,61 @@ def _association_failure(pending: Any, error: str) -> FormulaAssociationResult:
         image_xref=int(getattr(pending, "image_xref", 0) or 0),
         occurrence_ordinal=int(getattr(pending, "occurrence_ordinal", 0) or 0),
     )
+
+
+def _multiply_matrices(
+    left: Tuple[float, ...], right: Tuple[float, ...]
+) -> Tuple[float, float, float, float, float, float]:
+    """Return ``left`` applied first, then ``right`` (PDF row-vector order)."""
+    a1, b1, c1, d1, e1, f1 = left
+    a2, b2, c2, d2, e2, f2 = right
+    return (
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    )
+
+
+def _image_draw_rects(
+    ops: List[Any],
+) -> Dict[int, Tuple[float, float, float, float]]:
+    """Return each image draw's rectangle in default user space, by operator index.
+
+    An image fills the unit square of the current transformation matrix, so the
+    rectangle follows from the matrices that ``q``, ``Q`` and ``cm`` leave in
+    force at the draw. The rectangle is therefore the draw's own, in the space
+    a structure element's /BBox is written in. A stream whose graphics state
+    cannot be followed (an unbalanced ``Q``, malformed or non-finite operands)
+    yields no rectangles, so nothing is matched by position.
+    """
+    rects: Dict[int, Tuple[float, float, float, float]] = {}
+    matrix: Tuple[float, ...] = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    stack: List[Tuple[float, ...]] = []
+    try:
+        for index, op in enumerate(ops):
+            name = str(op.operator)
+            if name == "q":
+                stack.append(matrix)
+            elif name == "Q":
+                if not stack:
+                    return {}
+                matrix = stack.pop()
+            elif name == "cm":
+                values = tuple(float(value) for value in op.operands)
+                if len(values) != 6 or not all(math.isfinite(v) for v in values):
+                    return {}
+                matrix = _multiply_matrices(values, matrix)
+            elif name in ("Do", "INLINE IMAGE", "INLINE_IMAGE"):
+                a, b, c, d, e, f = matrix
+                xs = (e, a + e, c + e, a + c + e)
+                ys = (f, b + f, d + f, b + d + f)
+                rects[index] = (min(xs), min(ys), max(xs), max(ys))
+    except Exception:
+        return {}
+    return rects
 
 
 def _resolved_image_do_indices(page: Any, ops: List[Any], image_xref: int) -> List[int]:

@@ -4435,7 +4435,6 @@ class PdfRemediator(BaseRemediator):
         try:
             page_num = issue.metadata.get("page_number", 1)
             image_index = issue.metadata.get("image_index", 0)
-            image_bbox = issue.metadata.get("bbox")
 
             # An existing tagged image must keep its actual content owner.
             # A new root-level Figure cannot describe an already owned draw.
@@ -4505,12 +4504,26 @@ class PdfRemediator(BaseRemediator):
 
             # Newly generated structure is bound by the content tagger and
             # independently checked after save; no existing owner is replaced.
-            if self._struct_tree and alt_text:
+            # The Figure records the exact rectangle of the one draw it
+            # describes, in default user space, so the tagger can bind it to
+            # that draw and no other. When the occurrence is known but its draw
+            # cannot be resolved there is nothing to bind the Figure by, so none
+            # is written and the description is not placed. An issue that
+            # carries no occurrence identity gets a Figure with no position,
+            # which only a single image or a hand-built structure can bind.
+            from .pdf_image_finding_identity import _identity
+
+            layout_bbox = None
+            placeable = True
+            if _identity(issue) is not None:
+                layout_bbox = self._image_layout_bbox(issue)
+                placeable = layout_bbox is not None
+            if self._struct_tree and alt_text and placeable:
                 if self._struct_tree.add_alt_text_to_image(
                     page_num=page_num,
                     alt_text=alt_text,
                     image_index=image_index,
-                    image_bbox=image_bbox,
+                    image_bbox=layout_bbox,
                 ):
                     self._structure_modified = True
                     logger.info(
@@ -4540,6 +4553,66 @@ class PdfRemediator(BaseRemediator):
         except Exception as e:
             logger.error(f"Error applying alt text fix: {e}")
             return False
+
+    def _image_layout_bbox(
+        self, issue: RemediationIssue
+    ) -> Optional[tuple[float, float, float, float]]:
+        """Return the rectangle of the one draw this finding describes.
+
+        The occurrence identity names a displayed image and its ordinal among
+        the draws of that image. The draw is the ordinal-th direct ``Do`` of the
+        image's resource in the source page content, and its rectangle follows
+        from the transformation matrices in force there. That is default user
+        space, the space a /BBox is written in and the space the content tagger
+        derives for every draw, whatever the page's rotation or crop box. None
+        when the draw cannot be resolved exactly: the identity matches no single
+        displayed occurrence, or the page's direct draws of that image and its
+        displayed occurrences disagree in number.
+        """
+        from .content_tagger_v2 import _image_draw_rects, _resolved_image_do_indices
+        from .pdf_image_finding_identity import _identity
+
+        identity = _identity(issue)
+        if identity is None:
+            return None
+        page_number, xref, _, ordinal = (
+            identity[0],
+            identity[1],
+            identity[2],
+            identity[3],
+        )
+        try:
+            with (
+                fitz.open(self.file_path) as source_document,
+                pikepdf.open(self.file_path, attempt_recovery=False) as source_pdf,
+            ):
+                occurrences = _displayed_image_occurrences(
+                    source_document[page_number - 1], page_number
+                )
+                matches = [
+                    occurrence
+                    for occurrence in occurrences
+                    if (
+                        occurrence["page_number"],
+                        occurrence["image_xref"],
+                        occurrence["image_index"],
+                        occurrence["occurrence_ordinal"],
+                        tuple(occurrence["bbox"]),
+                        occurrence["occurrence_id"],
+                    )
+                    == identity
+                ]
+                displayed = [item for item in occurrences if item["image_xref"] == xref]
+                page = source_pdf.pages[page_number - 1]
+                ops = list(pikepdf.parse_content_stream(page))
+                draws = _resolved_image_do_indices(page, ops, xref)
+                if len(matches) != 1 or len(draws) != len(displayed):
+                    return None
+                if not 0 <= ordinal < len(draws):
+                    return None
+                return _image_draw_rects(ops).get(draws[ordinal])
+        except Exception:
+            return None
 
     def _refuse_source_binding(self, issue: RemediationIssue, reason: str) -> bool:
         refusals = getattr(self, "_source_binding_refusals", {})

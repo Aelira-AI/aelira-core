@@ -32,6 +32,8 @@ from PIL import Image
 
 from src.db.models import RemediationOutcome, ScanFix, ScanResult
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+from src.education.pdf_checks.image_checker import _displayed_image_occurrences
+from src.education.pdf_checks.image_semantics import structured_image_semantics
 from src.education.pdf_processor import PDFProcessor
 from src.education.remediation import image_equation_gate
 from src.education.remediation.base import RemediationConfig
@@ -107,6 +109,34 @@ def source_pdf(tmp_path: Path, equation_png: bytes) -> Path:
     return path
 
 
+GREEN_SQUARE = "A green square"
+
+
+@pytest.fixture
+def equation_first_pdf(tmp_path: Path, equation_png: bytes) -> Path:
+    """The equation image first, an ordinary image far below it.
+
+    The ordinary image is more than 48 points from the cue, so only the first
+    image is an equation candidate. Both images lack alternative text.
+    """
+    with Image.open(io.BytesIO(equation_png)) as image:
+        width, height = image.size
+    green = io.BytesIO()
+    Image.new("RGB", (80, 80), "green").save(green, format="PNG")
+    path = tmp_path / "equation-first.pdf"
+    with fitz.open() as doc:
+        page = doc.new_page(width=612, height=792)
+        page.insert_textbox(fitz.Rect(72, 72, 540, 130), BODY_TEXT, fontsize=11)
+        page.insert_text((72, 160), "Equation 1", fontsize=11)
+        page.insert_image(
+            fitz.Rect(72, 170, 72 + 36 * width / height, 206), stream=equation_png
+        )
+        page.insert_image(fitz.Rect(72, 400, 132, 460), stream=green.getvalue())
+        assert len(page.get_text().strip()) >= 100
+        doc.save(path)
+    return path
+
+
 class _Reader:
     """An alt-text-purpose client that reads the equation and refuses all else."""
 
@@ -132,20 +162,39 @@ class _Reader:
         return {"success": False, "content": ""}
 
 
-def _scan(source: Path):
+class _DescribingReader(_Reader):
+    """Reads the equation and describes any other image it is asked about."""
+
+    def analyze_image_sync(self, *, image_data: bytes, prompt: str, **kwargs: Any):
+        if prompt == RECOGNIZER_PROMPT:
+            return super().analyze_image_sync(
+                image_data=image_data, prompt=prompt, **kwargs
+            )
+        self.kinds.append("generic")
+        return {"success": True, "content": GREEN_SQUARE}
+
+
+def _scan(source: Path, *, other_images: int = 0):
     """Scan the source and prove the probe sees both findings first."""
     scan = PDFProcessor().process_pdf(str(source))
     kinds = Counter(issue.get("issue_type") for issue in scan.issues)
-    assert kinds["missing_alt_text"] == 1, kinds
+    assert kinds["missing_alt_text"] == 1 + other_images, kinds
     assert kinds[IMAGE_EQUATION_ISSUE_TYPE] == 1, kinds
     for index, issue in enumerate(scan.issues):
         issue["id"] = f"source-{index}"
     return scan
 
 
-def _remediate(source: Path, tmp_path: Path, reading: str):
-    scan = _scan(source)
-    reader = _Reader(reading)
+def _remediate(
+    source: Path,
+    tmp_path: Path,
+    reading: str,
+    *,
+    reader: _Reader | None = None,
+    other_images: int = 0,
+):
+    scan = _scan(source, other_images=other_images)
+    reader = reader or _Reader(reading)
     remediator = PdfRemediator(
         str(source),
         scan.issues,
@@ -160,6 +209,23 @@ def _remediate(source: Path, tmp_path: Path, reading: str):
         alt_text_client=reader,
     )
     return scan, remediator, remediator.remediate(), reader
+
+
+def _carried_by_image(path: str) -> dict[int, tuple[bool, str | None]]:
+    """What each image of the saved file carries, keyed by its embedded width.
+
+    The width is read from the saved file for each displayed occurrence, so the
+    answer follows the image itself and not its place in the document.
+    """
+    with fitz.open(path) as doc:
+        occurrences = _displayed_image_occurrences(doc[0], 1)
+        widths = {
+            item["occurrence_id"]: doc.extract_image(item["image_xref"])["width"]
+            for item in occurrences
+        }
+    semantics = structured_image_semantics(path, 0, occurrences)
+    assert semantics is not None
+    return {widths[key]: value for key, value in semantics.items()}
 
 
 def _rescan_kinds(path: str) -> Counter:
@@ -390,7 +456,7 @@ async def test_unrelated_reading_is_published_without_equation_content_or_gate(
         # keeps only the alt-less Figure the generic tagger gives every image.
         structure = _structure(result.output_file)
         assert "/Formula" not in [role for role, _ in structure]
-        assert [alt for role, alt in structure if role == "/Figure"] == [None]
+        assert all(alt is None for role, alt in structure if role == "/Figure")
         readable = _readable_bytes(result.output_file, tmp_path)
         for marker in EQUATION_CONTENT_MARKERS:
             assert marker not in readable, marker
@@ -416,7 +482,9 @@ async def test_unrelated_reading_is_published_without_equation_content_or_gate(
     assert run.published == [run.claimed]
     run.service.abort_staging.assert_not_called()
     assert run.gate_calls == []
-    assert [row.source_kind for row in run.rows] == [None, None, None]
+    # No stored row carries an image-equation kind, and none belongs to the image.
+    assert all(row.source_kind != "image_equation" for row in run.rows)
+    assert not {row.issue_id for row in run.rows} & set(ids.values())
     assert "image_equation_not_human_approved" not in artifact_review_blockers(run.rows)
 
     # The recorded outcome lists the image as manual work, with the equation's
@@ -429,3 +497,70 @@ async def test_unrelated_reading_is_published_without_equation_content_or_gate(
     )
     assert not [item for item in outcomes.values() if item["status"] == "withheld"]
     assert run.outcome["withheld_count"] == 0
+
+
+async def test_equation_first_page_describes_the_second_image_on_its_own_figure(
+    tmp_path: Path, equation_first_pdf: Path, equation_png: bytes
+) -> None:
+    """A rejected equation before an ordinary image no longer misplaces its text.
+
+    The equation image stays undescribed and the description of the second image
+    lands on that image's own Figure. The file verifies and publishes, the
+    equation and its image finding are manual work, and the second image's fix
+    is credited.
+    """
+    scan, remediator, result, reader = _remediate(
+        equation_first_pdf,
+        tmp_path,
+        UNRELATED_LATEX,
+        reader=_DescribingReader(UNRELATED_LATEX),
+        other_images=1,
+    )
+    equation_ids = _issue_ids(remediator, IMAGE_INDEX)
+    other_ids = _issue_ids(remediator, 1)
+    try:
+        assert result.success, result.error_message
+        # One reading of the equation and one description, for the other image.
+        assert reader.kinds == ["recognition", "generic"]
+
+        # By image: the equation image carries nothing, the green image carries
+        # its own description, whatever order the Figures come in.
+        with Image.open(io.BytesIO(equation_png)) as image:
+            equation_width = image.width
+        carried = _carried_by_image(result.output_file)
+        assert carried[equation_width] == (False, None)
+        assert carried[80] == (True, GREEN_SQUARE)
+        structure = _structure(result.output_file)
+        assert [alt for role, alt in structure if role == "/Figure"] == [
+            None,
+            GREEN_SQUARE,
+        ]
+        assert "/Formula" not in [role for role, _ in structure]
+
+        assert result.verification_passed, result.verification_result
+        assert result.verification_result.unavailable_checks == []
+        assert _manual(result, equation_ids[IMAGE_EQUATION_ISSUE_TYPE]).reason == (
+            "equation_verification_failed"
+        )
+        assert _manual(result, equation_ids["missing_alt_text"]).reason == (
+            "image_equation_alt_text_withheld"
+        )
+        assert _fixed(result, other_ids["missing_alt_text"]).fixed_content == (
+            GREEN_SQUARE
+        )
+        assert contains_image_equation_fixes(result.fixed_issues) is False
+        readable = _readable_bytes(result.output_file, tmp_path)
+        for marker in EQUATION_CONTENT_MARKERS:
+            assert marker not in readable, marker
+        run = await _publish(tmp_path, equation_first_pdf, scan, remediator, result)
+    finally:
+        result.close_output_claim()
+
+    assert run.outcome["success"] is True
+    assert run.provider_result["requires_approval"] is False
+    assert run.gate_calls == []
+    outcomes = {item["issue_id"]: item for item in run.outcome["issue_outcomes"]}
+    assert outcomes[equation_ids["missing_alt_text"]]["status"] == "manual"
+    assert outcomes[equation_ids[IMAGE_EQUATION_ISSUE_TYPE]]["status"] == "manual"
+    assert outcomes[other_ids["missing_alt_text"]]["status"] == "fixed"
+    assert not [item for item in outcomes.values() if item["status"] == "withheld"]

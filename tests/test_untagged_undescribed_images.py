@@ -18,8 +18,10 @@ round-trip verifier are replaced, as in the equation coordination tests.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import pikepdf
@@ -33,6 +35,7 @@ from src.education.pdf_checks.image_semantics import (
     is_untagged_pdf,
 )
 from src.education.remediation import pdf_remediator
+from src.education.remediation.content_tagger_v2 import ContentTaggerV2
 from src.education.remediation.image_equation_gate import (
     contains_image_equation_fixes,
     require_image_equation_matterhorn_result,
@@ -45,6 +48,7 @@ from src.education.remediation.pdf_image_finding_identity import (
 )
 from src.education.remediation.pdf_remediator import PdfRemediator
 from src.education.validation.matterhorn import MatterhornValidator
+from tests.test_printed_equation_end_to_end import _publish
 from tests.test_equation_alt_text_coordination import (
     ALT_TEXT_WITHHELD,
     CUE_TEXT,
@@ -283,20 +287,86 @@ def test_undescribed_figure_without_a_manual_finding_still_fails_closed(
         result.close_output_claim()
 
 
-def test_description_attached_to_the_wrong_figure_is_still_withheld(
+def test_description_of_the_second_image_lands_on_the_second_figure(
     tmp_path: Path, install_verifier
 ) -> None:
-    """The content tagger binds a generated Figure to the first image in order.
+    """An undescribed image before a described one no longer misplaces the text.
 
-    When an undescribed image comes before a described one, the description of
-    the second lands on the first image's Figure. Every finding is recorded and
-    the counts agree, but the file describes an image with another image's
-    text. The proof refuses it, because the described image has no verified fix
-    of its own. The file is withheld, as it is without this proof. Should the
-    tagger bind by identity, this case becomes publishable and the assertions
-    here should expect that.
+    The equation is drawn first and its reading is rejected, so it stays
+    undescribed. The generated Figure for the second image records that image's
+    box, so the tagger binds the description to the second image's draw and the
+    first image keeps an alt-less Figure that is listed as manual work. The file
+    verifies and publishes with its other fixes.
     """
     install_verifier(passes=False)
+    source = tmp_path / "source.pdf"
+    _write_untagged_source(source)
+    layout = EQUATION_FIRST
+
+    remediator, result = _run(source, tmp_path, _Provider())
+    try:
+        assert result.success, result.error_message
+        assert _figure_alts(result.output_file) == [None, GENERIC_ALT]
+        # By image, not by position in the tree: the second image is the one
+        # that is described, and the equation image is the one still missing.
+        assert _rescan_missing_alt(result.output_file, layout.ordinary) == []
+        assert len(_rescan_missing_alt(result.output_file, layout.equation)) == 1
+        assert _checkpoint(result.output_file, "13-004").details == (
+            "1 of 2 figures missing /Alt or /ActualText"
+        )
+        assert result.verification_passed, result.verification_result
+        assert result.verification_result.unavailable_checks == []
+
+        equation_ids = _issue_ids(remediator, layout.equation)
+        ordinary_ids = _issue_ids(remediator, layout.ordinary)
+        assert (
+            _fixed(result, ordinary_ids["missing_alt_text"]).fixed_content
+            == GENERIC_ALT
+        )
+        assert _manual(result, equation_ids[IMAGE_EQUATION_ISSUE_TYPE]).reason == (
+            "equation_verification_failed"
+        )
+        assert _manual(result, equation_ids["missing_alt_text"]).reason == (
+            ALT_TEXT_WITHHELD
+        )
+        assert {"language", "title", "structure", "alt_text"} <= {
+            fix.category.value for fix in result.fixed_issues
+        }
+        scan = SimpleNamespace(issues=[{"id": issue.id} for issue in remediator.issues])
+        run = asyncio.run(_publish(tmp_path, source, scan, remediator, result))
+    finally:
+        result.close_output_claim()
+
+    # The job publishes the file, lists the equation image as manual work and
+    # holds nothing for approval.
+    assert run.outcome["success"] is True
+    assert run.provider_result["requires_approval"] is False
+    outcomes = {item["issue_id"]: item for item in run.outcome["issue_outcomes"]}
+    assert outcomes[equation_ids["missing_alt_text"]]["status"] == "manual"
+    assert outcomes[ordinary_ids["missing_alt_text"]]["status"] == "fixed"
+    assert not [item for item in outcomes.values() if item["status"] == "withheld"]
+
+
+def test_misplaced_description_is_still_refused_if_the_tagger_binds_by_order(
+    tmp_path: Path, install_verifier, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proof does not trust the tagger: a misplaced description is withheld.
+
+    The tagger once bound each generated Figure to the first image in order.
+    With that binding restored, the description of the second image lands on the
+    first image's Figure. Every finding is recorded and the counts agree, but the
+    described image has no verified fix of its own, so the proof refuses it.
+    """
+    install_verifier(passes=False)
+
+    def bind_by_order(self: Any, elements: Any, used: set, block_rect: Any):
+        for index, element in enumerate(elements):
+            if index not in used and str(element.get("/S")) == "/Figure":
+                used.add(index)
+                return (element, "ordinal", 0.50)
+        return None
+
+    monkeypatch.setattr(ContentTaggerV2, "_match_figure_to_image", bind_by_order)
     source = tmp_path / "source.pdf"
     _write_untagged_source(source)
     layout = EQUATION_FIRST
