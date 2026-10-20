@@ -107,6 +107,26 @@ EQUATION_REASONS = {
         "recognised as an equation that could not be verified, so no description was written and it needs review",
         "not_applied",
     ),
+    "printed_equation_verifier_unavailable": (
+        "no second, independent reading was available to confirm it",
+        "not_applied",
+    ),
+    "printed_equation_verifier_failed": (
+        "a second, independent reading could not be completed",
+        "not_applied",
+    ),
+    "printed_equation_verifier_declined": (
+        "a second, independent reading did not find a printed equation in it",
+        "not_applied",
+    ),
+    "printed_equation_semantic_disagreement": (
+        "Two independent readings of the equation did not agree",
+        "not_applied",
+    ),
+    "image_equation_alt_text_ambiguous": (
+        "its notation cannot be turned into reliable plain-language alternative text",
+        "not_applied",
+    ),
 }
 
 
@@ -142,6 +162,26 @@ def test_equation_not_read_reasons_say_the_equation_was_not_read_or_changed():
         "image_equation_alt_text_withheld",
     ):
         assert "not read" not in EXPLANATIONS[code][0]
+
+
+def test_second_reading_reasons_say_what_was_and_was_not_established():
+    for code in (
+        "printed_equation_verifier_unavailable",
+        "printed_equation_verifier_failed",
+        "printed_equation_verifier_declined",
+    ):
+        reason, next_step, attempt = EXPLANATIONS[code]
+        # The first reading matched the image; nothing was claimed beyond that.
+        assert "was read once and matched its image" in reason
+        assert reason.endswith("so it was not applied.")
+        assert "manually" in next_step
+        assert attempt == "not_applied"
+    reason, next_step, _ = EXPLANATIONS["printed_equation_semantic_disagreement"]
+    assert "neither was applied" in reason
+    assert "Formula tag and alt text manually" in next_step
+    reason, next_step, _ = EXPLANATIONS["image_equation_alt_text_ambiguous"]
+    assert "was read and confirmed" in reason
+    assert "alternative text yourself" in next_step
 
 
 @pytest.mark.parametrize(

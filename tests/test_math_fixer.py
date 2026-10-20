@@ -91,7 +91,9 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     from types import SimpleNamespace
 
     from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.equation_verifier import canonicalize_mathml
     from src.education.remediation.math_fixer import MathFixer
+    from tests.printed_equation_fixtures import StubSecondReader, primary_reading
 
     calls = []
     validated = SimpleNamespace(
@@ -115,11 +117,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     class Recognizer:
         def recognize(self, image):
             calls.append(("recognizer", image))
-            return SimpleNamespace(
-                classification="printed_equation",
-                latex="x^2 + 1 = 0",
-                model="vision-model",
-            )
+            return primary_reading("x^2 + 1 = 0")
 
     class Verifier:
         def verify(self, image, latex):
@@ -128,7 +126,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
             from latex2mathml.converter import convert
 
             calls.append(("verifier", image, latex))
-            mathml = convert(latex)
+            mathml = canonicalize_mathml(convert(latex))
             return SimpleNamespace(
                 passed=True,
                 source_sha256="a" * 64,
@@ -144,6 +142,14 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
                 required_pixel_similarity=0.98,
             )
 
+        def canonicalize_mathml(self, mathml):
+            return canonicalize_mathml(mathml)
+
+    class RecordingSecondReader(StubSecondReader):
+        def read(self, source):
+            calls.append(("second_reader", source))
+            return super().read(source)
+
     class StructTree:
         def add_formula(self, **kwargs):
             raise AssertionError("association is deferred and must not mutate")
@@ -157,6 +163,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
         image_source=Source(),
         equation_recognizer=Recognizer(),
         equation_verifier=Verifier(),
+        printed_equation_second_reader=RecordingSecondReader("x^2 + 1 = 0"),
     )
     result = fixer._fix_math_issue(
         SimpleNamespace(
@@ -175,7 +182,12 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     assert not result.success
     assert result.error == "image_equation_association_pending"
     assert result.pending_association is not None
-    assert [call[0] for call in calls] == ["source", "recognizer", "verifier"]
+    assert [call[0] for call in calls] == [
+        "source",
+        "recognizer",
+        "verifier",
+        "second_reader",
+    ]
 
 
 def test_image_equation_unexpected_metadata_error_is_stable_and_redacted():

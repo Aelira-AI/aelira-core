@@ -107,8 +107,13 @@ from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
 from .math_fixer import (
+    IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
     IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR,
     IMAGE_EQUATION_EXISTING_OWNER_ERROR,
+    PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
+    PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
+    PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
+    PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
     MathFixer,
     PendingScannedRegionAssociation,
 )
@@ -1585,6 +1590,23 @@ class PdfRemediator(BaseRemediator):
                 "This image could not be matched to exactly one drawing operation "
                 "in the page content, so the equation was not read. Describe the "
                 "equation manually, or remediate the source document."
+            )
+        if error in {
+            PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
+            PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
+            PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
+            PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
+        }:
+            return (
+                "A second, independent reading of this equation did not confirm "
+                "the first, so no Formula was written. Check the equation against "
+                "the image and add its Formula tag and alt text manually."
+            )
+        if error == IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR:
+            return (
+                "The equation's notation cannot be turned into reliable "
+                "plain-language alt text automatically. Write the alt text and "
+                "add the Formula tag manually."
             )
         return (
             "Manually add Formula structure elements with MathML and alt text "

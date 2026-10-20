@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -19,6 +20,8 @@ class EquationRecognition:
     latex: Optional[str]
     provider: Optional[str] = None
     model: Optional[str] = None
+    # sha256 of the provider's answer exactly as received, before any parsing.
+    response_sha256: Optional[str] = None
 
 
 _PROMPT = """Classify this single bounded image. Return exactly one JSON object and no markdown or prose. The only accepted forms are {\"classification\":\"printed_equation\",\"latex\":\"...\"} or {\"classification\":\"not_equation\",\"latex\":null}. Use printed_equation only for one standalone printed mathematical equation. Preserve mathematical meaning in LaTeX."""
@@ -79,6 +82,7 @@ class EquationRecognizer:
             latex=parsed["latex"],
             provider=self._bounded_identity(getattr(client, "provider", None)),
             model=self._bounded_identity(getattr(client, "model", None)),
+            response_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
     def _parse(self, content: str) -> dict[str, Any]:

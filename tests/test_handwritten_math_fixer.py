@@ -149,6 +149,7 @@ def test_hmer_disagreement_stays_manual_without_association():
 
 
 def test_printed_success_never_invokes_hmer():
+    from src.education.printed_equation_policy import PRINTED_VERIFIER_PROMPT_SHA256
     from tests.test_image_equation_math_fixer import Recognizer, Verifier
 
     class NeverHmer:
@@ -158,8 +159,10 @@ def test_printed_success_never_invokes_hmer():
         def verify(self, *_args):
             raise AssertionError("accepted printed equations must not invoke HMER")
 
-    candidate = _fixer("legible-linear", Client("unused"))
-    mathml = candidate._convert_to_mathml("x^2 + 1 = 0")
+    # The only provider call is the printed second reading, answered as printed.
+    client = RawClient('{"classification":"printed_equation","latex":"x^2 + 1 = 0"}')
+    candidate = _fixer("legible-linear", client)
+    mathml = canonicalize_mathml(candidate._convert_to_mathml("x^2 + 1 = 0"))
     candidate.equation_recognizer = Recognizer()
     printed_verifier = Verifier(mathml)
     printed_verifier.evidence = dataclasses.replace(
@@ -174,6 +177,14 @@ def test_printed_success_never_invokes_hmer():
 
     assert result.error == "image_equation_association_pending"
     assert not hasattr(result.verification_evidence, "agreement_count")
+    # HMER is never called, and the second reader is called exactly once.
+    assert len(client.calls) == 1
+    assert (
+        hashlib.sha256(str(client.calls[0]["prompt"]).encode()).hexdigest()
+        == PRINTED_VERIFIER_PROMPT_SHA256
+    )
+    assert result.consensus_evidence is not None
+    assert result.consensus_evidence.agreement_count == 2
 
 
 class RawClient(Client):

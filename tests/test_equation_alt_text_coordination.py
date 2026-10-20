@@ -64,6 +64,13 @@ from src.education.remediation.math_fixer import (
 from src.education.remediation.outcome_explanations import manual_explanation
 from src.education.remediation.pdf_image_finding_identity import occurrence_identity
 from src.education.remediation.pdf_remediator import PdfRemediator
+from src.education.remediation.printed_equation_verifier import (
+    _VERIFIER_PROMPT as SECOND_READING_PROMPT,
+)
+from tests.printed_equation_fixtures import (
+    PRIMARY_RESPONSE_SHA256,
+    StubSecondReader,
+)
 from tests.test_image_equation_content_association import _pending
 
 pytestmark = pytest.mark.unit
@@ -257,11 +264,14 @@ class _Provider:
         self,
         classification: str = "printed_equation",
         latex_by_width: dict[int, str] | None = None,
+        second_latex_by_width: dict[int, str] | None = None,
     ) -> None:
         self.classification = classification
         # Reading returned for an image of the given pixel width, so one
         # document can hold equations that read differently.
         self.latex_by_width = latex_by_width or {}
+        # The blind second reading, which defaults to the same equation.
+        self.second_latex_by_width = second_latex_by_width or {}
         self.calls: list[tuple[str, int]] = []
         self.generic_images: list[str] = []
 
@@ -276,6 +286,18 @@ class _Provider:
                 else {"classification": "not_equation", "latex": None}
             )
             return {"success": True, "content": json.dumps(payload)}
+        if prompt == SECOND_READING_PROMPT:
+            self.calls.append(("second_reading", len(image_data)))
+            with Image.open(io.BytesIO(image_data)) as image:
+                latex = self.second_latex_by_width.get(
+                    image.width, self.latex_by_width.get(image.width, LATEX)
+                )
+            return {
+                "success": True,
+                "content": json.dumps(
+                    {"classification": "printed_equation", "latex": latex}
+                ),
+            }
         if prompt.startswith(GENERIC_PROMPT_START):
             self.calls.append(("generic", len(image_data)))
             self.generic_images.append(hashlib.sha256(image_data).hexdigest())
@@ -426,6 +448,7 @@ def test_deferred_occurrence_never_reaches_the_alt_text_provider(
         # One reading of the equation, and one generic description for the
         # other image only. The equation draw is never described generically.
         assert provider.kinds.count("recognition") == 1
+        assert provider.kinds.count("second_reading") == 1
         assert provider.generic_images == [_image_sha(source, OTHER_INDEX)]
         assert _image_sha(source, EQUATION_INDEX) not in provider.generic_images
         assert provider.kinds.count("other") == 0
@@ -594,6 +617,8 @@ def test_one_verified_and_one_rejected_equation_in_one_document(
         # Both readings were paid for. Neither equation image was described
         # generically, and the rejected one has no Formula and no description.
         assert provider.kinds.count("recognition") == 2
+        # Only the equation the image confirmed is read a second time.
+        assert provider.kinds.count("second_reading") == 1
         assert provider.generic_images == []
         structure = _structure(result.output_file)
         assert [alt for role, alt in structure if role == "/Formula"] == [EQUATION_ALT]
@@ -635,9 +660,10 @@ def test_promoted_alt_text_without_saved_file_verification(
         # One reading of the equation, one generic description for the other
         # image, and nothing else.
         assert provider.kinds.count("recognition") == 1
+        assert provider.kinds.count("second_reading") == 1
         assert provider.generic_images == [_image_sha(source, OTHER_INDEX)]
         assert provider.kinds.count("other") == 0
-        assert len(provider.calls) == 2
+        assert len(provider.calls) == 3
         structure = _structure(result.output_file)
         assert [alt for role, alt in structure if role == "/Formula"] == [EQUATION_ALT]
         assert [alt for role, alt in structure if role == "/Figure"] == [GENERIC_ALT]
@@ -1133,6 +1159,7 @@ class _Recognizer:
             latex=self.latex,
             provider="p",
             model="m",
+            response_sha256=PRIMARY_RESPONSE_SHA256,
         )
 
 
@@ -1148,6 +1175,7 @@ def _fixer(recognizer: _Recognizer, verifier: Any) -> MathFixer:
         image_source=_Source(),
         equation_recognizer=recognizer,
         equation_verifier=verifier,
+        printed_equation_second_reader=StubSecondReader("x^2"),
     )
 
 
@@ -1173,8 +1201,9 @@ _METADATA = {
 def test_result_records_whether_the_specialist_recognised_an_equation(
     classification: str, passes: bool, expected_error: str, recognised: bool
 ) -> None:
-    mathml = latex_to_mathml("x^2")
+    mathml = canonicalize_mathml(latex_to_mathml("x^2"))
     verifier = SimpleNamespace(
+        canonicalize_mathml=canonicalize_mathml,
         verify=lambda image, latex: MathVerificationEvidence(
             passed=passes,
             source_sha256="a" * 64,
@@ -1188,7 +1217,7 @@ def test_result_records_whether_the_specialist_recognised_an_equation(
             pixel_similarity=1.0,
             required_ink_iou=0.9,
             required_pixel_similarity=0.98,
-        )
+        ),
     )
     result = _fixer(_Recognizer(classification), verifier)._fix_math_issue(
         SimpleNamespace(metadata=_METADATA)

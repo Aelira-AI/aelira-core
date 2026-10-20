@@ -39,6 +39,14 @@ from src.education.remediation.equation_verifier import (
 from src.education.remediation.handwritten_equation_verifier import (
     HandwrittenEquationVerificationEvidence,
 )
+from src.education.remediation.printed_equation_verifier import (
+    SEMANTIC_DISAGREEMENT,
+    VERIFIER_DECLINED,
+    PrintedEquationConsensusEvidence,
+    PrintedEquationVerificationRejected,
+    printed_equation_agreement,
+    strip_math_delimiters,
+)
 
 if TYPE_CHECKING:
     from .equation_image_source import WorkingEquationRegionOccurrence
@@ -76,6 +84,14 @@ IMAGE_EQUATION_EXISTING_OWNER_ERROR = "image_equation_existing_owner_unsupported
 # displayed images, or marked content that does not balance). No Formula can be
 # written for it and verified afterwards.
 IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR = "image_equation_draw_unresolved"
+# The plain-language description built from the equation's LaTeX could not be
+# trusted (see ``equation_alt_text_is_ambiguous``), so no Formula is staged.
+IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR = "image_equation_alt_text_ambiguous"
+# Manual reasons for the blind second reading of a printed equation.
+PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR = "printed_equation_verifier_unavailable"
+PRINTED_EQUATION_VERIFIER_FAILED_ERROR = "printed_equation_verifier_failed"
+PRINTED_EQUATION_VERIFIER_DECLINED_ERROR = "printed_equation_verifier_declined"
+PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR = "printed_equation_semantic_disagreement"
 
 
 @dataclass(frozen=True)
@@ -110,6 +126,10 @@ class PendingEquationAssociation:
     verification_evidence: (
         MathVerificationEvidence | HandwrittenEquationVerificationEvidence
     )
+    # Present for every printed equation: the exact two-reading agreement the
+    # saved-file contract must carry. Handwritten equations keep their own
+    # consensus inside ``verification_evidence``.
+    consensus_evidence: Optional[PrintedEquationConsensusEvidence] = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +146,7 @@ class PendingScannedRegionAssociation:
     verification_evidence: (
         MathVerificationEvidence | HandwrittenEquationVerificationEvidence
     )
+    consensus_evidence: Optional[PrintedEquationConsensusEvidence] = None
 
     @property
     def page_number(self) -> int:
@@ -186,8 +207,9 @@ _INLINE_MATH_PATTERNS = [
 # ---------------------------------------------------------------------------
 
 _ARIA_SUBSTITUTIONS: List[tuple] = [
-    # Fractions
-    (re.compile(r"\\frac\{([^}]+)\}\{([^}]+)\}"), r"\1 over \2"),
+    # Fractions and binomial coefficients
+    (re.compile(r"\\[dtc]?frac\{([^}]+)\}\{([^}]+)\}"), r"\1 over \2"),
+    (re.compile(r"\\[dt]?binom\{([^}]+)\}\{([^}]+)\}"), r"\1 choose \2"),
     # Square root
     (re.compile(r"\\sqrt\{([^}]+)\}"), r"square root of \1"),
     (re.compile(r"\\sqrt\[([^\]]+)\]\{([^}]+)\}"), r"\1th root of \2"),
@@ -267,6 +289,9 @@ _ARIA_SUBSTITUTIONS: List[tuple] = [
 ]
 
 
+_EQUATION_ALT_TEXT_FALLBACK = "mathematical equation"
+
+
 def generate_equation_alt_text(latex: str) -> str:
     """Return the existing deterministic plain-English equation label."""
 
@@ -281,7 +306,49 @@ def generate_equation_alt_text(latex: str) -> str:
     for pattern, replacement in _ARIA_SUBSTITUTIONS:
         label = pattern.sub(replacement, label)
     label = label.strip()
-    return label if len(label) >= 2 else "mathematical equation"
+    return label if len(label) >= 2 else _EQUATION_ALT_TEXT_FALLBACK
+
+
+_FRACTION_COMMAND = re.compile(r"\\(?:[dtc]?frac|[dt]?binom)(?![A-Za-z])")
+_FRACTION_ARGUMENTS = re.compile(r"\{[^{}]+\}\{[^{}]+\}")
+_SQRT_COMMAND = re.compile(r"\\sqrt(?![A-Za-z])")
+_SQRT_ARGUMENTS = re.compile(r"(?:\[[^\[\]{}]+\])?\{[^{}]+\}")
+_BRACED_SCRIPT = re.compile(r"\{[^{}]+\}")
+
+
+def equation_alt_text_is_ambiguous(latex: str) -> bool:
+    """Whether the deterministic label cannot be trusted for this LaTeX.
+
+    The label comes from regular expressions, not from the equation's structure.
+    It is refused, never guessed, when it falls back to the generic text, when a
+    fraction, binomial or root does not carry the plain braced arguments the
+    expressions translate, or when a script is not one character or a plain
+    braced group. Without that, ``\\frac12`` would read "12", ``\\binom{n}{k}``
+    "nk" and ``x^2y`` "x to the power 2y".
+    """
+    if generate_equation_alt_text(latex) == _EQUATION_ALT_TEXT_FALLBACK:
+        return True
+    text = strip_math_delimiters(latex)
+    for command in _FRACTION_COMMAND.finditer(text):
+        if _FRACTION_ARGUMENTS.match(text, command.end()) is None:
+            return True
+    for command in _SQRT_COMMAND.finditer(text):
+        if _SQRT_ARGUMENTS.match(text, command.end()) is None:
+            return True
+    for index, character in enumerate(text):
+        if character not in "^_" or (index and text[index - 1] == "\\"):
+            continue
+        script = text[index + 1 :]
+        if script.startswith("{"):
+            if _BRACED_SCRIPT.match(script) is None:
+                return True
+            continue
+        first = script[:1]
+        if not first or first.isspace() or first in "\\{}^_":
+            return True
+        if first.isalnum() and script[1:2].isalnum():
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +382,8 @@ class MathFixResult:
     # whether or not the reading was later verified. A generic image
     # description must not stand in for an equation that could not be proven.
     equation_recognized: bool = False
+    # The printed-equation second-reading agreement, when one was established.
+    consensus_evidence: Optional[PrintedEquationConsensusEvidence] = None
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +429,7 @@ class MathFixer:
         equation_verifier: Optional[Any] = None,
         handwritten_recognizer: Optional[Any] = None,
         handwritten_verifier: Optional[Any] = None,
+        printed_equation_second_reader: Optional[Any] = None,
     ) -> None:
         self.pdf = pdf
         self.fitz_doc = fitz_doc
@@ -389,6 +459,13 @@ class MathFixer:
             from .handwritten_equation_verifier import HandwrittenEquationVerifier
 
             handwritten_verifier = HandwrittenEquationVerifier(alt_text_client)
+        if printed_equation_second_reader is None and alt_text_client is not None:
+            from .printed_equation_verifier import PrintedEquationSecondReader
+
+            printed_equation_second_reader = PrintedEquationSecondReader(
+                alt_text_client
+            )
+        self.printed_equation_second_reader = printed_equation_second_reader
         self.image_source = image_source
         self.region_source = region_source
         self.equation_recognizer = equation_recognizer
@@ -750,6 +827,14 @@ class MathFixer:
                 error="equation_verification_mismatch",
                 page_number=page_number,
             )
+        refusal, consensus = self._printed_equation_second_reading(
+            validated,
+            recognition,
+            staged_mathml_sha256=actual_mathml_sha256,
+            page_number=page_number,
+        )
+        if refusal is not None:
+            return refusal
         aria_label = self._generate_aria_label(recognition.latex)
         identity = validated.identity
         if scanned_region:
@@ -769,6 +854,7 @@ class MathFixer:
                     provider_used=getattr(recognition, "provider", None),
                     model_used=getattr(recognition, "model", None),
                     verification_evidence=evidence,
+                    consensus_evidence=consensus,
                 )
             )
             pending_error = "scanned_equation_region_association_pending"
@@ -786,6 +872,7 @@ class MathFixer:
                 provider_used=getattr(recognition, "provider", None),
                 model_used=getattr(recognition, "model", None),
                 verification_evidence=evidence,
+                consensus_evidence=consensus,
             )
             pending_error = "image_equation_association_pending"
         return MathFixResult(
@@ -803,7 +890,57 @@ class MathFixer:
             model_used=getattr(recognition, "model", None),
             verification_evidence=evidence,
             pending_association=pending,
+            consensus_evidence=consensus,
         )
+
+    def _printed_equation_second_reading(
+        self,
+        validated: Any,
+        recognition: Any,
+        *,
+        staged_mathml_sha256: str,
+        page_number: int,
+    ) -> tuple[Optional[MathFixResult], Optional[PrintedEquationConsensusEvidence]]:
+        """Require a blind second reading that agrees exactly with the first.
+
+        Runs only after the visual comparison passed, so a reading the image
+        already refuted costs no second provider call. The description is
+        checked first for the same reason, and again for the second reading's
+        LaTeX once the two are known to agree.
+        """
+
+        def refuse(error: str) -> tuple[MathFixResult, None]:
+            return (
+                MathFixResult(success=False, error=error, page_number=page_number),
+                None,
+            )
+
+        if equation_alt_text_is_ambiguous(recognition.latex):
+            return refuse(IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR)
+        reader = self.printed_equation_second_reader
+        if reader is None:
+            return refuse(PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR)
+        try:
+            second = reader.read(validated)
+            consensus = printed_equation_agreement(recognition, second)
+        except PrintedEquationVerificationRejected as exc:
+            if str(exc) == VERIFIER_DECLINED:
+                return refuse(PRINTED_EQUATION_VERIFIER_DECLINED_ERROR)
+            if str(exc) == SEMANTIC_DISAGREEMENT:
+                return refuse(PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR)
+            return refuse(PRINTED_EQUATION_VERIFIER_FAILED_ERROR)
+        except Exception:
+            return refuse(PRINTED_EQUATION_VERIFIER_FAILED_ERROR)
+        if (
+            not isinstance(consensus, PrintedEquationConsensusEvidence)
+            or consensus.passed is not True
+            or consensus.source_sha256 != validated.normalized_sha256
+            or consensus.mathml_sha256 != staged_mathml_sha256
+        ):
+            return refuse("equation_verification_mismatch")
+        if equation_alt_text_is_ambiguous(second.latex):
+            return refuse(IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR)
+        return None, consensus
 
     def _prepare_handwritten_equation(
         self, validated: Any, *, page_number: int, scanned_region: bool
@@ -1087,15 +1224,7 @@ class MathFixer:
         if not HAS_LATEX2MATHML or latex_to_mathml is None:
             return ""
 
-        # Strip common delimiters
-        stripped = latex.strip()
-        for delimiter_pair in [("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)")]:
-            start, end = delimiter_pair
-            if stripped.startswith(start) and stripped.endswith(end):
-                stripped = stripped[len(start) : len(stripped) - len(end)].strip()
-                break
-        if stripped.startswith("$") and stripped.endswith("$") and len(stripped) > 1:
-            stripped = stripped[1:-1].strip()
+        stripped = strip_math_delimiters(latex)
 
         try:
             return latex_to_mathml(stripped)

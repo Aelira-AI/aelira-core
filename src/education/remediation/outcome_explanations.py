@@ -89,6 +89,31 @@ EXPLANATIONS = {
         "Review the equation finding for this image, then describe the image manually or correct the source document and rescan.",
         "not_applied",
     ),
+    "printed_equation_verifier_unavailable": (
+        "The equation was read once and matched its image, but no second, independent reading was available to confirm it, so it was not applied.",
+        "Ask your administrator to check the image AI configuration, or check the equation against the image and add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_failed": (
+        "The equation was read once and matched its image, but a second, independent reading could not be completed, so it was not applied.",
+        "Retry remediation, or check the equation against the image and add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_declined": (
+        "The equation was read once and matched its image, but a second, independent reading did not find a printed equation in it, so it was not applied.",
+        "Check the image. If it is an equation, add its Formula tag and alt text manually; if it is not, describe it as an image, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_semantic_disagreement": (
+        "Two independent readings of the equation did not agree, so neither was applied.",
+        "Check the equation against the image, then add its Formula tag and alt text manually, and rescan.",
+        "not_applied",
+    ),
+    "image_equation_alt_text_ambiguous": (
+        "The equation was read and confirmed, but its notation cannot be turned into reliable plain-language alternative text automatically, so it was not applied.",
+        "Write the equation's alternative text yourself and add its Formula tag, or rewrite the equation with braced fractions, roots and exponents in the source document, then rescan.",
+        "not_applied",
+    ),
     "table_structure_not_verified": (
         "The table's actual cell content and structure could not be verified.",
         "Review the table cells and headers in the source document or PDF editor, then rescan.",
@@ -215,6 +240,11 @@ _MANUAL_REASON_CODES = {
     "image_equation_alt_text_deferred": "image_equation_alt_text_deferred",
     "image_equation_alt_text_withheld": "image_equation_alt_text_withheld",
     "equation_too_large_for_verification": "equation_too_large_for_verification",
+    "printed_equation_verifier_unavailable": "printed_equation_verifier_unavailable",
+    "printed_equation_verifier_failed": "printed_equation_verifier_failed",
+    "printed_equation_verifier_declined": "printed_equation_verifier_declined",
+    "printed_equation_semantic_disagreement": "printed_equation_semantic_disagreement",
+    "image_equation_alt_text_ambiguous": "image_equation_alt_text_ambiguous",
 }
 _MANUAL_REASON_CODES.update(
     {code: code for codes, _, _ in _ORDER_GUARD_GROUPS for code in codes}
