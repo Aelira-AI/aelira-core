@@ -25,6 +25,29 @@ from PIL import Image
 from io import BytesIO
 from .office_findings import office_issue_metadata
 
+# Each PresentationML shape element keeps its common non-visual properties,
+# including the `descr` alternative text, on a `cNvPr` child of its own
+# non-visual wrapper, never on the shape element itself.
+_SHAPE_NON_VISUAL_PROPERTIES = (
+    "./p:nvPicPr/p:cNvPr"
+    " | ./p:nvSpPr/p:cNvPr"
+    " | ./p:nvGrpSpPr/p:cNvPr"
+    " | ./p:nvGraphicFramePr/p:cNvPr"
+    " | ./p:nvCxnSpPr/p:cNvPr"
+)
+
+
+def get_shape_alt_text(shape) -> str:
+    """Return the shape's alternative text from its `cNvPr` element, or "".
+
+    This reads the same attribute the PPTX remediator writes, so alt text added
+    by remediation is visible to a rescan of the saved file.
+    """
+    properties = shape._element.xpath(_SHAPE_NON_VISUAL_PROPERTIES)
+    if not properties:
+        return ""
+    return properties[0].get("descr", "")
+
 
 class ContrastIssue(BaseModel):
     """Contrast ratio issue"""
@@ -1570,7 +1593,7 @@ class PowerPointProcessor:
         4. Otherwise: use standard generate_alt_text()
         """
         try:
-            alt_text = shape._element.get("descr", "")
+            alt_text = get_shape_alt_text(shape)
             has_alt = alt_text and alt_text.strip() != ""
 
             if not has_alt:
