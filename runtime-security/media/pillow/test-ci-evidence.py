@@ -647,7 +647,7 @@ case "$1" in
         if [ "$FAIL_AT" = source_identity ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi
         for last do :; done
         case "$last" in
-          *pdf_remediator.py) echo '9ad3e1bccf3d208d4485b1e872f3cb7b138b805decea5e79c11216745879ef7b  file' ;;
+          *pdf_remediator.py) echo '49e65c3765b65dd98d9302acf1e15c3ac940cfb0ab9a6936668ab6bdd1460572  file' ;;
           *handwritten_math_suitability.py) echo '310e239e7837e12e22a3ee14a831f38cf163360959675f7ae0ad149c4a5ddf50  file' ;;
           *) exit 37 ;;
         esac ;;
