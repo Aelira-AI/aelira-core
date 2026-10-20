@@ -78,3 +78,41 @@ def primary_reading(
         response_sha256=response_sha256,
     )
 
+
+def consensus_evidence_for(
+    mathml: str,
+    *,
+    source_sha256: str = "a" * 64,
+    provider: str = "gemini",
+    model: str = "vision-model",
+):
+    """Agreement evidence for one canonical MathML string and one source."""
+    from src.education.printed_equation_policy import (
+        PRINTED_VERIFIER_POLICY_SHA256,
+        PRINTED_VERIFIER_POLICY_VERSION,
+    )
+    from src.education.remediation.printed_equation_verifier import (
+        PrintedEquationConsensusEvidence,
+    )
+
+    digest = sha256_text(mathml)
+    return PrintedEquationConsensusEvidence(
+        passed=True,
+        source_sha256=source_sha256,
+        mathml_sha256=digest,
+        policy_version=PRINTED_VERIFIER_POLICY_VERSION,
+        policy_sha256=PRINTED_VERIFIER_POLICY_SHA256,
+        agreement_count=2,
+        required_agreement_count=2,
+        primary_mathml_sha256=digest,
+        verifier_mathml_sha256=digest,
+        primary_response_sha256=PRIMARY_RESPONSE_SHA256,
+        verifier_response_sha256="e" * 64,
+        primary_latex_sha256="1" * 64,
+        verifier_latex_sha256="2" * 64,
+        primary_provider=provider,
+        primary_model=model,
+        verifier_provider=provider,
+        verifier_model=model,
+        verifier_prompt_sha256=PRINTED_VERIFIER_PROMPT_SHA256,
+    )

@@ -130,6 +130,7 @@ from src.education.visual_semantic_contract import (
     HandwrittenEquationConsensusEvidenceV1,
     HandwrittenEquationContract,
     MathMLExpressionV1,
+    PrintedEquationConsensusEvidenceV1,
     PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
     ScannedRegionFormulaSavedEvidenceV1,
@@ -350,12 +351,19 @@ def _printed_equation_contract(
     path: str | Path, pending: Any, association: Any
 ) -> PrintedEquationContract:
     """Build a printed contract from bytes that passed reverse verification."""
+    consensus_evidence = getattr(pending, "consensus_evidence", None)
+    if consensus_evidence is None:
+        raise ValueError("printed equation lacks its second-reading agreement")
     semantic, locator, saved, normalized_source_sha256 = (
         _visual_equation_contract_parts(path, pending, association)
     )
     roundtrip = PrintedEquationRoundtripEvidenceV1(
         evidence_kind="printed_equation_roundtrip_v1",
         **asdict(pending.verification_evidence),
+    )
+    consensus = PrintedEquationConsensusEvidenceV1(
+        evidence_kind="printed_equation_consensus_v1",
+        **asdict(consensus_evidence),
     )
 
     specialist_material = {
@@ -367,7 +375,7 @@ def _printed_equation_contract(
     specialist_sha256 = canonical_sha256(specialist_material)
     contract_material = {
         **specialist_material,
-        "verification_evidence": (roundtrip, saved),
+        "verification_evidence": (roundtrip, consensus, saved),
         "specialist_sha256": specialist_sha256,
     }
     return PrintedEquationContract(

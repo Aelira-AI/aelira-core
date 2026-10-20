@@ -44,6 +44,11 @@ from src.education.handwritten_equation_policy import (
     HANDWRITTEN_VERIFIER_POLICY_SHA256,
     HANDWRITTEN_VERIFIER_POLICY_VERSION,
 )
+from src.education.printed_equation_policy import (
+    PRINTED_VERIFIER_POLICY_SHA256,
+    PRINTED_VERIFIER_POLICY_VERSION,
+    PRINTED_VERIFIER_PROMPT_SHA256,
+)
 from src.education.molecular_graph import (
     AccessibleMolecularDescriptionV1,
     VerifiedMolecularGraphV1,
@@ -291,6 +296,54 @@ class PrintedEquationRoundtripEvidenceV1(BaseModel):
     @classmethod
     def _printable_versions(cls, value: str) -> str:
         return _validate_printable(value, label="evidence version")
+
+
+class PrintedEquationConsensusEvidenceV1(BaseModel):
+    """Exact two-reading semantic agreement evidence for printed math."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["printed_equation_consensus_v1"]
+    passed: Literal[True]
+    source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    policy_version: Literal["printed-equation-consensus-v1"]
+    policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    agreement_count: Literal[2]
+    required_agreement_count: Literal[2]
+    primary_mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_latex_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_latex_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_provider: str = Field(min_length=1, max_length=200)
+    primary_model: str = Field(min_length=1, max_length=200)
+    verifier_provider: str = Field(min_length=1, max_length=200)
+    verifier_model: str = Field(min_length=1, max_length=200)
+    verifier_prompt_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator(
+        "primary_provider", "primary_model", "verifier_provider", "verifier_model"
+    )
+    @classmethod
+    def _printable_identities(cls, value: str) -> str:
+        return _validate_printable(value, label="provider identity")
+
+    @model_validator(mode="after")
+    def _validate_consensus(self) -> "PrintedEquationConsensusEvidenceV1":
+        if (
+            self.policy_version != PRINTED_VERIFIER_POLICY_VERSION
+            or self.policy_sha256 != PRINTED_VERIFIER_POLICY_SHA256
+            or self.verifier_prompt_sha256 != PRINTED_VERIFIER_PROMPT_SHA256
+        ):
+            raise ValueError("printed verifier policy identity is invalid")
+        if (
+            self.mathml_sha256 != self.primary_mathml_sha256
+            or self.mathml_sha256 != self.verifier_mathml_sha256
+        ):
+            raise ValueError("independent printed readings do not agree")
+        return self
 
 
 class HandwrittenEquationConsensusEvidenceV1(BaseModel):
@@ -917,6 +970,7 @@ def _validate_saved_render_signatures(value: Any) -> Any:
 
 VerificationEvidence: TypeAlias = Annotated[
     PrintedEquationRoundtripEvidenceV1
+    | PrintedEquationConsensusEvidenceV1
     | HandwrittenEquationConsensusEvidenceV1
     | StandaloneFormulaSavedEvidenceV1
     | ScannedRegionFormulaSavedEvidenceV1
@@ -935,7 +989,7 @@ VerificationEvidenceAdapter = TypeAdapter(VerificationEvidence)
 
 
 class PrintedEquationContract(BaseModel):
-    """Complete v1 specialist output and reverse-verification contract."""
+    """Complete specialist output, two-reading agreement and saved-file proof."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -944,7 +998,7 @@ class PrintedEquationContract(BaseModel):
     semantic_output: SemanticOutput
     normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
     verification_evidence: tuple[VerificationEvidence, ...] = Field(
-        min_length=2, max_length=2
+        min_length=3, max_length=3
     )
     specialist_sha256: str = Field(pattern=_SHA256_PATTERN)
     contract_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -956,6 +1010,11 @@ class PrintedEquationContract(BaseModel):
             for item in self.verification_evidence
             if isinstance(item, PrintedEquationRoundtripEvidenceV1)
         ]
+        consensus = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, PrintedEquationConsensusEvidenceV1)
+        ]
         standalone = [
             item
             for item in self.verification_evidence
@@ -966,9 +1025,14 @@ class PrintedEquationContract(BaseModel):
             for item in self.verification_evidence
             if isinstance(item, ScannedRegionFormulaSavedEvidenceV1)
         ]
-        if len(roundtrip) != 1 or len(standalone) + len(scanned) != 1:
+        if (
+            len(roundtrip) != 1
+            or len(consensus) != 1
+            or len(standalone) + len(scanned) != 1
+        ):
             raise ValueError(
-                "printed equations require exact roundtrip and saved evidence"
+                "printed equations require exact roundtrip, consensus and "
+                "saved evidence"
             )
         saved = standalone[0] if standalone else scanned[0]
         roundtrip_evidence = roundtrip[0]
@@ -982,6 +1046,10 @@ class PrintedEquationContract(BaseModel):
         if self.normalized_source_sha256 != roundtrip_evidence.source_sha256:
             raise ValueError(
                 "normalized source digest does not match roundtrip evidence"
+            )
+        if self.normalized_source_sha256 != consensus[0].source_sha256:
+            raise ValueError(
+                "normalized source digest does not match consensus evidence"
             )
         if any(
             item.mathml_sha256 != self.semantic_output.mathml_sha256
@@ -1528,6 +1596,7 @@ __all__ = [
     "HandwrittenEquationConsensusEvidenceV1",
     "HandwrittenEquationContract",
     "MathMLExpressionV1",
+    "PrintedEquationConsensusEvidenceV1",
     "PrintedEquationContract",
     "PrintedEquationRoundtripEvidenceV1",
     "ScannedRegionFormulaSavedEvidenceV1",
