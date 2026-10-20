@@ -311,7 +311,7 @@ async def scan_multimedia(
     AI-POWERED MULTIMEDIA ACCESSIBILITY
     REQUIRES API KEY IN PRODUCTION
     REQUIRES: video feature (tier-gated via TIER_QUOTAS; enabled on all core tiers)
-    - Transcription with speaker identification (Whisper)
+    - Transcription and captions (Whisper); speakers are not identified
     - AI audio descriptions for visual content (WCAG 1.2.3, 1.2.5)
     - Text-to-speech conversion for blind users (Piper TTS)
     - Explicit unassessed flashing state for video (WCAG 2.3.1)

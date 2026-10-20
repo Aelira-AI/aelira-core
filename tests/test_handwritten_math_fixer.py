@@ -173,3 +173,38 @@ def test_printed_success_never_invokes_hmer():
 
     assert result.error == "image_equation_association_pending"
     assert not hasattr(result.verification_evidence, "agreement_count")
+
+
+def test_braced_and_unbraced_readings_agree_and_stage_the_canonical_mathml():
+    from src.education.remediation.equation_verifier import canonicalize_mathml
+    from src.education.visual_semantic_contract import MathMLExpressionV1
+
+    client = Client("x^{2}+y=10", "x^2 + y = 10")
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_association_pending"
+    assert result.verification_evidence.agreement_count == 2
+    mathml = result.pending_association.mathml_string
+    assert "<mrow><mn>2</mn></mrow>" not in mathml
+    assert canonicalize_mathml(mathml) == mathml
+    digest = hashlib.sha256(mathml.encode("utf-8")).hexdigest()
+    assert digest == result.verification_evidence.mathml_sha256
+    # The staged string is also exactly what the stored contract will accept.
+    MathMLExpressionV1(
+        semantic_kind="mathml_expression_v1",
+        mathml=mathml,
+        alt_text=result.aria_label,
+        mathml_sha256=digest,
+    )
+
+
+def test_a_real_difference_between_readings_still_stays_manual():
+    client = Client("x^{2}+y=10", "x^{3}+y=10")
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "handwritten_equation_verification_failed"
+    assert result.pending_association is None

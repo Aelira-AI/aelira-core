@@ -2,6 +2,8 @@ import dataclasses
 import hashlib
 from types import SimpleNamespace
 
+import pytest
+
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
 from src.education.remediation.math_fixer import MathFixer
 
@@ -179,3 +181,95 @@ def test_injected_verification_extra_fields_cannot_enter_pending_evidence():
     }
     assert "private latex" not in repr(result.pending_association)
     assert "private image" not in repr(result.pending_association)
+
+
+def test_printed_path_embeds_exactly_the_canonical_form_the_verifier_rendered():
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    from src.education.remediation.equation_verifier import (
+        EquationVerifier,
+        canonicalize_mathml,
+    )
+    from src.education.visual_semantic_contract import MathMLExpressionV1
+
+    canvas = Image.new("RGB", (240, 90), "white")
+    ImageDraw.Draw(canvas).line((20, 45, 220, 45), fill="black", width=5)
+    jpeg = BytesIO()
+    canvas.save(jpeg, "JPEG", quality=95, subsampling=0)
+    payload = jpeg.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    rendered_inputs: list[str] = []
+
+    class BracedRecognizer:
+        def recognize(self, payload):
+            return SimpleNamespace(
+                classification="printed_equation",
+                latex="x^{2} + 1 = 0",
+                provider="gemini",
+                model="vision-model",
+            )
+
+    candidate = fixer(Verifier("unused"))
+    assert "<mrow><mn>2</mn></mrow>" in candidate._convert_to_mathml("x^{2} + 1 = 0")
+    candidate.equation_recognizer = BracedRecognizer()
+    candidate.image_source.payload.jpeg_bytes = payload
+    candidate.image_source.payload.normalized_sha256 = digest
+    candidate.equation_verifier = EquationVerifier(
+        renderer=lambda mathml: rendered_inputs.append(mathml) or payload
+    )
+
+    result = candidate._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.error == "image_equation_association_pending"
+    staged = result.pending_association.mathml_string
+    assert rendered_inputs == [staged]
+    assert "<mrow><mn>2</mn></mrow>" not in staged
+    assert canonicalize_mathml(staged) == staged
+    sha = hashlib.sha256(staged.encode("utf-8")).hexdigest()
+    assert result.verification_evidence.mathml_sha256 == sha
+    MathMLExpressionV1(
+        semantic_kind="mathml_expression_v1",
+        mathml=staged,
+        alt_text=result.aria_label,
+        mathml_sha256=sha,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "error"),
+    [
+        ("renderer_dimension_limit", "equation_too_large_for_verification"),
+        ("renderer_failed", "equation_verification_failed"),
+        ("render_dimension_limit", "equation_verification_failed"),
+        ("render_byte_limit", "equation_verification_failed"),
+        ("blank_render", "equation_verification_failed"),
+        ("comparison_failed", "equation_verification_failed"),
+        ("conversion_failed", "equation_verification_failed"),
+        ("invalid_mathml", "equation_verification_failed"),
+    ],
+)
+def test_only_the_renderer_size_bound_reports_an_equation_too_large(reason, error):
+    from src.education.remediation.equation_verifier import EquationVerificationRejected
+
+    class Rejecting:
+        def verify(self, image, latex):
+            raise EquationVerificationRejected(reason)
+
+    result = fixer(Rejecting())._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.success is False
+    assert result.error == error
+    assert result.pending_association is None
+
+
+def test_an_untyped_failure_with_the_same_text_keeps_the_generic_error():
+    class Crashing:
+        def verify(self, image, latex):
+            raise RuntimeError("renderer_dimension_limit")
+
+    result = fixer(Crashing())._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.error == "equation_verification_failed"
+    assert result.pending_association is None

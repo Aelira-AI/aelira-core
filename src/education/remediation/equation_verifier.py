@@ -16,6 +16,10 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 from latex2mathml.converter import convert as latex_to_mathml
 
+from src.education.canonical_mathml_version import (
+    CANONICAL_MATHML_VERSION as CANONICAL_MATHML_VERSION,
+)
+
 from .equation_image_source import ValidatedEquationRaster
 
 ASSET_DIR = Path(__file__).parent / "assets" / "math-font"
@@ -43,6 +47,11 @@ _ALLOWED_MATHML_TAGS = frozenset(
         "mtr",
         "mtd",
         "mspace",
+        # latex2mathml wraps \dbinom, \tbinom, \dfrac, \tfrac, \cfrac and the
+        # \displaystyle family in an mstyle. Only displaystyle and scriptlevel are
+        # accepted on it (see _PASSIVE_ATTRIBUTES_BY_TAG); the mstyle that
+        # \color and \large emit carries mathcolor or mathsize and is rejected.
+        "mstyle",
         "mpadded",
         "mphantom",
         "mfenced",
@@ -89,13 +98,37 @@ _COMMON_PASSIVE_ATTRIBUTES = frozenset(
         "width",
     }
 )
+# Two elements get a different set from the common one:
+# * ``mfrac`` also accepts ``linethickness``, which is how latex2mathml draws a
+#   binomial coefficient (a fraction with no rule). No other element needs it.
+# * ``mstyle`` accepts exactly ``displaystyle`` and ``scriptlevel``, the only
+#   attributes latex2mathml emits for \dbinom, \tbinom, \dfrac, \tfrac, \cfrac
+#   and \displaystyle, \textstyle, \scriptstyle and \scriptscriptstyle. Colour
+#   and size (\color, \textcolor, \large) arrive on an mstyle as ``mathcolor`` and
+#   ``mathsize``; they stay rejected because the visual comparison is greyscale
+#   and rescales both images to the same ink box, so it cannot tell a changed
+#   colour or overall size from the source.
 _PASSIVE_ATTRIBUTES_BY_TAG = {
-    tag: _COMMON_PASSIVE_ATTRIBUTES for tag in _ALLOWED_MATHML_TAGS
+    **{tag: _COMMON_PASSIVE_ATTRIBUTES for tag in _ALLOWED_MATHML_TAGS},
+    "mfrac": _COMMON_PASSIVE_ATTRIBUTES | {"linethickness"},
+    "mstyle": frozenset({"displaystyle", "scriptlevel"}),
 }
+_XML_WHITESPACE = " \t\r\n"
 
 
 class EquationVerificationRejected(ValueError):
     """Round-trip verification could not produce bounded trustworthy evidence."""
+
+
+RENDERER_DIMENSION_LIMIT = "renderer_dimension_limit"
+
+
+class RendererDimensionLimit(RuntimeError):
+    """The rendered formula was larger than the configured width or height."""
+
+
+class _RenderedElementTooLarge(Exception):
+    """Worker-side signal that the formula box exceeded the size bound."""
 
 
 def _expanded_mathml_name(tag: str) -> tuple[Optional[str], str]:
@@ -110,19 +143,49 @@ def _expanded_mathml_name(tag: str) -> tuple[Optional[str], str]:
     return tag[1:boundary], local.lower()
 
 
-def _canonical_mathml_element(node: ElementTree.Element) -> str:
+def _is_blank(text: Optional[str]) -> bool:
+    return text is None or not text.strip(_XML_WHITESPACE)
+
+
+def _collapse_redundant_group(element: ElementTree.Element) -> ElementTree.Element:
+    """Return the lone child of a meaning-free ``mrow``, else the element itself.
+
+    LaTeX braces become attribute-free single-child ``mrow`` wrappers, so
+    ``x^{2}`` and ``x^2`` differ only by that wrapper. An ``mrow`` with
+    attributes, with more than one child, or with stray text is kept. A lone
+    ``mo`` keeps its wrapper because operator form and fence handling depend on
+    the enclosing row.
+    """
+    if (
+        element.tag != "mrow"
+        or element.attrib
+        or len(element) != 1
+        or not _is_blank(element.text)
+    ):
+        return element
+    child = element[0]
+    if child.tag == "mo" or not _is_blank(child.tail):
+        return element
+    child.tail = None
+    return child
+
+
+def _canonical_mathml_tree(node: ElementTree.Element) -> ElementTree.Element:
     _, name = _expanded_mathml_name(node.tag)
     canonical = ElementTree.Element(name)
     for key in sorted(node.attrib):
         canonical.set(key, node.attrib[key])
     canonical.text = node.text
     for child in list(node):
-        child_xml = _canonical_mathml_element(child)
-        child_element = ElementTree.fromstring(child_xml)
-        child_element.tail = child.tail
-        canonical.append(child_element)
+        child_canonical = _canonical_mathml_tree(child)
+        child_canonical.tail = child.tail
+        canonical.append(child_canonical)
+    return _collapse_redundant_group(canonical)
+
+
+def _canonical_mathml_element(node: ElementTree.Element) -> str:
     return ElementTree.tostring(
-        canonical, encoding="unicode", short_empty_elements=True
+        _canonical_mathml_tree(node), encoding="unicode", short_empty_elements=True
     )
 
 
@@ -133,7 +196,10 @@ def canonicalize_mathml(
     max_mathml_nodes: int = 512,
     max_mathml_depth: int = 32,
 ) -> str:
-    """Return the exact passive MathML representation accepted by the verifier."""
+    """Return the exact passive MathML representation accepted by the verifier.
+
+    The form is versioned by ``CANONICAL_MATHML_VERSION``.
+    """
     if not isinstance(mathml, str) or not mathml or len(mathml) > max_mathml_chars:
         raise EquationVerificationRejected("invalid_mathml")
     lowered = mathml.lower()
@@ -253,18 +319,16 @@ html,body{{margin:0;background:#fff;color:#000}}
                 page.evaluate("document.fonts.ready")
                 locator = page.locator("#formula")
                 box = locator.bounding_box(timeout=5_000)
-                if (
-                    box is None
-                    or box["width"] <= 0
-                    or box["height"] <= 0
-                    or box["width"] > max_width
-                    or box["height"] > max_height
-                ):
-                    raise RuntimeError("renderer_dimension_limit")
+                if box is None or box["width"] <= 0 or box["height"] <= 0:
+                    raise RuntimeError("renderer_empty_element")
+                if box["width"] > max_width or box["height"] > max_height:
+                    raise _RenderedElementTooLarge
                 output = locator.screenshot(animations="disabled", timeout=5_000)
             finally:
                 browser.close()
         connection.send(("ok", output, network_requests))
+    except _RenderedElementTooLarge:
+        connection.send(("dimension_limit", b"", network_requests))
     except Exception:
         connection.send(("error", b"", network_requests))
     finally:
@@ -314,7 +378,7 @@ class OfflineMathMLRenderer:
             if not receiving.poll() or process.exitcode != 0:
                 raise RuntimeError("renderer_failed")
             status, output, self.network_requests = receiving.recv()
-            if status != "ok":
+            if status not in {"ok", "dimension_limit"}:
                 raise RuntimeError("renderer_failed")
         finally:
             receiving.close()
@@ -323,6 +387,8 @@ class OfflineMathMLRenderer:
                 process.join()
         if self.network_requests:
             raise RuntimeError("renderer_network_attempt")
+        if status == "dimension_limit":
+            raise RendererDimensionLimit(RENDERER_DIMENSION_LIMIT)
         return output
 
 
@@ -356,6 +422,8 @@ class EquationVerifier:
         mathml = self.canonicalize_mathml(mathml)
         try:
             rendered = self.renderer(mathml)
+        except RendererDimensionLimit:
+            raise EquationVerificationRejected(RENDERER_DIMENSION_LIMIT) from None
         except Exception:
             raise EquationVerificationRejected("renderer_failed") from None
         if not isinstance(rendered, bytes) or not rendered:

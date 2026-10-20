@@ -11,7 +11,9 @@ pyannote.audio Dependencies:
 
 Fallback:
 When pyannote.audio is not available, uses silence-based heuristics
-to estimate speaker changes.
+to estimate speaker changes. A result with method_used == "heuristic" only
+guesses where a speaker might change: it is not evidence of who is speaking
+and must not be shown to users as speaker identification.
 """
 
 from typing import List, Optional, Dict, Any, Tuple
