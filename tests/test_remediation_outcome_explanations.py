@@ -162,3 +162,25 @@ def test_other_equation_reasons_still_map_to_unrecorded(reason):
     ]
     assert outcome["reason_code"] == "manual_reason_unrecorded"
     assert "SECRET" not in str(outcome)
+
+
+def test_oversized_equation_reason_has_its_own_honest_public_explanation():
+    issues = [{"id": "oversized"}, {"id": "failed"}]
+    result = SimpleNamespace(
+        manual_issues=[
+            {"issue_id": "oversized", "reason": "equation_too_large_for_verification"},
+            {"issue_id": "failed", "reason": "equation_verification_failed"},
+        ],
+        fixed_issues=[],
+    )
+    counts = outcome_accounting(issues, result, published=False)
+    public = public_job_result(_safe_failure_result("manual_required", counts, None))
+    oversized, failed = public["issue_outcomes"]
+
+    assert oversized["reason_code"] == "equation_too_large_for_verification"
+    assert oversized["attempt"] == "not_applied"
+    assert "larger than" in oversized["reason"]
+    assert "could not be compared" in oversized["reason"]
+    assert "alt text manually" in oversized["next_step"]
+    # Other equation verification failures still do not invent a public reason.
+    assert failed["reason_code"] == "manual_reason_unrecorded"
