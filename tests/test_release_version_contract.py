@@ -151,6 +151,9 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#376]",
         "[#375]",
         "[#377]",
+        "## Known issue: printed equation alt text",
+        "[#693]",
+        "[#694]",
     ):
         assert phrase in body
     assert "No database migration" not in body

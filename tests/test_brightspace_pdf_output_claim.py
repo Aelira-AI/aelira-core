@@ -20,6 +20,11 @@ from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
 from src.services.scan_fix_service import ScanReviewGraph
+from tests.test_image_equation_matterhorn_gate import (
+    GATE_ACCEPTED,
+    GATE_REFUSED,
+    publisher_params,
+)
 from tests.test_image_equation_review_gate import EVIDENCE, _fix as _typed_equation_fix
 
 CLAIMED_PDF = b"%PDF-1.7\nbrightspace descriptor claim\n%%EOF\n"
@@ -743,47 +748,36 @@ async def test_brightspace_pdf_persists_real_image_equation_review_evidence(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("matterhorn_result", "matterhorn_error"),
-    [
-        (None, RuntimeError("validator unavailable")),
-        (
-            SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
-            None,
-        ),
-        (
-            SimpleNamespace(
-                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
-                total=1,
-                passed=0,
-                failed=1,
-                warnings=0,
-            ),
-            None,
-        ),
-        (
-            SimpleNamespace(
-                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
-                total=2,
-                passed=1,
-                failed=0,
-                warnings=0,
-            ),
-            None,
-        ),
-    ],
-    ids=["exception", "unavailable", "disqualifying", "integrity"],
+    ("matterhorn_result", "source_failures"), publisher_params(GATE_ACCEPTED)
 )
-async def test_brightspace_image_equation_matterhorn_failure_preserves_prior_state(
-    tmp_path, matterhorn_result, matterhorn_error
+async def test_brightspace_image_equation_publishes_when_matterhorn_failures_pre_existed(
+    tmp_path, matterhorn_result, source_failures
 ):
     result = _image_equation_result(tmp_path / "fixed.pdf")
+    result.source_matterhorn_failures = source_failures
 
-    run = await _run_pdf_outer(
-        tmp_path,
-        result,
-        matterhorn_result=matterhorn_result,
-        matterhorn_error=matterhorn_error,
-    )
+    run = await _run_pdf_outer(tmp_path, result, matterhorn_result=matterhorn_result)
+
+    assert run.outcome.status == "completed"
+    assert run.published == [CLAIMED_PDF]
+    assert run.validated == [CLAIMED_PDF]
+    run.service.abort_staging.assert_not_called()
+    assert run.cloud_file.has_remediated_version is True
+    assert run.outcome.artifact_sha256 == hashlib.sha256(CLAIMED_PDF).hexdigest()
+    assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("matterhorn_result", "source_failures"), publisher_params(GATE_REFUSED)
+)
+async def test_brightspace_image_equation_gate_refusal_preserves_prior_state(
+    tmp_path, matterhorn_result, source_failures
+):
+    result = _image_equation_result(tmp_path / "fixed.pdf")
+    result.source_matterhorn_failures = source_failures
+
+    run = await _run_pdf_outer(tmp_path, result, matterhorn_result=matterhorn_result)
 
     assert run.outcome.status == "failed"
     assert run.outcome.error_code == "artifact_unavailable"
@@ -792,6 +786,24 @@ async def test_brightspace_image_equation_matterhorn_failure_preserves_prior_sta
     assert run.cloud_file.remediation_origin is None
     assert run.cloud_file.remediated_issues_fixed == 0
     assert run.cloud_file.remediated_issues_remaining == 0
+    assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+async def test_brightspace_image_equation_validator_exception_preserves_prior_state(
+    tmp_path,
+):
+    result = _image_equation_result(tmp_path / "fixed.pdf")
+
+    run = await _run_pdf_outer(
+        tmp_path, result, matterhorn_error=RuntimeError("validator unavailable")
+    )
+
+    assert run.outcome.status == "failed"
+    assert run.outcome.error_code == "artifact_unavailable"
+    assert run.published == []
+    assert run.cloud_file.has_remediated_version is False
+    assert run.cloud_file.remediation_origin is None
     assert result.has_output_claim() is False
 
 

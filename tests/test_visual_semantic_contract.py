@@ -548,3 +548,73 @@ def test_scanned_saved_formula_bbox_rejects_top_left_or_forged_coordinates():
                 _scanned_saved(formula_bbox=[30.6, 63.36, 153.0, 101.376]),
             )
         )
+
+
+PRE_V2_MATHML = (
+    '<math display="inline"><mrow><msup><mi>x</mi><mn>2</mn></msup></mrow></math>'
+)
+CANONICAL_V2_MATHML = '<math display="inline"><msup><mi>x</mi><mn>2</mn></msup></math>'
+
+
+def _printed_contract_for(mathml: str) -> tuple[dict[str, object], dict[str, object]]:
+    """Return a self-consistent printed contract and its legacy evidence row."""
+    digest = hashlib.sha256(mathml.encode("utf-8")).hexdigest()
+    saved = _standalone_saved(mathml_sha256=digest)
+    roundtrip = _roundtrip(mathml_sha256=digest)
+    raw = _contract(
+        _embedded_locator(),
+        saved,
+        semantic=_semantic(mathml=mathml, mathml_sha256=digest),
+        evidence=[roundtrip, saved],
+    )
+    legacy = {key: value for key, value in roundtrip.items() if key != "evidence_kind"}
+    return raw, legacy
+
+
+def _stored_row(contract: dict[str, object], evidence: dict[str, object]):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        source_kind="image_equation",
+        fixed_content=_semantic()["alt_text"],
+        page_number=2,
+        verification_evidence=evidence,
+        visual_semantic_contract=contract,
+        source_locator=None,
+    )
+
+
+def test_contract_stored_in_the_pre_v2_canonical_form_fails_closed():
+    from src.education.visual_semantic_contract import (
+        PrintedEquationContract,
+        VisualSemanticContractAdapter,
+    )
+    from src.services.scan_fix_service import (
+        image_equation_review_blockers,
+        validated_visual_semantic_contract,
+        visual_semantic_disposition,
+    )
+
+    current, current_evidence = _printed_contract_for(CANONICAL_V2_MATHML)
+    legacy, legacy_evidence = _printed_contract_for(PRE_V2_MATHML)
+
+    # Positive control: the same contract shape in the v2 form is complete.
+    assert PrintedEquationContract.model_validate(current).semantic_output.mathml == (
+        CANONICAL_V2_MATHML
+    )
+    assert (
+        visual_semantic_disposition(_stored_row(current, current_evidence))
+        == "complete"
+    )
+
+    # The only difference is the redundant single-child mrow wrapper.
+    with pytest.raises(ValidationError, match="canonical verifier form"):
+        PrintedEquationContract.model_validate(legacy)
+    with pytest.raises(ValidationError):
+        VisualSemanticContractAdapter.validate_python(legacy)
+    assert validated_visual_semantic_contract(legacy) is None
+    row = _stored_row(legacy, legacy_evidence)
+    assert visual_semantic_disposition(row) == "invalid"
+    assert "image_equation_visual_contract_invalid" in (
+        image_equation_review_blockers([row])
+    )

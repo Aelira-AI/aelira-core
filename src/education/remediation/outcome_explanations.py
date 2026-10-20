@@ -99,6 +99,11 @@ EXPLANATIONS = {
         "Simplify or split the table, verify its headers and cell associations, then rescan.",
         "not_applied",
     ),
+    "equation_too_large_for_verification": (
+        "The recognized equation renders larger than the size the automatic equation check supports, so it could not be compared with the image.",
+        "Check the equation against the image, split a long equation into separate lines or images, or add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
     "output_verification_failed": (
         "The change exists only in a candidate file. The document did not pass the required output verification, so that file was not delivered.",
         "Review the unresolved findings and correct the document before running remediation again.",
@@ -107,6 +112,11 @@ EXPLANATIONS = {
     "output_not_published": (
         "The change was recorded in a candidate, but no resulting file was published for this job.",
         "Review the job status and resolve its blocking condition before retrying.",
+        "candidate_change",
+    ),
+    "output_adds_pdfua_failures": (
+        "The change exists only in a candidate file. Publishing it would add PDF/UA problems the source document did not have, so the file was withheld and your original is unchanged.",
+        "Running remediation again on this document is unlikely to change the result. Review the unresolved findings and correct the document in its source, then rescan.",
         "candidate_change",
     ),
     "manual_reason_unrecorded": (
@@ -209,6 +219,7 @@ _MANUAL_REASON_CODES = {
     "image_equation_draw_unresolved": "image_equation_draw_unresolved",
     "image_equation_alt_text_deferred": "image_equation_alt_text_deferred",
     "image_equation_alt_text_withheld": "image_equation_alt_text_withheld",
+    "equation_too_large_for_verification": "equation_too_large_for_verification",
 }
 _MANUAL_REASON_CODES.update(
     {code: code for codes, _, _ in _ORDER_GUARD_GROUPS for code in codes}

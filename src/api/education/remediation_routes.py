@@ -77,6 +77,9 @@ from ._shared import (
 )
 from ._scope import authorize_review_scan_access, authorize_scan_access
 
+from ...education.remediation.image_equation_gate import (
+    ImageEquationMatterhornError,
+)
 from ...education.remediation.latex_pdf_validation import latex_result_fields
 from ...education.remediation.score_reporting import fresh_score_comparison
 from ...education.latex_evidence import latex_evidence_fields
@@ -87,6 +90,12 @@ router = APIRouter()
 
 LEGACY_REMEDIATION_WAIT_SECONDS = 300.0
 LEGACY_REMEDIATION_POLL_SECONDS = 0.5
+# A rerun is unlikely to change this verdict, so the direct route reports it as
+# a conflict with the exact reason instead of a retryable server failure.
+_PDFUA_REGRESSION_WITHHELD_DETAIL = (
+    "The remediated file was withheld because it would add PDF/UA problems "
+    "the source document did not have. Your original file is unchanged."
+)
 _JOB_TERMINAL_STATUSES = frozenset(
     {CloudJobStatus.COMPLETED.value, CloudJobStatus.FAILED.value}
 )
@@ -2936,11 +2945,14 @@ async def remediate_scan(
                         mh_result = validator.validate(validation_path)
                         from ...education.remediation.image_equation_gate import (
                             contains_image_equation_fixes,
+                            recorded_source_matterhorn_failures,
                             require_image_equation_matterhorn_result,
                         )
 
                         if contains_image_equation_fixes(result.fixed_issues):
-                            require_image_equation_matterhorn_result(mh_result)
+                            require_image_equation_matterhorn_result(
+                                mh_result, recorded_source_matterhorn_failures(result)
+                            )
             elif publishable_result and not pdf_claim_required:
                 output_path = result.output_file
                 if (
@@ -3161,6 +3173,10 @@ async def remediate_scan(
         logger.error(
             "Remediation failed (scan_id=%s, error_class=%s)", scan_id, type(e).__name__
         )
+        introduced_pdfua_failures = (
+            isinstance(e, ImageEquationMatterhornError)
+            and str(e) == "matterhorn_result_disqualifying"
+        )
         # The failed transaction (including any success audit row) is gone.
         # Record one sanitized terminal failure in a fresh best-effort commit.
         try:
@@ -3185,7 +3201,11 @@ async def remediate_scan(
                 error=(
                     "invalid_scan_result"
                     if isinstance(e, _InvalidScanResultError)
-                    else "remediation_exception"
+                    else (
+                        "remediation_artifact_unavailable"
+                        if introduced_pdfua_failures
+                        else "remediation_exception"
+                    )
                 ),
                 commit=True,
             )
@@ -3193,6 +3213,10 @@ async def remediate_scan(
             logger.error(
                 "Best-effort remediation failure audit could not be persisted",
                 extra={"scan_id": scan_id},
+            )
+        if introduced_pdfua_failures:
+            raise HTTPException(
+                status_code=409, detail=_PDFUA_REGRESSION_WITHHELD_DETAIL
             )
         raise HTTPException(
             status_code=500, detail="Remediation failed. Please try again."

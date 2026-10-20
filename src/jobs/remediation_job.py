@@ -48,6 +48,7 @@ from ..education.remediation.base import (
     classify_issue_category,
     merge_partitioned_manual_issues,
 )
+from ..education.remediation.image_equation_gate import ImageEquationMatterhornError
 from ..utils.security import (
     PERSISTED_BLACKBOARD_ORIGIN_ERROR,
     PERSISTED_CANVAS_ORIGIN_ERROR,
@@ -1142,7 +1143,7 @@ async def process_remediation_job(
             else None
         )
 
-        def account_outcomes(result, *, published):
+        def account_outcomes(result, *, published, withheld_reason=None):
             return outcome_accounting(
                 source_issues,
                 result,
@@ -1150,9 +1151,12 @@ async def process_remediation_job(
                 original_issues=original_source_issues,
                 withheld_reason=(
                     (
-                        "output_verification_failed"
-                        if getattr(result, "verification_passed", None) is False
-                        else "output_not_published"
+                        withheld_reason
+                        or (
+                            "output_verification_failed"
+                            if getattr(result, "verification_passed", None) is False
+                            else "output_not_published"
+                        )
                     )
                     if not published
                     else None
@@ -1723,11 +1727,15 @@ async def process_remediation_job(
 
                 from ..education.remediation.image_equation_gate import (
                     contains_image_equation_fixes,
+                    recorded_source_matterhorn_failures,
                     require_image_equation_matterhorn_result,
                 )
 
                 if contains_image_equation_fixes(remediation_result.fixed_issues):
-                    require_image_equation_matterhorn_result(matterhorn)
+                    require_image_equation_matterhorn_result(
+                        matterhorn,
+                        recorded_source_matterhorn_failures(remediation_result),
+                    )
 
                 for cp in matterhorn.checkpoints:
                     db.add(
@@ -2013,6 +2021,45 @@ async def process_remediation_job(
                     extra={"scan_id": scan_id},
                 )
             restore_prior_cloud_state()
+            if isinstance(exc, ImageEquationMatterhornError) and cleanup_complete:
+                # The gate refused these exact output bytes. Another attempt is
+                # expected to reproduce the refusal, so the failure is final
+                # once the staged artifact is gone. Failed cleanup keeps the
+                # retryable path below so the orphaned staging claim is still
+                # reaped.
+                logger.warning(
+                    "Remediation output refused by the Matterhorn publication gate",
+                    extra={"scan_id": scan_id, "gate_code": str(exc)},
+                )
+                if not defer_final_commit:
+                    scan.status = ScanStatus.FAILED
+                    _set_remediation_outcome(
+                        scan, RemediationOutcome.ARTIFACT_UNAVAILABLE
+                    )
+                    scan.completed_at = datetime.now(timezone.utc)
+                    if assert_owned is not None:
+                        await assert_owned()
+                    db.commit()
+                return {
+                    "success": False,
+                    "error": "remediation_artifact_unavailable",
+                    "fixed_count": remediation_result.fixed_count,
+                    "manual_count": remediation_result.manual_count,
+                    "failed_count": remediation_result.failed_count,
+                    "skipped_count": remediation_result.skipped_count,
+                    "total_issues": remediation_result.total_issues,
+                    "scan_id": scan_id,
+                    **account_outcomes(
+                        remediation_result,
+                        published=False,
+                        withheld_reason=(
+                            "output_adds_pdfua_failures"
+                            if str(exc) == "matterhorn_result_disqualifying"
+                            else None
+                        ),
+                    ),
+                    **latex_result_fields(remediation_result),
+                }
             raise RetryableRemediationJobError(
                 "remediation_artifact_retryable",
                 artifact_id=artifact_publication.artifact_id,

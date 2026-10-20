@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -209,3 +210,121 @@ def test_handwritten_contract_rejects_cross_source_cross_variant_and_tampering(
 
     with pytest.raises(ValidationError):
         HandwrittenEquationContract.model_validate(raw)
+
+
+V1_POLICY_VERSION = "handwritten-equation-consensus-v1"
+
+
+def _v1_policy_sha256() -> str:
+    """The v1 digest: no canonical-form version, so it predates MathML v2."""
+    return _sha256(
+        {
+            "policy_version": V1_POLICY_VERSION,
+            "agreement": "exact_canonical_mathml",
+            "required_agreement_count": 2,
+            "suitability_policy_sha256": POLICY_SHA256,
+        }
+    )
+
+
+def _v1_consensus() -> dict[str, object]:
+    return _consensus(
+        verifier_policy_version=V1_POLICY_VERSION,
+        verifier_policy_sha256=_v1_policy_sha256(),
+    )
+
+
+def _stored_row(contract: dict[str, object], consensus: dict[str, object]):
+    return SimpleNamespace(
+        source_kind="image_equation",
+        fixed_content=_semantic()["alt_text"],
+        page_number=2,
+        verification_evidence={
+            key: value for key, value in consensus.items() if key != "evidence_kind"
+        },
+        visual_semantic_contract=contract,
+        source_locator=None,
+    )
+
+
+def test_current_policy_evidence_is_the_positive_control_for_v1_rejection():
+    from src.education.visual_semantic_contract import (
+        HandwrittenEquationConsensusEvidenceV1,
+    )
+
+    HandwrittenEquationConsensusEvidenceV1.model_validate(_consensus())
+    assert V1_POLICY_VERSION != HANDWRITTEN_VERIFIER_POLICY_VERSION
+    assert _v1_policy_sha256() != HANDWRITTEN_VERIFIER_POLICY_SHA256
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param(
+            {
+                "verifier_policy_version": V1_POLICY_VERSION,
+                "verifier_policy_sha256": _v1_policy_sha256(),
+            },
+            id="v1-version-and-digest",
+        ),
+        pytest.param(
+            {"verifier_policy_version": V1_POLICY_VERSION},
+            id="v1-version-current-digest",
+        ),
+        pytest.param(
+            {"verifier_policy_sha256": _v1_policy_sha256()},
+            id="current-version-v1-digest",
+        ),
+    ],
+)
+def test_handwritten_evidence_recorded_under_policy_v1_fails_closed(overrides):
+    from src.education.remediation.base import HandwrittenVerificationEvidence
+    from src.education.visual_semantic_contract import (
+        HandwrittenEquationConsensusEvidenceV1,
+        HandwrittenEquationContract,
+        VisualSemanticContractAdapter,
+    )
+
+    consensus = _consensus(**overrides)
+    legacy = {k: v for k, v in consensus.items() if k != "evidence_kind"}
+    saved = _standalone_saved()
+    raw = _contract(_embedded_locator(), saved, evidence=[consensus, saved])
+
+    with pytest.raises(ValidationError):
+        HandwrittenEquationConsensusEvidenceV1.model_validate(consensus)
+    with pytest.raises(ValidationError):
+        HandwrittenVerificationEvidence.model_validate(legacy)
+    with pytest.raises(ValidationError):
+        HandwrittenEquationContract.model_validate(raw)
+    with pytest.raises(ValidationError):
+        VisualSemanticContractAdapter.validate_python(raw)
+
+
+def test_stored_policy_v1_handwritten_row_is_invalid_not_a_crash():
+    from src.services.scan_fix_service import (
+        image_equation_review_blockers,
+        validated_visual_semantic_contract,
+        visual_semantic_disposition,
+        valid_image_equation_evidence,
+    )
+
+    saved = _standalone_saved()
+    current = _stored_row(
+        _contract(_embedded_locator(), saved, evidence=[_consensus(), saved]),
+        _consensus(),
+    )
+    legacy_consensus = _v1_consensus()
+    legacy = _stored_row(
+        _contract(_embedded_locator(), saved, evidence=[legacy_consensus, saved]),
+        legacy_consensus,
+    )
+
+    assert visual_semantic_disposition(current) == "complete"
+    assert valid_image_equation_evidence(current.verification_evidence) is True
+
+    assert validated_visual_semantic_contract(legacy.visual_semantic_contract) is None
+    assert valid_image_equation_evidence(legacy.verification_evidence) is False
+    assert visual_semantic_disposition(legacy) == "invalid"
+    blockers = image_equation_review_blockers([legacy])
+    assert "image_equation_visual_contract_invalid" in blockers
+    assert "image_equation_evidence_invalid" in blockers

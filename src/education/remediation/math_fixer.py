@@ -32,6 +32,10 @@ from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
 )
+from src.education.remediation.equation_verifier import (
+    RENDERER_DIMENSION_LIMIT,
+    EquationVerificationRejected,
+)
 from src.education.remediation.handwritten_equation_verifier import (
     HandwrittenEquationVerificationEvidence,
 )
@@ -685,6 +689,16 @@ class MathFixer:
         """Preserve the existing printed-equation verification path."""
         try:
             verification = self.equation_verifier.verify(validated, recognition.latex)
+        except EquationVerificationRejected as exc:
+            return MathFixResult(
+                success=False,
+                error=(
+                    "equation_too_large_for_verification"
+                    if str(exc) == RENDERER_DIMENSION_LIMIT
+                    else "equation_verification_failed"
+                ),
+                page_number=page_number,
+            )
         except Exception:
             return MathFixResult(
                 success=False,

@@ -1388,11 +1388,14 @@ def _validate_brightspace_pdf_claim(
                 matterhorn = MatterhornValidator().validate(str(validation_path))
                 from ..education.remediation.image_equation_gate import (
                     contains_image_equation_fixes,
+                    recorded_source_matterhorn_failures,
                     require_image_equation_matterhorn_result,
                 )
 
                 if contains_image_equation_fixes(getattr(result, "fixed_issues", ())):
-                    require_image_equation_matterhorn_result(matterhorn)
+                    require_image_equation_matterhorn_result(
+                        matterhorn, recorded_source_matterhorn_failures(result)
+                    )
             except Exception as exc:
                 from ..education.remediation.image_equation_gate import (
                     contains_image_equation_fixes,

@@ -115,6 +115,9 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
     .join(' ');
   expect(words(srtSpeech)).toEqual(words(spoken));
   expect(srt).toMatch(/^1\n00:00:00,000 --> /);
+  // Speakers are never identified: no WebVTT voice span and no "[Name]:" SRT prefix.
+  expect(webvtt).not.toContain('<v ');
+  expect(srt.split('\n').filter((line) => /^\[[^\]]*\]:/.test(line))).toEqual([]);
 
   // The score and findings describe the uploaded file, which has no caption track of its own.
   expect(structure.has_captions).toBe(false);
@@ -148,6 +151,7 @@ test('media: a synthetic teaching clip is transcribed for real, captions are wel
   expect(download.suggestedFilename(), 'captions never take the media name').toBe('teaching-clip-captions.vtt');
   const delivered = (await readFile(await download.path())).toString('utf8');
   expect(delivered.startsWith('WEBVTT\n')).toBe(true);
+  expect(delivered, 'the delivered captions assert no speaker').not.toContain('<v ');
   const deliveredSpeech = delivered
     .split('\n')
     .filter((line) => line && line !== 'WEBVTT' && !/^\d+$/.test(line) && !line.includes('-->'))
