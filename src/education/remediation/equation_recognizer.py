@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from .equation_image_source import ValidatedEquationRaster
+from .equation_reading_parser import EquationReadingRejected, parse_equation_reading
 
 
 class EquationRecognitionRejected(ValueError):
@@ -82,42 +82,17 @@ class EquationRecognizer:
         )
 
     def _parse(self, content: str) -> dict[str, Any]:
-        if (
-            not content
-            or len(content) > self.max_response_chars
-            or content.strip() != content
-        ):
-            raise EquationRecognitionRejected("invalid_provider_response")
-
-        def reject_duplicates(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise EquationRecognitionRejected("invalid_provider_response")
-                result[key] = value
-            return result
-
         try:
-            parsed = json.loads(content, object_pairs_hook=reject_duplicates)
-        except EquationRecognitionRejected:
-            raise
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise EquationRecognitionRejected("invalid_provider_response") from exc
-        if not isinstance(parsed, dict) or set(parsed) != {"classification", "latex"}:
-            raise EquationRecognitionRejected("invalid_provider_response")
-        classification = parsed["classification"]
-        latex = parsed["latex"]
-        if classification == "not_equation":
-            if latex is not None:
-                raise EquationRecognitionRejected("invalid_provider_response")
-            return parsed
-        if classification != "printed_equation" or not isinstance(latex, str):
-            raise EquationRecognitionRejected("invalid_provider_response")
-        if not latex or len(latex) > self.max_latex_chars:
-            raise EquationRecognitionRejected("invalid_provider_response")
-        if any(not character.isprintable() for character in latex):
-            raise EquationRecognitionRejected("invalid_provider_response")
-        return parsed
+            classification, latex = parse_equation_reading(
+                content,
+                equation_classification="printed_equation",
+                null_classifications=frozenset({"not_equation"}),
+                max_latex_chars=self.max_latex_chars,
+                max_response_chars=self.max_response_chars,
+            )
+        except EquationReadingRejected:
+            raise EquationRecognitionRejected("invalid_provider_response") from None
+        return {"classification": classification, "latex": latex}
 
     @staticmethod
     def _bounded_identity(value: Any) -> Optional[str]:

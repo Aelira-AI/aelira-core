@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -15,6 +13,7 @@ from src.education.handwritten_math_suitability import (
 )
 
 from .equation_image_source import ValidatedEquationRaster
+from .equation_reading_parser import EquationReadingRejected, parse_equation_reading
 
 HandwrittenEquationClassification = Literal[
     "handwritten_equation", "not_handwritten_math", "unsupported_notation"
@@ -73,51 +72,22 @@ def _validate_source(source: ValidatedEquationRaster) -> bytes:
 def _parse_hmer_content(
     content: Any, *, max_latex_chars: int, max_response_chars: int
 ) -> tuple[HandwrittenEquationClassification, str | None]:
-    if (
-        not isinstance(content, str)
-        or not content
-        or len(content) > max_response_chars
-        or content.strip() != content
-    ):
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise HandwrittenEquationRecognitionRejected(
-                    "invalid_provider_response"
-                )
-            result[key] = value
-        return result
-
     try:
-        parsed = json.loads(content, object_pairs_hook=reject_duplicates)
-    except HandwrittenEquationRecognitionRejected:
-        raise
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        classification, latex = parse_equation_reading(
+            content,
+            equation_classification="handwritten_equation",
+            null_classifications=frozenset(
+                {"not_handwritten_math", "unsupported_notation"}
+            ),
+            max_latex_chars=max_latex_chars,
+            max_response_chars=max_response_chars,
+            require_clean_latex=True,
+        )
+    except EquationReadingRejected:
         raise HandwrittenEquationRecognitionRejected(
             "invalid_provider_response"
-        ) from exc
-    if not isinstance(parsed, dict) or set(parsed) != {"classification", "latex"}:
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-    classification = parsed["classification"]
-    latex = parsed["latex"]
-    if classification in {"not_handwritten_math", "unsupported_notation"}:
-        if latex is not None:
-            raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-        return classification, None
-    if classification != "handwritten_equation" or not isinstance(latex, str):
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-    if (
-        not latex
-        or latex != latex.strip()
-        or len(latex) > max_latex_chars
-        or any(not character.isprintable() for character in latex)
-        or re.search(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069]", latex)
-    ):
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-    return classification, latex
+        ) from None
+    return classification, latex  # type: ignore[return-value]
 
 
 def _call_hmer_client(

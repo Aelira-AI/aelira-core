@@ -147,7 +147,7 @@ def test_noneligible_or_forged_suitability_never_reaches_hmer_transport():
         '{"classification":"unsupported_notation","latex":"x"}',
         '{"classification":"unknown","latex":null}',
         '[{"classification":"handwritten_equation","latex":"x"}]',
-        '{"classification":"handwritten_equation","latex":"x\\ny"}',
+        '{"classification":"handwritten_equation","latex":"x\ny"}',
     ],
 )
 def test_primary_hmer_response_contract_fails_closed(content: str):
