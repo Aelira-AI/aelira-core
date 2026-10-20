@@ -1737,6 +1737,7 @@ jobs:
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py
+          docker run --rm --network none --user 0 --entrypoint apt-get aelira-worker-isolation:test check
           bun run scripts/verify_python_expat_layers.ts aelira-worker-isolation:test
           bun run scripts/verify_opencv_layers.ts aelira-worker-isolation:test
           bun run scripts/verify_libxml2_6653.ts aelira-worker-isolation:test
