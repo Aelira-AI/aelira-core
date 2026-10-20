@@ -862,7 +862,7 @@ SINGLE_SYMBOL_EDITS = [
     ("a + b = c", "a - b = c"),
     ("x_{1} + x_{2} = 0", "x_{1} + x_{3} = 0"),
     ("y = 2x + 1", "y = 2x + 7"),
-    (r"\sqrt{x+1} = 3", r"\sqrt{x-1} = 3"),
+    (r"\sqrt{x} + 1 = 3", r"\sqrt{x} - 1 = 3"),
     ("a < b", "a > b"),
 ]
 
@@ -915,17 +915,30 @@ AMBIGUOUS = [
     r"x^{}",
     "x",
     "$x$",
+    # A compound argument reads the same as a group that ends earlier.
+    r"\sqrt{x+1}",
+    r"a_{ij}",
+    r"3x^{2}y + 2xy^{2} = 0",
+    r"y = \frac{1}{2}x + 3",
+    r"x^{n}y",
+    r"x^{ny}",
+    r"\sqrt{2}x",
+    r"\sqrt{2x}",
+    r"a_{n}x^{n}",
+    r"\bar{x} = 5",
+    r"\hat{x} + 1",
+    r"\sqrt{x+1} = 3",
+    r"\frac{a+b}{c}",
+    r"x^{n+1}",
 ]
 UNAMBIGUOUS = [
     r"x^{2} + 3x - 7 = 0",
     r"x^2 + 1 = 0",
     r"\frac{1}{2}",
     r"\dfrac{1}{2}",
-    r"\sqrt{x+1}",
     r"\sqrt[3]{x}",
     r"\binom{n}{k}",
     r"\dbinom{n}{k}",
-    r"a_{ij}",
     r"x_i^2",
     r"\int_0^1 x^2 dx",
     r"E = mc^{2}",
@@ -964,6 +977,24 @@ def test_a_binomial_reads_as_a_choice():
     assert generate_equation_alt_text(r"\frac{1}{2}") == "1 over 2"
 
 
+@pytest.mark.parametrize(
+    ("latex", "words"),
+    [
+        (r"x \le 3", "x less than or equal to 3"),
+        (r"x \ne 0", "x not equal to 0"),
+        (r"\sin x = 0", "sine x = 0"),
+        (r"\log_{2} 8 = 3", "log sub 2 8 = 3"),
+        (r"a \pm b", "a plus or minus b"),
+    ],
+)
+def test_a_reading_with_a_named_command_is_staged_with_its_words(latex, words):
+    result = _fix(_fixer(latex, StubSecondReader(latex)))
+
+    assert result.error == "image_equation_association_pending"
+    assert result.aria_label == words
+    assert result.pending_association.alt_text == words
+
+
 def test_a_staged_binomial_carries_the_choice_wording():
     result = _fix(_fixer(r"\binom{n}{k}", StubSecondReader(r"\binom{n}{k}")))
 
@@ -988,6 +1019,20 @@ CONVERTIBLE_AMBIGUOUS = [
     r"e^{x^{2}}",
     "x",
     "$x$",
+    # Readings whose words run together or erase a command, or whose argument
+    # holds more than one token and so does not say where it ends.
+    r"3x^{2}y + 2xy^{2} = 0",
+    r"y = \frac{1}{2}x + 3",
+    r"x^{n}y",
+    r"x^{ny}",
+    r"\sqrt{2}x",
+    r"\sqrt{2x}",
+    r"a_{n}x^{n}",
+    r"\bar{x} = 5",
+    r"\hat{x} + 1",
+    r"\sqrt{x+1} = 3",
+    r"\frac{a+b}{c}",
+    r"x^{n+1}",
 ]
 
 

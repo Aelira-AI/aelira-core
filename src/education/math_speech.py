@@ -37,7 +37,11 @@ def strip_math_delimiters(latex: str) -> str:
 # Spoken-word label for LaTeX (the equation path) and its ambiguity guard
 # ---------------------------------------------------------------------------
 
-_SPOKEN_SUBSTITUTIONS: List[tuple] = [
+# A backslash followed by letters is a LaTeX command, unless the token is
+# clearly a Windows path (see ``_WINDOWS_PATH``).
+_COMMAND = re.compile(r"\\[A-Za-z]+")
+
+_SPOKEN_RULES: List[tuple] = [
     # Fractions and binomial coefficients
     (re.compile(r"\\[dtc]?frac\{([^}]+)\}\{([^}]+)\}"), r"\1 over \2"),
     (re.compile(r"\\[dt]?binom\{([^}]+)\}\{([^}]+)\}"), r"\1 choose \2"),
@@ -95,12 +99,12 @@ _SPOKEN_SUBSTITUTIONS: List[tuple] = [
     (re.compile(r"\\div\b"), "divided by"),
     (re.compile(r"\\pm\b"), "plus or minus"),
     (re.compile(r"\\mp\b"), "minus or plus"),
-    (re.compile(r"\\leq\b"), "less than or equal to"),
-    (re.compile(r"\\geq\b"), "greater than or equal to"),
-    (re.compile(r"\\neq\b"), "not equal to"),
+    (re.compile(r"\\leq?\b"), "less than or equal to"),
+    (re.compile(r"\\geq?\b"), "greater than or equal to"),
+    (re.compile(r"\\neq?\b"), "not equal to"),
     (re.compile(r"\\approx\b"), "approximately equal to"),
     (re.compile(r"\\equiv\b"), "equivalent to"),
-    (re.compile(r"\\cdot\b"), "dot"),
+    (re.compile(r"\\cdot\b"), "times"),
     (re.compile(r"\\ldots\b"), "ellipsis"),
     (re.compile(r"\\cdots\b"), "ellipsis"),
     (re.compile(r"\\infty\b"), "infinity"),
@@ -110,7 +114,52 @@ _SPOKEN_SUBSTITUTIONS: List[tuple] = [
     (re.compile(r"\\prod\b"), "product"),
     (re.compile(r"\\int\b"), "integral"),
     (re.compile(r"\\oint\b"), "contour integral"),
+    # Functions
+    (re.compile(r"\\sin\b"), "sine"),
+    (re.compile(r"\\cos\b"), "cosine"),
+    (re.compile(r"\\tan\b"), "tangent"),
+    (re.compile(r"\\log\b"), "log"),
+    (re.compile(r"\\ln\b"), "natural log"),
 ]
+
+
+def _padded(pattern: "re.Pattern[str]", replacement: str):
+    """Keep a spoken form from running into the letter or digit before it.
+
+    A command written hard against a symbol, as in ``2\\pi`` or ``a\\times b``,
+    would otherwise read "2pi" and "atimes".
+    """
+
+    def replace(match: "re.Match[str]") -> str:
+        before = (
+            match.string[match.start() - 1 : match.start()] if match.start() else ""
+        )
+        return (" " if before.isalnum() else "") + match.expand(replacement)
+
+    return pattern, replace
+
+
+# Commands that only change how an equation is drawn. They have no spoken form
+# and nothing to say, so removing them loses no meaning. Every other command that
+# the table above does not translate is refused, never erased.
+_TYPOGRAPHY_RULES: List[tuple] = [
+    (re.compile(r"\\(?:left|right)\s*\."), ""),
+    (re.compile(r"\\(?:left|right|displaystyle)(?![A-Za-z])"), ""),
+    (re.compile(r"\\mathrm\{([^}]*)\}"), r"\1"),
+    (re.compile(r"\\(?:quad|qquad)(?![A-Za-z])"), " "),
+    (re.compile(r"\\[,;:!]"), " "),
+]
+
+# The commands the table translates are padded; the scripts already carry a
+# leading space, and the typography rules must not add one.
+_SPOKEN_SUBSTITUTIONS: List[tuple] = [
+    (
+        _padded(pattern, replacement)
+        if pattern.pattern.startswith("\\\\")
+        else (pattern, replacement)
+    )
+    for pattern, replacement in _SPOKEN_RULES
+] + _TYPOGRAPHY_RULES
 
 # The catch-all clean-up that runs after the spoken forms above. It deletes every
 # command it does not recognise and keeps the braced argument, so it is kept
@@ -149,46 +198,154 @@ def generate_equation_alt_text(latex: str) -> str:
     return label if len(label) >= 2 else _EQUATION_ALT_TEXT_FALLBACK
 
 
-_FRACTION_COMMAND = re.compile(r"\\(?:[dtc]?frac|[dt]?binom)(?![A-Za-z])")
-_FRACTION_ARGUMENTS = re.compile(r"\{[^{}]+\}\{[^{}]+\}")
+# ---------------------------------------------------------------------------
+# The ambiguity guard
+#
+# The label is built by substitution, so it says the words of an equation but
+# not where its parts begin and end. ``x^{n+1}`` and ``x^{n}+1`` both read
+# "x to the power n+1". The guard accepts an equation only when no other
+# equation the guard also accepts reads the same, and it gets there by refusing
+# rather than by adding words:
+#
+#   1. Every argument of a fraction, binomial, root or script is one token: a
+#      number, a single letter, or one Greek letter or infinity. Anything joined
+#      to it, whether by an operator, a space, another symbol or a second
+#      construct, makes the argument compound, and a compound argument is what
+#      lets the group's edge move without the words changing.
+#   2. A group is never followed, with nothing between, by a letter, a digit, an
+#      opening brace or a command, which would run into its last word
+#      ("x squaredy"). A fraction, binomial or root is also never followed by a
+#      script. A script may be followed by the other kind of script.
+#   3. A brace group that is not an argument is refused. The label drops braces,
+#      so ``{ab}^2`` and ``ab^2`` would read the same.
+#   4. A command with no spoken form is never erased. Only the typography
+#      commands above, which say nothing, are dropped.
+#   5. A backslash never survives into the label.
+#
+# The label also puts a space before a spoken form that follows a letter or
+# digit, so ``a\frac{b}{c}`` reads "a b over c" and ``\frac{ab}{c}`` "ab over c".
+# ---------------------------------------------------------------------------
+
+_SYMBOL_COMMANDS = (
+    "alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|pi|"
+    "rho|sigma|tau|upsilon|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|"
+    "Upsilon|Phi|Psi|Omega|infty"
+)
+_TOKEN = (
+    r"(?:[0-9]+(?:\.[0-9]+)?|[A-Za-z](?![A-Za-z0-9])|\\(?:"
+    + _SYMBOL_COMMANDS
+    + r")(?![A-Za-z]))"
+)
+_BRACED_TOKEN = re.compile(r"\{\s*" + _TOKEN + r"\s*\}")
+_BRACKETED_TOKEN = re.compile(r"\[\s*" + _TOKEN + r"\s*\]")
+_PREFIX_COMMAND = re.compile(r"\\(?:[dtc]?frac|[dt]?binom)(?![A-Za-z])")
 _SQRT_COMMAND = re.compile(r"\\sqrt(?![A-Za-z])")
-_SQRT_ARGUMENTS = re.compile(r"(?:\[[^\[\]{}]+\])?\{[^{}]+\}")
-_BRACED_SCRIPT = re.compile(r"\{[^{}]+\}")
+_MATHRM_GROUP = re.compile(r"\\mathrm\{[A-Za-z0-9]+\}")
+
+
+def _unspoken_commands(latex: str) -> List[str]:
+    """The commands the table leaves behind: the ones the label would erase."""
+    text = strip_math_delimiters(latex)
+    for pattern, replacement in _SPOKEN_SUBSTITUTIONS:
+        text = pattern.sub(replacement, text)
+    return _COMMAND.findall(text)
+
+
+# What may follow a group directly although it starts with a backslash: a space
+# command, which the label turns into a space, or the closing delimiter of a
+# ``\left`` ... ``\right`` pair, which the label turns into the delimiter.
+_SEPARATOR_COMMAND = re.compile(
+    r"\\(?:[,;:!]|quad(?![A-Za-z])|qquad(?![A-Za-z])|right\s*[)\]|.])"
+)
+
+
+def _may_follow(text: str, end: int, own: Optional[str]) -> bool:
+    """Whether what comes right after a group keeps its last word apart.
+
+    ``own`` is ``^`` or ``_`` for a script group, ``None`` for a fraction,
+    binomial or root.
+    """
+    following = text[end : end + 1]
+    if following == "\\":
+        return _SEPARATOR_COMMAND.match(text, end) is not None
+    if following.isalnum() or following == "{":
+        return False
+    if following in ("^", "_"):
+        return own is not None and following != own
+    return True
+
+
+def _structure_is_unambiguous(text: str) -> bool:
+    index = 0
+    length = len(text)
+    while index < length:
+        character = text[index]
+        if character == "\\":
+            command = _PREFIX_COMMAND.match(text, index)
+            if command:
+                first = _BRACED_TOKEN.match(text, command.end())
+                second = _BRACED_TOKEN.match(text, first.end()) if first else None
+                if second is None or not _may_follow(text, second.end(), None):
+                    return False
+                index = second.end()
+                continue
+            command = _SQRT_COMMAND.match(text, index)
+            if command:
+                position = command.end()
+                optional = _BRACKETED_TOKEN.match(text, position)
+                if optional:
+                    position = optional.end()
+                radicand = _BRACED_TOKEN.match(text, position)
+                if radicand is None or not _may_follow(text, radicand.end(), None):
+                    return False
+                index = radicand.end()
+                continue
+            group = _MATHRM_GROUP.match(text, index)
+            if group:
+                index = group.end()
+                continue
+            escaped = text[index + 1 : index + 2]
+            index += 2 if escaped and escaped in "{}^_" else 1
+            continue
+        if character in "^_":
+            if text[index + 1 : index + 2] == "{":
+                group = _BRACED_TOKEN.match(text, index + 1)
+                if group is None or not _may_follow(text, group.end(), character):
+                    return False
+                index = group.end()
+                continue
+            script = text[index + 1 :]
+            first = script[:1]
+            if not first or first.isspace() or first in "\\{}^_":
+                return False
+            if first.isalnum() and script[1:2].isalnum():
+                return False
+            if not _may_follow(text, index + 2, character):
+                return False
+            index += 2
+            continue
+        if character in "{}":
+            return False
+        index += 1
+    return True
 
 
 def equation_alt_text_is_ambiguous(latex: str) -> bool:
     """Whether the deterministic label cannot be trusted for this LaTeX.
 
-    The label comes from regular expressions, not from the equation's structure.
-    It is refused, never guessed, when it falls back to the generic text, when a
-    fraction, binomial or root does not carry the plain braced arguments the
-    expressions translate, or when a script is not one character or a plain
-    braced group. Without that, ``\\frac12`` would read "12", ``\\binom{n}{k}``
-    "nk" and ``x^2y`` "x to the power 2y".
+    The label is refused, never guessed, when it falls back to the generic text,
+    when it would erase a command it has no words for, when a backslash would
+    survive into it, or when its words could belong to a different equation (see
+    the rules above). ``\\frac12`` would read "12", ``x^{n}y`` and ``x^{ny}``
+    would read the same, and ``\\sin x = 0`` would read "x = 0".
     """
-    if generate_equation_alt_text(latex) == _EQUATION_ALT_TEXT_FALLBACK:
+    label = generate_equation_alt_text(latex)
+    if label == _EQUATION_ALT_TEXT_FALLBACK or "\\" in label:
         return True
     text = strip_math_delimiters(latex)
-    for command in _FRACTION_COMMAND.finditer(text):
-        if _FRACTION_ARGUMENTS.match(text, command.end()) is None:
-            return True
-    for command in _SQRT_COMMAND.finditer(text):
-        if _SQRT_ARGUMENTS.match(text, command.end()) is None:
-            return True
-    for index, character in enumerate(text):
-        if character not in "^_" or (index and text[index - 1] == "\\"):
-            continue
-        script = text[index + 1 :]
-        if script.startswith("{"):
-            if _BRACED_SCRIPT.match(script) is None:
-                return True
-            continue
-        first = script[:1]
-        if not first or first.isspace() or first in "\\{}^_":
-            return True
-        if first.isalnum() and script[1:2].isalnum():
-            return True
-    return False
+    if _unspoken_commands(text):
+        return True
+    return not _structure_is_unambiguous(text)
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +377,6 @@ SPOKEN_MATH_INSTRUCTION = (
     "signs, backslashes, carets or braces."
 )
 
-# A backslash followed by letters is a LaTeX command, unless the token is
-# clearly a Windows path (see ``_WINDOWS_PATH``).
-_COMMAND = re.compile(r"\\[A-Za-z]+")
 # A braced script, ``x^{2}`` or ``a_{n}``: the other bare LaTeX signal.
 _SCRIPT_GROUP = re.compile(r"[\^_]\{")
 # What ``json.loads`` makes of the first letter of a command written with a
@@ -265,30 +419,11 @@ _NOT_PATH = re.compile(r"[{}^$]")
 _MAX_GROUP = 500
 
 
-def _unspoken_commands(latex: str) -> List[str]:
-    """The commands the spoken forms leave behind.
-
-    The clean-up that follows deletes them without a trace, so a command that
-    appears here is one the label would silently erase.
-    """
-    text = strip_math_delimiters(latex)
-    for pattern, replacement in _SPOKEN_SUBSTITUTIONS:
-        text = pattern.sub(replacement, text)
-    return _COMMAND.findall(text)
-
-
 def _speak(latex: str) -> Optional[str]:
     """Spoken words for one span of LaTeX, or ``None`` when it cannot be said."""
     if equation_alt_text_is_ambiguous(latex):
         return None
-    if _unspoken_commands(latex):
-        return None
-    spoken = generate_equation_alt_text(latex)
-    # A backslash that survives the table (a thin space, an escaped brace, a
-    # doubled command) would be announced as "backslash".
-    if "\\" in spoken:
-        return None
-    return spoken
+    return generate_equation_alt_text(latex)
 
 
 def _token_end(text: str, start: int) -> int:

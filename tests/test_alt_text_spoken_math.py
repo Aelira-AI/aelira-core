@@ -195,6 +195,7 @@ async def test_latex_in_a_generic_description_is_spoken(tmp_path):
         r"Value \(\alpha+\beta\) here",
         r"Value \[\frac{1}{2}+y=4\] here",
         r"Area is \pi r^{2} here",
+        r"The solution is $x \le 3$ for $\sin x = 0$",
     ],
 )
 async def test_every_latex_form_is_spoken_before_use(tmp_path, answer):
@@ -215,6 +216,8 @@ async def test_every_latex_form_is_spoken_before_use(tmp_path, answer):
         r"Growth is $x^10$ here",
         r"The index is $a_ij$ here",
         r"Only $x$ is labelled",
+        r"The roots are $\sqrt{x+1}$ here",
+        r"The slope is y = \frac{1}{2}x + 3 here",
         r"All \forall x here",
         r"Set $\{x, y\}$ here",
         "Plot \x0crac{a}{b}",
