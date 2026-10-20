@@ -17,7 +17,7 @@ from strict_json import boolean, exact_object, integer, load, loads
 HEX = re.compile(r"[a-f0-9]{64}")
 IMAGE = re.compile(r"sha256:[a-f0-9]{64}")
 CONSUMERS = {
-    "src/education/remediation/pdf_remediator.py": "07fa041ffb1a7194d37aeef5f3f7aab0da3f2ae169f33e923abea28b06467f8e",
+    "src/education/remediation/pdf_remediator.py": "7b1921b7ca27a3af1eeb3f494fc3a2680e1ae47a8b3cc3a8f7c926cc1a21e656",
     "src/education/handwritten_math_suitability.py": "310e239e7837e12e22a3ee14a831f38cf163360959675f7ae0ad149c4a5ddf50",
 }
 FEATURES = (
