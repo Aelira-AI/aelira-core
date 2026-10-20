@@ -454,6 +454,9 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
             "compliance_improvement": result.improvement,
             "duration_seconds": result.duration_seconds,
             "verification_passed": getattr(result, "verification_passed", False),
+            "source_matterhorn_failures": getattr(
+                result, "source_matterhorn_failures", None
+            ),
             "review_requirements": review_requirements,
             **({"reviewed_pdf_recovery": recovery_receipt} if recovery_receipt else {}),
             "human_review_required": recovery is not None
