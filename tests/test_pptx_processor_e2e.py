@@ -7,11 +7,8 @@ using synthetic PowerPoint test fixtures.
 Updated to match PowerPointProcessingResult dataclass API.
 """
 
-import re
 import pytest
 from pathlib import Path
-from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 # Add backend to path
 import sys
@@ -27,29 +24,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "powerpoint"
 LECTURE_DECK = FIXTURES_DIR / "lecture_deck.pptx"
 DARK_THEME = FIXTURES_DIR / "dark_theme.pptx"
 IMAGE_HEAVY = FIXTURES_DIR / "image_heavy.pptx"
-
-
-@pytest.fixture
-def image_heavy_deck(tmp_path):
-    """image_heavy.pptx with python-pptx's file-name placeholders removed.
-
-    The fixture generator added its pictures with python-pptx, which fills each
-    picture's descr with the source file name. Those pictures were meant to be
-    undescribed, so remove the placeholders; the picture that was given real
-    alt text keeps it.
-    """
-    presentation = Presentation(str(IMAGE_HEAVY))
-    for slide in presentation.slides:
-        for shape in slide.shapes:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                properties = shape._element.nvPicPr.cNvPr
-                if re.fullmatch(
-                    r"[\w-]+\.(png|jpe?g|gif)", properties.get("descr", "")
-                ):
-                    del properties.attrib["descr"]
-    path = tmp_path / "image_heavy.pptx"
-    presentation.save(str(path))
-    return path
 
 
 @pytest.fixture
@@ -104,11 +78,11 @@ class TestPowerPointProcessingWorkflow:
         # Verify compliance score exists
         assert 0 <= result.compliance_score <= 100
 
-    def test_image_heavy_processing(self, pptx_processor, image_heavy_deck):
+    def test_image_heavy_processing(self, pptx_processor):
         """Test processing of image-heavy presentation."""
         assert IMAGE_HEAVY.exists(), f"Test fixture not found: {IMAGE_HEAVY}"
 
-        result = pptx_processor.process_pptx(str(image_heavy_deck))
+        result = pptx_processor.process_pptx(str(IMAGE_HEAVY))
 
         assert result is not None
 
@@ -211,9 +185,9 @@ class TestContrastDetection:
 class TestImageAltTextDetection:
     """Test detection of missing alt text on images."""
 
-    def test_missing_alt_text_detection(self, pptx_processor, image_heavy_deck):
+    def test_missing_alt_text_detection(self, pptx_processor):
         """Test detection of images without alt text."""
-        result = pptx_processor.process_pptx(str(image_heavy_deck))
+        result = pptx_processor.process_pptx(str(IMAGE_HEAVY))
 
         # Collect all alt text issues
         all_alt_text_issues = []
@@ -253,9 +227,9 @@ class TestImageAltTextDetection:
                     len(alt_text) > 0
                 ), "Image marked as having alt text but text is empty"
 
-    def test_image_location_tracking(self, pptx_processor, image_heavy_deck):
+    def test_image_location_tracking(self, pptx_processor):
         """Test that image locations are tracked correctly."""
-        result = pptx_processor.process_pptx(str(image_heavy_deck))
+        result = pptx_processor.process_pptx(str(IMAGE_HEAVY))
 
         for slide in result.slides:
             for img_issue in slide.alt_text_issues:

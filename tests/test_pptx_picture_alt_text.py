@@ -264,3 +264,103 @@ class TestRemediateThenRescan:
         assert _picture_descr(result.output_file, "Needs alt") == GENERATED
         assert result.verification_passed is True
         assert result.manual_issues == []
+
+
+class TestFilenameAndPlaceholderAltText:
+    """A file name or tool placeholder in `descr` describes nothing."""
+
+    @pytest.mark.parametrize(
+        "descr",
+        [
+            "nature1.png",
+            "C:\\pics\\photo.JPG",
+            "Picture 3",
+            "image001.emf",
+            "Image 1",
+            "Graphic 2",
+            "Screenshot",
+        ],
+    )
+    def test_filename_or_placeholder_is_reported_as_missing(self, tmp_path, descr):
+        source = tmp_path / "placeholder.pptx"
+        _build(source, [("Lecture photo", descr)])
+
+        result = PowerPointProcessor().process_pptx(str(source))
+
+        findings = [i for s in result.slides for i in s.alt_text_issues]
+        assert len(findings) == 1
+        assert findings[0].has_alt_text is False
+        assert findings[0].alt_text_is_placeholder is True
+        assert findings[0].existing_alt_text == descr
+        (finding,) = _alt_findings(result)
+        assert "filename or placeholder" in finding["description"]
+        assert finding["severity"] == "critical"
+
+    def test_severity_matches_a_picture_with_no_alt_text(self, tmp_path):
+        placeholder = tmp_path / "placeholder.pptx"
+        missing = tmp_path / "missing.pptx"
+        _build(placeholder, [("Photo", "photo.png")])
+        _build(missing, [("Photo", None)])
+
+        with_placeholder = PowerPointProcessor().process_pptx(str(placeholder))
+        without_alt = PowerPointProcessor().process_pptx(str(missing))
+
+        assert [i["severity"] for i in _alt_findings(with_placeholder)] == [
+            i["severity"] for i in _alt_findings(without_alt)
+        ]
+        assert with_placeholder.compliance_score == without_alt.compliance_score
+
+    def test_python_pptx_default_file_name_is_reported(self, tmp_path):
+        """python-pptx fills `descr` with the file name when it adds a picture."""
+        source = tmp_path / "default.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        slide.shapes.title.text = "Enrolment"
+        slide.shapes.add_picture(_png(), 0, 1828800)
+        presentation.save(source)
+
+        result = PowerPointProcessor().process_pptx(str(source))
+
+        assert [
+            i.alt_text_is_placeholder for s in result.slides for i in s.alt_text_issues
+        ] == [True]
+
+    @pytest.mark.parametrize(
+        "descr",
+        [
+            "Diagram of a PNG compression pipeline",
+            "Screenshot of the login page showing an error banner",
+            "Image 3 shows enrolment rising each year",
+            DESCRIBED,
+        ],
+    )
+    def test_real_description_is_not_reported(self, tmp_path, descr):
+        source = tmp_path / "real.pptx"
+        _build(source, [("Lecture figure", descr)])
+
+        result = PowerPointProcessor().process_pptx(str(source))
+
+        assert [i for s in result.slides for i in s.alt_text_issues] == []
+        assert _alt_findings(result) == []
+
+    def test_placeholder_is_replaced_and_the_fix_is_verified(self, tmp_path):
+        source = tmp_path / "source.pptx"
+        _build(source, [("Rainfall chart", "rainfall.png"), ("Has alt", DESCRIBED)])
+        client = _VisionStub()
+
+        scan = PowerPointProcessor().process_pptx(str(source))
+        issues = _alt_findings(scan)
+        assert [i["metadata"]["alt_text_is_placeholder"] for i in issues] == [True]
+        result = PptxRemediator(
+            str(source), issues, _config(tmp_path), alt_text_client=client
+        ).remediate()
+
+        assert result.success, result.error_message
+        assert client.calls == 1
+        assert _picture_descr(result.output_file, "Rainfall chart") == GENERATED
+        assert _picture_descr(result.output_file, "Has alt") == DESCRIBED
+        assert [f.verification_passed for f in result.fixed_issues] == [True]
+        assert result.manual_issues == []
+        assert result.verification_passed is True
+        after = PowerPointProcessor().process_pptx(result.output_file)
+        assert _alt_findings(after) == []

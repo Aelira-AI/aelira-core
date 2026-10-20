@@ -137,9 +137,7 @@ def test_scanner_score_uses_reported_severities_and_critical_cap(tmp_path, kind)
         document.save(source)
     elif kind == "pptx":
         presentation = Presentation(source)
-        picture = presentation.slides[0].shapes.add_picture(image, 0, 0)
-        # python-pptx fills descr with the file name; leave the picture undescribed.
-        picture._element.nvPicPr.cNvPr.attrib.pop("descr", None)
+        presentation.slides[0].shapes.add_picture(image, 0, 0)
         presentation.save(source)
     else:
         from openpyxl import load_workbook

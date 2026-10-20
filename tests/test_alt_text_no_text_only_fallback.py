@@ -95,9 +95,7 @@ def _make_pptx(path: Path) -> None:
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[5])
     slide.shapes.title.text = "Cell biology"
-    picture = slide.shapes.add_picture(io.BytesIO(_png()), 0, 0)
-    # python-pptx fills descr with the file name; leave the picture undescribed.
-    picture._element.nvPicPr.cNvPr.attrib.pop("descr", None)
+    slide.shapes.add_picture(io.BytesIO(_png()), 0, 0)
     presentation.save(path)
 
 
