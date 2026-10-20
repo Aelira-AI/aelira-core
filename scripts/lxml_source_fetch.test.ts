@@ -12,7 +12,7 @@ const good = 'pinned source fixture\n';
 const digest = createHash('sha256').update(good).digest('hex');
 const bad = '<html>untrusted response with PRIVATE_RESPONSE_MARKER</html>\n';
 
-function run(modes: string[], pin = digest, stale = false) {
+function run(modes: string[], pin = digest, stale = false, fallbacks: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'lxml-fetch-test-'));
   try {
     const bin = join(dir, 'bin');
@@ -57,7 +57,7 @@ esac
     // Keep tests fast while recording that only bounded backoff was requested.
     writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FIXTURE/sleeps"\n');
     chmodSync(join(bin, 'sleep'), 0o755);
-    const result = Bun.spawnSync(['sh', '-eu', '-c', `${helper}\nfetch https://example.invalid/source "$1" archive.tar.gz\nprintf accepted > accepted\n`, 'test', pin], {
+    const result = Bun.spawnSync(['sh', '-eu', '-c', `${helper}\nfetch https://example.invalid/source "$1" archive.tar.gz ${fallbacks.join(' ')}\nprintf accepted > accepted\n`, 'test', pin], {
       cwd: dir,
       env: { ...process.env, FIXTURE: dir, PATH: `${bin}:${process.env.PATH}` },
       timeout: 5000,
@@ -140,5 +140,51 @@ describe('lxml pinned source fetch (offline production shell)', () => {
 
   test('a malformed checksum cannot accept otherwise good bytes', () => {
     refused(run(['good', 'good', 'good'], 'malformed'));
+  });
+
+  test('a fallback is used only after every primary attempt fails, and only with pinned bytes', () => {
+    const fallback = 'https://mirror.example.invalid/source';
+    const result = run(['bad', 'bad', 'bad', 'good'], digest, false, [fallback]);
+    expect(result.status).toBe(0);
+    expect(result.count).toBe(4);
+    expect(result.archive).toBe(good);
+    expect(result.accepted).toBe(true);
+    expect(result.partials).toEqual([]);
+    expect(result.calls.slice(0, 3).every((call) => call.endsWith('https://example.invalid/source'))).toBe(true);
+    expect(result.calls[3].endsWith(fallback)).toBe(true);
+    // Each source keeps its own bounded attempts; no wait follows the last one.
+    expect(result.sleeps).toEqual(['1', '1']);
+    const lines = result.stderr.trim().split('\n');
+    expect(lines).toHaveLength(3);
+    for (const line of lines) expect(line).not.toContain('fallback=');
+    expect(result.stderr).not.toContain('example.invalid');
+  });
+
+  test('a working primary never touches the fallback', () => {
+    const result = run(['good', 'good'], digest, false, ['https://mirror.example.invalid/source']);
+    expect(result.status).toBe(0);
+    expect(result.count).toBe(1);
+    expect(result.calls[0].endsWith('https://example.invalid/source')).toBe(true);
+    expect(result.stderr).toBe('');
+  });
+
+  test('a fallback with the wrong bytes is refused after its own bounded attempts', () => {
+    const result = run(['bad', 'bad', 'bad', 'bad', 'bad', 'bad', 'good'], digest, false, ['https://mirror.example.invalid/source']);
+    refused(result, 6);
+    const lines = result.stderr.trim().split('\n');
+    expect(lines).toHaveLength(6);
+    expect(lines.slice(3).every((line) => line.startsWith('lxml source archive.tar.gz fallback=1/1 attempt='))).toBe(true);
+    expect(result.stderr).not.toContain('mirror.example.invalid');
+    expect(result.sleeps).toEqual(['1', '1', '1', '1']);
+  });
+
+  test('fallbacks are tried in order', () => {
+    const second = 'https://second.example.invalid/source';
+    const result = run(['bad', 'bad', 'bad', 'failure', 'failure', 'failure', 'good'], digest, false, ['https://first.example.invalid/source', second]);
+    expect(result.status).toBe(0);
+    expect(result.count).toBe(7);
+    expect(result.calls[6].endsWith(second)).toBe(true);
+    expect(result.stderr).toContain('fallback=1/2 attempt=3/3 curl_status=28');
+    expect(result.stderr).not.toContain('fallback=2/2');
   });
 });

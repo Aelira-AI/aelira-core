@@ -5505,6 +5505,7 @@ class PdfRemediator(BaseRemediator):
         stage = "original_scan_failed"
         for fixed in self.result.fixed_issues:
             fixed.saved_file_verification = None
+        self.result.source_matterhorn_failures = None
         try:
             with self._materialize_output_claim_for_verification() as verification_path:
                 snapshot = begin_measurement(self.file_path, verification_path)
@@ -5828,6 +5829,17 @@ class PdfRemediator(BaseRemediator):
                     )
                     if new_failures:
                         verification.passed = False
+                    # Publication gates compare the claimed output against
+                    # this baseline. Failures with changed evidence are not
+                    # attributed to the source.
+                    self.result.source_matterhorn_failures = sorted(
+                        (
+                            key
+                            for key in before_failures.elements()
+                            if key not in uncertain_failures
+                        ),
+                        key=lambda key: (key[0], -1 if key[1] is None else key[1]),
+                    )
                 except Exception as e:
                     verification.passed = False
                     verification.unavailable_checks.append("matterhorn")
@@ -5877,6 +5889,7 @@ class PdfRemediator(BaseRemediator):
             self.result.remediated_compliance_score = None
             self.result.improvement = None
             self.result.score_provenance = None
+            self.result.source_matterhorn_failures = None
             verification = VerificationResult(
                 passed=False,
                 issues_before=len(self.issues),

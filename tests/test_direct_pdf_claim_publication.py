@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from src.auth.dependencies import AuthenticatedPrincipal
 from src.db.models import (
     CloudFile,
+    MatterhornResult,
     RemediationArtifact,
     Scan,
     ScanFix,
@@ -27,6 +28,11 @@ from src.db.models import (
 from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
+from tests.test_image_equation_matterhorn_gate import (
+    GATE_ACCEPTED,
+    GATE_REFUSED,
+    publisher_params,
+)
 from tests.test_image_equation_review_gate import EVIDENCE, _fix as _typed_equation_fix
 
 CLAIMED_BYTES = b"%PDF-1.7\nexact descriptor-bound remediation\n%%EOF\n"
@@ -225,6 +231,7 @@ async def _run_route(
     publication_hook=None,
     artifact_service=None,
     source_binding="missing",
+    audit=None,
 ):
     from src.api.education.remediation_routes import remediate_scan
 
@@ -291,7 +298,7 @@ async def _run_route(
         )
 
     matterhorn.validate.side_effect = validate
-    audit = MagicMock()
+    audit = audit or MagicMock()
     remediator_factory = MagicMock(return_value=remediator)
     with ExitStack() as stack:
         stack.enter_context(
@@ -506,39 +513,94 @@ async def test_direct_pdf_claim_closes_when_publication_raises(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("matterhorn_result", "matterhorn_error"),
-    [
-        (None, RuntimeError("Matterhorn unavailable")),
-        (
-            SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
-            None,
-        ),
-        (
-            SimpleNamespace(
-                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
-                total=1,
-                passed=0,
-                failed=1,
-                warnings=0,
-            ),
-            None,
-        ),
-        (
-            SimpleNamespace(
-                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
-                total=2,
-                passed=1,
-                failed=0,
-                warnings=0,
-            ),
-            None,
-        ),
-    ],
-    ids=["exception", "unavailable", "disqualifying", "integrity"],
+    ("matterhorn_result", "source_failures"), publisher_params(GATE_ACCEPTED)
 )
-async def test_direct_image_equation_matterhorn_failure_rolls_back(
-    tmp_path, matterhorn_result, matterhorn_error
+async def test_direct_image_equation_publishes_when_matterhorn_failures_pre_existed(
+    tmp_path, matterhorn_result, source_failures
 ):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    result.source_matterhorn_failures = source_failures
+    service = MagicMock()
+
+    run = await _run_route(
+        tmp_path,
+        result,
+        matterhorn_result=matterhorn_result,
+        artifact_service=service,
+    )
+
+    assert run.response["success"] is True
+    assert run.publication["bytes"] == CLAIMED_BYTES
+    service.abort_staging.assert_not_called()
+    # The validator's findings, including inherited failures, stay on record.
+    recorded = [row for row in run.db.added if isinstance(row, MatterhornResult)]
+    assert [row.checkpoint_id for row in recorded] == [
+        item.id for item in matterhorn_result.checkpoints
+    ]
+    assert [row.status for row in recorded] == [
+        item.status.value for item in matterhorn_result.checkpoints
+    ]
+    assert result.has_output_claim() is False
+
+
+PDFUA_WITHHELD_DETAIL = (
+    "The remediated file was withheld because it would add PDF/UA problems "
+    "the source document did not have. Your original file is unchanged."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("matterhorn_result", "source_failures", "code"),
+    [pytest.param(c.result, c.source_failures, c.code, id=c.id) for c in GATE_REFUSED],
+)
+async def test_direct_image_equation_gate_refusal_rolls_back(
+    tmp_path, matterhorn_result, source_failures, code
+):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    result.source_matterhorn_failures = source_failures
+    service = MagicMock()
+    audit = MagicMock()
+
+    with pytest.raises(HTTPException) as caught:
+        await _run_route(
+            tmp_path,
+            result,
+            matterhorn_result=matterhorn_result,
+            artifact_service=service,
+            audit=audit,
+        )
+
+    service.abort_staging.assert_called_once_with(
+        ANY,
+        artifact_id="66666666-6666-4666-8666-666666666666",
+        publication_token="direct-exact-token",
+    )
+    assert result.close_calls == 1
+    assert result.has_output_claim() is False
+    audit.log_remediation_failed.assert_called_once()
+    audited = audit.log_remediation_failed.call_args.kwargs["error"]
+    if code == "matterhorn_result_disqualifying":
+        # A rerun is unlikely to change this verdict, so it is a conflict with
+        # its reason rather than a retryable server failure.
+        assert caught.value.status_code == 409
+        assert caught.value.detail == PDFUA_WITHHELD_DETAIL
+        assert "try again" not in caught.value.detail.lower()
+        assert audited == "remediation_artifact_unavailable"
+    else:
+        # A missing or unusable validator result says nothing about the
+        # document, so it keeps the generic failure response.
+        assert caught.value.status_code == 500
+        assert caught.value.detail == "Remediation failed. Please try again."
+        assert audited == "remediation_exception"
+
+
+@pytest.mark.asyncio
+async def test_direct_image_equation_validator_exception_rolls_back(tmp_path):
     output = tmp_path / "fixed.pdf"
     output.write_bytes(CLAIMED_BYTES)
     result = _DirectPdfResult(output)
@@ -548,8 +610,7 @@ async def test_direct_image_equation_matterhorn_failure_rolls_back(
         await _run_route(
             tmp_path,
             result,
-            matterhorn_result=matterhorn_result,
-            matterhorn_error=matterhorn_error,
+            matterhorn_error=RuntimeError("Matterhorn unavailable"),
             artifact_service=service,
         )
 

@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 from pathlib import Path
 
 from pydantic import (
@@ -847,6 +847,10 @@ class RemediationResult(BaseModel):
     # Verification (post-remediation re-scan)
     verification_passed: bool = False
     verification_result: Optional[VerificationResult] = None
+    # Matterhorn checkpoints (id, page) the source already failed, recorded by
+    # the saved-file comparison against the exact claimed output. Failures whose
+    # evidence changed are left out. None means no comparison was recorded.
+    source_matterhorn_failures: Optional[List[Tuple[str, Optional[int]]]] = None
     latex_pdf_validation: Optional[LatexPDFValidation] = None
     latex_evidence: Dict[str, LatexRepresentationEvidence] = Field(default_factory=dict)
 

@@ -228,10 +228,27 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     # xdg-utils is a hard Depends of texlive-base, so apt cannot remove it
     # without removing TeX. Its only callers are interactive (texdoc, LuaTeX
     # os.openurl, ImageMagick's browse delegate) and none runs in a server, so
-    # remove the package itself with dpkg. apt will report that one unmet
-    # dependency; the final image never runs apt, and
-    # scripts/verify_final_os_packages.py pins the exact residue.
+    # remove the package itself with dpkg. That leaves texlive-base with an
+    # unmet dependency, which breaks apt in any image built FROM this one, so
+    # install an empty local package that Provides xdg-utils. It ships no
+    # files and is not named xdg-utils, so no scanner inventories xdg-utils.
+    # No network is needed. scripts/verify_final_os_packages.py pins the
+    # result and CI runs apt-get check against the final image.
     && dpkg --purge --force-depends xdg-utils \
+    && mkdir -p -m 0755 /tmp/aelira-xdg-utils-absent/DEBIAN \
+    && printf '%s\n' \
+        'Package: aelira-xdg-utils-absent' \
+        'Version: 1.0' \
+        'Architecture: all' \
+        'Maintainer: Aelira container image build' \
+        'Provides: xdg-utils' \
+        'Description: empty stand-in for the removed xdg-utils package' \
+        ' Satisfies the dependency that texlive-base declares on xdg-utils' \
+        ' without installing xdg-email or any other file.' \
+        > /tmp/aelira-xdg-utils-absent/DEBIAN/control \
+    && dpkg-deb --root-owner-group --build /tmp/aelira-xdg-utils-absent /tmp/aelira-xdg-utils-absent.deb \
+    && dpkg --install /tmp/aelira-xdg-utils-absent.deb \
+    && rm -rf /tmp/aelira-xdg-utils-absent /tmp/aelira-xdg-utils-absent.deb \
     && rm -rf /var/lib/apt/lists/* /var/cache/fontconfig/* /var/log/apt/* \
     && rm -f /etc/machine-id /var/lib/dbus/machine-id \
         /var/cache/ldconfig/aux-cache /var/lib/texmf/ls-R \

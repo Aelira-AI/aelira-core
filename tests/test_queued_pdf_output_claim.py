@@ -13,6 +13,7 @@ import pytest
 from src.db.models import (
     CloudFile,
     CloudProvider,
+    MatterhornResult,
     RemediationArtifact,
     RemediationOutcome,
     Scan,
@@ -24,6 +25,11 @@ from src.db.models import (
 from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
+from tests.test_image_equation_matterhorn_gate import (
+    GATE_ACCEPTED,
+    GATE_REFUSED,
+    publisher_params,
+)
 from tests.test_image_equation_review_gate import EVIDENCE, _fix as _typed_equation_fix
 
 
@@ -700,43 +706,20 @@ async def test_queued_pdf_cancellation_after_publication_aborts_exact_claim(
     assert remediation_result.has_output_claim() is False
 
 
-@pytest.mark.parametrize(
-    "matterhorn",
-    [
-        RuntimeError("validator unavailable"),
-        SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
-        SimpleNamespace(
-            checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
-            total=1,
-            passed=0,
-            failed=1,
-            warnings=0,
-        ),
-        SimpleNamespace(
-            checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
-            total=2,
-            passed=1,
-            failed=0,
-            warnings=0,
-        ),
-    ],
-    ids=["exception", "unavailable", "disqualifying", "integrity"],
-)
-async def test_queued_image_equation_matterhorn_failure_aborts_exact_staging(
-    tmp_path, matterhorn
+async def _run_equation_gate_job(
+    tmp_path, matterhorn, *, source_failures=None, abort_error=None
 ):
-    from src.jobs.remediation_job import (
-        RetryableRemediationJobError,
-        process_remediation_job,
-    )
+    """Publish one verified equation through the job, with a scripted validator."""
+    from src.jobs.remediation_job import process_remediation_job
 
     payload = b"%PDF-queued-image-equation-gate"
     _, output_path, scan, cloud_file, db, job_data = _context(tmp_path)
     prior_state = dict(vars(cloud_file))
     remediation_result = _result(Path(job_data["file_path"]), output_path, payload)
+    remediation_result.source_matterhorn_failures = source_failures
     remediation_result.fixed_issues = [
         _typed_equation_fix(
-            issue_id="equation-1",
+            issue_id="source-0",
             description="verified equation",
             fixed_content="Formula and MathML",
             provider_used="ollama",
@@ -751,6 +734,8 @@ async def test_queued_image_equation_matterhorn_failure_aborts_exact_staging(
         publication_token="queued-matterhorn-token",
     )
     service = MagicMock()
+    if abort_error is not None:
+        service.abort_staging.side_effect = abort_error
 
     def publish(*_args, **_kwargs):
         cloud_file.current_remediation_artifact_id = artifact.id
@@ -764,6 +749,7 @@ async def test_queued_image_equation_matterhorn_failure_aborts_exact_staging(
     else:
         validator.validate.return_value = matterhorn
 
+    result = error = None
     with (
         patch(
             "src.jobs.remediation_job._get_remediator_for_scan_type",
@@ -784,15 +770,145 @@ async def test_queued_image_equation_matterhorn_failure_aborts_exact_staging(
             return_value=validator,
         ),
     ):
-        with pytest.raises(RetryableRemediationJobError):
-            await process_remediation_job(job_data, db)
-
-    service.abort_staging.assert_called_once_with(
-        db,
-        artifact_id=publication.artifact_id,
-        publication_token=publication.publication_token,
+        try:
+            result = await process_remediation_job(job_data, db)
+        except Exception as exc:  # the caller asserts the exact type
+            error = exc
+    return SimpleNamespace(
+        result=result,
+        error=error,
+        service=service,
+        publication=publication,
+        scan=scan,
+        db=db,
+        cloud_file=cloud_file,
+        prior_state=prior_state,
+        remediation_result=remediation_result,
     )
-    assert vars(cloud_file) == prior_state
-    assert scan.status == ScanStatus.PROCESSING
-    assert scan.remediation_outcome is None
-    assert remediation_result.has_output_claim() is False
+
+
+@pytest.mark.parametrize(
+    ("matterhorn", "source_failures"), publisher_params(GATE_ACCEPTED)
+)
+async def test_queued_image_equation_publishes_when_matterhorn_failures_pre_existed(
+    tmp_path, matterhorn, source_failures
+):
+    run = await _run_equation_gate_job(
+        tmp_path, matterhorn, source_failures=source_failures
+    )
+
+    assert run.error is None
+    assert run.result["success"] is True
+    assert run.result["artifact_id"] == "artifact-1"
+    run.service.abort_staging.assert_not_called()
+    assert run.scan.remediation_outcome == RemediationOutcome.COMPLETED.value
+    # The validator's findings, including inherited failures, stay on record.
+    recorded = [row for row in run.db.added if isinstance(row, MatterhornResult)]
+    assert [row.checkpoint_id for row in recorded] == [
+        item.id for item in matterhorn.checkpoints
+    ]
+    assert [row.status for row in recorded] == [
+        item.status.value for item in matterhorn.checkpoints
+    ]
+    assert run.remediation_result.has_output_claim() is False
+
+
+@pytest.mark.parametrize(
+    ("matterhorn", "source_failures", "code"),
+    [pytest.param(c.result, c.source_failures, c.code, id=c.id) for c in GATE_REFUSED],
+)
+async def test_queued_image_equation_gate_refusal_aborts_staging_and_is_final(
+    tmp_path, matterhorn, source_failures, code
+):
+    from src.jobs.remediation_job import RemediationJobFailed, _commit_terminal_failure
+
+    run = await _run_equation_gate_job(
+        tmp_path, matterhorn, source_failures=source_failures
+    )
+
+    # A refusal returns a terminal failure instead of raising the retryable
+    # error, so the queue does not rerun remediation for the same bytes.
+    assert run.error is None
+    assert run.result["success"] is False
+    assert run.result["error"] == "remediation_artifact_unavailable"
+    run.service.abort_staging.assert_called_once_with(
+        run.db,
+        artifact_id=run.publication.artifact_id,
+        publication_token=run.publication.publication_token,
+    )
+    assert vars(run.cloud_file) == run.prior_state
+    assert run.scan.status == ScanStatus.FAILED
+    assert run.scan.remediation_outcome == RemediationOutcome.ARTIFACT_UNAVAILABLE.value
+    assert not [row for row in run.db.added if isinstance(row, MatterhornResult)]
+    assert run.remediation_result.has_output_claim() is False
+
+    # The queue handler turns that result into a deterministic failure (a
+    # RemediationJobFailed without a cause is never requeued) that credits no
+    # fix.
+    with pytest.raises(RemediationJobFailed) as terminal:
+        await _commit_terminal_failure(
+            SimpleNamespace(),
+            run.db,
+            run.result["error"],
+            scan=run.scan,
+            result=run.result,
+        )
+    assert terminal.value.code == "remediation_artifact_unavailable"
+    assert terminal.value.__cause__ is None
+    assert terminal.value.details["fixed_count"] == 0
+    # The user-facing reason says why the file was withheld; only a failure
+    # that remediation introduced is described as one retrying cannot fix.
+    [outcome] = [
+        item
+        for item in terminal.value.details["issue_outcomes"]
+        if item["status"] == "withheld"
+    ]
+    if code == "matterhorn_result_disqualifying":
+        assert outcome["reason_code"] == "output_adds_pdfua_failures"
+        assert "original is unchanged" in outcome["reason"]
+        assert "is unlikely to change the result" in outcome["next_step"]
+    else:
+        assert outcome["reason_code"] == "output_not_published"
+
+
+async def test_queued_image_equation_validator_exception_still_retries(tmp_path):
+    from src.jobs.remediation_job import RetryableRemediationJobError
+
+    run = await _run_equation_gate_job(
+        tmp_path, RuntimeError("validator unavailable"), source_failures=None
+    )
+
+    # No gate verdict exists, so the transient validator failure keeps its
+    # retryable handling after the staged artifact is aborted.
+    assert isinstance(run.error, RetryableRemediationJobError)
+    assert run.error.cleanup_complete is True
+    run.service.abort_staging.assert_called_once_with(
+        run.db,
+        artifact_id=run.publication.artifact_id,
+        publication_token=run.publication.publication_token,
+    )
+    assert vars(run.cloud_file) == run.prior_state
+    assert run.scan.status == ScanStatus.PROCESSING
+    assert run.scan.remediation_outcome is None
+    assert run.remediation_result.has_output_claim() is False
+
+
+async def test_queued_image_equation_refusal_with_failed_cleanup_keeps_cleanup_retry(
+    tmp_path,
+):
+    from src.jobs.remediation_job import RetryableRemediationJobError
+
+    refused = GATE_REFUSED[0]
+    run = await _run_equation_gate_job(
+        tmp_path,
+        refused.result,
+        source_failures=refused.source_failures,
+        abort_error=RuntimeError("storage unavailable"),
+    )
+
+    # An orphaned staging claim must still be reaped, so only this case keeps
+    # the retryable path, now carrying the pending-cleanup marker.
+    assert isinstance(run.error, RetryableRemediationJobError)
+    assert run.error.cleanup_complete is False
+    assert run.error.artifact_id == run.publication.artifact_id
+    assert vars(run.cloud_file) == run.prior_state

@@ -23,7 +23,31 @@ from pathlib import Path
 from src.utils.async_helpers import run_async_from_sync
 from PIL import Image
 from io import BytesIO
+from .alt_text_quality import alt_text_is_placeholder
 from .office_findings import office_issue_metadata
+
+# Each PresentationML shape element keeps its common non-visual properties,
+# including the `descr` alternative text, on a `cNvPr` child of its own
+# non-visual wrapper, never on the shape element itself.
+_SHAPE_NON_VISUAL_PROPERTIES = (
+    "./p:nvPicPr/p:cNvPr"
+    " | ./p:nvSpPr/p:cNvPr"
+    " | ./p:nvGrpSpPr/p:cNvPr"
+    " | ./p:nvGraphicFramePr/p:cNvPr"
+    " | ./p:nvCxnSpPr/p:cNvPr"
+)
+
+
+def get_shape_alt_text(shape) -> str:
+    """Return the shape's alternative text from its `cNvPr` element, or "".
+
+    This reads the same attribute the PPTX remediator writes, so alt text added
+    by remediation is visible to a rescan of the saved file.
+    """
+    properties = shape._element.xpath(_SHAPE_NON_VISUAL_PROPERTIES)
+    if not properties:
+        return ""
+    return properties[0].get("descr", "")
 
 
 class ContrastIssue(BaseModel):
@@ -50,6 +74,9 @@ class AltTextIssue(BaseModel):
     image_type: str
     has_alt_text: bool
     existing_alt_text: Optional[str] = None  # The current alt text if any
+    # True when the existing alt text is only a file name or tool placeholder,
+    # which is reported as missing because it does not describe the image
+    alt_text_is_placeholder: bool = False
     suggested_alt_text: Optional[str] = None
     # Validation fields (when validate_alt_text is enabled)
     alt_text_validated: bool = False  # Whether AI validation was performed
@@ -211,7 +238,14 @@ class PowerPointProcessingResult(BaseModel):
                     fix = "Mark as decorative (set empty alt text)"
                 elif not issue.has_alt_text:
                     title = "Missing Alt Text"
-                    desc = f"Image '{issue.shape_name}' is missing alt text"
+                    if issue.alt_text_is_placeholder:
+                        desc = (
+                            f"Image '{issue.shape_name}' is missing alt text: the "
+                            "existing text appears to be a filename or placeholder, "
+                            "not a description"
+                        )
+                    else:
+                        desc = f"Image '{issue.shape_name}' is missing alt text"
                     fix = issue.suggested_alt_text or "Add descriptive alt text"
                 else:
                     title = "Inaccurate Alt Text"
@@ -1570,8 +1604,13 @@ class PowerPointProcessor:
         4. Otherwise: use standard generate_alt_text()
         """
         try:
-            alt_text = shape._element.get("descr", "")
+            alt_text = get_shape_alt_text(shape)
             has_alt = alt_text and alt_text.strip() != ""
+            # A file name or tool placeholder in the description field is not
+            # alt text: it passes a presence check and describes nothing.
+            placeholder_alt = bool(has_alt) and alt_text_is_placeholder(alt_text)
+            if placeholder_alt:
+                has_alt = False
 
             if not has_alt:
                 # Image is MISSING alt text - use smart analysis
@@ -1733,7 +1772,8 @@ class PowerPointProcessor:
                     shape_name=shape.name,
                     image_type="picture",
                     has_alt_text=False,
-                    existing_alt_text=None,
+                    existing_alt_text=alt_text.strip() if placeholder_alt else None,
+                    alt_text_is_placeholder=placeholder_alt,
                     suggested_alt_text=suggested_alt,
                     detected_image_type=detected_type,
                     is_decorative=is_decorative,
