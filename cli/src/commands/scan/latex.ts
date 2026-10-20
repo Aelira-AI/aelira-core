@@ -14,7 +14,7 @@ export default class ScanLatex extends Command {
       required: true,
     }),
   }
-static description = 'Convert LaTeX equations to MathML. An equation description drafted by a model is kept as a review draft and is never written as an ARIA label (supports ChemFig, mhchem, physics notation, TikZ)'
+static description = 'Convert LaTeX equations to MathML (supports ChemFig, mhchem, physics notation, TikZ). Model-drafted equation descriptions are kept as review drafts and never written as ARIA labels.'
 static examples = [
     '<%= config.bin %> <%= command.id %> equations.tex',
     '<%= config.bin %> <%= command.id %> ./latex-files/',

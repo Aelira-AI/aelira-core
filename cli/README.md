@@ -140,7 +140,7 @@ aelira scan ppt ./presentations/
 
 ### `aelira scan latex` - LaTeX to MathML Converter
 
-Convert LaTeX equations to MathML. An equation description drafted by a model is kept as a review draft and is never written as an ARIA label.
+Convert LaTeX equations to MathML. Model-drafted equation descriptions are kept as review drafts and never written as ARIA labels.
 
 **Advanced LaTeX support:**
 - ChemFig chemical structure support
