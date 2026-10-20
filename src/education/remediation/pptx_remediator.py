@@ -27,7 +27,7 @@ from pptx.oxml.ns import qn
 
 from src.education.math_speech import (
     SPOKEN_MATH_INSTRUCTION,
-    speak_math_in_description,
+    refuse_math_markup,
 )
 
 from .base import (
@@ -713,13 +713,13 @@ class PptxRemediator(BaseRemediator):
                 if result.get("success") and result.get("content"):
                     alt_text = result["content"].strip().strip("\"'")
                     if alt_text:
-                        # Mathematics is spoken, or the description is refused
-                        # and the image stays open for review.
-                        spoken = speak_math_in_description(alt_text)
-                        if spoken is None:
+                        # A description that carries mathematical markup is
+                        # refused, whole and before it is truncated, and the
+                        # image stays open for review.
+                        if refuse_math_markup(alt_text) is None:
                             self._record_math_description_refusal(issue)
                             return None
-                        return spoken[:125]
+                        return alt_text[:125]
             except Exception as e:
                 logger.warning(f"Vision-based alt text generation failed: {e}")
 

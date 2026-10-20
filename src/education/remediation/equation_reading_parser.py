@@ -26,28 +26,15 @@ import json
 import re
 from typing import Any, FrozenSet, Optional, Tuple
 
+from src.education.model_json import double_unescaped_backslashes
+
 
 class EquationReadingRejected(ValueError):
     """The answer was not exactly one acceptable equation reading."""
 
 
-# A backslash that does not start a JSON escape the model could have meant:
-# one not followed by a quote, a backslash or a slash, and not the start of a
-# complete four-digit unicode escape. The leading group swallows pairs of
-# backslashes first, so an even run (already escaped backslashes) is untouched
-# and only the last backslash of an odd run is doubled. A well-formed unicode
-# escape stays an escape, so an answer that mixes ``\\u03b1`` with a bare
-# ``\\beta`` keeps the first meaning and still repairs the second.
-_UNESCAPED_BACKSLASH = re.compile(
-    r'(?<!\\)((?:\\\\)*)\\(?=[^"\\/u]|u(?![0-9A-Fa-f]{4}))'
-)
 _INVISIBLE_LATEX = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 _INVALID = "invalid_provider_response"
-
-
-def double_unescaped_backslashes(content: str) -> str:
-    """Return ``content`` with each bare JSON backslash made a literal one."""
-    return _UNESCAPED_BACKSLASH.sub(r"\1\\\\", content)
 
 
 def _parse_once(

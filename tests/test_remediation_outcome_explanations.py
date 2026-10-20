@@ -128,7 +128,7 @@ EQUATION_REASONS = {
         "not_applied",
     ),
     "image_description_math_not_speakable": (
-        "contained mathematical notation that could not be turned into reliable spoken words",
+        "contained mathematical notation, such as LaTeX, that a screen reader would announce symbol by symbol",
         "not_applied",
     ),
 }

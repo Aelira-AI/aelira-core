@@ -1,18 +1,17 @@
 """Spoken words for mathematics in alternative text, in one place.
 
-Two paths turn LaTeX into words a screen reader can announce. The equation path
-reads an equation image and builds its label with ``generate_equation_alt_text``.
-The generic image-description path asks a vision model to describe an image, and
-a model that meets an equation tends to answer in LaTeX, which a screen reader
-announces as backslashes, braces and dollar signs. Both paths share this module
-so the same table of spoken forms, and the same refusal to guess, applies to
-each.
+Two paths put mathematics into alternative text. The equation path reads an
+equation image and builds its label from the LaTeX with
+``generate_equation_alt_text``; ``equation_alt_text_is_ambiguous`` refuses the
+equations whose label would garble or mislead. The generic image-description path
+asks a vision model to describe an image, and a model that meets an equation can
+answer in LaTeX, which a screen reader announces as backslashes, braces and
+dollar signs.
 
-``speak_math_in_description`` is the single check every generated description
-passes through before it is used as alternative text. Text without mathematics
-comes back unchanged. Mathematics is converted with the table below. Anything
-the table cannot say reliably is refused with ``None``, never guessed: the
-caller leaves the image for a person.
+The description path never rewrites. A prompt that asks for plain spoken words
+removes the markup, so ``refuse_math_markup`` returns a description unchanged or
+refuses it whole, and the image is left for a person. Both checks refuse rather
+than guess.
 """
 
 from __future__ import annotations
@@ -350,6 +349,11 @@ def equation_alt_text_is_ambiguous(latex: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # One check for every generated description
+#
+# A description that holds mathematics is never rewritten here. A prompt that
+# asks for plain spoken words removes the markup, so a description that still
+# carries it is not trusted: it is refused whole and the image is left for a
+# person. Text without markup is returned as the same string.
 # ---------------------------------------------------------------------------
 
 # Returned as the ``error`` of a generation result that was refused. It avoids
@@ -362,10 +366,17 @@ IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON = "image_description_math_not_speaka
 
 # What a remediator tells a person when it refused such a description.
 MATH_DESCRIPTION_RECOMMENDATION = (
-    "The proposed description contained mathematical notation that could not be "
-    "turned into reliable spoken words, so nothing was written. Describe the "
-    "image yourself, writing any mathematics in plain words, or tag an equation "
-    "with a Formula element and its alt text."
+    "The proposed description contained mathematical notation, such as LaTeX, "
+    "that a screen reader would announce symbol by symbol, so nothing was "
+    "written. Describe the image yourself, writing any mathematics in plain "
+    "words, or tag an equation with a Formula element and its alt text."
+)
+
+# What an API caller is told when a description was refused.
+MATH_REFUSAL_MESSAGE = (
+    "The generated description contained mathematical notation that a screen "
+    "reader would announce symbol by symbol, so it was not used. Describe the "
+    "image yourself, or mark it as an equation."
 )
 
 # The sentence every alternative-text prompt carries. It asks for words and does
@@ -377,185 +388,135 @@ SPOKEN_MATH_INSTRUCTION = (
     "signs, backslashes, carets or braces."
 )
 
-# A braced script, ``x^{2}`` or ``a_{n}``: the other bare LaTeX signal.
-_SCRIPT_GROUP = re.compile(r"[\^_]\{")
-# What ``json.loads`` makes of the first letter of a command written with a
-# single backslash inside a JSON string: ``\f`` and ``\b`` become a form feed and
-# a backspace (``\frac``, ``\beta``), ``\t`` and ``\r`` become a tab and a
-# carriage return when a lowercase letter follows (``\times``, ``\rho``). The
-# command is already gone when the text reaches this module, so the character
-# that replaced it is the only trace. None of them belongs in a description.
-_DECODED_ESCAPE = re.compile(r"[\x08\x0c]|(?<![A-Za-z])[\t\r](?=[a-z])")
+# Delimited mathematics that is not an inline dollar span: ``\(...\)`` and
+# ``\[...\]``.
+_ESCAPED_DELIMITERS = re.compile(r"\\\(.+?\\\)|\\\[.+?\\\]", re.DOTALL)
 
-# Delimited mathematics, in the order the alternatives are tried. The inline
-# ``$...$`` form follows the usual Markdown rule so that prices stay prices: the
-# opening dollar sign is followed by something other than a space, the closing
-# one is not preceded by a space or an operator and is not followed by a digit,
-# and an escaped ``\$`` never opens or closes anything. ``$5 and $10`` and
-# ``$5-$10`` therefore contain no mathematics.
-_DELIMITED = re.compile(
+# A braced script, ``x^{2}`` or ``a_{n}``.
+_SCRIPT_GROUP = re.compile(r"[\^_]\{")
+# A bare script with something on both sides: ``r^2`` or ``(a+b)^2``. A caret that
+# has a space on either side, as in "press ^C", is not read as a script.
+_BARE_CARET = re.compile(r"(?<=\S)\^(?=\S)")
+# A bare subscript between single symbols: ``x_i`` or ``a_10``. The symbol on the
+# left stands alone, so ``snake_case`` and ``my_file`` are not read as scripts.
+_BARE_SUBSCRIPT = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9]_[A-Za-z0-9]")
+
+# Dollar spans, in the order the alternatives are tried. The inline form follows
+# the usual Markdown rule so that prices stay prices: the opening dollar sign is
+# followed by something other than a space, the closing one is not preceded by a
+# space or an operator and is not followed by a digit, and an escaped dollar sign
+# never opens or closes anything. A span is mathematics only when what is between
+# the signs holds mathematics, so a unit such as ``($)`` or ``($M)`` is not.
+_DOLLAR_SPAN = re.compile(
     r"(?<!\\)\$\$(?P<display>.+?)(?<!\\)\$\$"
-    r"|\\\[(?P<bracket>.+?)\\\]"
-    r"|\\\((?P<paren>.+?)\\\)"
-    r"|(?<![\\$])\$(?![\s$])(?P<inline>[^$\n]+?)(?<![\s\\=+\-*/,:;<>|])\$(?![\d$])",
+    r"|(?<![\\$])\$(?![\s$])(?P<inline>[^$\n]+?)(?<![\s\\=+\-*/,:;<>])\$(?![\d$])",
     re.DOTALL,
 )
+_INNER_MATH = re.compile(
+    r"\\[A-Za-z]"  # a command
+    r"|[\^_{}|]"  # a script, a brace or a bar
+    r"|[A-Za-z0-9)\]][=+\-*/<>][A-Za-z0-9(\[]"  # an operator between symbols
+    r"|^\s*[A-Za-z]+\("  # a function call
+    r"|^\s*[A-Za-z0-9]\s*$"  # a lone symbol
+)
+
+# Names that are LaTeX commands, so ``C:\frac`` is not read as a drive path.
+_KNOWN_COMMANDS = frozenset(
+    {
+        "frac", "dfrac", "tfrac", "cfrac", "binom", "dbinom", "tbinom", "sqrt",
+        "sum", "prod", "int", "oint", "times", "div", "pm", "mp", "le", "leq",
+        "ge", "geq", "ne", "neq", "approx", "equiv", "cdot", "cdots", "ldots",
+        "partial", "nabla", "sin", "cos", "tan", "log", "ln", "left", "right",
+        "over", "text", "mathrm", "mathbb", "bar", "hat", "vec", "to", "in",
+        *_SYMBOL_COMMANDS.split("|"),
+    }
+)  # fmt: skip
 
 # A token that is clearly a Windows path is not mathematics. The rule is
 # deliberately narrow: a drive letter (``C:\Users\...``), a UNC share
 # (``\\server\share``), or a relative path that ends in a file extension
-# (``src\education\math.py``). A backslash followed by letters in anything else
-# is read as a LaTeX command, which is the cautious reading: it ends in a
-# refusal and a person looks, rather than a path or a command being spoken.
+# (``src\education\math.py``). None of them holds a brace, a caret or a dollar
+# sign, and a drive path does not start with a LaTeX command, so ``B:\frac{1}{2}``
+# is mathematics. A backslash followed by letters in anything else is read as a
+# LaTeX command, which is the cautious reading.
 _PATH_LEAD = r"[\"'(\[<]*"
 _WINDOWS_PATH = re.compile(
-    rf"^{_PATH_LEAD}(?:[A-Za-z]:\\|\\\\[^\\\s]+\\)\S*"
+    rf"^{_PATH_LEAD}[A-Za-z]:\\[^\s{{}}^$]*$"
+    rf"|^{_PATH_LEAD}\\\\[^\\\s]+\\[^\s{{}}^$]*$"
     rf"|^{_PATH_LEAD}[\w.-]+(?:\\[\w.-]+)+\.[A-Za-z0-9]{{1,5}}[\"')\].,;:!?>]*$"
 )
+_DRIVE_COMPONENT = re.compile(rf"^{_PATH_LEAD}[A-Za-z]:\\([A-Za-z]+)")
 # A token that cannot continue a path that contains spaces.
 _NOT_PATH = re.compile(r"[{}^$]")
 
-# How far a braced group may run before an unclosed ``{`` is taken literally.
-_MAX_GROUP = 500
+
+def _is_windows_path(token: str) -> bool:
+    if _WINDOWS_PATH.search(token) is None:
+        return False
+    drive = _DRIVE_COMPONENT.match(token)
+    return not (drive and drive.group(1) in _KNOWN_COMMANDS)
 
 
-def _speak(latex: str) -> Optional[str]:
-    """Spoken words for one span of LaTeX, or ``None`` when it cannot be said."""
-    if equation_alt_text_is_ambiguous(latex):
-        return None
-    return generate_equation_alt_text(latex)
+def holds_math_markup(text: str) -> bool:
+    """Whether a description carries LaTeX or other mathematical markup.
 
-
-def _token_end(text: str, start: int) -> int:
-    """End of the whitespace-delimited token at ``start``.
-
-    A braced group is kept whole even when it contains spaces, so
-    ``\\frac{a + b}{c}`` is one token. A brace that does not close within
-    ``_MAX_GROUP`` characters is an ordinary character.
+    That is any of: a backslash command that is not part of a clearly identified
+    Windows path; ``\\(...\\)`` or ``\\[...\\]``; ``^{`` or ``_{``; a bare script
+    with a symbol on both sides, such as ``r^2`` or ``x_i``; or a dollar span
+    with mathematics between the signs, meaning a command, a script, a bar, a
+    brace, an operator between symbols, a function call or a single symbol.
+    Prices such as ``$5-$10``, units such as ``($M)`` and paths are not markup.
     """
-    length = len(text)
-    index = start
-    while index < length and not text[index].isspace():
-        if text[index] == "{":
-            depth = 0
-            probe = index
-            limit = min(length, index + _MAX_GROUP)
-            while probe < limit:
-                if text[probe] == "{":
-                    depth += 1
-                elif text[probe] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                probe += 1
-            if probe < limit and text[probe] == "}" and depth == 0:
-                index = probe + 1
-                continue
-        index += 1
-    return index
-
-
-def _convert_plain(segment: str) -> Optional[str]:
-    """Convert the bare LaTeX in text that holds no delimited mathematics.
-
-    A token is converted when it holds a backslash command or a braced script,
-    and is left exactly as it is otherwise. Returns ``None`` when a token that
-    holds mathematics cannot be spoken reliably.
-    """
-    pieces: List[str] = []
+    if _ESCAPED_DELIMITERS.search(text):
+        return True
+    for match in _DOLLAR_SPAN.finditer(text):
+        inner = match.group("display")
+        if inner is None:
+            inner = match.group("inline")
+        if _INNER_MATH.search(inner):
+            return True
     in_path = False
-    index = 0
-    length = len(segment)
-    while index < length:
-        if segment[index].isspace():
-            end = index
-            while end < length and segment[end].isspace():
-                end += 1
-            pieces.append(segment[index:end])
-            index = end
-            continue
-        end = _token_end(segment, index)
-        token = segment[index:end]
-        index = end
-        if _WINDOWS_PATH.search(token):
+    for token in text.split():
+        if _is_windows_path(token):
             in_path = True
-            pieces.append(token)
-        elif in_path and "\\" in token and not _NOT_PATH.search(token):
+            continue
+        if in_path and "\\" in token and not _NOT_PATH.search(token):
             # The next word of a path that has a space in it, such as the
             # ``Files\App`` of ``C:\Program Files\App``.
-            pieces.append(token)
-        else:
-            in_path = False
-            if _COMMAND.search(token) or _SCRIPT_GROUP.search(token):
-                spoken = _speak(token)
-                if spoken is None:
-                    return None
-                pieces.append(spoken)
-            else:
-                pieces.append(token)
-    return "".join(pieces)
+            continue
+        in_path = False
+        if (
+            _COMMAND.search(token)
+            or _SCRIPT_GROUP.search(token)
+            or _BARE_CARET.search(token)
+            or _BARE_SUBSCRIPT.search(token)
+        ):
+            return True
+    return False
 
 
-def speak_math_in_description(text: str) -> Optional[str]:
-    """Return ``text`` with its mathematics spoken, or ``None`` to refuse it.
+def refuse_math_markup(text: str) -> Optional[str]:
+    """Return ``text`` unchanged, or ``None`` when it carries mathematical markup.
 
     This is the one check a generated description passes through before it is
-    used as alternative text. Text that holds no mathematics comes back as the
-    same string, byte for byte. Otherwise every span is converted with the
-    equation path's table: ``$$...$$``, ``\\[...\\]``, ``\\(...\\)`` and
-    ``$...$`` spans, and bare backslash commands and braced ``^{}``/``_{}``
-    groups outside any delimiter. ``None`` means the description must not be
-    used, and the image is left for a person, when
-
-    - a span is one ``equation_alt_text_is_ambiguous`` refuses,
-    - a command has no spoken form, so the label would erase it, or a backslash
-      survives conversion, or
-    - the text carries the trace of a command a JSON parser already swallowed.
-
-    Converting twice changes nothing the second time, because the spoken form
-    holds no mathematics.
+    used as alternative text. It never rewrites anything: the string that comes
+    back is the string that went in. ``None`` means the description must not be
+    used and the image is left for a person.
     """
-    if not isinstance(text, str):
+    if not isinstance(text, str) or holds_math_markup(text):
         return None
-    if _DECODED_ESCAPE.search(text):
-        return None
-    if "\\" not in text and "$" not in text and not _SCRIPT_GROUP.search(text):
-        return text
-    pieces: List[str] = []
-    last = 0
-    for match in _DELIMITED.finditer(text):
-        plain = _convert_plain(text[last : match.start()])
-        if plain is None:
-            return None
-        inner = match.group("display") or match.group("bracket")
-        inner = inner or match.group("paren") or match.group("inline")
-        spoken = _speak(inner)
-        if spoken is None:
-            return None
-        before = plain[-1:] if plain else (pieces[-1][-1:] if pieces else "")
-        after = text[match.end() : match.end() + 1]
-        pieces.append(plain)
-        # Mathematics written hard against a word would run into it once the
-        # delimiters are gone.
-        pieces.append((" " if before.isalnum() else "") + spoken)
-        if after.isalnum():
-            pieces.append(" ")
-        last = match.end()
-    tail = _convert_plain(text[last:])
-    if tail is None:
-        return None
-    pieces.append(tail)
-    result = "".join(pieces)
-    return text if result == text else result
+    return text
 
 
 __all__ = [
     "IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON",
     "MATH_DESCRIPTION_RECOMMENDATION",
     "MATH_NOT_SPEAKABLE_ERROR",
+    "MATH_REFUSAL_MESSAGE",
     "SPOKEN_MATH_INSTRUCTION",
     "equation_alt_text_is_ambiguous",
     "generate_equation_alt_text",
-    "speak_math_in_description",
+    "holds_math_markup",
+    "refuse_math_markup",
     "strip_math_delimiters",
 ]

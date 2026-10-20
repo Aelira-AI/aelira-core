@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ...db.database import get_db_dependency
 from ...db.models import APIKey
 from ...education.image_alt_text import ImageAltTextGenerator
+from ...education.math_speech import MATH_NOT_SPEAKABLE_ERROR, MATH_REFUSAL_MESSAGE
 from ...ai.workspace_provider_runtime import workspace_provider_runtime
 from ...middleware.quota import increment_image_usage
 from ._shared import (
@@ -26,6 +27,16 @@ router = APIRouter()
 
 def _workspace_image_generator(workspace_id: str) -> ImageAltTextGenerator:
     return ImageAltTextGenerator(lms_client=workspace_provider_runtime(workspace_id))
+
+
+def _raise_if_description_refused(result: dict) -> None:
+    """A description the model wrote as mathematical markup is refused for good.
+
+    Asking again gives the same kind of answer, so this is not a server fault.
+    The request is understood and cannot be completed, and the message says so.
+    """
+    if result.get("error") == MATH_NOT_SPEAKABLE_ERROR:
+        raise HTTPException(status_code=422, detail=MATH_REFUSAL_MESSAGE)
 
 
 @router.post("/image/alt-text")
@@ -104,6 +115,7 @@ async def generate_image_alt_text(
         )
 
         if not result.get("success"):
+            _raise_if_description_refused(result)
             raise HTTPException(
                 status_code=500,
                 detail="Image analysis failed. Please try again.",
@@ -216,7 +228,11 @@ async def batch_generate_alt_text(
                     "image_type": result.get("image_type"),
                     "educational_value": result.get("educational_value"),
                     "error": (
-                        "Image analysis failed. Please try again."
+                        (
+                            MATH_REFUSAL_MESSAGE
+                            if result.get("error") == MATH_NOT_SPEAKABLE_ERROR
+                            else "Image analysis failed. Please try again."
+                        )
                         if not result.get("success")
                         else None
                     ),
@@ -543,7 +559,8 @@ async def detect_image_type(
     - is_decorative: Whether to use empty alt attribute
     - image_purpose: Classification type
     - confidence: 0-1 confidence score
-    - recommended_alt: Suggested alt text (empty for decorative)
+    - recommended_alt: Suggested alt text (empty for decorative, null when it was
+      withheld because it carried mathematical markup)
     """
     _, user_id, department_id = api_key_info
 
@@ -709,6 +726,7 @@ async def describe_chart_or_graph(
         logger.info("Chart description finished (duration_ms=%s)", processing_time)
 
         if not result.get("success"):
+            _raise_if_description_refused(result)
             raise HTTPException(
                 status_code=500, detail="Image analysis failed. Please try again."
             )
@@ -832,6 +850,14 @@ async def analyze_image_comprehensive(
             ),
             "processing_time_ms": processing_time,
         }
+
+        # Say so when the description itself was refused
+        description = result.get("description")
+        if (
+            isinstance(description, dict)
+            and description.get("error") == MATH_NOT_SPEAKABLE_ERROR
+        ):
+            response["description_message"] = MATH_REFUSAL_MESSAGE
 
         # Add validation results if existing alt text was provided
         if existing_alt_text and result.get("validation"):

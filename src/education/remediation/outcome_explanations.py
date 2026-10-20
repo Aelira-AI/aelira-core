@@ -30,7 +30,7 @@ EXPLANATIONS = {
         "not_applied",
     ),
     "image_description_math_not_speakable": (
-        "The image description proposed by the AI contained mathematical notation that could not be turned into reliable spoken words, so no description was written.",
+        "The image description proposed by the AI contained mathematical notation, such as LaTeX, that a screen reader would announce symbol by symbol, so no description was written.",
         "Describe the image yourself, writing any mathematics in plain words, or add a Formula tag with alt text if it is an equation, then rescan.",
         "not_applied",
     ),
