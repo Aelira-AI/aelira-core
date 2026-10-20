@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -376,3 +377,53 @@ def test_handwritten_paths_still_reject_what_the_repair_cannot_save():
             HandwrittenEquationRecognizer(
                 HandwrittenClient(_success(content))
             ).recognize(raster, _evidence(raster))
+
+
+# ---------------------------------------------------------------------------
+# The invisible marks the strict parse rejects, and the row break it cannot repair
+# ---------------------------------------------------------------------------
+
+
+def test_the_invisible_mark_class_matches_exactly_the_marks_it_names():
+    from src.education.remediation import equation_reading_parser as parser
+
+    expected = {
+        chr(code)
+        for low, high in ((0x200B, 0x200F), (0x202A, 0x202E), (0x2066, 0x2069))
+        for code in range(low, high + 1)
+    }
+    matched = {
+        chr(code)
+        for code in range(0x110000)
+        if parser._INVISIBLE_LATEX.search(chr(code))
+    }
+
+    assert matched == expected
+
+
+def test_the_parser_source_holds_no_invisible_character_itself():
+    from src.education.remediation import equation_reading_parser as parser
+
+    assert Path(parser.__file__).read_text(encoding="utf-8").isascii()
+
+
+def test_a_row_break_written_with_two_backslashes_arrives_as_one_and_is_refused():
+    """``\\\\`` is a JSON escape for one backslash, so the reading changes meaning.
+
+    The repair cannot tell it from an intended escape, and both recognisers
+    refuse the result because the label they would build keeps a backslash.
+    """
+    from src.education.remediation.math_fixer import equation_alt_text_is_ambiguous
+
+    for wrap in (_printed, _handwritten):
+        body = BS + BS + " " + "c = d"
+        content = wrap("a = b " + body)
+        classification, latex = _parse(
+            content,
+            equation_classification=(
+                "printed_equation" if wrap is _printed else "handwritten_equation"
+            ),
+        )
+        assert classification.endswith("_equation")
+        assert latex == "a = b " + BS + " c = d"
+        assert equation_alt_text_is_ambiguous(latex) is True

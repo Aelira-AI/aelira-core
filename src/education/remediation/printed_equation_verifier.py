@@ -190,6 +190,24 @@ class PrintedEquationSecondReader:
         )
 
 
+def primary_reading_is_complete(primary: Any) -> bool:
+    """Whether a first reading carries everything the agreement evidence needs.
+
+    The evidence names the first reading's provider, model and response digest.
+    A reading that lacks one can never be agreed with, so this is checked before
+    the second reading is paid for.
+    """
+    latex = getattr(primary, "latex", None)
+    return (
+        getattr(primary, "classification", None) == "printed_equation"
+        and isinstance(latex, str)
+        and bool(latex)
+        and _bounded_identity(getattr(primary, "provider", None)) is not None
+        and _bounded_identity(getattr(primary, "model", None)) is not None
+        and _is_sha256(getattr(primary, "response_sha256", None))
+    )
+
+
 def _canonical_mathml(latex: str, converter: Callable[[str], str]) -> str:
     return canonicalize_mathml(converter(strip_math_delimiters(latex)))
 
@@ -209,19 +227,12 @@ def printed_equation_agreement(
         raise PrintedEquationVerificationRejected("second_reading_invalid")
     if second.classification != "printed_equation":
         raise PrintedEquationVerificationRejected(VERIFIER_DECLINED)
-    primary_latex = getattr(primary, "latex", None)
-    primary_provider = _bounded_identity(getattr(primary, "provider", None))
-    primary_model = _bounded_identity(getattr(primary, "model", None))
-    primary_response_sha256 = getattr(primary, "response_sha256", None)
-    if (
-        getattr(primary, "classification", None) != "printed_equation"
-        or not isinstance(primary_latex, str)
-        or not primary_latex
-        or primary_provider is None
-        or primary_model is None
-        or not _is_sha256(primary_response_sha256)
-    ):
+    if not primary_reading_is_complete(primary):
         raise PrintedEquationVerificationRejected("primary_evidence_incomplete")
+    primary_latex = primary.latex
+    primary_provider = _bounded_identity(primary.provider)
+    primary_model = _bounded_identity(primary.model)
+    primary_response_sha256 = primary.response_sha256
     if (
         not isinstance(second.latex, str)
         or not second.latex
@@ -282,6 +293,7 @@ __all__ = [
     "PrintedEquationVerificationRejected",
     "SEMANTIC_DISAGREEMENT",
     "VERIFIER_DECLINED",
+    "primary_reading_is_complete",
     "printed_equation_agreement",
     "strip_math_delimiters",
 ]

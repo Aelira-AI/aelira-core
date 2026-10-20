@@ -77,11 +77,17 @@ class EquationRecognizer:
         if not isinstance(content, str):
             raise EquationRecognitionRejected("provider_failure")
         parsed = self._parse(content)
+        # Identity comes from the provider's own answer first, then from what
+        # the client declares. A client that routes to a provider chosen per
+        # call, such as the LMS remediation client, has no fixed model to
+        # declare, so its answer is the only place the model is named.
         return EquationRecognition(
             classification=parsed["classification"],
             latex=parsed["latex"],
-            provider=self._bounded_identity(getattr(client, "provider", None)),
-            model=self._bounded_identity(getattr(client, "model", None)),
+            provider=self._bounded_identity(response.get("provider"))
+            or self._bounded_identity(getattr(client, "provider", None)),
+            model=self._bounded_identity(response.get("model"))
+            or self._bounded_identity(getattr(client, "model", None)),
             response_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 

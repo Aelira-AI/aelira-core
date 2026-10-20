@@ -414,3 +414,19 @@ def test_a_disagreement_is_still_reported_as_a_failed_verification():
 
     assert result.error == "handwritten_equation_verification_failed"
     assert result.pending_association is None
+
+
+def test_a_handwritten_row_break_that_lost_a_backslash_is_never_staged():
+    """Two backslashes in a JSON answer are one after parsing, so the reading changed."""
+    reading = "a = b " + chr(92) * 2 + " c = d"
+    client = Client(reading, reading)
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.pending_association is None
+    assert result.success is False
+    assert result.error in {
+        "image_equation_alt_text_ambiguous",
+        "handwritten_equation_verification_failed",
+    }

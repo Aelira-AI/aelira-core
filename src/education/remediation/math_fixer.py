@@ -51,6 +51,7 @@ from src.education.remediation.printed_equation_verifier import (
     VERIFIER_DECLINED,
     PrintedEquationConsensusEvidence,
     PrintedEquationVerificationRejected,
+    primary_reading_is_complete,
     printed_equation_agreement,
 )
 
@@ -776,6 +777,10 @@ class MathFixer:
 
         if equation_alt_text_is_ambiguous(recognition.latex):
             return refuse(IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR)
+        # A first reading that lacks its provider, model or response digest can
+        # never be agreed with, so the second reading is not paid for.
+        if not primary_reading_is_complete(recognition):
+            return refuse(PRINTED_EQUATION_VERIFIER_FAILED_ERROR)
         reader = self.printed_equation_second_reader
         if reader is None:
             return refuse(PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR)

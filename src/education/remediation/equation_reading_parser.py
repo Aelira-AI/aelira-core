@@ -12,6 +12,12 @@ The parse here is strict first. Only when that fails, or when the parsed LaTeX
 holds a non-printable character, are the unescaped backslashes doubled and the
 answer parsed one more time. A strict parse that already produced printable
 LaTeX is never repaired, so a correctly escaped answer keeps its meaning.
+
+One case is not repaired and cannot be: a LaTeX row break ``\\\\`` written with
+its two backslashes is a valid JSON escape for one backslash, so the reading
+arrives with a lone backslash and a changed meaning. Both the printed and the
+handwritten path refuse it, because the label they would build keeps a
+backslash and the equation guard refuses such a label.
 """
 
 from __future__ import annotations
@@ -35,7 +41,7 @@ class EquationReadingRejected(ValueError):
 _UNESCAPED_BACKSLASH = re.compile(
     r'(?<!\\)((?:\\\\)*)\\(?=[^"\\/u]|u(?![0-9A-Fa-f]{4}))'
 )
-_INVISIBLE_LATEX = re.compile(r"[​-‏‪-‮⁦-⁩]")
+_INVISIBLE_LATEX = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 _INVALID = "invalid_provider_response"
 
 

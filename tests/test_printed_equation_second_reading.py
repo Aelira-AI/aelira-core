@@ -1130,8 +1130,239 @@ def test_a_disagreeing_second_reading_leaves_no_formula_and_no_description(
         structure = _structure(result.output_file)
         assert [alt for role, alt in structure if role == "/Formula"] == []
         assert not contains_image_equation_fixes(result.fixed_issues)
-        # Neither reading was written anywhere in the saved file.
-        saved = open(result.output_file, "rb").read()
-        assert b"x cubed" not in saved
+        # Neither reading's description is carried by a structure element of any
+        # role. The probe below finds it when the readings agree.
+        assert _roles_carrying_alt(structure, "squared", "cubed") == []
+    finally:
+        result.close_output_claim()
+
+
+def _roles_carrying_alt(structure, *words: str) -> list[str]:
+    """The role of every structure element whose alt text holds any of the words."""
+    return [
+        role for role, alt in structure if alt and any(word in alt for word in words)
+    ]
+
+
+def test_an_agreeing_second_reading_writes_a_description_the_probe_finds(
+    tmp_path, install_verifier
+):
+    from tests.test_equation_alt_text_coordination import (
+        EQUATION_ALT,
+        _Provider,
+        _run,
+        _structure,
+        _write_untagged_source,
+    )
+
+    install_verifier()
+    source = tmp_path / "source.pdf"
+    _write_untagged_source(source)
+
+    _remediator, result = _run(source, tmp_path, _Provider())
+    try:
+        assert result.success, result.error_message
+        structure = _structure(result.output_file)
+        assert _roles_carrying_alt(structure, "squared", "cubed") == ["/Formula"]
+        assert [alt for role, alt in structure if role == "/Formula"] == [EQUATION_ALT]
+    finally:
+        result.close_output_claim()
+
+
+# ---------------------------------------------------------------------------
+# Clients that name their model in the answer, not in an attribute
+# ---------------------------------------------------------------------------
+
+
+class _LmsLikeClient:
+    """Like the LMS remediation client: a provider attribute and no model.
+
+    The model that answered is named only in the response.
+    """
+
+    purpose = "alt_text"
+    provider = "lms-remediation"
+
+    def __init__(self, content: str, **response: Any) -> None:
+        self.content = content
+        self.response = response
+        self.calls = 0
+
+    def analyze_image_sync(self, **_kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        return {"success": True, "content": self.content, **self.response}
+
+
+def test_the_first_reading_takes_its_identity_from_the_provider_response():
+    client = _LmsLikeClient(
+        _printed("x^2 + 1 = 0"), provider="routed-provider", model="routed-model-v2"
+    )
+
+    recognition = EquationRecognizer(client).recognize(_raster())
+
+    assert recognition.provider == "routed-provider"
+    assert recognition.model == "routed-model-v2"
+
+
+def test_the_client_attributes_are_the_fallback_for_the_identity():
+    client = _LmsLikeClient(_printed("x^2 + 1 = 0"), model="response-model")
+
+    recognition = EquationRecognizer(client).recognize(_raster())
+
+    # No provider in the response, so the client's own attribute is used.
+    assert recognition.provider == "lms-remediation"
+    assert recognition.model == "response-model"
+    attribute_client = _Client(_printed("x^2 + 1 = 0"))
+    recognition = EquationRecognizer(attribute_client).recognize(_raster())
+    assert (recognition.provider, recognition.model) == (
+        "fixture-provider",
+        "fixture-vision-v1",
+    )
+
+
+def test_an_unusable_response_identity_falls_back_to_the_attribute():
+    client = _LmsLikeClient(_printed("x^2"), provider="", model="bad\x00model")
+
+    recognition = EquationRecognizer(client).recognize(_raster())
+
+    assert recognition.provider == "lms-remediation"
+    assert recognition.model is None
+
+
+def test_a_client_that_names_its_model_in_the_answer_stages_with_one_second_reading():
+    client = _LmsLikeClient(_printed("x^2 + 1 = 0"), model="response-model-v1")
+    reader = StubSecondReader("x^2 + 1 = 0")
+    fixer = _fixer("x^2 + 1 = 0", reader)
+    fixer.equation_recognizer = EquationRecognizer(client)
+
+    result = _fix(fixer)
+
+    assert result.error == "image_equation_association_pending"
+    assert client.calls == 1
+    assert reader.calls == 1
+    assert result.model_used == "response-model-v1"
+    assert result.provider_used == "lms-remediation"
+    assert result.consensus_evidence.primary_model == "response-model-v1"
+
+
+def test_a_client_with_no_identity_anywhere_is_refused_without_a_second_reading():
+    client = _LmsLikeClient(_printed("x^2 + 1 = 0"))
+    reader = StubSecondReader("x^2 + 1 = 0")
+    fixer = _fixer("x^2 + 1 = 0", reader)
+    fixer.equation_recognizer = EquationRecognizer(client)
+
+    result = _fix(fixer)
+
+    assert result.error == "printed_equation_verifier_failed"
+    assert result.pending_association is None
+    assert result.consensus_evidence is None
+    assert reader.calls == 0
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [{"provider": None}, {"model": None}, {"response_sha256": None}, {"model": ""}],
+)
+def test_an_incomplete_first_reading_never_costs_a_second_reading(missing):
+    reader = StubSecondReader("x^2 + 1 = 0")
+    fixer = _fixer("x^2 + 1 = 0", reader)
+    fixer.equation_recognizer = SimpleNamespace(
+        recognize=lambda _payload: primary_reading("x^2 + 1 = 0", **missing)
+    )
+
+    result = _fix(fixer)
+
+    assert result.error == "printed_equation_verifier_failed"
+    assert result.pending_association is None
+    assert reader.calls == 0
+
+
+def test_a_complete_first_reading_is_reported_complete():
+    assert verifier_module.primary_reading_is_complete(primary_reading()) is True
+    assert verifier_module.primary_reading_is_complete(None) is False
+    assert (
+        verifier_module.primary_reading_is_complete(
+            primary_reading(response_sha256="not-a-digest")
+        )
+        is False
+    )
+
+
+def test_a_full_flow_with_an_lms_like_client_promotes_the_equation(
+    tmp_path, install_verifier
+):
+    from src.education.remediation.image_equation_gate import (
+        contains_image_equation_fixes,
+    )
+    from tests.test_equation_alt_text_coordination import (
+        EQUATION_ALT,
+        _Provider,
+        _run,
+        _structure,
+        _write_untagged_source,
+    )
+
+    class LmsProvider(_Provider):
+        model = None  # the LMS client declares no model
+
+        def analyze_image_sync(self, **kwargs: Any):
+            result = super().analyze_image_sync(**kwargs)
+            if result.get("success") and result.get("content"):
+                result = {**result, "provider": "lms-remediation", "model": "routed-v1"}
+            return result
+
+    install_verifier()
+    source = tmp_path / "source.pdf"
+    _write_untagged_source(source)
+    provider = LmsProvider()
+
+    _remediator, result = _run(source, tmp_path, provider)
+    try:
+        assert result.success, result.error_message
+        assert provider.kinds.count("second_reading") == 1
+        assert contains_image_equation_fixes(result.fixed_issues)
+        assert any(fix.model_used == "routed-v1" for fix in result.fixed_issues)
+        assert [
+            alt for role, alt in _structure(result.output_file) if role == "/Formula"
+        ] == [EQUATION_ALT]
+    finally:
+        result.close_output_claim()
+
+
+def test_a_full_flow_with_a_client_that_names_no_model_pays_for_no_second_reading(
+    tmp_path, install_verifier
+):
+    from src.education.remediation.image_equation_gate import (
+        contains_image_equation_fixes,
+    )
+    from tests.test_equation_alt_text_coordination import (
+        EQUATION_INDEX,
+        _issue_ids,
+        _manual,
+        _Provider,
+        _run,
+        _structure,
+        _write_untagged_source,
+    )
+
+    class NamelessProvider(_Provider):
+        model = None
+
+    install_verifier()
+    source = tmp_path / "source.pdf"
+    _write_untagged_source(source)
+    provider = NamelessProvider()
+
+    remediator, result = _run(source, tmp_path, provider)
+    try:
+        assert result.success, result.error_message
+        ids = _issue_ids(remediator, EQUATION_INDEX)
+        manual = _manual(result, ids[IMAGE_EQUATION_ISSUE_TYPE])
+        assert manual.reason == "printed_equation_verifier_failed"
+        assert provider.kinds.count("second_reading") == 0
+        assert not contains_image_equation_fixes(result.fixed_issues)
+        assert [
+            alt for role, alt in _structure(result.output_file) if role == "/Formula"
+        ] == []
     finally:
         result.close_output_claim()
