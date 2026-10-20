@@ -293,7 +293,17 @@ def _resolve_image_ownership(
             if any(value[2] for value in stack):
                 non_image_mcids.update(mcids)
             draws.append((image.objgen[0], artifact, mcids[0] if mcids else None))
-        elif name in {"BI", "BX", "EX"}:
+        elif name in {"BI", "INLINE IMAGE"}:
+            # pikepdf parses BI..ID..EI into one instruction named
+            # "INLINE IMAGE", so "BI" itself never reaches this loop. An inline
+            # image has no resource name, so it is never a draw that can be
+            # bound to an occurrence. It is paint, like text: every MCID open
+            # here stops being image-only content, so a Formula cannot be
+            # credited for it and a Figure cannot be an exclusive owner. Outside
+            # marked content the stack is empty and nothing is marked. The page
+            # stays resolvable, so every other draw keeps its credit.
+            non_image_mcids.update(value[1] for value in stack if value[1] is not None)
+        elif name in {"BX", "EX"}:
             raise ValueError("scope")
         elif name in {
             "Tj",

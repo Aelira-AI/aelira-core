@@ -3,14 +3,26 @@
 The positive fixture is the saved output of the real association writer, so the
 Formula, the marked-content sequence and the ParentTree entry are exactly what
 the remediator produces. Every negative starts from that same saved output and
-changes one property of the Formula or of its scope.
+applies one targeted edit to the Formula, its ancestors or its marked-content
+scope. A helper that needs a second edit to stay well formed says so in its
+docstring. Scopes the ownership walk cannot attribute at all (an OBJR kid, a
+Form XObject draw, BX/EX) make the whole page unresolvable instead. Those
+tests assert the failed-closed result and the incomplete-scan record rather
+than using the strict helper, which would raise.
+
+An inline image is different. It is never a draw, so it cannot be credited and
+cannot make the page unresolvable. It is paint, like text: every marked-content
+sequence it sits in stops being image-only content. The tests for it assert
+that the Formula loses its credit, that the page still resolves, and that the
+other draws on the page keep theirs.
 """
 
 from __future__ import annotations
 
 import io
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +33,10 @@ from PIL import Image
 from pikepdf import Array, Dictionary, Name, String
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
-from src.education.pdf_checks.completeness import require_complete_pdf_scan
+from src.education.pdf_checks.completeness import (
+    IncompletePDFScanError,
+    require_complete_pdf_scan,
+)
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.pdf_checks.image_semantics import (
     FigureFailureEvidence,
@@ -50,7 +65,12 @@ pytestmark = pytest.mark.unit
 EQUATION_INDEX = 0
 OTHER_INDEX = 1
 EQUATION_ALT = "x squared"
+FIGURE_ALT = "A rule separating the sections"
+GENERIC_ALT = "A generic caption"
 MISSING_ALT_MESSAGE = "Image missing alternative text"
+OWNERSHIP_CHECK = "image_checker.image_semantic_ownership"
+# The marked-content id the association writer gives the Formula on page 1.
+FORMULA_MCID = 2
 
 
 def _write_source(path: Path) -> None:
@@ -132,13 +152,98 @@ def _occurrences(path: Path) -> list[dict[str, Any]]:
         return _displayed_image_occurrences(doc[0], 1)
 
 
-def _semantics(path: Path) -> dict[int, tuple[bool, str | None]]:
-    """Resolve through the public entry point; an incomplete scan fails the test."""
-    occurrences = _occurrences(path)
+def _semantics(
+    path: Path, occurrences: list[dict[str, Any]] | None = None
+) -> dict[int, tuple[bool, str | None]]:
+    """Resolve through the public entry point; an incomplete scan fails the test.
+
+    `occurrences` defaults to the file's own. A page the walk cannot resolve
+    records an incomplete check, so it raises here instead of passing as
+    "undescribed".
+    """
+    occurrences = _occurrences(path) if occurrences is None else occurrences
     with require_complete_pdf_scan(True):
         result = structured_image_semantics(str(path), 0, occurrences)
     assert result is not None
     return {item["image_index"]: result[item["occurrence_id"]] for item in occurrences}
+
+
+def _rebound_occurrences(saved: Path, changed: Path) -> list[dict[str, Any]]:
+    """The saved file's two draws, bound to the changed file's image resources.
+
+    Saving a mutated copy renumbers objects, so the saved file's `image_xref`
+    values no longer match. Everything else (index, bbox, id) is unchanged, which
+    is what lets a changed file reach the content-stream walk even when its own
+    displayed-image indexes would not line up with its draws.
+    """
+    with pikepdf.open(changed) as pdf:
+        page = pdf.pages[0]
+        images = page.Resources.XObject
+        xrefs = [
+            images[str(op.operands[0])].objgen[0]
+            for op in pikepdf.parse_content_stream(page)
+            if str(op.operator) == "Do"
+            and images[str(op.operands[0])].get("/Subtype") == Name.Image
+        ]
+    occurrences = _occurrences(saved)
+    assert len(xrefs) == len(occurrences)
+    return [{**item, "image_xref": xref} for item, xref in zip(occurrences, xrefs)]
+
+
+def _unresolved(
+    path: Path, occurrences: list[dict[str, Any]] | None = None
+) -> dict[int, tuple[bool, str | None]]:
+    """Semantics of a page the ownership walk cannot resolve.
+
+    The scan must record the ownership check as incomplete, so the strict
+    helper above would raise. Callers still get the per-draw result, which must
+    be undescribed for every draw. `occurrences` defaults to the file's own.
+    """
+    occurrences = _occurrences(path) if occurrences is None else occurrences
+    results: list[dict[str, tuple[bool, str | None]] | None] = []
+    with pytest.raises(IncompletePDFScanError, match=OWNERSHIP_CHECK):
+        with require_complete_pdf_scan(True):
+            results.append(structured_image_semantics(str(path), 0, occurrences))
+    (result,) = results
+    assert result is not None
+    return {item["image_index"]: result[item["occurrence_id"]] for item in occurrences}
+
+
+def _generic_alt_issue(occurrence: dict[str, Any]) -> RemediationIssue:
+    """The ordinary missing-alt finding for one displayed image occurrence."""
+    return RemediationIssue(
+        id=f"generic-alt-{occurrence['image_index'] + 1}",
+        category=IssueCategory.ALT_TEXT,
+        severity=IssueSeverity.HIGH,
+        description=MISSING_ALT_MESSAGE,
+        location=f"Page 1, Image {occurrence['image_index'] + 1}",
+        metadata={
+            "page_number": 1,
+            "image_xref": occurrence["image_xref"],
+            "image_index": occurrence["image_index"],
+            "occurrence_ordinal": occurrence["occurrence_ordinal"],
+            "bbox": list(occurrence["bbox"]),
+            "occurrence_id": occurrence["occurrence_id"],
+        },
+    )
+
+
+def _write_generic_alt(path: Path, tmp_path: Path, index: int) -> tuple[bool, Any]:
+    """Run the Figure Alt writer on a copy of `path` for the draw at `index`.
+
+    Returns whether the writer applied the text and the Figure's resulting Alt.
+    """
+    occurrence = _occurrences(path)[index]
+    issue = _generic_alt_issue(occurrence)
+    target = tmp_path / f"writer-{path.stem}.pdf"
+    shutil.copyfile(path, target)
+    remediator = PdfRemediator(str(target), [issue], RemediationConfig(use_ai=False))
+    with pikepdf.open(target) as live_pdf, fitz.open(target) as live_view:
+        remediator._struct_tree = PDFStructureTree(live_pdf)
+        remediator._generated_structure = False
+        applied = remediator._apply_alt_text_fix(issue, live_view, GENERIC_ALT)
+        alt = _find_role(live_pdf.Root.StructTreeRoot, "/Figure").get("/Alt")
+    return applied, None if alt is None else str(alt)
 
 
 def _accessible(source: Path, saved: Path) -> frozenset[tuple[int, int]]:
@@ -157,9 +262,11 @@ def _accessible(source: Path, saved: Path) -> frozenset[tuple[int, int]]:
     return saved_images.accessible
 
 
-def _findings(path: Path, image_index: int) -> tuple[list[str], list[str]]:
+def _findings(
+    path: Path, image_index: int, *, require_complete: bool = True
+) -> tuple[list[str], list[str]]:
     """Missing-alt messages and equation candidates a fresh scan reports."""
-    scan = PDFProcessor().process_pdf(str(path))
+    scan = PDFProcessor(require_complete_scan=require_complete).process_pdf(str(path))
     own = [issue for issue in scan.issues if issue.get("image_index") == image_index]
     missing = [
         issue["message"] for issue in own if issue.get("message") == MISSING_ALT_MESSAGE
@@ -198,7 +305,10 @@ def _regions(plain: list[pikepdf.ContentStreamInstruction]) -> tuple[int, int, i
     return text_end, first, second
 
 
-def _set_content(pdf: pikepdf.Pdf, ops: list[pikepdf.ContentStreamInstruction]) -> None:
+def _set_content(
+    pdf: pikepdf.Pdf,
+    ops: Sequence[pikepdf.ContentStreamInstruction | pikepdf.ContentStreamInlineImage],
+) -> None:
     pdf.pages[0].obj.Contents = pdf.make_stream(pikepdf.unparse_content_stream(ops))
 
 
@@ -246,7 +356,13 @@ def _blank_alt(pdf: pikepdf.Pdf) -> None:
     _find_formula(pdf.Root.StructTreeRoot).Alt = String("  \t ")
 
 
-def _actual_text_only(pdf: pikepdf.Pdf) -> None:
+def _actual_text_instead_of_alt(pdf: pikepdf.Pdf) -> None:
+    """Swap /Alt for /ActualText: two edits, and /Alt is gone either way.
+
+    The ActualText guard is isolated by `_alt_and_actual_text`, which keeps a
+    valid /Alt. This case pins that ActualText is not an acceptable substitute
+    for the description.
+    """
     formula = _find_formula(pdf.Root.StructTreeRoot)
     del formula["/Alt"]
     formula.ActualText = String(EQUATION_ALT)
@@ -358,8 +474,307 @@ def _inside_figure(pdf: pikepdf.Pdf) -> None:
     )
 
 
-def _mutate(saved: Path, tmp_path: Path, change: Callable[[pikepdf.Pdf], None]) -> Path:
-    target = tmp_path / "mutated.pdf"
+def _marked_ops(
+    pdf: pikepdf.Pdf, role: str = "/Formula"
+) -> tuple[list[pikepdf.ContentStreamInstruction], int]:
+    """The page's operators and the index of the BDC that opens `role`'s content.
+
+    That marked content is `BDC`, the image's `Do`, `EMC`, so the Do sits at
+    `bdc + 1` and the closing EMC at `bdc + 2`.
+    """
+    ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+    names = [str(op.operator) for op in ops]
+    bdc = next(
+        index
+        for index, op in enumerate(ops)
+        if names[index] == "BDC" and str(op.operands[0]) == role
+    )
+    assert names[bdc + 1 : bdc + 3] == ["Do", "EMC"]
+    return ops, bdc
+
+
+def _inline_image_op(pdf: pikepdf.Pdf) -> pikepdf.ContentStreamInlineImage:
+    """A 1x1 inline image, parsed so its operator is pikepdf's "INLINE IMAGE"."""
+    stream = pdf.make_stream(b"BI /W 1 /H 1 /CS /G /BPC 8 ID \x00 EI")
+    (instruction,) = pikepdf.parse_content_stream(stream)
+    assert str(instruction.operator) == "INLINE IMAGE"
+    return instruction
+
+
+def _inline_after_draw(pdf: pikepdf.Pdf) -> None:
+    """An inline image follows the Formula's `Do` inside its marked content."""
+    ops, bdc = _marked_ops(pdf)
+    _set_content(pdf, [*ops[: bdc + 2], _inline_image_op(pdf), *ops[bdc + 2 :]])
+
+
+def _inline_before_draw(pdf: pikepdf.Pdf) -> None:
+    """An inline image precedes the Formula's `Do` inside its marked content."""
+    ops, bdc = _marked_ops(pdf)
+    _set_content(pdf, [*ops[: bdc + 1], _inline_image_op(pdf), *ops[bdc + 1 :]])
+
+
+def _inline_nested_after_draw(pdf: pikepdf.Pdf) -> None:
+    """An inline image sits in a nested BMC inside the Formula's marked content."""
+    ops, bdc = _marked_ops(pdf)
+    nested = [_op("BMC", Name.Span), _inline_image_op(pdf), _op("EMC")]
+    _set_content(pdf, [*ops[: bdc + 2], *nested, *ops[bdc + 2 :]])
+
+
+def _inline_after_figure_draw(pdf: pikepdf.Pdf) -> None:
+    """An inline image follows the Figure's `Do` inside the Figure's content."""
+    ops, bdc = _marked_ops(pdf, "/Figure")
+    _set_content(pdf, [*ops[: bdc + 2], _inline_image_op(pdf), *ops[bdc + 2 :]])
+
+
+def _inline_outside_marked_content(pdf: pikepdf.Pdf) -> None:
+    """An inline image after all content, inside no marked-content sequence."""
+    ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+    _set_content(pdf, [*ops, _inline_image_op(pdf)])
+
+
+def _bx_ex(pdf: pikepdf.Pdf) -> None:
+    """A compatibility section around the whole page content.
+
+    pikepdf reports BX and EX as ordinary operators, unlike an inline image.
+    """
+    ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+    _set_content(pdf, [_op("BX"), *ops, _op("EX")])
+
+
+def _find_role(root: Any, role: str) -> Any:
+    """The single structure element with role `role`."""
+    found: list[Any] = []
+
+    def visit(value: Any) -> None:
+        if str(value.get("/S", "")) == role:
+            found.append(value)
+        kids = value.get("/K")
+        children = list(kids) if isinstance(kids, Array) else ([kids] if kids else [])
+        for child in children:
+            if isinstance(child, Dictionary) and "/S" in child:
+                visit(child)
+
+    visit(root)
+    assert len(found) == 1
+    return found[0]
+
+
+def _describe_figure(pdf: pikepdf.Pdf) -> None:
+    """Give the page's one Figure a description of its own."""
+    _find_role(pdf.Root.StructTreeRoot, "/Figure").Alt = String(FIGURE_ALT)
+
+
+def _formula_group_last(
+    pdf: pikepdf.Pdf, *, inline: str | None, describe_figure: bool = False
+) -> None:
+    """Draw the Formula's image last; optionally put an inline image in its content.
+
+    Swapping the two `q cm BDC Do EMC Q` groups puts any inline image after
+    every addressable draw. MuPDF lists an inline image in the page's image
+    inventory, so one placed before a draw would shift that draw's displayed
+    index; here the displayed indexes still line up with the draws, and only
+    the walk's own handling of the inline image is under test.
+
+    `inline` is None, "after" (the Formula's `Do` is followed by the inline
+    image) or "nested" (the inline image sits in a BMC inside the Formula's
+    sequence). The Figure's description is a second, independent edit.
+    """
+    ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+    names = [str(op.operator) for op in ops]
+    first_do = names.index("Do")
+    second_do = names.index("Do", first_do + 1)
+    formula = ops[first_do - 3 : first_do + 3]
+    figure = ops[second_do - 3 : second_do + 3]
+    for group in (formula, figure):
+        assert [str(op.operator) for op in group] == [
+            "q",
+            "cm",
+            "BDC",
+            "Do",
+            "EMC",
+            "Q",
+        ]
+    assert str(formula[2].operands[0]) == "/Formula"
+    tail: list[Any] = []
+    if inline == "after":
+        tail = [_inline_image_op(pdf)]
+    elif inline == "nested":
+        tail = [_op("BMC", Name.Span), _inline_image_op(pdf), _op("EMC")]
+    _set_content(
+        pdf,
+        [*ops[: first_do - 3], *figure, *formula[:4], *tail, *formula[4:]],
+    )
+    if describe_figure:
+        _describe_figure(pdf)
+
+
+def _described_figure_with_inline_image(pdf: pikepdf.Pdf) -> None:
+    """The Figure has a description and an inline image in its marked content."""
+    _describe_figure(pdf)
+    _inline_after_figure_draw(pdf)
+
+
+def _bdc_property(position: str, key: str, text: str) -> Callable[[pikepdf.Pdf], None]:
+    """A BDC property `key` on, around or inside the Formula's MCID sequence.
+
+    "on" adds it to the Formula's own BDC next to the MCID, "around" opens a
+    wrapping `BDC /Span` before the Formula's BDC, and "inside" opens an empty
+    `BDC /Span` after it. Nothing is painted by the extra marker.
+    """
+
+    def change(pdf: pikepdf.Pdf) -> None:
+        ops, bdc = _marked_ops(pdf)
+        extra = Dictionary({key: String(text)})
+        if position == "on":
+            mcid = int(ops[bdc].operands[1].MCID)
+            props = Dictionary({"/MCID": mcid, key: String(text)})
+            ops[bdc] = _op("BDC", Name.Formula, props)
+        elif position == "around":
+            ops = [
+                *ops[:bdc],
+                _op("BDC", Name.Span, extra),
+                *ops[bdc : bdc + 3],
+                _op("EMC"),
+                *ops[bdc + 3 :],
+            ]
+        else:
+            ops = [
+                *ops[: bdc + 1],
+                _op("BDC", Name.Span, extra),
+                _op("EMC"),
+                *ops[bdc + 1 :],
+            ]
+        _set_content(pdf, ops)
+
+    return change
+
+
+def _nested_bmc(*, paint_text: bool) -> Callable[[pikepdf.Pdf], None]:
+    """A plain BMC inside the Formula's MCID sequence, optionally painting text."""
+
+    def change(pdf: pikepdf.Pdf) -> None:
+        ops, bdc = _marked_ops(pdf)
+        inner = [_op("BMC", Name.Span)]
+        if paint_text:
+            inner += [
+                _op("BT"),
+                _op("Tf", Name("/helv"), 4),
+                _op("Tj", String("x")),
+                _op("ET"),
+            ]
+        inner.append(_op("EMC"))
+        _set_content(pdf, [*ops[: bdc + 2], *inner, *ops[bdc + 2 :]])
+
+    return change
+
+
+def _ancestor_remapped_role(pdf: pikepdf.Pdf) -> None:
+    """The Formula resolves directly, but its Document ancestor is remapped."""
+    root = pdf.Root.StructTreeRoot
+    _find_formula(root).P.S = Name("/Chapter")
+    root.RoleMap = Dictionary({"/Chapter": Name.Sect})
+
+
+def _ancestor_namespace(pdf: pikepdf.Pdf) -> None:
+    """The Formula resolves directly, but its Document ancestor has a namespace."""
+    _find_formula(pdf.Root.StructTreeRoot).P.NS = pdf.make_indirect(
+        Dictionary(NS=String("urn:example:custom"))
+    )
+
+
+def _child_owns_mcid(pdf: pikepdf.Pdf) -> None:
+    """A child element of the Formula owns the MCID; the Formula owns none.
+
+    The ParentTree entry moves to the child, so the structure stays consistent.
+    """
+    root = pdf.Root.StructTreeRoot
+    formula = _find_formula(root)
+    child = pdf.make_indirect(
+        Dictionary(
+            Type=Name.StructElem,
+            S=Name.Span,
+            P=formula,
+            Pg=pdf.pages[0].obj,
+            K=formula.K,
+        )
+    )
+    formula.K = Array([child])
+    entries = root.ParentTree.Nums[1]
+    slot = next(
+        index
+        for index, owner in enumerate(entries)
+        if owner is not None and owner.objgen == formula.objgen
+    )
+    entries[slot] = child
+
+
+def _objr_kid(pdf: pikepdf.Pdf) -> None:
+    """The Formula also holds an object reference to a page annotation."""
+    formula = _find_formula(pdf.Root.StructTreeRoot)
+    page = pdf.pages[0].obj
+    annotation = pdf.make_indirect(
+        Dictionary(
+            Type=Name.Annot,
+            Subtype=Name.Link,
+            Rect=Array([72, 90, 192, 130]),
+        )
+    )
+    page.Annots = Array([annotation])
+    formula.K = Array([formula.K, Dictionary(Type=Name.OBJR, Pg=page, Obj=annotation)])
+
+
+def _form_xobject_draw(pdf: pikepdf.Pdf) -> None:
+    """A Form XObject is drawn inside the Formula's marked content."""
+    page = pdf.pages[0]
+    form = pdf.make_stream(b"")
+    form.Type = Name.XObject
+    form.Subtype = Name.Form
+    form.BBox = Array([0, 0, 10, 10])
+    page.Resources.XObject["/fzForm"] = form
+    ops, bdc = _marked_ops(pdf)
+    _set_content(pdf, [*ops[: bdc + 2], _op("Do", Name("/fzForm")), *ops[bdc + 2 :]])
+
+
+def _second_page(owner: str, mcid: int) -> Callable[[pikepdf.Pdf], None]:
+    """Append a page whose marked-content id `mcid` is owned through an MCR /Pg.
+
+    `owner` is "formula" (the Formula reaches onto page 2), "text" (the page's
+    text element does, so the Formula is untouched) or "nobody" (the page has
+    no structure at all).
+    """
+
+    def change(pdf: pikepdf.Pdf) -> None:
+        root = pdf.Root.StructTreeRoot
+        formula = _find_formula(root)
+        assert int(formula.K.MCID) == FORMULA_MCID
+        pdf.add_blank_page(page_size=(400, 300))
+        second = pdf.pages[1].obj
+        second.StructParents = 1
+        entries = Array([])
+        if owner != "nobody":
+            element = formula if owner == "formula" else _text_element(pdf)
+            second.Contents = pdf.make_stream(
+                f"/Span << /MCID {mcid} >> BDC EMC".encode()
+            )
+            entries = Array([None] * mcid + [element])
+            element.K = Array(
+                [element.K, Dictionary(Type=Name.MCR, Pg=second, MCID=mcid)]
+            )
+        tree = root.ParentTree
+        tree.Nums.append(1)
+        tree.Nums.append(entries)
+        tree.Limits = Array([0, 1])
+
+    return change
+
+
+def _mutate(
+    saved: Path,
+    tmp_path: Path,
+    change: Callable[[pikepdf.Pdf], None],
+    name: str = "mutated.pdf",
+) -> Path:
+    target = tmp_path / name
     with pikepdf.open(saved) as pdf:
         change(pdf)
         pdf.save(target)
@@ -427,22 +842,7 @@ def test_formula_owner_never_becomes_an_exclusive_figure(equation_files, tmp_pat
     )
 
     # The remediator therefore still refuses to write a Figure /Alt over it.
-    occurrence = occurrences[EQUATION_INDEX]
-    issue = RemediationIssue(
-        id="generic-alt-1",
-        category=IssueCategory.ALT_TEXT,
-        severity=IssueSeverity.HIGH,
-        description=MISSING_ALT_MESSAGE,
-        location="Page 1, Image 1",
-        metadata={
-            "page_number": 1,
-            "image_xref": occurrence["image_xref"],
-            "image_index": occurrence["image_index"],
-            "occurrence_ordinal": occurrence["occurrence_ordinal"],
-            "bbox": list(occurrence["bbox"]),
-            "occurrence_id": occurrence["occurrence_id"],
-        },
-    )
+    issue = _generic_alt_issue(occurrences[EQUATION_INDEX])
     target = tmp_path / "refusal.pdf"
     shutil.copyfile(saved, target)
     remediator = PdfRemediator(str(target), [issue], RemediationConfig(use_ai=False))
@@ -479,7 +879,7 @@ NEGATIVES = {
     "empty_alt": _empty_alt,
     "blank_alt": _blank_alt,
     "non_string_alt": _non_string_alt,
-    "actual_text_only": _actual_text_only,
+    "actual_text_instead_of_alt": _actual_text_instead_of_alt,
     "alt_and_actual_text": _alt_and_actual_text,
     "ancestor_alt": _ancestor_alt,
     "ancestor_actual_text": _ancestor_actual_text,
@@ -489,6 +889,25 @@ NEGATIVES = {
     "mixed_text_and_image_mcid": _mixed_mcid,
     "text_element_in_formula_scope": _text_child,
     "nested_in_figure": _inside_figure,
+    "ancestor_remapped_role": _ancestor_remapped_role,
+    "ancestor_namespace": _ancestor_namespace,
+    "mcid_owned_by_formula_child": _child_owns_mcid,
+    **{
+        f"bdc_{label}_{position}_mcid": _bdc_property(position, key, EQUATION_ALT)
+        for position in ("on", "around", "inside")
+        for label, key in (("alt", "/Alt"), ("actual_text", "/ActualText"))
+        # An ActualText wrapper outside any MCID also fails the reading-order
+        # check by itself; it is covered by OWNERSHIP_ONLY_NEGATIVES instead.
+        if (label, position) != ("actual_text", "around")
+    },
+}
+
+# Changes the whole-file rescan cannot follow for an unrelated reason, so only
+# the ownership result is asserted. Painting text changes the page's paint, which
+# the save-correspondence proof rejects before ownership is consulted.
+OWNERSHIP_ONLY_NEGATIVES = {
+    "text_painted_in_nested_bmc": _nested_bmc(paint_text=True),
+    "bdc_actual_text_around_mcid": _bdc_property("around", "/ActualText", EQUATION_ALT),
 }
 
 
@@ -509,6 +928,18 @@ def test_malformed_or_shared_formula_owner_stays_inaccessible(
     assert candidates == [IMAGE_EQUATION_ISSUE_TYPE]
 
 
+@pytest.mark.parametrize("name", sorted(OWNERSHIP_ONLY_NEGATIVES))
+def test_ownership_alone_refuses_what_the_rescan_cannot_follow(
+    name, equation_files, tmp_path
+):
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, OWNERSHIP_ONLY_NEGATIVES[name])
+    assert _semantics(changed) == {
+        EQUATION_INDEX: (False, None),
+        OTHER_INDEX: (False, None),
+    }
+
+
 def test_unmutated_copy_is_credited_so_each_refusal_is_the_mutation(
     equation_files, tmp_path
 ):
@@ -516,3 +947,241 @@ def test_unmutated_copy_is_credited_so_each_refusal_is_the_mutation(
     _, saved = equation_files
     changed = _mutate(saved, tmp_path, lambda pdf: None)
     assert _semantics(changed)[EQUATION_INDEX] == (True, EQUATION_ALT)
+
+
+@pytest.mark.parametrize("position", ["on", "around", "inside"])
+def test_bdc_property_that_is_not_replacement_text_keeps_the_credit(
+    position, equation_files, tmp_path
+):
+    """The BDC placements above refuse because of /Alt and /ActualText only."""
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _bdc_property(position, "/Lang", "en-AU"))
+    assert _semantics(changed)[EQUATION_INDEX] == (True, EQUATION_ALT)
+
+
+def test_nested_bmc_that_paints_nothing_keeps_the_credit(equation_files, tmp_path):
+    """Only the text painted inside the nested BMC refuses, not the BMC itself."""
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _nested_bmc(paint_text=False))
+    assert _semantics(changed)[EQUATION_INDEX] == (True, EQUATION_ALT)
+
+
+@pytest.mark.parametrize(
+    "mcid", [0, FORMULA_MCID], ids=["different_number", "same_number"]
+)
+def test_formula_that_also_owns_an_mcid_on_another_page_is_not_credited(
+    mcid, equation_files, tmp_path
+):
+    """Page 2's MCID can differ from the Formula's here or reuse its number.
+
+    Marked-content ids are only unique per page, so ownership is tracked as
+    (page, MCID). A Formula reaching onto another page stops owning "outright"
+    even when the number on that page matches the one it owns on page 1.
+    """
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _second_page("formula", mcid))
+    assert _semantics(changed) == {
+        EQUATION_INDEX: (False, None),
+        OTHER_INDEX: (False, None),
+    }
+
+
+def test_mcid_number_reused_by_another_element_keeps_the_credit(
+    equation_files, tmp_path
+):
+    """Reuse alone is harmless: the text element owns that number on page 2."""
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _second_page("text", FORMULA_MCID))
+    assert _semantics(changed)[EQUATION_INDEX] == (True, EQUATION_ALT)
+
+
+def test_second_page_with_no_structure_keeps_the_credit(equation_files, tmp_path):
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _second_page("nobody", FORMULA_MCID))
+    assert _semantics(changed)[EQUATION_INDEX] == (True, EQUATION_ALT)
+
+
+UNRESOLVABLE = {
+    "objr_kid": _objr_kid,
+    "form_xobject_draw": _form_xobject_draw,
+    # Unchanged by the inline-image rule: pikepdf reports BX and EX as plain
+    # operators and the walk has never attributed paint inside them.
+    "bx_ex": _bx_ex,
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNRESOLVABLE))
+def test_unattributable_scope_fails_the_whole_page_closed(
+    name, equation_files, tmp_path
+):
+    """No draw on the page is credited, and the scan is marked incomplete.
+
+    The saved file's occurrences are re-bound to the changed file so the
+    resource-number check cannot fail the page first; the scope check in the
+    content-stream walk is what is under test.
+    """
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, UNRESOLVABLE[name])
+    assert _unresolved(changed, _rebound_occurrences(saved, changed)) == {
+        EQUATION_INDEX: (False, None),
+        OTHER_INDEX: (False, None),
+    }
+
+
+INLINE_IN_FORMULA_CONTENT = {
+    "before_the_draw": _inline_before_draw,
+    "after_the_draw": _inline_after_draw,
+    "nested_in_a_bmc": _inline_nested_after_draw,
+}
+
+
+@pytest.mark.parametrize("name", sorted(INLINE_IN_FORMULA_CONTENT))
+def test_inline_image_in_formula_content_is_not_credited_and_the_page_resolves(
+    name, equation_files, tmp_path
+):
+    """The Formula's marked content holds paint that is not its image.
+
+    An inline image before a draw shifts that draw's displayed index, so the
+    saved file's occurrences are re-bound to the changed file, as for the
+    unresolvable scopes above. The strict helper raises if the page failed to
+    resolve, so reaching the assertion proves it did: the walk neither
+    credits the Formula nor gives up on the page.
+    """
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, INLINE_IN_FORMULA_CONTENT[name])
+    assert _semantics(changed, _rebound_occurrences(saved, changed)) == {
+        EQUATION_INDEX: (False, None),
+        OTHER_INDEX: (False, None),
+    }
+
+
+def test_rebinding_occurrences_alone_keeps_the_formula_credit(equation_files, tmp_path):
+    """Control for the inline cases above: only the inline image removes credit."""
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, lambda pdf: None)
+    assert _semantics(changed, _rebound_occurrences(saved, changed)) == {
+        EQUATION_INDEX: (True, EQUATION_ALT),
+        OTHER_INDEX: (False, None),
+    }
+
+
+# With the Formula drawn last, an inline image placed after its `Do` is listed
+# last in the page's image inventory, so no displayed index shifts and the
+# page's own occurrences can be used as they are. The Figure is drawn first.
+FIGURE_FIRST = 0
+FORMULA_LAST = 1
+
+
+@pytest.mark.parametrize("inline", ["after", "nested"])
+def test_unrelated_described_figure_stays_credited_beside_an_inline_image(
+    inline, equation_files, tmp_path
+):
+    """A described Figure elsewhere on the page is not reported as missing alt.
+
+    A non-strict scan, the only kind that reports missing alternative text for
+    a page it could not fully inventory, must still credit the Figure. The
+    Formula, whose sequence holds the inline image, is not credited.
+    """
+    _, saved = equation_files
+    control = _mutate(
+        saved,
+        tmp_path,
+        partial(_formula_group_last, inline=None, describe_figure=True),
+        "control.pdf",
+    )
+    assert _semantics(control) == {
+        FIGURE_FIRST: (True, FIGURE_ALT),
+        FORMULA_LAST: (True, EQUATION_ALT),
+    }
+    # Strict scans refuse nothing without the inline image.
+    PDFProcessor().process_pdf(str(control))
+
+    changed = _mutate(
+        saved,
+        tmp_path,
+        partial(_formula_group_last, inline=inline, describe_figure=True),
+        "inline.pdf",
+    )
+    assert [item["image_index"] for item in _occurrences(changed)] == [0, 1]
+    assert _semantics(changed) == {
+        FIGURE_FIRST: (True, FIGURE_ALT),
+        FORMULA_LAST: (False, None),
+    }
+
+    figure_missing, figure_candidates = _findings(
+        changed, FIGURE_FIRST, require_complete=False
+    )
+    assert figure_missing == []
+    assert figure_candidates == []
+    formula_missing, _ = _findings(changed, FORMULA_LAST, require_complete=False)
+    assert formula_missing == [MISSING_ALT_MESSAGE]
+
+    # The inline image has no addressable entry, so a strict scan still refuses.
+    with pytest.raises(IncompletePDFScanError, match="unaddressable_image"):
+        PDFProcessor().process_pdf(str(changed))
+
+
+def test_inline_image_outside_marked_content_does_not_block_a_formula_credit(
+    equation_files, tmp_path
+):
+    """Outside every marked-content sequence an inline image marks nothing."""
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _inline_outside_marked_content)
+    assert [item["image_index"] for item in _occurrences(changed)] == [0, 1]
+    assert _semantics(changed) == {
+        EQUATION_INDEX: (True, EQUATION_ALT),
+        OTHER_INDEX: (False, None),
+    }
+    missing, candidates = _findings(changed, EQUATION_INDEX, require_complete=False)
+    assert missing == []
+    assert candidates == []
+    other_missing, _ = _findings(changed, OTHER_INDEX, require_complete=False)
+    assert other_missing == [MISSING_ALT_MESSAGE]
+
+
+def test_inline_image_in_figure_content_is_never_an_exclusive_figure(
+    equation_files, tmp_path
+):
+    """Like text painted in a Figure's content, an inline image stops it being
+    an exclusive owner, so the Figure Alt writer refuses to write over it.
+
+    The page still resolves, and the Formula on it keeps its credit.
+    """
+    _, saved = equation_files
+    other_id = _occurrences(saved)[OTHER_INDEX]["occurrence_id"]
+    with pikepdf.open(saved) as pdf:
+        ownership = resolve_image_ownership(pdf, str(saved), 0, _occurrences(saved))
+        assert other_id in ownership.exclusive_figures
+    assert missing_figure_occurrences(str(saved)) is not None
+    # Control: without the inline image the writer describes this Figure.
+    assert _write_generic_alt(saved, tmp_path, OTHER_INDEX) == (True, GENERIC_ALT)
+
+    changed = _mutate(saved, tmp_path, _inline_after_figure_draw)
+    occurrences = _occurrences(changed)
+    assert [item["image_index"] for item in occurrences] == [0, 1]
+    with pikepdf.open(changed) as pdf:
+        ownership = resolve_image_ownership(pdf, str(changed), 0, occurrences)
+    assert occurrences[OTHER_INDEX]["occurrence_id"] not in ownership.exclusive_figures
+    assert _semantics(changed) == {
+        EQUATION_INDEX: (True, EQUATION_ALT),
+        OTHER_INDEX: (False, None),
+    }
+    # The Figure-failure evidence for Matterhorn 13-004 is withheld, as it is
+    # for a Figure whose content paints text.
+    assert missing_figure_occurrences(str(changed)) is None
+    assert _write_generic_alt(changed, tmp_path, OTHER_INDEX) == (False, None)
+
+
+def test_described_figure_with_inline_image_in_its_content_keeps_its_credit(
+    equation_files, tmp_path
+):
+    """Scanner credit comes from the Figure's own Alt, not from exclusivity."""
+    _, saved = equation_files
+    changed = _mutate(saved, tmp_path, _described_figure_with_inline_image)
+    assert _semantics(changed) == {
+        EQUATION_INDEX: (True, EQUATION_ALT),
+        OTHER_INDEX: (True, FIGURE_ALT),
+    }
+    missing, candidates = _findings(changed, OTHER_INDEX, require_complete=False)
+    assert missing == []
+    assert candidates == []
