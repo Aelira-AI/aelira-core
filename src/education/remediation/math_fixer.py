@@ -32,6 +32,11 @@ from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
 )
+from src.education.math_speech import (
+    equation_alt_text_is_ambiguous,
+    generate_equation_alt_text,
+    strip_math_delimiters,
+)
 from src.education.remediation.equation_verifier import (
     RENDERER_DIMENSION_LIMIT,
     EquationVerificationRejected,
@@ -47,7 +52,6 @@ from src.education.remediation.printed_equation_verifier import (
     PrintedEquationConsensusEvidence,
     PrintedEquationVerificationRejected,
     printed_equation_agreement,
-    strip_math_delimiters,
 )
 
 if TYPE_CHECKING:
@@ -203,155 +207,6 @@ _INLINE_MATH_PATTERNS = [
     re.compile(r"\$([^$]+?)\$"),
     re.compile(r"\\\((.+?)\\\)", re.DOTALL),
 ]
-
-# ---------------------------------------------------------------------------
-# ARIA label substitution table (LaTeX → plain English)
-# ---------------------------------------------------------------------------
-
-_ARIA_SUBSTITUTIONS: List[tuple] = [
-    # Fractions and binomial coefficients
-    (re.compile(r"\\[dtc]?frac\{([^}]+)\}\{([^}]+)\}"), r"\1 over \2"),
-    (re.compile(r"\\[dt]?binom\{([^}]+)\}\{([^}]+)\}"), r"\1 choose \2"),
-    # Square root
-    (re.compile(r"\\sqrt\{([^}]+)\}"), r"square root of \1"),
-    (re.compile(r"\\sqrt\[([^\]]+)\]\{([^}]+)\}"), r"\1th root of \2"),
-    # Powers (must come before simple ^ handler)
-    (re.compile(r"\^2\b"), " squared"),
-    (re.compile(r"\^3\b"), " cubed"),
-    (re.compile(r"\^\{2\}"), " squared"),
-    (re.compile(r"\^\{3\}"), " cubed"),
-    (re.compile(r"\^\{([^}]+)\}"), r" to the power \1"),
-    (re.compile(r"\^(\w)"), r" to the power \1"),
-    # Subscripts
-    (re.compile(r"_\{([^}]+)\}"), r" sub \1"),
-    (re.compile(r"_(\w)"), r" sub \1"),
-    # Greek letters (lowercase)
-    (re.compile(r"\\alpha\b"), "alpha"),
-    (re.compile(r"\\beta\b"), "beta"),
-    (re.compile(r"\\gamma\b"), "gamma"),
-    (re.compile(r"\\delta\b"), "delta"),
-    (re.compile(r"\\epsilon\b"), "epsilon"),
-    (re.compile(r"\\zeta\b"), "zeta"),
-    (re.compile(r"\\eta\b"), "eta"),
-    (re.compile(r"\\theta\b"), "theta"),
-    (re.compile(r"\\iota\b"), "iota"),
-    (re.compile(r"\\kappa\b"), "kappa"),
-    (re.compile(r"\\lambda\b"), "lambda"),
-    (re.compile(r"\\mu\b"), "mu"),
-    (re.compile(r"\\nu\b"), "nu"),
-    (re.compile(r"\\xi\b"), "xi"),
-    (re.compile(r"\\pi\b"), "pi"),
-    (re.compile(r"\\rho\b"), "rho"),
-    (re.compile(r"\\sigma\b"), "sigma"),
-    (re.compile(r"\\tau\b"), "tau"),
-    (re.compile(r"\\upsilon\b"), "upsilon"),
-    (re.compile(r"\\phi\b"), "phi"),
-    (re.compile(r"\\chi\b"), "chi"),
-    (re.compile(r"\\psi\b"), "psi"),
-    (re.compile(r"\\omega\b"), "omega"),
-    # Greek letters (uppercase)
-    (re.compile(r"\\Gamma\b"), "Gamma"),
-    (re.compile(r"\\Delta\b"), "Delta"),
-    (re.compile(r"\\Theta\b"), "Theta"),
-    (re.compile(r"\\Lambda\b"), "Lambda"),
-    (re.compile(r"\\Xi\b"), "Xi"),
-    (re.compile(r"\\Pi\b"), "Pi"),
-    (re.compile(r"\\Sigma\b"), "Sigma"),
-    (re.compile(r"\\Upsilon\b"), "Upsilon"),
-    (re.compile(r"\\Phi\b"), "Phi"),
-    (re.compile(r"\\Psi\b"), "Psi"),
-    (re.compile(r"\\Omega\b"), "Omega"),
-    # Operators
-    (re.compile(r"\\times\b"), "times"),
-    (re.compile(r"\\div\b"), "divided by"),
-    (re.compile(r"\\pm\b"), "plus or minus"),
-    (re.compile(r"\\mp\b"), "minus or plus"),
-    (re.compile(r"\\leq\b"), "less than or equal to"),
-    (re.compile(r"\\geq\b"), "greater than or equal to"),
-    (re.compile(r"\\neq\b"), "not equal to"),
-    (re.compile(r"\\approx\b"), "approximately equal to"),
-    (re.compile(r"\\equiv\b"), "equivalent to"),
-    (re.compile(r"\\cdot\b"), "dot"),
-    (re.compile(r"\\ldots\b"), "ellipsis"),
-    (re.compile(r"\\cdots\b"), "ellipsis"),
-    (re.compile(r"\\infty\b"), "infinity"),
-    (re.compile(r"\\partial\b"), "partial derivative"),
-    (re.compile(r"\\nabla\b"), "nabla"),
-    (re.compile(r"\\sum\b"), "sum"),
-    (re.compile(r"\\prod\b"), "product"),
-    (re.compile(r"\\int\b"), "integral"),
-    (re.compile(r"\\oint\b"), "contour integral"),
-    # Remove remaining LaTeX commands (leave their arguments visible)
-    (re.compile(r"\\[a-zA-Z]+\{([^}]*)\}"), r"\1"),
-    (re.compile(r"\\[a-zA-Z]+"), ""),
-    # Clean up braces, backticks, etc.
-    (re.compile(r"[{}]"), ""),
-    # Collapse whitespace
-    (re.compile(r"\s{2,}"), " "),
-]
-
-
-_EQUATION_ALT_TEXT_FALLBACK = "mathematical equation"
-
-
-def generate_equation_alt_text(latex: str) -> str:
-    """Return the existing deterministic plain-English equation label."""
-
-    label = latex.strip()
-    for delimiter_pair in [("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)")]:
-        start, end = delimiter_pair
-        if label.startswith(start) and label.endswith(end):
-            label = label[len(start) : len(label) - len(end)].strip()
-            break
-    if label.startswith("$") and label.endswith("$") and len(label) > 1:
-        label = label[1:-1].strip()
-    for pattern, replacement in _ARIA_SUBSTITUTIONS:
-        label = pattern.sub(replacement, label)
-    label = label.strip()
-    return label if len(label) >= 2 else _EQUATION_ALT_TEXT_FALLBACK
-
-
-_FRACTION_COMMAND = re.compile(r"\\(?:[dtc]?frac|[dt]?binom)(?![A-Za-z])")
-_FRACTION_ARGUMENTS = re.compile(r"\{[^{}]+\}\{[^{}]+\}")
-_SQRT_COMMAND = re.compile(r"\\sqrt(?![A-Za-z])")
-_SQRT_ARGUMENTS = re.compile(r"(?:\[[^\[\]{}]+\])?\{[^{}]+\}")
-_BRACED_SCRIPT = re.compile(r"\{[^{}]+\}")
-
-
-def equation_alt_text_is_ambiguous(latex: str) -> bool:
-    """Whether the deterministic label cannot be trusted for this LaTeX.
-
-    The label comes from regular expressions, not from the equation's structure.
-    It is refused, never guessed, when it falls back to the generic text, when a
-    fraction, binomial or root does not carry the plain braced arguments the
-    expressions translate, or when a script is not one character or a plain
-    braced group. Without that, ``\\frac12`` would read "12", ``\\binom{n}{k}``
-    "nk" and ``x^2y`` "x to the power 2y".
-    """
-    if generate_equation_alt_text(latex) == _EQUATION_ALT_TEXT_FALLBACK:
-        return True
-    text = strip_math_delimiters(latex)
-    for command in _FRACTION_COMMAND.finditer(text):
-        if _FRACTION_ARGUMENTS.match(text, command.end()) is None:
-            return True
-    for command in _SQRT_COMMAND.finditer(text):
-        if _SQRT_ARGUMENTS.match(text, command.end()) is None:
-            return True
-    for index, character in enumerate(text):
-        if character not in "^_" or (index and text[index - 1] == "\\"):
-            continue
-        script = text[index + 1 :]
-        if script.startswith("{"):
-            if _BRACED_SCRIPT.match(script) is None:
-                return True
-            continue
-        first = script[:1]
-        if not first or first.isspace() or first in "\\{}^_":
-            return True
-        if first.isalnum() and script[1:2].isalnum():
-            return True
-    return False
-
 
 # ---------------------------------------------------------------------------
 # Result dataclass

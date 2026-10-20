@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 
 from latex2mathml.converter import convert as latex_to_mathml
 
+from src.education.math_speech import strip_math_delimiters
 from src.education.printed_equation_policy import (
     PRINTED_REQUIRED_AGREEMENT_COUNT,
     PRINTED_VERIFIER_POLICY_SHA256,
@@ -84,18 +85,6 @@ class PrintedEquationConsensusEvidence:
     verifier_provider: str
     verifier_model: str
     verifier_prompt_sha256: str
-
-
-def strip_math_delimiters(latex: str) -> str:
-    """Remove one pair of display or inline math delimiters, if present."""
-    stripped = latex.strip()
-    for start, end in (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)")):
-        if stripped.startswith(start) and stripped.endswith(end):
-            stripped = stripped[len(start) : len(stripped) - len(end)].strip()
-            break
-    if stripped.startswith("$") and stripped.endswith("$") and len(stripped) > 1:
-        stripped = stripped[1:-1].strip()
-    return stripped
 
 
 def _bounded_identity(value: Any) -> Optional[str]:

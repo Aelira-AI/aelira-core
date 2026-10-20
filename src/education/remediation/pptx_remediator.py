@@ -25,6 +25,11 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.dml.color import RGBColor
 from pptx.oxml.ns import qn
 
+from src.education.math_speech import (
+    SPOKEN_MATH_INSTRUCTION,
+    speak_math_in_description,
+)
+
 from .base import (
     BaseRemediator,
     RemediationIssue,
@@ -695,7 +700,8 @@ class PptxRemediator(BaseRemediator):
                 "- Be concise (under 125 characters)\n"
                 "- Describe the visual content and its purpose\n"
                 "- Don't start with 'Image of' or 'Picture of'\n"
-                "- Focus on what matters for understanding the slide\n\n"
+                "- Focus on what matters for understanding the slide\n"
+                f"- {SPOKEN_MATH_INSTRUCTION}\n\n"
                 "Generate only the alt text, nothing else:"
             )
             try:
@@ -707,7 +713,13 @@ class PptxRemediator(BaseRemediator):
                 if result.get("success") and result.get("content"):
                     alt_text = result["content"].strip().strip("\"'")
                     if alt_text:
-                        return alt_text[:125]
+                        # Mathematics is spoken, or the description is refused
+                        # and the image stays open for review.
+                        spoken = speak_math_in_description(alt_text)
+                        if spoken is None:
+                            self._record_math_description_refusal(issue)
+                            return None
+                        return spoken[:125]
             except Exception as e:
                 logger.warning(f"Vision-based alt text generation failed: {e}")
 

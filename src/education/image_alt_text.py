@@ -16,8 +16,26 @@ from PIL import Image
 
 from src.config.settings import get_settings
 from src.education.alt_text_quality import normalize_usable_alt_text
+from src.education.math_speech import (
+    MATH_NOT_SPEAKABLE_ERROR,
+    SPOKEN_MATH_INSTRUCTION,
+    speak_math_in_description,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Prompt contracts that changed after analyses were first recorded. The recorder
+# returns a stored result for a repeated request without calling the provider,
+# and the request hash covers the arguments but not the prompt text, so a method
+# whose prompt changed carries a revision. An analysis recorded under the old
+# prompt, which may hold raw LaTeX, is then never replayed as if it came from
+# the new one. Methods whose prompts did not change keep their original hash.
+_PROMPT_REVISIONS = {
+    "generate_alt_text": "spoken-math-v1",
+    "describe_chart_or_graph": "spoken-math-v1",
+    "validate_alt_text": "spoken-math-v1",
+}
 
 
 def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
@@ -28,6 +46,9 @@ def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
         "positional": list(args[1:]),
         "keyword": {key: value for key, value in kwargs.items() if key != "image_path"},
     }
+    revision = _PROMPT_REVISIONS.get(method_name)
+    if revision is not None:
+        parameters["prompt_revision"] = revision
     try:
         encoded = json.dumps(
             parameters,
@@ -37,17 +58,20 @@ def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
             allow_nan=False,
         ).encode("ascii")
     except (TypeError, ValueError):
-        encoded = json.dumps(
-            {
-                "version": "image-alt-text-request-v1",
-                "method": method_name,
-                "parameter_types": [type(value).__name__ for value in args[1:]],
-                "keyword_types": {
-                    key: type(value).__name__
-                    for key, value in sorted(kwargs.items())
-                    if key != "image_path"
-                },
+        typed = {
+            "version": "image-alt-text-request-v1",
+            "method": method_name,
+            "parameter_types": [type(value).__name__ for value in args[1:]],
+            "keyword_types": {
+                key: type(value).__name__
+                for key, value in sorted(kwargs.items())
+                if key != "image_path"
             },
+        }
+        if revision is not None:
+            typed["prompt_revision"] = revision
+        encoded = json.dumps(
+            typed,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("ascii")
@@ -102,6 +126,34 @@ def _tracked_analysis(method):
             self._analysis_depth -= 1
 
     return wrapped
+
+
+def _speak_json_strings(value: Any) -> tuple[bool, Any]:
+    """Pass every string in a parsed model answer through the math check.
+
+    Returns ``(False, None)`` when any string is refused, so a description is
+    never half spoken. Numbers, booleans and nulls are left alone.
+    """
+    if isinstance(value, str):
+        spoken = speak_math_in_description(value)
+        return (spoken is not None), spoken
+    if isinstance(value, list):
+        items = []
+        for item in value:
+            ok, converted = _speak_json_strings(item)
+            if not ok:
+                return False, None
+            items.append(converted)
+        return True, items
+    if isinstance(value, dict):
+        fields = {}
+        for key, item in value.items():
+            ok, converted = _speak_json_strings(item)
+            if not ok:
+                return False, None
+            fields[key] = converted
+        return True, fields
+    return True, value
 
 
 class ImageAltTextGenerator:
@@ -627,10 +679,12 @@ class ImageAltTextGenerator:
         if educational_context:
             prompt = f"""Describe this image for a screen reader user who cannot see it.
 If it contains text, diagrams, charts, equations, or code, describe the content clearly.
+{SPOKEN_MATH_INSTRUCTION}
 Be concise but accurate (1-3 sentences, under 150 characters for simple images, longer for complex content).
 Focus on what's important for understanding the educational content.{context_info}"""
         else:
             prompt = f"""Describe this image for a screen reader user who cannot see it.
+{SPOKEN_MATH_INSTRUCTION}
 Be concise but accurate (1-2 sentences, under 125 characters).
 Focus on the main visual elements and purpose.{context_info}"""
 
@@ -655,6 +709,27 @@ Focus on the main visual elements and purpose.{context_info}"""
                 "inference_time": elapsed,
                 "provider": provider,
             }
+
+        # Mathematics is spoken, or the description is refused, before it can be
+        # used. A refusal is a failed generation: no description is written.
+        spoken = speak_math_in_description(alt_text)
+        if spoken is None:
+            return {
+                "success": False,
+                "error": MATH_NOT_SPEAKABLE_ERROR,
+                "inference_time": elapsed,
+                "provider": provider,
+            }
+        if spoken != alt_text:
+            spoken = normalize_usable_alt_text(spoken)
+            if spoken is None:
+                return {
+                    "success": False,
+                    "error": "Unusable or incomplete alt text response",
+                    "inference_time": elapsed,
+                    "provider": provider,
+                }
+            alt_text = spoken
 
         return {
             "alt_text": alt_text,
@@ -780,7 +855,9 @@ Common issues to check for:
 - Text that describes the wrong thing entirely
 - Missing important visual elements (text in image, people, actions)
 - Decorative images marked as informative or vice versa
-- Alt text that's too long or too short for the image complexity"""
+- Alt text that's too long or too short for the image complexity
+
+{SPOKEN_MATH_INSTRUCTION} This applies to suggested_improvement."""
 
         response_text, elapsed, provider, model = await self._generate_vision(
             image_path, prompt, max_tokens=500
@@ -811,12 +888,19 @@ Common issues to check for:
 
             result = json.loads(cleaned)
 
+            # A suggested replacement is alternative text, so it is spoken or
+            # withheld. Withholding it leaves the verdict intact and suggests
+            # nothing, which every caller already treats as no suggestion.
+            suggestion = result.get("suggested_improvement")
+            if isinstance(suggestion, str):
+                suggestion = speak_math_in_description(suggestion)
+
             return {
                 "success": True,
                 "is_accurate": result.get("is_accurate", False),
                 "accuracy_score": result.get("accuracy_score", 0.0),
                 "issues": result.get("issues", []),
-                "suggested_improvement": result.get("suggested_improvement"),
+                "suggested_improvement": suggestion,
                 "reasoning": result.get("reasoning", ""),
                 "existing_alt_text": existing_alt_text,
                 "inference_time": elapsed,
@@ -1054,7 +1138,8 @@ Important guidelines:
 - For pie charts, describe percentages and segments
 - For bar/line charts, describe the axes and trends
 - For infographics, describe the logical flow and key points
-- For maps, describe regions and what data is shown"""
+- For maps, describe regions and what data is shown
+- {SPOKEN_MATH_INSTRUCTION}"""
 
         max_tokens = 1500 if detail_level == "detailed" else 1000
         response_text, elapsed, provider, model = await self._generate_vision(
@@ -1085,6 +1170,16 @@ Important guidelines:
 
             result = json.loads(cleaned)
 
+            # Every description field is spoken, or none is used.
+            ok, result = _speak_json_strings(result)
+            if not ok:
+                return {
+                    "success": False,
+                    "error": MATH_NOT_SPEAKABLE_ERROR,
+                    "inference_time": elapsed,
+                    "provider": provider,
+                }
+
             return {
                 "success": True,
                 "chart_type": result.get("chart_type", "unknown"),
@@ -1102,7 +1197,15 @@ Important guidelines:
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse chart description as JSON: {e}")
-            # Return raw text as description
+            # Return raw text as description, spoken or refused like any other
+            response_text = speak_math_in_description(response_text)
+            if response_text is None:
+                return {
+                    "success": False,
+                    "error": MATH_NOT_SPEAKABLE_ERROR,
+                    "inference_time": elapsed,
+                    "provider": provider,
+                }
             return {
                 "success": True,
                 "chart_type": "unknown",

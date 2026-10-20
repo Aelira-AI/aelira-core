@@ -63,6 +63,10 @@ from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
 )
+from src.education.math_speech import (
+    IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON,
+    MATH_DESCRIPTION_RECOMMENDATION,
+)
 from src.education.remediation.category_mapper import (
     BUILTIN_ISSUE_TYPE_CATEGORY_MAP,
 )
@@ -1314,10 +1318,19 @@ class BaseRemediator(ABC):
         fix_content = self._generate_fix(issue, document)
 
         if fix_content is None:
+            refused = self._math_description_refused(issue)
             self._add_manual_issue(
                 issue,
-                reason="Could not generate appropriate fix",
-                recommendation=self._get_manual_recommendation(issue),
+                reason=(
+                    IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON
+                    if refused
+                    else "Could not generate appropriate fix"
+                ),
+                recommendation=(
+                    MATH_DESCRIPTION_RECOMMENDATION
+                    if refused
+                    else self._get_manual_recommendation(issue)
+                ),
             )
             return
 
@@ -1654,6 +1667,14 @@ class BaseRemediator(ABC):
             The fix content, or None if no template applies
         """
         return None
+
+    def _record_math_description_refusal(self, issue: RemediationIssue) -> None:
+        """Note that a proposed image description was refused for its mathematics."""
+        self.__dict__.setdefault("_math_description_refusals", set()).add(issue.id)
+
+    def _math_description_refused(self, issue: RemediationIssue) -> bool:
+        """Whether this issue's proposed description was refused for mathematics."""
+        return issue.id in self.__dict__.get("_math_description_refusals", ())
 
     def _get_client_for_issue(self, issue: RemediationIssue) -> Optional[Any]:
         """Return the only client permitted for an issue's AI purpose."""

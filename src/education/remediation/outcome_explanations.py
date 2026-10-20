@@ -29,6 +29,11 @@ EXPLANATIONS = {
         "Review the image and its context, supply an accurate description, and retry remediation.",
         "not_applied",
     ),
+    "image_description_math_not_speakable": (
+        "The image description proposed by the AI contained mathematical notation that could not be turned into reliable spoken words, so no description was written.",
+        "Describe the image yourself, writing any mathematics in plain words, or add a Formula tag with alt text if it is an equation, then rescan.",
+        "not_applied",
+    ),
     "image_occurrence_unbound": (
         "The image description could not be attached to one uniquely identified source image occurrence.",
         "Locate the image in the source document or PDF tag tree and verify its Figure and marked-content association before adding a description.",
@@ -226,6 +231,7 @@ _MANUAL_REASON_CODES = {
     "Category disabled in configuration": "category_disabled",
     "Alt-text AI provider unavailable": "alt_text_provider_unavailable",
     "No usable image description was returned": "image_description_unavailable",
+    "image_description_math_not_speakable": "image_description_math_not_speakable",
     "The image occurrence could not be uniquely bound to an existing Figure.": "image_occurrence_unbound",
     "The existing Figure has ambiguous, shared or unsupported image ownership.": "image_ownership_unsupported",
     "Decorative image artifact conversion requires source-level review.": "decorative_image_requires_review",

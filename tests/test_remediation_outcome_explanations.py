@@ -127,6 +127,10 @@ EQUATION_REASONS = {
         "its notation cannot be turned into reliable plain-language alternative text",
         "not_applied",
     ),
+    "image_description_math_not_speakable": (
+        "contained mathematical notation that could not be turned into reliable spoken words",
+        "not_applied",
+    ),
 }
 
 

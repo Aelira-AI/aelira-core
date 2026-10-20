@@ -123,6 +123,12 @@ from src.education.math_contracts import (
     CONCRETE_MATH_ISSUE_TYPES,
     IMAGE_EQUATION_ISSUE_TYPE,
 )
+from src.education.math_speech import (
+    IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON,
+    MATH_DESCRIPTION_RECOMMENDATION,
+    SPOKEN_MATH_INSTRUCTION,
+    speak_math_in_description,
+)
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.visual_semantic_contract import (
     EmbeddedImageOccurrenceLocator,
@@ -1766,12 +1772,20 @@ class PdfRemediator(BaseRemediator):
                     (
                         "Alt-text AI provider unavailable"
                         if self.alt_text_client is None
-                        else "No usable image description was returned"
+                        else (
+                            IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON
+                            if self._math_description_refused(issue)
+                            else "No usable image description was returned"
+                        )
                     )
                     if issue.category == IssueCategory.ALT_TEXT
                     else "Could not generate appropriate fix"
                 ),
-                recommendation=self._get_manual_recommendation(issue),
+                recommendation=(
+                    MATH_DESCRIPTION_RECOMMENDATION
+                    if self._math_description_refused(issue)
+                    else self._get_manual_recommendation(issue)
+                ),
             )
             return
 
@@ -5377,6 +5391,7 @@ class PdfRemediator(BaseRemediator):
                         "Describe the image's content and purpose. "
                         "Don't start with 'Image of' or 'Picture of'. "
                         "Focus on what's important for understanding the document. "
+                        f"{SPOKEN_MATH_INSTRUCTION} "
                         "Generate only the alt text, nothing else."
                     )
                     result = client.analyze_image_sync(
@@ -5387,7 +5402,13 @@ class PdfRemediator(BaseRemediator):
                     if result.get("success") and result.get("content"):
                         alt_text = result["content"].strip().strip("\"'")
                         if alt_text:
-                            return alt_text[:125]
+                            # Mathematics is spoken, or the description is
+                            # refused and the image stays open for review.
+                            spoken = speak_math_in_description(alt_text)
+                            if spoken is None:
+                                self._record_math_description_refusal(issue)
+                                return None
+                            return spoken[:125]
             except Exception as e:
                 logger.warning(
                     f"Vision AI alt text failed, leaving for human review: {e}"
