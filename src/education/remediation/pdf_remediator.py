@@ -141,9 +141,17 @@ _MAX_SCANNED_REGION_ASSOCIATIONS = 32
 _MAX_SCANNED_REGION_ASSOCIATIONS_PER_PAGE = 1
 _MAX_SCANNED_REGION_PAGES = 8
 
+# Version tag of the receipt recorded for each fix whose finding was shown to be
+# resolved by rescanning the saved bytes.
+_SAVED_FILE_RECEIPT_METHOD = "pdf-finding-presence-v1"
+
 # Manual reason for the alt-text finding of an image that an equation fix is
 # still waiting to claim in the saved file.
 _EQUATION_ALT_TEXT_DEFERRED = "image_equation_alt_text_deferred"
+
+
+class ReviewGatedContentError(RuntimeError):
+    """Review-gated visual content was written without a verified gated fix."""
 
 
 @dataclass
@@ -1204,6 +1212,10 @@ class PdfRemediator(BaseRemediator):
             if self.config.verify_fixes and output_path:
                 self._verify_fixes(output_path)
 
+            # Last gate before success is reported: review-gated content that
+            # reached the saved file must still be backed by its gated fix.
+            self._require_review_gated_fixes_survive()
+
             self._calculate_scores()
             self.result.complete()
 
@@ -1225,6 +1237,15 @@ class PdfRemediator(BaseRemediator):
                 if getattr(self, "_pre_table_pikepdf_doc", None) is not None:
                     self._rollback_provisional_table_fixes()
                 self._discard_failed_table_output(self._get_output_path())
+            if isinstance(e, ReviewGatedContentError) or getattr(
+                self, "_verified_image_equations", None
+            ):
+                # Review-gated content was written into the published file.
+                # With the run failed nothing vouches for it, so it must not
+                # stay at the destination.
+                self._quarantine_failed_output(
+                    self._get_output_path(), "review-gated visual content"
+                )
             self.result.success = False
             self.result.error_message = str(e)
             self.result.close_output_claim()
@@ -1233,6 +1254,48 @@ class PdfRemediator(BaseRemediator):
             self._cleanup_working_copy()
 
         return self.result
+
+    def _require_review_gated_fixes_survive(self) -> None:
+        """Fail closed unless every written gated association keeps its gated fix.
+
+        Each association in ``_verified_image_equations`` is already inside the
+        saved PDF. It must still have a fixed issue with a review-gated source
+        kind that passed verification and, when saved-file verification is on,
+        carries that verification's receipt. A rescan that demoted the equation
+        fix, a skipped reconcile, or an unavailable rescan all leave the PDF
+        holding gated content that nothing vouches for. Raising routes the run
+        through the exception branch of ``remediate``, which reports failure,
+        closes the output claim and quarantines the published file.
+        """
+        written = getattr(self, "_verified_image_equations", None) or []
+        if not written:
+            return
+        from .image_equation_gate import REVIEW_GATED_VISUAL_SOURCE_KINDS
+
+        backed = {
+            fixed.issue_id: fixed
+            for fixed in self.result.fixed_issues
+            if fixed.source_kind in REVIEW_GATED_VISUAL_SOURCE_KINDS
+            and fixed.verification_passed is True
+        }
+        unbacked = 0
+        for entry in written:
+            fixed = backed.get(entry[0].id)
+            receipt = fixed.saved_file_verification if fixed is not None else None
+            if fixed is None or (
+                self.config.verify_fixes
+                and not (
+                    isinstance(receipt, dict)
+                    and receipt.get("method_version") == _SAVED_FILE_RECEIPT_METHOD
+                    and receipt.get("issue_id") == fixed.issue_id
+                )
+            ):
+                unbacked += 1
+        if unbacked:
+            raise ReviewGatedContentError(
+                "Review-gated visual content was written to the output without a "
+                f"verified review-gated fix for {unbacked} image(s)"
+            )
 
     def _complete_reviewed_recovery(self, document: Any) -> "RemediationResult":
         """Verify the exact reviewed candidate without heuristic retagging.
@@ -3637,7 +3700,16 @@ class PdfRemediator(BaseRemediator):
             )
 
     def _discard_failed_table_output(self, output_path: str) -> None:
-        """Remove only exact output bytes published by this remediation task."""
+        """Quarantine a table remediation's published output after it failed."""
+        self._quarantine_failed_output(output_path, "table")
+
+    def _quarantine_failed_output(self, output_path: str, label: str) -> None:
+        """Move exactly the output bytes this remediation task published aside.
+
+        ``label`` names what failed, for the log and warning text. Output the
+        task did not publish is never touched, and nothing is deleted: the
+        entry is renamed into a private directory beside the destination.
+        """
         source = Path(self.file_path)
         destination = Path(output_path)
         configured_directory = (
@@ -3650,7 +3722,7 @@ class PdfRemediator(BaseRemediator):
             resolved_parent = destination.parent.resolve(strict=False)
             resolved_source = source.resolve(strict=False)
         except OSError as exc:
-            logger.warning("Could not resolve failed table output safely: %s", exc)
+            logger.warning("Could not resolve failed %s output safely: %s", label, exc)
             return
 
         candidate = resolved_parent / destination.name
@@ -3658,7 +3730,8 @@ class PdfRemediator(BaseRemediator):
             candidate.relative_to(resolved_directory)
         except ValueError:
             logger.warning(
-                "Refusing to remove failed table output outside its directory: %s",
+                "Refusing to remove failed %s output outside its directory: %s",
+                label,
                 output_path,
             )
             return
@@ -3677,7 +3750,7 @@ class PdfRemediator(BaseRemediator):
         try:
             self._require_descriptor_publication_support()
             parent_fd = self._open_bound_directory(
-                str(resolved_parent), purpose="failed table output directory"
+                str(resolved_parent), purpose=f"failed {label} output directory"
             )
             quarantine_name, quarantine_identity = self._create_candidate_directory(
                 parent_fd,
@@ -3718,7 +3791,8 @@ class PdfRemediator(BaseRemediator):
                 or _descriptor_sha256(output_fd) != binding[3]
             ):
                 logger.warning(
-                    "Refusing to remove failed table output whose identity changed: %s",
+                    "Refusing to remove failed %s output whose identity changed: %s",
+                    label,
                     candidate,
                 )
                 return
@@ -3727,13 +3801,13 @@ class PdfRemediator(BaseRemediator):
         except FileNotFoundError:
             return
         except (OSError, RuntimeError) as exc:
-            logger.warning("Could not verify failed table output safely: %s", exc)
+            logger.warning("Could not verify failed %s output safely: %s", label, exc)
             return
         finally:
             if quarantined_entry and quarantine_dir_fd is not None:
                 self._published_output_binding = None
                 warning = (
-                    "Failed table cleanup retained unverified output at "
+                    f"Failed {label} cleanup retained unverified output at "
                     f"'{quarantine_path}' rather than deleting mutable pathname bytes"
                 )
                 if descriptor_matched_task:
@@ -5714,7 +5788,7 @@ class PdfRemediator(BaseRemediator):
             for fixed in self.result.fixed_issues:
                 if fixed.verification_passed is True:
                     fixed.saved_file_verification = {
-                        "method_version": "pdf-finding-presence-v1",
+                        "method_version": _SAVED_FILE_RECEIPT_METHOD,
                         "issue_id": fixed.issue_id,
                         "source_sha256": measurement["source_sha256"],
                         "output_sha256": measurement["output_sha256"],
