@@ -7,12 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.13] - 2026-10-19
+## [0.9.13] - 2026-10-20
 
-This combined-source release candidate is represented by open draft
-[#682](https://github.com/Aelira-AI/aelira-core/pull/682). The native security
-change is merged; publication and final combined-artifact acceptance remain
-pending.
 See the [release notes](docs/releases/v0.9.13.md) for operator actions and
 evidence limits.
 
@@ -24,11 +20,13 @@ evidence limits.
 
 ### Changed
 
+- Playwright moves from 1.63.0 to 1.64.0, with its newer Chromium, and the API runtime stage uses a `debian:trixie-slim` base. Chromium-rendered equation images and LaTeX HTML-to-PDF output can differ byte for byte from v0.9.12; compare renders within one release.
 - Four merged dependency groups update five CLI packages and its installation lockfile, eight dashboard packages, Pydantic and its required core version, and selected native-fixture/font-corpus pins with SoupSieve selector consumers. Each passed CI at its reviewed head before merging ([#652](https://github.com/Aelira-AI/aelira-core/pull/652), [#653](https://github.com/Aelira-AI/aelira-core/pull/653), [#654](https://github.com/Aelira-AI/aelira-core/pull/654), [#655](https://github.com/Aelira-AI/aelira-core/pull/655)); coordination and release-note inclusion are tracked in [#665](https://github.com/Aelira-AI/aelira-core/issues/665). Embedded-library assessment has separate gates.
 - Hugging Face Hub is updated to 2.2.0 and Tokenizers to 0.23.3, which accepts Hub 2 and later. Hub 2 adds `httpx2`, `httpcore2` and `truststore` to the pinned runtime set. A real faster-whisper `tiny.en` download, transcription and `HF_HUB_OFFLINE=1` cached load now run in the built API image on both architectures ([#560](https://github.com/Aelira-AI/aelira-core/issues/560)).
 
 ### Security
 
+- The dashboard image installs Alpine `libx11` 1.8.14-r0 for CVE-2026-88806 ([#686](https://github.com/Aelira-AI/aelira-core/pull/686)).
 - Merged [#640](https://github.com/Aelira-AI/aelira-core/pull/640) rebuilds Debian libxml2 with the maintained CVE-2026-6653 patch and verifies the installed package, loaded native consumers and shipped image layers. Seven other libxml2 advisories remain affected and disclosed; broader advisory acceptance is still open.
 - Three MEDIUM scanner findings without a Debian fix are reviewed and disclosed in the [advisory record](docs/security/known-unfixed-advisories-0.9.12.md#medium-severity-advisories-reviewed-in-the-0913-candidate): CVE-2026-107161 (Cyrus SASL DIGEST-MD5, plugin not installed), CVE-2026-85091 (zlib, vulnerable code not present in Debian's 1.3.1) and CVE-2026-27171 (zlib `crc32_combine`, no caller in the image). The record also lists the zlib copies bundled in lxml, PyMuPDF and Node.js, including an older Chromium zlib build inside Node.js.
 - Source-built PyAV and OpenCV use hash-verified FFmpeg 9.0.2 instead of their published wheels' private stacks. Native checks cover library binding, audio decode, seven video codec families and scene boundaries; wider media and embedded-library assessment remains open ([#669](https://github.com/Aelira-AI/aelira-core/pull/669), [#675](https://github.com/Aelira-AI/aelira-core/pull/675)).
