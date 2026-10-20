@@ -13,7 +13,7 @@ import math
 import re
 import zlib
 from io import BytesIO
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, cast
@@ -59,8 +59,14 @@ class SavedImageCorrespondence:
     accessible: frozenset[tuple[int, int]]
 
 
-def _identity(issue: RemediationIssue) -> tuple[Any, ...] | None:
-    metadata = issue.metadata
+def occurrence_identity(metadata: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """Return the displayed-occurrence identity carried in finding metadata.
+
+    The identity is page, image xref, image index, occurrence ordinal, bounding
+    box and occurrence id. Any missing, mistyped or malformed part yields None.
+    Findings that describe the same draw agree on this tuple even when they
+    word their location differently.
+    """
     values = [
         metadata.get(key)
         for key in ("page_number", "image_xref", "image_index", "occurrence_ordinal")
@@ -85,9 +91,17 @@ def _identity(issue: RemediationIssue) -> tuple[Any, ...] | None:
         r"imgocc-v1-[0-9a-f]{24}", occurrence_id
     ):
         return None
+    return page, xref, index, ordinal, bbox, occurrence_id
+
+
+def _identity(issue: RemediationIssue) -> tuple[Any, ...] | None:
+    identity = occurrence_identity(issue.metadata)
+    if identity is None:
+        return None
+    page, index = identity[0], identity[2]
     if issue.location != f"Page {page}, Image {index + 1}":
         return None
-    return page, xref, index, ordinal, bbox, occurrence_id
+    return identity
 
 
 def _is_image_finding(issue: RemediationIssue) -> bool:

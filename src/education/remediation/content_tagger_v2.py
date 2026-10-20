@@ -1725,6 +1725,77 @@ def _form_xobject_reaches_image(
     return False
 
 
+def image_draw_has_semantic_owner(
+    pdf: Any,
+    fitz_doc: Any,
+    *,
+    page_number: int,
+    image_xref: int,
+    image_index: int,
+    occurrence_ordinal: int,
+    bbox: tuple[float, ...],
+    occurrence_id: str,
+) -> Optional[bool]:
+    """Report whether one exact image draw already sits in semantic marked content.
+
+    ``associate_image_formula`` wraps the target ``Do`` in a Formula sequence, and
+    its saved-file verification requires that sequence to be the only marked
+    content around the draw apart from an Artifact scope. A draw that is already
+    inside any other sequence, such as the Figure of a tagged source, can never
+    take that association. The same scope walk and draw resolution are used here
+    so the answer is available before any provider call is made.
+
+    Returns True when another non-Artifact sequence encloses the draw, False when
+    none does, and None when the draw cannot be resolved to exactly one content
+    stream operator. None is not an answer about ownership.
+    """
+    from src.education.pdf_checks.image_checker import _displayed_image_occurrences
+
+    try:
+        occurrences = _displayed_image_occurrences(
+            fitz_doc[page_number - 1], page_number
+        )
+        exact = [
+            item
+            for item in occurrences
+            if item["page_number"] == page_number
+            and item["image_xref"] == image_xref
+            and item["image_index"] == image_index
+            and item["occurrence_ordinal"] == occurrence_ordinal
+            and item["occurrence_id"] == occurrence_id
+            and all(
+                abs(left - right) <= 1e-6 for left, right in zip(item["bbox"], bbox)
+            )
+        ]
+        if len(exact) != 1:
+            return None
+        page = pdf.pages[page_number - 1]
+        ops = list(pikepdf.parse_content_stream(page))
+        do_indices = _resolved_image_do_indices(page, ops, image_xref)
+        displayed_same_xref = [
+            item for item in occurrences if item["image_xref"] == image_xref
+        ]
+        if len(do_indices) != len(displayed_same_xref) or occurrence_ordinal >= len(
+            do_indices
+        ):
+            return None
+        stack: List[str] = []
+        for op in ops[: do_indices[occurrence_ordinal]]:
+            operator = str(op.operator)
+            if operator in {"BMC", "BDC"}:
+                try:
+                    stack.append(str(op.operands[0]))
+                except Exception:
+                    stack.append("")
+            elif operator == "EMC":
+                if not stack:
+                    return None
+                stack.pop()
+        return any(tag != "/Artifact" for tag in stack)
+    except Exception:
+        return None
+
+
 def _number_tree_entries(struct_root: Any) -> tuple[Any, List[tuple[int, Any]]]:
     parent_tree = struct_root.get(Name.ParentTree)
     if parent_tree is None:
@@ -5684,6 +5755,7 @@ __all__ = [
     "associate_scanned_region_chemical_formula",
     "associate_scanned_region_chemical_structure",
     "associate_scanned_region_formula",
+    "image_draw_has_semantic_owner",
     "preflight_scanned_region_render_budget",
     "verify_image_formula_association",
     "verify_image_chemical_formula_association",

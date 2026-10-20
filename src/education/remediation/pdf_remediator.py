@@ -31,7 +31,7 @@ import stat
 import tempfile
 import warnings
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -106,10 +106,17 @@ from .table_tagger import (
 from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
-from .math_fixer import MathFixer, PendingScannedRegionAssociation
+from .math_fixer import (
+    IMAGE_EQUATION_EXISTING_OWNER_ERROR,
+    MathFixer,
+    PendingScannedRegionAssociation,
+)
 from .handwritten_equation_verifier import HandwrittenEquationVerificationEvidence
 from .equation_image_source import WorkingEquationRegionOccurrence
-from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
+from src.education.math_contracts import (
+    CONCRETE_MATH_ISSUE_TYPES,
+    IMAGE_EQUATION_ISSUE_TYPE,
+)
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.visual_semantic_contract import (
     EmbeddedImageOccurrenceLocator,
@@ -133,6 +140,25 @@ logger = logging.getLogger(__name__)
 _MAX_SCANNED_REGION_ASSOCIATIONS = 32
 _MAX_SCANNED_REGION_ASSOCIATIONS_PER_PAGE = 1
 _MAX_SCANNED_REGION_PAGES = 8
+
+# Manual reason for the alt-text finding of an image that an equation fix is
+# still waiting to claim in the saved file.
+_EQUATION_ALT_TEXT_DEFERRED = "image_equation_alt_text_deferred"
+
+
+@dataclass
+class _EquationOccurrenceHold:
+    """One image draw the equation specialist has taken responsibility for.
+
+    ``pending`` marks a verified reading awaiting its saved-file association.
+    ``blocked`` marks an equation that was recognised or refused, so no generic
+    image description may stand in for it. ``alt_text_issue`` is the alt-text
+    finding for the same draw once the alt-text pass has held it back.
+    """
+
+    state: str
+    reason: str
+    alt_text_issue: Optional[RemediationIssue] = None
 
 
 def _file_sha256(path: str | Path) -> str:
@@ -815,6 +841,8 @@ class PdfRemediator(BaseRemediator):
         self._content_tagger_stats: Optional[Dict[str, int]] = None
         self._pending_image_equations: List[tuple[Any, Any]] = []
         self._verified_image_equations: List[tuple[Any, Any, Any]] = []
+        # Equation-claimed image draws keyed by displayed-occurrence identity.
+        self._equation_holds: Dict[tuple[Any, ...], _EquationOccurrenceHold] = {}
         # Exact identity of a final PDF published by this remediator instance.
         # Cleanup must never infer ownership merely from the deterministic name.
         self._published_output_binding: Optional[tuple[str, int, int, str]] = None
@@ -1414,6 +1442,9 @@ class PdfRemediator(BaseRemediator):
                         continue
                     if result.pending_association is not None:
                         self._pending_image_equations.append((issue, result))
+                        self._hold_equation_occurrence(
+                            issue, "pending", "image_equation_association_pending"
+                        )
                         self._add_manual_issue(
                             issue,
                             reason="Verified image equation awaits exact content association",
@@ -1423,6 +1454,15 @@ class PdfRemediator(BaseRemediator):
                             ),
                         )
                         continue
+                    if (
+                        result.equation_recognized
+                        or result.error == IMAGE_EQUATION_EXISTING_OWNER_ERROR
+                    ):
+                        self._hold_equation_occurrence(
+                            issue,
+                            "blocked",
+                            result.error or "image_equation_not_verified",
+                        )
                     if result.success:
                         self._structure_modified = True
                         desc = (
@@ -1442,8 +1482,14 @@ class PdfRemediator(BaseRemediator):
                             issue,
                             reason=result.error or "Could not convert math content",
                             recommendation=(
-                                "Manually add Formula structure elements with MathML "
-                                "and alt text for mathematical content."
+                                "This image already belongs to a tagged structure "
+                                "element. Describe the equation in that element's "
+                                "alternative text, or remediate the source document."
+                                if result.error == IMAGE_EQUATION_EXISTING_OWNER_ERROR
+                                else (
+                                    "Manually add Formula structure elements with "
+                                    "MathML and alt text for mathematical content."
+                                )
                             ),
                         )
 
@@ -1464,6 +1510,69 @@ class PdfRemediator(BaseRemediator):
                     reason=f"Specialist module '{name}' raised an error: {e}",
                     recommendation="Review and fix manually",
                 )
+
+    def _hold_equation_occurrence(
+        self, issue: RemediationIssue, state: str, reason: str
+    ) -> None:
+        """Record that the equation fix owns this image draw.
+
+        The key is the displayed-occurrence identity the issue carries, so the
+        alt-text finding for the same draw can be matched without comparing
+        page or image positions. Region findings carry no such identity and are
+        not held.
+        """
+        from .pdf_image_finding_identity import occurrence_identity
+
+        if issue.metadata.get("issue_type") != IMAGE_EQUATION_ISSUE_TYPE:
+            return
+        identity = occurrence_identity(issue.metadata)
+        if identity is not None:
+            holds = self.__dict__.setdefault("_equation_holds", {})
+            holds[identity] = _EquationOccurrenceHold(state, reason)
+
+    def _defer_alt_text_to_equation(self, issue: RemediationIssue) -> bool:
+        """Keep the generic alt-text finding for an equation-held draw manual.
+
+        Returns True when the finding was handled. No provider is called and no
+        Figure is created: a Figure would be a second owner of the same draw, and
+        a generic description must never stand in for an equation that was
+        recognised but not proven. A verified equation later supplies the
+        description itself, through ``_reconcile_verified_image_equations``.
+        """
+        holds = getattr(self, "_equation_holds", None)
+        if not holds or issue.category != IssueCategory.ALT_TEXT:
+            return False
+        from .pdf_image_finding_identity import _identity, _is_image_finding
+
+        if not _is_image_finding(issue):
+            return False
+        identity = _identity(issue)
+        hold = holds.get(identity) if identity is not None else None
+        if hold is None:
+            return False
+        hold.alt_text_issue = issue
+        if hold.state == "pending":
+            self._add_manual_issue(
+                issue,
+                reason=_EQUATION_ALT_TEXT_DEFERRED,
+                recommendation=(
+                    "This image is an equation with a verified reading awaiting "
+                    "its saved-file check. Its alternative text comes from that "
+                    "reading. If the equation fix was not applied, describe the "
+                    "image manually."
+                ),
+            )
+        else:
+            self._add_manual_issue(
+                issue,
+                reason=hold.reason,
+                recommendation=(
+                    "The image was handled as an equation, so no generic image "
+                    "description was generated for it. Review the equation "
+                    "finding for this image and describe it manually."
+                ),
+            )
+        return True
 
     def _process_issue(self, issue: RemediationIssue, document: Any):
         """Process a single issue with confidence scoring.
@@ -1510,6 +1619,8 @@ class PdfRemediator(BaseRemediator):
                 reason=str(classification_reason),
                 recommendation="Review the issue category and apply the fix manually.",
             )
+            return
+        if self._defer_alt_text_to_equation(issue):
             return
 
         # Delegate to base for category-disabled / can't-auto-fix checks
@@ -3737,7 +3848,51 @@ class PdfRemediator(BaseRemediator):
                 wcag_criteria="1.1.1",
                 page_number=staged.page_number,
             )
+            self._promote_deferred_alt_text(issue, staged, remaining_manual)
         self.result.manual_issues = remaining_manual
+
+    def _promote_deferred_alt_text(
+        self, equation_issue: RemediationIssue, staged: Any, remaining_manual: list
+    ) -> None:
+        """Give the held alt-text finding the verified equation's description.
+
+        The finding is promoted only when this exact draw's equation contract was
+        verified in the saved candidate. The new fix carries no source kind: the
+        equation fix is the review-gated record for the draw, and a second gated
+        record would claim the same occurrence twice. It stays flagged for human
+        review at the equation's own confidence ceiling, and the saved-file
+        rescan still has to credit the description before it counts.
+        """
+        from .pdf_image_finding_identity import occurrence_identity
+
+        identity = occurrence_identity(equation_issue.metadata)
+        holds = getattr(self, "_equation_holds", None)
+        hold = holds.get(identity) if holds and identity is not None else None
+        if hold is None or hold.state != "pending" or hold.alt_text_issue is None:
+            return
+        alt_issue = hold.alt_text_issue
+        matching = [
+            manual
+            for manual in remaining_manual
+            if manual.issue_id == alt_issue.id
+            and manual.reason == _EQUATION_ALT_TEXT_DEFERRED
+        ]
+        if len(matching) != 1:
+            return
+        remaining_manual.remove(matching[0])
+        self.result.manual_count -= 1
+        self._add_fixed_issue(
+            alt_issue,
+            fixed_content=staged.aria_label,
+            fix_method="ai_vision",
+            confidence=min(float(staged.confidence), 0.55),
+            notes="Alternative text taken from the verified equation reading.",
+            needs_review=True,
+            provider_used=staged.provider_used,
+            model_used=staged.model_used,
+            wcag_criteria="1.1.1",
+            page_number=staged.page_number,
+        )
 
     def _reload_pikepdf_doc(self) -> None:
         """Reload the pikepdf document handle from disk.
