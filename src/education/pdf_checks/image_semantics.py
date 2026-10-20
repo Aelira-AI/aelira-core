@@ -365,6 +365,21 @@ def _resolve_image_ownership(
     return ImageOwnership(result, exclusive_figures, figures)
 
 
+def is_untagged_pdf(path: str) -> bool:
+    """Return True only when the PDF opens and has no structure tree at all.
+
+    ``missing_figure_occurrences`` returns None both for an untagged file and for
+    a tagged one it cannot resolve. A caller that treats the first differently
+    from the second must prove it here. Any failure to open or read the file
+    answers False, so an unreadable source is never taken for an untagged one.
+    """
+    try:
+        with pikepdf.open(path, attempt_recovery=False) as pdf:
+            return "/StructTreeRoot" not in pdf.Root
+    except Exception:
+        return False
+
+
 def missing_figure_occurrences(
     path: str,
 ) -> FigureFailureEvidence | None:

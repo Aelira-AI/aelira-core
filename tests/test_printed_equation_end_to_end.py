@@ -354,7 +354,7 @@ async def test_correct_reading_is_accepted_by_the_gate_and_requires_approval(
     assert "image_equation_not_human_approved" in artifact_review_blockers(run.rows)
 
 
-async def test_unrelated_reading_leaves_no_equation_content_and_no_gate(
+async def test_unrelated_reading_is_published_without_equation_content_or_gate(
     tmp_path: Path, source_pdf: Path
 ) -> None:
     scan, remediator, result, reader = _remediate(source_pdf, tmp_path, UNRELATED_LATEX)
@@ -365,17 +365,24 @@ async def test_unrelated_reading_leaves_no_equation_content_and_no_gate(
         # generic description of the same image.
         assert reader.kinds == ["recognition"]
 
+        # The document keeps its verified language, title and structure fixes,
+        # and neither finding of the image is credited.
+        assert {fix.category.value for fix in result.fixed_issues} >= {
+            "language",
+            "title",
+            "structure",
+        }
+        assert not [
+            fix
+            for fix in result.fixed_issues
+            if fix.issue_id in set(ids.values()) or fix.source_kind == "image_equation"
+        ]
         assert _manual(result, ids[IMAGE_EQUATION_ISSUE_TYPE]).reason == (
             "equation_verification_failed"
         )
         assert _manual(result, ids["missing_alt_text"]).reason == (
             "image_equation_alt_text_withheld"
         )
-        assert not [
-            fix
-            for fix in result.fixed_issues
-            if fix.issue_id in set(ids.values()) or fix.source_kind == "image_equation"
-        ]
         # This is the value the job derives requires_approval from.
         assert contains_image_equation_fixes(result.fixed_issues) is False
 
@@ -389,30 +396,36 @@ async def test_unrelated_reading_leaves_no_equation_content_and_no_gate(
             assert marker not in readable, marker
         assert not re.search(rb"/Alt\s*[(<]", readable)
 
-        # That undescribed Figure is a new Matterhorn 13-004 failure, with
-        # different evidence from the untagged source, so the candidate does not
-        # verify. The job therefore withholds the whole file rather than
-        # publishing it, and nothing is staged, gated or stored.
-        assert result.verification_passed is False
-        assert "matterhorn:13-004:changed_failure_evidence" in (
-            result.verification_result.unavailable_checks
-        )
+        # That undescribed Figure turns Matterhorn 13-004 from "cannot check
+        # figures" (no structure tree in the source) into a count. The source
+        # image was already undescribed and is recorded as manual work, so the
+        # saved-file verification accepts the change and nothing is withheld.
+        assert result.verification_passed is True, result.verification_result
+        assert result.verification_result.unavailable_checks == []
+        assert "Matterhorn 13-004" in result.verification_result.persistent_failures
+        assert ("13-004", None) in result.source_matterhorn_failures
         run = await _publish(tmp_path, source_pdf, scan, remediator, result)
     finally:
         result.close_output_claim()
 
-    assert run.outcome["success"] is False
-    assert run.outcome["error"] == "remediation_artifact_unavailable"
-    assert run.provider_result is None
-    run.service.claim_and_publish_stream.assert_not_called()
+    # The job publishes the file. Nothing equation-related is gated, so the
+    # approval gate is not involved and the artifact is not held for approval.
+    assert run.outcome["success"] is True
+    assert run.provider_result["requires_approval"] is False
+    assert run.outcome["download_available"] is True
+    assert run.published == [run.claimed]
+    run.service.abort_staging.assert_not_called()
     assert run.gate_calls == []
-    assert run.rows == []
+    assert [row.source_kind for row in run.rows] == [None, None, None]
+    assert "image_equation_not_human_approved" not in artifact_review_blockers(run.rows)
+
+    # The recorded outcome lists the image as manual work, with the equation's
+    # own reason, and withholds nothing.
     outcomes = {item["issue_id"]: item for item in run.outcome["issue_outcomes"]}
     assert outcomes[ids[IMAGE_EQUATION_ISSUE_TYPE]]["status"] == "manual"
     assert outcomes[ids["missing_alt_text"]]["status"] == "manual"
     assert outcomes[ids["missing_alt_text"]]["reason_code"] == (
         "image_equation_alt_text_withheld"
     )
-    assert not any(
-        item["status"] == "fixed" for item in outcomes.values()
-    ), "a withheld candidate credits no fix"
+    assert not [item for item in outcomes.values() if item["status"] == "withheld"]
+    assert run.outcome["withheld_count"] == 0

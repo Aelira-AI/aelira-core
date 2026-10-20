@@ -5498,6 +5498,7 @@ class PdfRemediator(BaseRemediator):
                     bind_missing_image_findings,
                     output_image_key,
                     preserve_image_pages,
+                    undescribed_figures_are_recorded_manual,
                 )
 
                 source_rule_issues = [
@@ -5723,6 +5724,7 @@ class PdfRemediator(BaseRemediator):
                             and after_evidence != before_evidence
                         ):
                             from ..pdf_checks.image_semantics import (
+                                is_untagged_pdf,
                                 missing_figure_occurrences,
                             )
 
@@ -5745,6 +5747,41 @@ class PdfRemediator(BaseRemediator):
                                     )
                                     and (before_missing - after_missing).issubset(
                                         saved_images.accessible
+                                    )
+                                )
+                            elif (
+                                before_figures is None
+                                and after_figures is not None
+                                and is_untagged_pdf(self.file_path)
+                            ):
+                                # An untagged source has no Figures to compare, so
+                                # tagging turned "cannot check figures" into a
+                                # count of undescribed ones. That is not a defect
+                                # remediation introduced when each of those images
+                                # was already undescribed and is recorded as
+                                # manual work, and every image the output does
+                                # describe is backed by its own verified fix. A
+                                # tagged source that merely could not be resolved
+                                # never reaches this branch.
+                                fixed_ids = {
+                                    fixed.issue_id for fixed in self.result.fixed_issues
+                                }
+                                verified_partial_figure_repair = (
+                                    undescribed_figures_are_recorded_manual(
+                                        after_figures,
+                                        saved_images,
+                                        [
+                                            image_bindings[record.issue_id]
+                                            for record in self.result.manual_issues
+                                            if record.issue_id in image_bindings
+                                            and record.issue_id not in fixed_ids
+                                        ],
+                                        [
+                                            image_bindings[fixed.issue_id]
+                                            for fixed in self.result.fixed_issues
+                                            if fixed.issue_id in image_bindings
+                                        ],
+                                        after_records[0].details,
                                     )
                                 )
                         if any(
