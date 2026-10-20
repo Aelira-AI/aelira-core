@@ -8,7 +8,7 @@ This module provides functionality to:
 4. Extract audio from video files for processing
 5. Generate AI-powered audio descriptions for visual content (WCAG 1.2.3, 1.2.5)
 6. Record that whole-video flashing safety is unassessed (WCAG 2.3.1)
-7. Enhanced captions with speaker identification and sound effects
+7. Enhanced captions with sound-effect descriptions (speakers are not identified)
 8. Full transcript generation combining audio and visual descriptions
 """
 
@@ -45,7 +45,7 @@ class TranscriptionSegment(BaseModel):
     text: str
     confidence: Optional[float] = None
     speaker_id: Optional[str] = (
-        None  # Speaker identification (e.g., "Speaker 1", "John")
+        None  # Only from real speaker diarization; None when no speaker is established
     )
     is_sound_effect: bool = False  # True if this is a non-speech sound description
 
@@ -231,7 +231,9 @@ class MultimediaProcessor:
             generate_audio_descriptions: Whether to generate AI audio descriptions (WCAG 1.2.3, 1.2.5)
             generate_spoken_descriptions: Whether to convert text descriptions to spoken audio (TTS)
             detect_flashing: Retained option; records unavailable or disabled state
-            enhance_captions: Whether to add speaker ID and sound effect descriptions
+            enhance_captions: Whether to add sound effect descriptions to captions.
+                Speakers are never labelled: no speaker-identification model is
+                installed, so segments carry no speaker.
             generate_transcript: Whether to generate full text transcript (WCAG 1.2.8)
 
         Returns:
@@ -608,7 +610,8 @@ class MultimediaProcessor:
 
         Args:
             audio_path: Path to audio file
-            enhance_captions: Add speaker diarization and sound effect detection
+            enhance_captions: Add sound effect detection. Speakers are not
+                identified; segments always have speaker_id None.
 
         Returns:
             List of transcription segments with timestamps
@@ -626,24 +629,14 @@ class MultimediaProcessor:
             segments_list, info = model.transcribe(
                 audio_path,
                 beam_size=5,
-                word_timestamps=enhance_captions,  # Enable for speaker detection
+                word_timestamps=enhance_captions,
             )
 
             # Convert to our format
             transcription = []
-            current_speaker = None
-            speaker_changes = []
 
             for segment in segments_list:
                 text = segment.text.strip()
-
-                # Detect speaker changes based on pauses and patterns
-                speaker_id = None
-                if enhance_captions:
-                    speaker_id = self._detect_speaker(
-                        text, segment.start, speaker_changes, current_speaker
-                    )
-                    current_speaker = speaker_id
 
                 # Check if this is a sound effect (non-speech audio)
                 is_sound_effect = False
@@ -660,7 +653,6 @@ class MultimediaProcessor:
                             if hasattr(segment, "confidence")
                             else None
                         ),
-                        speaker_id=speaker_id,
                         is_sound_effect=is_sound_effect,
                     )
                 )
@@ -679,73 +671,6 @@ class MultimediaProcessor:
             logger.error(f"[MultimediaProcessor] Transcription failed: {e}")
             return []
 
-    def _detect_speaker(
-        self,
-        text: str,
-        timestamp: float,
-        speaker_changes: List[Tuple[float, str]],
-        current_speaker: Optional[str],
-    ) -> str:
-        """
-        Detect speaker changes based on audio patterns
-
-        Simple heuristic-based speaker detection:
-        - Detects quoted dialogue
-        - Tracks speaker changes based on pauses
-        - Assigns speaker IDs
-
-        Args:
-            text: Transcribed text
-            timestamp: Start timestamp
-            speaker_changes: List of (timestamp, speaker_id) tuples
-            current_speaker: Current speaker ID
-
-        Returns:
-            Speaker ID string
-        """
-        # Simple speaker detection heuristics
-        # In production, use pyannote.audio for proper diarization
-
-        # Check for dialogue patterns indicating speaker change
-        dialogue_patterns = [
-            r'^".*"$',  # Quoted text
-            r"^[A-Z][a-z]+:",  # Name followed by colon
-            r"^\[.*\]:",  # Bracketed speaker name
-        ]
-
-        for pattern in dialogue_patterns:
-            if re.match(pattern, text):
-                # Extract speaker name if present
-                name_match = re.match(r"^([A-Z][a-z]+):", text)
-                if name_match:
-                    return name_match.group(1)
-                bracket_match = re.match(r"^\[([^\]]+)\]:", text)
-                if bracket_match:
-                    return bracket_match.group(1)
-
-        # Check for significant pause (>2 seconds) indicating speaker change
-        if speaker_changes:
-            last_timestamp, last_speaker = speaker_changes[-1]
-            if timestamp - last_timestamp > 2.0:
-                # Likely a speaker change
-                speaker_num = 1
-                if last_speaker and last_speaker.startswith("Speaker "):
-                    try:
-                        speaker_num = int(last_speaker.split()[-1]) % 3 + 1
-                    except Exception:
-                        pass
-                new_speaker = f"Speaker {speaker_num}"
-                speaker_changes.append((timestamp, new_speaker))
-                return new_speaker
-
-        # No speaker change detected
-        if current_speaker:
-            return current_speaker
-
-        # First speaker
-        speaker_changes.append((timestamp, "Speaker 1"))
-        return "Speaker 1"
-
     def _transcribe_with_diarization(
         self,
         audio_path: str,
@@ -753,15 +678,17 @@ class MultimediaProcessor:
         enhance_captions: bool = True,
     ) -> Tuple[List[TranscriptionSegment], Optional[DiarizationResult]]:
         """
-        Transcribe audio with ML-based speaker diarization.
+        Transcribe audio and label speakers from real speaker diarization.
 
-        Uses pyannote.audio for accurate speaker identification when available,
-        falling back to heuristic detection otherwise.
+        Labels are applied only when pyannote.audio produced the diarization.
+        When it is unavailable or fails, segments are returned without speakers
+        and the diarization result is None; silence-based guesses are never
+        turned into speaker labels.
 
         Args:
             audio_path: Path to audio file
-            use_ml_diarization: Whether to use ML-based diarization
-            enhance_captions: Whether to enhance captions with speaker labels
+            use_ml_diarization: Whether to attempt ML-based diarization
+            enhance_captions: Unused; retained for signature compatibility
 
         Returns:
             Tuple of (transcription segments, diarization result)
@@ -780,7 +707,19 @@ class MultimediaProcessor:
                 diarizer = SpeakerDiarizer(use_gpu=False)
 
                 # Run diarization
-                diarization_result = diarizer.diarize(audio_path)
+                result = diarizer.diarize(audio_path)
+
+                if result.method_used != "pyannote":
+                    # SpeakerDiarizer falls back to silence heuristics when
+                    # pyannote is missing or fails. Those only guess at speaker
+                    # changes, so they must not become labels.
+                    logger.info(
+                        f"[MultimediaProcessor] Speaker diarization unavailable "
+                        f"(method: {result.method_used}); speakers are not labelled"
+                    )
+                    return segments, None
+
+                diarization_result = result
 
                 logger.info(
                     f"[MultimediaProcessor] Diarization complete: "
@@ -802,29 +741,23 @@ class MultimediaProcessor:
                         ],
                     )
 
-                    # Update segments with speaker info
-                    for i, merged_seg in enumerate(merged):
-                        if i < len(segments):
-                            segments[i].speaker_id = merged_seg.get("speaker")
+                    # Update segments with speaker info. The merge marks a
+                    # segment that no diarization turn overlaps as
+                    # SPEAKER_UNKNOWN: that is the absence of a speaker.
+                    for segment, merged_seg in zip(segments, merged):
+                        speaker = merged_seg.get("speaker")
+                        segment.speaker_id = (
+                            None if speaker == "SPEAKER_UNKNOWN" else speaker
+                        )
 
             except Exception as e:
                 logger.warning(
                     f"[MultimediaProcessor] ML diarization failed, "
-                    f"using heuristic fallback: {e}"
+                    f"speakers are not labelled: {e}"
                 )
-                # Fall back to existing heuristic method
-                speaker_changes: List[Tuple[float, str]] = []
-                current_speaker = None
-
                 for segment in segments:
-                    speaker = self._detect_speaker(
-                        segment.text,
-                        segment.start_time,
-                        speaker_changes,
-                        current_speaker,
-                    )
-                    segment.speaker_id = speaker
-                    current_speaker = speaker
+                    segment.speaker_id = None
+                diarization_result = None
 
         return segments, diarization_result
 
@@ -915,9 +848,12 @@ class MultimediaProcessor:
         to provide richer accessibility for deaf and hard-of-hearing users.
 
         Enhancements:
-        1. Speaker identification from visuals (e.g., "Woman in blue blazer")
-        2. Scene context for sound effects (e.g., "[Applause as speaker finishes]")
-        3. Visual cues in captions (e.g., "[Music plays over title slide]")
+        1. Scene context for sound effects (e.g., "[Applause as speaker finishes]")
+        2. Visual cues in captions (e.g., "[Music plays over title slide]")
+
+        Speakers are not identified from visuals: a person visible in a frame is
+        not evidence that this person is the one speaking, so each segment keeps
+        the speaker_id it already had.
 
         Args:
             transcription: List of transcription segments
@@ -944,11 +880,6 @@ class MultimediaProcessor:
         # Sort by timestamp for efficient lookup
         visual_context_timeline.sort(key=lambda x: x["timestamp"])
 
-        # Extract speaker appearances from frame descriptions
-        speaker_appearances = self._extract_speaker_info_from_descriptions(
-            audio_descriptions
-        )
-
         # Enhance each caption segment
         enhanced_segments = []
         for segment in transcription:
@@ -957,19 +888,14 @@ class MultimediaProcessor:
                 segment.start_time, visual_context_timeline
             )
 
-            # 1. Enhance speaker labels with visual identification
-            enhanced_speaker_id = self._enhance_speaker_with_visual_context(
-                segment.speaker_id, segment.start_time, speaker_appearances
-            )
-
-            # 2. Enhance sound effects with scene context
+            # 1. Enhance sound effects with scene context
             enhanced_text = segment.text
             if segment.is_sound_effect and context:
                 enhanced_text = self._enhance_sound_effect_with_context(
                     segment.text, context
                 )
 
-            # 3. Add visual cue prefixes for non-speech segments (music over slides, etc.)
+            # 2. Add visual cue prefixes for non-speech segments (music over slides, etc.)
             if segment.is_sound_effect and context:
                 visual_cue = self._extract_visual_cue(context)
                 if visual_cue:
@@ -983,49 +909,12 @@ class MultimediaProcessor:
                     end_time=segment.end_time,
                     text=enhanced_text,
                     confidence=segment.confidence,
-                    speaker_id=enhanced_speaker_id,
+                    speaker_id=segment.speaker_id,
                     is_sound_effect=segment.is_sound_effect,
                 )
             )
 
         return enhanced_segments
-
-    def _extract_speaker_info_from_descriptions(
-        self, audio_descriptions: List[AudioDescription]
-    ) -> List[Dict]:
-        """
-        Extract speaker appearance information from frame descriptions.
-
-        Looks for patterns like "man in blue shirt", "woman at podium",
-        "Dr. Smith speaking", etc.
-
-        Returns list of {timestamp, description, speaker_visual} dicts
-        """
-        speaker_info = []
-        speaker_patterns = [
-            # Person descriptions
-            r"(man|woman|person|speaker|presenter|instructor|professor|student)\s+(in|wearing|with)\s+([^,.]+)",
-            r"(man|woman|person)\s+(at|behind|near)\s+(podium|desk|screen|whiteboard)",
-            # Named speakers
-            r"(Dr\.?|Prof\.?|Mr\.?|Ms\.?|Mrs\.?)\s+(\w+)\s+(?:is\s+)?speaking",
-            # Action-based identification
-            r"(male|female)\s+(speaker|presenter|instructor|lecturer)",
-        ]
-
-        for desc in audio_descriptions:
-            for pattern in speaker_patterns:
-                match = re.search(pattern, desc.description, re.IGNORECASE)
-                if match:
-                    speaker_info.append(
-                        {
-                            "timestamp": desc.timestamp,
-                            "description": desc.description,
-                            "speaker_visual": match.group(0).strip(),
-                        }
-                    )
-                    break
-
-        return speaker_info
 
     def _find_visual_context_for_timestamp(
         self, timestamp: float, timeline: List[Dict]
@@ -1043,41 +932,6 @@ class MultimediaProcessor:
                 break
 
         return closest
-
-    def _enhance_speaker_with_visual_context(
-        self,
-        current_speaker_id: Optional[str],
-        timestamp: float,
-        speaker_appearances: List[Dict],
-    ) -> Optional[str]:
-        """
-        Enhance speaker label with visual description.
-
-        Transforms "Speaker 1" into "Woman at podium" or "Dr. Smith"
-        """
-        if not speaker_appearances:
-            return current_speaker_id
-
-        # Find the closest speaker appearance to this timestamp
-        closest_appearance = None
-        min_distance = float("inf")
-
-        for appearance in speaker_appearances:
-            distance = abs(appearance["timestamp"] - timestamp)
-            if distance < min_distance and distance < 10.0:  # Within 10 seconds
-                min_distance = distance
-                closest_appearance = appearance
-
-        if closest_appearance:
-            visual_id = closest_appearance["speaker_visual"]
-            # Clean up the visual ID for caption display
-            visual_id = visual_id.strip().capitalize()
-            # Limit length for readability
-            if len(visual_id) > 40:
-                visual_id = visual_id[:37] + "..."
-            return visual_id
-
-        return current_speaker_id
 
     def _enhance_sound_effect_with_context(
         self, sound_effect_text: str, context: Dict
@@ -1179,7 +1033,10 @@ class MultimediaProcessor:
 
     def _generate_webvtt(self, segments: List[TranscriptionSegment]) -> str:
         """
-        Generate WebVTT caption file content with speaker identification
+        Generate WebVTT caption file content
+
+        A <v> voice span is written only for a segment that carries a speaker_id,
+        which only real speaker diarization sets.
 
         Args:
             segments: List of transcription segments
@@ -1211,7 +1068,10 @@ class MultimediaProcessor:
 
     def _generate_srt(self, segments: List[TranscriptionSegment]) -> str:
         """
-        Generate SRT caption file content with speaker identification
+        Generate SRT caption file content
+
+        A speaker prefix is written only for a segment that carries a speaker_id,
+        which only real speaker diarization sets.
 
         Args:
             segments: List of transcription segments
@@ -1980,12 +1840,18 @@ Format: Just the description text, no labels or explanations."""
             if item["type"] == "audio":
                 if item.get("is_sound"):
                     lines.append(f"[{timestamp_str}] {item['text']}")
-                else:
-                    speaker = item.get("speaker", "Unknown")
+                elif item.get("speaker"):
+                    # Only real diarization sets a speaker.
+                    speaker = item["speaker"]
                     if speaker != current_speaker:
                         lines.append(f"\n[{timestamp_str}] {speaker}:")
                         current_speaker = speaker
                     lines.append(f"  {item['text']}")
+                else:
+                    # No established speaker: keep the segment's own timestamp
+                    # and do not invent a speaker header.
+                    current_speaker = None
+                    lines.append(f"[{timestamp_str}] {item['text']}")
             else:
                 # Visual description
                 lines.append(f"\n[{timestamp_str}] [VISUAL: {item['text']}]")

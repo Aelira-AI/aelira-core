@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Transcripts no longer label speakers. Captions, transcripts and stored segments used to carry invented `Speaker N` and name labels, produced by a pause-and-wording heuristic rather than voice identification, so one voice could appear as several people in WebVTT `<v>` spans and SRT prefixes. Segments now have no speaker unless real speaker diarization supplies one, which this product does not run. Captions and transcripts stored by earlier scans keep their labels until the media is scanned again ([#649](https://github.com/Aelira-AI/aelira-core/issues/649)).
+
 ## [0.9.13] - 2026-10-20
 
 See the [release notes](docs/releases/v0.9.13.md) for operator actions and
