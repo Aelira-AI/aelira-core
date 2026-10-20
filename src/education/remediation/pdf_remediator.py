@@ -168,6 +168,19 @@ _EQUATION_ALT_TEXT_DEFERRED = "image_equation_alt_text_deferred"
 # equation finding.
 _EQUATION_ALT_TEXT_WITHHELD = "image_equation_alt_text_withheld"
 
+# Manual reasons for an image whose description cannot be bound to that image
+# alone in a newly generated structure. Each is recorded before any Figure is
+# written, so the finding is never credited and no description is placed.
+# The draw is not one direct drawing operation the structure can mark.
+_IMAGE_DRAW_UNRESOLVED = "image_draw_unresolved"
+# Another image is drawn over it at nearly the same place, so a Figure for one
+# fits both.
+_IMAGE_DRAW_AMBIGUOUS = "image_draw_ambiguous"
+# The draw already sits inside marked content, such as an artifact.
+_IMAGE_IN_MARKED_CONTENT = "image_in_marked_content"
+# The finding carries no occurrence identity and its page holds other images.
+_IMAGE_OCCURRENCE_UNIDENTIFIED = "image_occurrence_unidentified"
+
 
 class ReviewGatedContentError(RuntimeError):
     """Review-gated visual content was written without a verified gated fix."""
@@ -4479,7 +4492,6 @@ class PdfRemediator(BaseRemediator):
         try:
             page_num = issue.metadata.get("page_number", 1)
             image_index = issue.metadata.get("image_index", 0)
-            image_bbox = issue.metadata.get("bbox")
 
             # An existing tagged image must keep its actual content owner.
             # A new root-level Figure cannot describe an already owned draw.
@@ -4549,12 +4561,36 @@ class PdfRemediator(BaseRemediator):
 
             # Newly generated structure is bound by the content tagger and
             # independently checked after save; no existing owner is replaced.
+            # The Figure records the rectangle of the one draw it describes, in
+            # default user space, and the tagger binds it to the block that
+            # rectangle alone fits. When the occurrence is known but its draw
+            # cannot be resolved to one unambiguous, markable drawing operation
+            # there is nothing safe to bind the Figure by, so the finding is
+            # refused with the reason: no Figure, no HTML sidecar, and the issue
+            # is never recorded as fixed. An issue that carries no occurrence
+            # identity gets a Figure with no position, which the tagger can only
+            # pair by order, so it is written only for the page's single image.
+            from .pdf_image_finding_identity import _identity
+
+            layout_bbox = None
+            if _identity(issue) is not None:
+                layout_bbox, refusal = self._image_layout_bbox(issue)
+                if layout_bbox is None:
+                    return self._refuse_source_binding(issue, refusal)
+            elif (
+                self._struct_tree
+                and alt_text
+                and not self._is_sole_image_block(page_num)
+            ):
+                return self._refuse_source_binding(
+                    issue, _IMAGE_OCCURRENCE_UNIDENTIFIED
+                )
             if self._struct_tree and alt_text:
                 if self._struct_tree.add_alt_text_to_image(
                     page_num=page_num,
                     alt_text=alt_text,
                     image_index=image_index,
-                    image_bbox=image_bbox,
+                    image_bbox=layout_bbox,
                 ):
                     self._structure_modified = True
                     logger.info(
@@ -4583,6 +4619,105 @@ class PdfRemediator(BaseRemediator):
 
         except Exception as e:
             logger.error(f"Error applying alt text fix: {e}")
+            return False
+
+    def _image_layout_bbox(
+        self, issue: RemediationIssue
+    ) -> tuple[Optional[tuple[float, float, float, float]], str]:
+        """Return the rectangle of the one draw this finding describes, or why not.
+
+        The occurrence identity names a displayed image and its ordinal among
+        the draws of that image. The draw is the ordinal-th direct ``Do`` of the
+        image's resource in the source page content, and its rectangle follows
+        from the transformation matrices in force there. That is default user
+        space, the space a /BBox is written in and the space the content tagger
+        derives for every draw, whatever the page's rotation or crop box.
+
+        The rectangle is returned only when a Figure written with it can be
+        bound to this draw and no other. The answer is a refusal reason when:
+        the identity matches no single displayed occurrence, or the page's
+        direct draws of that image and its displayed occurrences disagree in
+        number (``image_draw_unresolved``); the draw sits inside marked content,
+        where the tagger makes no block (``image_in_marked_content``); or any
+        other image draw on the page overlaps it at the tagger's position
+        threshold, so one box would fit both (``image_draw_ambiguous``).
+        """
+        from .content_tagger_v2 import (
+            POSITION_MATCH_IOU,
+            _draw_states,
+            _draws_image_xobject,
+            _rect_iou,
+            _resolved_image_do_indices,
+        )
+        from .pdf_image_finding_identity import _identity
+
+        identity = _identity(issue)
+        if identity is None:
+            return None, _IMAGE_DRAW_UNRESOLVED
+        page_number, xref, _, ordinal = (
+            identity[0],
+            identity[1],
+            identity[2],
+            identity[3],
+        )
+        try:
+            with (
+                fitz.open(self.file_path) as source_document,
+                pikepdf.open(self.file_path, attempt_recovery=False) as source_pdf,
+            ):
+                occurrences = _displayed_image_occurrences(
+                    source_document[page_number - 1], page_number
+                )
+                matches = [
+                    occurrence
+                    for occurrence in occurrences
+                    if (
+                        occurrence["page_number"],
+                        occurrence["image_xref"],
+                        occurrence["image_index"],
+                        occurrence["occurrence_ordinal"],
+                        tuple(occurrence["bbox"]),
+                        occurrence["occurrence_id"],
+                    )
+                    == identity
+                ]
+                displayed = [item for item in occurrences if item["image_xref"] == xref]
+                page = source_pdf.pages[page_number - 1]
+                ops = list(pikepdf.parse_content_stream(page))
+                draws = _resolved_image_do_indices(page, ops, xref)
+                if len(matches) != 1 or len(draws) != len(displayed):
+                    return None, _IMAGE_DRAW_UNRESOLVED
+                if not 0 <= ordinal < len(draws):
+                    return None, _IMAGE_DRAW_UNRESOLVED
+                states = _draw_states(ops)
+                chosen = draws[ordinal]
+                if chosen not in states:
+                    return None, _IMAGE_DRAW_UNRESOLVED
+                rect, depth = states[chosen]
+                if depth > 0:
+                    return None, _IMAGE_IN_MARKED_CONTENT
+                for index, (other, _) in states.items():
+                    if index == chosen or not (
+                        _draws_image_xobject(page, ops[index])
+                        or str(ops[index].operator) in ("INLINE IMAGE", "INLINE_IMAGE")
+                    ):
+                        continue
+                    if _rect_iou(rect, other) >= POSITION_MATCH_IOU:
+                        return None, _IMAGE_DRAW_AMBIGUOUS
+                return rect, ""
+        except Exception:
+            return None, _IMAGE_DRAW_UNRESOLVED
+
+    def _is_sole_image_block(self, page_number: int) -> bool:
+        """Whether the page holds exactly one image the tagger will make a block of."""
+        from .content_tagger_v2 import _taggable_image_draws
+
+        try:
+            with pikepdf.open(self.file_path, attempt_recovery=False) as source_pdf:
+                page = source_pdf.pages[page_number - 1]
+                ops = list(pikepdf.parse_content_stream(page))
+                return len(_taggable_image_draws(page, ops)) == 1
+        except Exception:
             return False
 
     def _refuse_source_binding(self, issue: RemediationIssue, reason: str) -> bool:
@@ -5549,6 +5684,7 @@ class PdfRemediator(BaseRemediator):
                     bind_missing_image_findings,
                     output_image_key,
                     preserve_image_pages,
+                    undescribed_figures_are_recorded_manual,
                 )
 
                 source_rule_issues = [
@@ -5774,6 +5910,7 @@ class PdfRemediator(BaseRemediator):
                             and after_evidence != before_evidence
                         ):
                             from ..pdf_checks.image_semantics import (
+                                is_untagged_pdf,
                                 missing_figure_occurrences,
                             )
 
@@ -5796,6 +5933,41 @@ class PdfRemediator(BaseRemediator):
                                     )
                                     and (before_missing - after_missing).issubset(
                                         saved_images.accessible
+                                    )
+                                )
+                            elif (
+                                before_figures is None
+                                and after_figures is not None
+                                and is_untagged_pdf(self.file_path)
+                            ):
+                                # An untagged source has no Figures to compare, so
+                                # tagging turned "cannot check figures" into a
+                                # count of undescribed ones. That is not a defect
+                                # remediation introduced when each of those images
+                                # was already undescribed and is recorded as
+                                # manual work, and every image the output does
+                                # describe is backed by its own verified fix. A
+                                # tagged source that merely could not be resolved
+                                # never reaches this branch.
+                                fixed_ids = {
+                                    fixed.issue_id for fixed in self.result.fixed_issues
+                                }
+                                verified_partial_figure_repair = (
+                                    undescribed_figures_are_recorded_manual(
+                                        after_figures,
+                                        saved_images,
+                                        [
+                                            image_bindings[record.issue_id]
+                                            for record in self.result.manual_issues
+                                            if record.issue_id in image_bindings
+                                            and record.issue_id not in fixed_ids
+                                        ],
+                                        [
+                                            image_bindings[fixed.issue_id]
+                                            for fixed in self.result.fixed_issues
+                                            if fixed.issue_id in image_bindings
+                                        ],
+                                        after_records[0].details,
                                     )
                                 )
                         if any(
