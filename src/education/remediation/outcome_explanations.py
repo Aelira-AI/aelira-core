@@ -89,6 +89,11 @@ EXPLANATIONS = {
         "Review the job status and resolve its blocking condition before retrying.",
         "candidate_change",
     ),
+    "output_adds_pdfua_failures": (
+        "The change exists only in a candidate file. Publishing it would add PDF/UA problems the source document did not have, so the file was withheld and your original is unchanged.",
+        "Running remediation again on this document is unlikely to change the result. Review the unresolved findings and correct the document in its source, then rescan.",
+        "candidate_change",
+    ),
     "manual_reason_unrecorded": (
         "This job requires manual remediation but did not record a more specific public reason.",
         "Use the scan guidance to inspect and correct this finding, then rescan.",

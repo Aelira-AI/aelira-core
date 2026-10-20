@@ -72,6 +72,7 @@ def test_pdf_failed_output_scan_is_not_a_verified_fix(tmp_path, monkeypatch):
     remediator._verify_fixes("saved.pdf")
     remediator._calculate_scores()
     assert remediator.result.score_provenance is None
+    assert remediator.result.source_matterhorn_failures is None
     assert remediator.result.remediated_compliance_score is None
     assert remediator.result.fixed_count == 0
     assert remediator.result.manual_count == 1
@@ -149,6 +150,44 @@ def test_matterhorn_uses_source_baseline(
     assert bool(verification.persistent_failures) is (
         before_status == after_status == "fail"
     )
+    # The publication gate compares the claimed output against this baseline.
+    assert remediator.result.source_matterhorn_failures == (
+        [("09-004", None)] if before_status == "fail" else []
+    )
+
+
+def test_matterhorn_baseline_keeps_page_scope_and_multiplicity(tmp_path, monkeypatch):
+    remediator, _ = setup_remediator(
+        tmp_path, monkeypatch, scan(92, [FINDING]), scan(100, [])
+    )
+
+    def result(*pages):
+        return SimpleNamespace(
+            checkpoints=[
+                SimpleNamespace(
+                    id="13-004",
+                    name="Alt text",
+                    status="fail",
+                    severity="error",
+                    page_number=page,
+                    details="Figure missing /Alt",
+                )
+                for page in pages
+            ]
+        )
+
+    monkeypatch.setattr(
+        "src.education.validation.matterhorn.MatterhornValidator.validate",
+        Mock(side_effect=[result(3, None, 3, 1), result(1)]),
+    )
+    verification = remediator._verify_fixes("saved.pdf")
+    assert verification.passed is True
+    assert remediator.result.source_matterhorn_failures == [
+        ("13-004", None),
+        ("13-004", 1),
+        ("13-004", 3),
+        ("13-004", 3),
+    ]
 
 
 def test_matterhorn_unavailable_is_not_a_verification_pass(tmp_path, monkeypatch):
@@ -162,6 +201,7 @@ def test_matterhorn_unavailable_is_not_a_verification_pass(tmp_path, monkeypatch
     verification = remediator._verify_fixes("saved.pdf")
     assert verification.passed is False
     assert verification.unavailable_checks == ["matterhorn"]
+    assert remediator.result.source_matterhorn_failures is None
 
 
 def test_worsening_existing_matterhorn_failure_cannot_pass(tmp_path, monkeypatch):
@@ -198,3 +238,69 @@ def test_worsening_existing_matterhorn_failure_cannot_pass(tmp_path, monkeypatch
         "matterhorn:13-004:changed_failure_evidence"
     ]
     assert verification.persistent_failures == []
+    assert remediator.result.source_matterhorn_failures == []
+
+
+def test_unavailable_matterhorn_comparison_clears_a_stale_baseline(
+    tmp_path, monkeypatch
+):
+    remediator, _ = setup_remediator(
+        tmp_path, monkeypatch, scan(92, [FINDING]), scan(100, [])
+    )
+    remediator.result.source_matterhorn_failures = [("06-003", None)]
+    monkeypatch.setattr(
+        "src.education.validation.matterhorn.MatterhornValidator.validate",
+        lambda *_: None,
+    )
+    verification = remediator._verify_fixes("saved.pdf")
+    assert verification.unavailable_checks == ["matterhorn"]
+    assert remediator.result.source_matterhorn_failures is None
+
+
+def test_failed_measurement_after_the_comparison_clears_the_recorded_baseline(
+    tmp_path, monkeypatch
+):
+    from src.education.remediation import score_measurement
+
+    remediator, _ = setup_remediator(
+        tmp_path, monkeypatch, scan(92, [FINDING]), scan(100, [])
+    )
+    remediator.result.source_matterhorn_failures = [("06-003", None)]
+
+    def failed_checkpoint(status):
+        return SimpleNamespace(
+            checkpoints=[
+                SimpleNamespace(
+                    id="09-004",
+                    name="Role mappings",
+                    status=status,
+                    page_number=None,
+                    severity="error",
+                    details="Same recorded role-mapping failure",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(
+        "src.education.validation.matterhorn.MatterhornValidator.validate",
+        Mock(side_effect=[failed_checkpoint("fail"), failed_checkpoint("fail")]),
+    )
+    real_finish = score_measurement.finish_measurement
+    calls = []
+    recorded_before_failure = []
+
+    def finish_then_fail(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            # The second call binds the validator comparison and runs after
+            # the baseline was recorded; fail it so the pass is abandoned.
+            recorded_before_failure.append(remediator.result.source_matterhorn_failures)
+            raise RuntimeError("measurement changed")
+        return real_finish(*args, **kwargs)
+
+    monkeypatch.setattr(score_measurement, "finish_measurement", finish_then_fail)
+    verification = remediator._verify_fixes("saved.pdf")
+    assert recorded_before_failure == [[("09-004", None)]]
+    assert verification.passed is False
+    assert remediator.result.verification_passed is False
+    assert remediator.result.source_matterhorn_failures is None

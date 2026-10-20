@@ -15,6 +15,15 @@ ProgressReporter = Callable[[int, str | None], Awaitable[bool]]
 OwnershipChecker = Callable[[], Awaitable[None]]
 ExternalEffectBeginner = Callable[[], Awaitable[str]]
 
+# Reasons that describe a withheld candidate rather than a manual finding.
+_WITHHELD_REASON_CODES = frozenset(
+    {
+        "output_verification_failed",
+        "output_not_published",
+        "output_adds_pdfua_failures",
+    }
+)
+
 _CREDENTIAL_MATERIAL_KEYS = frozenset(
     {
         "access_token",
@@ -243,11 +252,9 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                 explanation = public_explanation(record.get("reason_code"))
                 if isinstance(record.get("reason_code"), str) and (
                     status == "manual"
-                    and record.get("reason_code")
-                    not in {"output_verification_failed", "output_not_published"}
+                    and record.get("reason_code") not in _WITHHELD_REASON_CODES
                     or status == "withheld"
-                    and record.get("reason_code")
-                    in {"output_verification_failed", "output_not_published"}
+                    and record.get("reason_code") in _WITHHELD_REASON_CODES
                 ):
                     outcome.update(explanation)
                 if isinstance(record.get("source_index_scope"), str) and record.get(
