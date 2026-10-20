@@ -216,3 +216,66 @@ def test_image_equation_unexpected_metadata_error_is_stable_and_redacted():
 
     assert results[0].error == "math_fix_failed"
     assert "private-invalid-page" not in results[0].error
+
+
+def _page_text_fixer():
+    from types import SimpleNamespace
+
+    from src.education.remediation.math_fixer import MathFixer
+
+    formulas: list[str] = []
+
+    class StructTree:
+        @staticmethod
+        def add_formula(*, page_num, alt_text, mathml_string):
+            formulas.append(alt_text)
+            return True
+
+    fixer = object.__new__(MathFixer)
+    fixer.pdf = SimpleNamespace(pages=[object()])
+    fixer.struct_tree = StructTree()
+    return fixer, formulas
+
+
+def _page_text_issue(equation_text):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        metadata={
+            "issue_type": "math_content_accessibility",
+            "equation_text": equation_text,
+        }
+    )
+
+
+def test_page_text_equation_is_refused_when_its_label_would_garble():
+    for equation in (
+        r"x^{n}+1",
+        r"\frac12",
+        r"\sin x \le y",
+        r"\bar{x} = 5",
+        r"x^{2}y",
+    ):
+        fixer, formulas = _page_text_fixer()
+
+        result = fixer._fix_math_issue(_page_text_issue(equation))
+
+        if equation == r"\sin x \le y":
+            # Every command here has a spoken form and nothing runs together.
+            assert result.success is True
+            assert formulas == ["sine x less than or equal to y"]
+            continue
+        assert result.success is False
+        assert result.error == "image_equation_alt_text_ambiguous"
+        assert result.equation_text == equation
+        assert formulas == []
+
+
+def test_page_text_equation_with_a_clear_label_still_gets_its_formula():
+    fixer, formulas = _page_text_fixer()
+
+    result = fixer._fix_math_issue(_page_text_issue(r"x^{2} + 1 = 0"))
+
+    assert result.success is True
+    assert result.aria_label == "x squared + 1 = 0"
+    assert formulas == ["x squared + 1 = 0"]

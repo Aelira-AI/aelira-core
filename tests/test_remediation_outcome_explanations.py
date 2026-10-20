@@ -184,7 +184,7 @@ def test_second_reading_reasons_say_what_was_and_was_not_established():
     assert "neither was applied" in reason
     assert "Formula tag and alt text manually" in next_step
     reason, next_step, _ = EXPLANATIONS["image_equation_alt_text_ambiguous"]
-    assert "was read and confirmed" in reason
+    assert "was read, but its notation" in reason
     assert "alternative text yourself" in next_step
 
 

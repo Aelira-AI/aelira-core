@@ -40,16 +40,36 @@ def strip_math_delimiters(latex: str) -> str:
 # clearly a Windows path (see ``_WINDOWS_PATH``).
 _COMMAND = re.compile(r"\\[A-Za-z]+")
 
+# The word a numeric root index is spoken as. Any other number has no word here
+# and is refused, so ``\sqrt[3]{x}`` reads "cube root of x" and never "3th".
+_ROOT_WORDS = {
+    "2": "square",
+    "3": "cube",
+    "4": "fourth",
+    "5": "fifth",
+    "6": "sixth",
+    "7": "seventh",
+    "8": "eighth",
+    "9": "ninth",
+    "10": "tenth",
+}
+
+
+def _indexed_root(match: "re.Match[str]") -> str:
+    index = match.group(1).strip()
+    return f"{_ROOT_WORDS.get(index, index + 'th')} root of {match.group(2)}"
+
+
 _SPOKEN_RULES: List[tuple] = [
     # Fractions and binomial coefficients
     (re.compile(r"\\[dtc]?frac\{([^}]+)\}\{([^}]+)\}"), r"\1 over \2"),
     (re.compile(r"\\[dt]?binom\{([^}]+)\}\{([^}]+)\}"), r"\1 choose \2"),
     # Square root
     (re.compile(r"\\sqrt\{([^}]+)\}"), r"square root of \1"),
-    (re.compile(r"\\sqrt\[([^\]]+)\]\{([^}]+)\}"), r"\1th root of \2"),
+    (re.compile(r"\\sqrt\[([^\]]+)\]\{([^}]+)\}"), _indexed_root),
     # Powers (must come before simple ^ handler)
-    (re.compile(r"\^2\b"), " squared"),
-    (re.compile(r"\^3\b"), " cubed"),
+    (re.compile(r"\^2(?![A-Za-z0-9])"), " squared"),
+    (re.compile(r"\^3(?![A-Za-z0-9])"), " cubed"),
     (re.compile(r"\^\{2\}"), " squared"),
     (re.compile(r"\^\{3\}"), " cubed"),
     (re.compile(r"\^\{([^}]+)\}"), r" to the power \1"),
@@ -103,11 +123,11 @@ _SPOKEN_RULES: List[tuple] = [
     (re.compile(r"\\neq?\b"), "not equal to"),
     (re.compile(r"\\approx\b"), "approximately equal to"),
     (re.compile(r"\\equiv\b"), "equivalent to"),
-    (re.compile(r"\\cdot\b"), "times"),
+    (re.compile(r"\\cdot\b"), "dot"),
     (re.compile(r"\\ldots\b"), "ellipsis"),
-    (re.compile(r"\\cdots\b"), "ellipsis"),
+    (re.compile(r"\\cdots\b"), "centered ellipsis"),
     (re.compile(r"\\infty\b"), "infinity"),
-    (re.compile(r"\\partial\b"), "partial derivative"),
+    (re.compile(r"\\partial\b"), "partial"),
     (re.compile(r"\\nabla\b"), "nabla"),
     (re.compile(r"\\sum\b"), "sum"),
     (re.compile(r"\\prod\b"), "product"),
@@ -122,18 +142,22 @@ _SPOKEN_RULES: List[tuple] = [
 ]
 
 
-def _padded(pattern: "re.Pattern[str]", replacement: str):
+def _padded(pattern: "re.Pattern[str]", replacement):
     """Keep a spoken form from running into the letter or digit before it.
 
     A command written hard against a symbol, as in ``2\\pi`` or ``a\\times b``,
-    would otherwise read "2pi" and "atimes".
+    would otherwise read "2pi" and "atimes". ``replacement`` is a template or a
+    function of the match.
     """
 
     def replace(match: "re.Match[str]") -> str:
         before = (
             match.string[match.start() - 1 : match.start()] if match.start() else ""
         )
-        return (" " if before.isalnum() else "") + match.expand(replacement)
+        spoken = (
+            replacement(match) if callable(replacement) else match.expand(replacement)
+        )
+        return (" " if before.isalnum() else "") + spoken
 
     return pattern, replace
 
@@ -213,13 +237,23 @@ def generate_equation_alt_text(latex: str) -> str:
 #      lets the group's edge move without the words changing.
 #   2. A group is never followed, with nothing between, by a letter, a digit, an
 #      opening brace or a command, which would run into its last word
-#      ("x squaredy"). A fraction, binomial or root is also never followed by a
-#      script. A script may be followed by the other kind of script.
-#   3. A brace group that is not an argument is refused. The label drops braces,
+#      ("x squaredy"), nor by a decimal point or comma and a digit, which would
+#      read as a longer number. A fraction, binomial or root is also never
+#      followed by a script. A script may be followed by the other kind of script.
+#   3. A spoken form that is not closed is accepted only where nothing can be read
+#      into it: at the end, before a closing parenthesis, a comma or a relation.
+#      That covers a fraction, a binomial, a root and a script spoken "to the
+#      power n" or "sub n". "squared" and "cubed" are closed forms and may be
+#      followed by anything the other rules allow. So "x squared plus 3 x" is
+#      accepted, and "x to the power n plus 1" is refused because it could also
+#      be x to the power n+1.
+#   4. A brace group that is not an argument is refused. The label drops braces,
 #      so ``{ab}^2`` and ``ab^2`` would read the same.
-#   4. A command with no spoken form is never erased. Only the typography
+#   5. A script directly after an integral, sum, product or contour integral is a
+#      limit, and is refused: the label would read it as a script on the symbol.
+#   6. A command with no spoken form is never erased. Only the typography
 #      commands above, which say nothing, are dropped.
-#   5. A backslash never survives into the label.
+#   7. A backslash never survives into the label.
 #
 # The label also puts a space before a spoken form that follows a letter or
 # digit, so ``a\frac{b}{c}`` reads "a b over c" and ``\frac{ab}{c}`` "ab over c".
@@ -256,6 +290,18 @@ def _unspoken_commands(latex: str) -> List[str]:
 _SEPARATOR_COMMAND = re.compile(
     r"\\(?:[,;:!]|quad(?![A-Za-z])|qquad(?![A-Za-z])|right\s*[)\]|.])"
 )
+# What a spoken form that is not closed may be followed by: the end of the text,
+# a closing parenthesis, a comma, or a relation. "x to the power n" followed by
+# "plus 1" could be read as "x to the power (n plus 1)", so an open-ended group
+# is accepted only where nothing can be read into it.
+_TERMINAL_COMMAND = re.compile(
+    r"\\(?:right\s*\)|(?:le|leq|ge|geq|ne|neq|approx|equiv)(?![A-Za-z]))"
+)
+# A spacing command the label turns into a space, skipped when looking ahead.
+_SPACING_COMMAND = re.compile(r"\\(?:[,;:!]|quad(?![A-Za-z])|qquad(?![A-Za-z]))")
+# What a limit sits on: a script directly after one of these is a limit, which
+# the label would read as a script on the symbol.
+_BEFORE_LIMITS = re.compile(r"\\(?:int|sum|prod|oint)\s*$")
 
 
 def _may_follow(text: str, end: int, own: Optional[str]) -> bool:
@@ -269,9 +315,36 @@ def _may_follow(text: str, end: int, own: Optional[str]) -> bool:
         return _SEPARATOR_COMMAND.match(text, end) is not None
     if following.isalnum() or following == "{":
         return False
+    # A decimal point or comma with a digit behind it would read as a longer
+    # number: ``x^{1}.5`` and ``x^{1.5}`` would say the same thing.
+    if following in (".", ",") and text[end + 1 : end + 2].isdigit():
+        return False
     if following in ("^", "_"):
         return own is not None and following != own
     return True
+
+
+def _is_terminal(text: str, end: int) -> bool:
+    """Whether an open-ended spoken form ends here, so nothing can be read into it."""
+    index = end
+    while index < len(text):
+        if text[index].isspace():
+            index += 1
+            continue
+        spacing = _SPACING_COMMAND.match(text, index)
+        if spacing is None:
+            break
+        index = spacing.end()
+    if index >= len(text):
+        return True
+    if text[index] in "=<>,)":
+        return True
+    return _TERMINAL_COMMAND.match(text, index) is not None
+
+
+def _closed_script(character: str, argument: str) -> bool:
+    """A script spoken "squared" or "cubed" is closed; every other one is not."""
+    return character == "^" and argument.strip() in ("2", "3")
 
 
 def _structure_is_unambiguous(text: str) -> bool:
@@ -284,7 +357,11 @@ def _structure_is_unambiguous(text: str) -> bool:
             if command:
                 first = _BRACED_TOKEN.match(text, command.end())
                 second = _BRACED_TOKEN.match(text, first.end()) if first else None
-                if second is None or not _may_follow(text, second.end(), None):
+                if (
+                    second is None
+                    or not _may_follow(text, second.end(), None)
+                    or not _is_terminal(text, second.end())
+                ):
                     return False
                 index = second.end()
                 continue
@@ -293,9 +370,18 @@ def _structure_is_unambiguous(text: str) -> bool:
                 position = command.end()
                 optional = _BRACKETED_TOKEN.match(text, position)
                 if optional:
+                    root_index = text[position + 1 : optional.end() - 1].strip()
+                    if root_index not in _ROOT_WORDS and not re.fullmatch(
+                        "[A-Za-z]", root_index
+                    ):
+                        return False
                     position = optional.end()
                 radicand = _BRACED_TOKEN.match(text, position)
-                if radicand is None or not _may_follow(text, radicand.end(), None):
+                if (
+                    radicand is None
+                    or not _may_follow(text, radicand.end(), None)
+                    or not _is_terminal(text, radicand.end())
+                ):
                     return False
                 index = radicand.end()
                 continue
@@ -307,9 +393,16 @@ def _structure_is_unambiguous(text: str) -> bool:
             index += 2 if escaped and escaped in "{}^_" else 1
             continue
         if character in "^_":
+            if _BEFORE_LIMITS.search(text, 0, index):
+                return False
             if text[index + 1 : index + 2] == "{":
                 group = _BRACED_TOKEN.match(text, index + 1)
                 if group is None or not _may_follow(text, group.end(), character):
+                    return False
+                argument = text[index + 2 : group.end() - 1]
+                if not _closed_script(character, argument) and not _is_terminal(
+                    text, group.end()
+                ):
                     return False
                 index = group.end()
                 continue
@@ -320,6 +413,10 @@ def _structure_is_unambiguous(text: str) -> bool:
             if first.isalnum() and script[1:2].isalnum():
                 return False
             if not _may_follow(text, index + 2, character):
+                return False
+            if not _closed_script(character, first) and not _is_terminal(
+                text, index + 2
+            ):
                 return False
             index += 2
             continue

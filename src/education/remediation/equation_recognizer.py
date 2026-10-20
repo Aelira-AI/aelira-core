@@ -108,6 +108,8 @@ class EquationRecognizer:
     def _bounded_identity(value: Any) -> Optional[str]:
         if not isinstance(value, str) or not value or len(value) > 200:
             return None
+        if value != value.strip():
+            return None
         if not value.isprintable() or "\x00" in value:
             return None
         return value

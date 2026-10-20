@@ -115,7 +115,7 @@ EXPLANATIONS = {
         "not_applied",
     ),
     "image_equation_alt_text_ambiguous": (
-        "The equation was read and confirmed, but its notation cannot be turned into reliable plain-language alternative text automatically, so it was not applied.",
+        "The equation was read, but its notation cannot be turned into reliable plain-language alternative text automatically, so it was not applied.",
         "Write the equation's alternative text yourself and add its Formula tag, or rewrite the equation with braced fractions, roots and exponents in the source document, then rescan.",
         "not_applied",
     ),

@@ -40,9 +40,10 @@ def test_the_substitution_table_is_defined_in_exactly_one_place():
     assert definitions == ["src/education/math_speech.py"]
 
 
-# Recorded from the generator before it moved. The move changes nothing. The
-# third column is the verdict of the guard as it was then; the guard has since
-# been tightened and is tested below.
+# Recorded from the generator before it moved. The move changed nothing. Two
+# labels have since been corrected on purpose, the cube root and the partial
+# derivative symbol. The third column is the verdict of the guard as it was then;
+# the guard has since been tightened and is tested below.
 EQUATION_PATH = [
     ("x^{2} + 3x - 7 = 0", "x squared + 3x - 7 = 0", False),
     ("\\frac{a}{b}", "a over b", False),
@@ -53,7 +54,7 @@ EQUATION_PATH = [
     ("\\binom{n}{k}", "n choose k", False),
     ("\\dbinom{n}{k} + 1", "n choose k + 1", False),
     ("\\sqrt{x}", "square root of x", False),
-    ("\\sqrt[3]{x}", "3th root of x", False),
+    ("\\sqrt[3]{x}", "cube root of x", False),
     ("E = mc^{2}", "E = mc squared", False),
     ("x^2 + y^2 = r^2", "x squared + y squared = r squared", False),
     ("a_{n}", "a sub n", False),
@@ -70,7 +71,7 @@ EQUATION_PATH = [
     ("a \\approx b \\equiv c", "a approximately equal to b equivalent to c", False),
     ("1 \\ldots n", "1 ellipsis n", False),
     ("\\infty", "infinity", False),
-    ("\\partial f", "partial derivative f", False),
+    ("\\partial f", "partial f", False),
     ("\\nabla g", "nabla g", False),
     ("\\sum_{i} x_{i}", "sum sub i x sub i", False),
     ("\\int_0^1 x dx", "integral sub 0 to the power 1 x dx", False),
@@ -179,10 +180,70 @@ ERASED_COMMAND = [
 # Braceless arguments, and a fraction, root or script that is not written out.
 BRACELESS = [r"\frac13", r"\frac{a}b", r"\sqrt2", r"x^10", r"x_10", r"x^\alpha"]
 
+# A script directly after an integral, sum, product or contour integral is a
+# limit, which the label would read as a script on the symbol.
+LIMITS = [
+    r"\int_{0}^{1} x^{2} dx",
+    r"\int_0^1 x dx",
+    r"\int_{1}^{x} z",
+    r"\int_a^b f",
+    r"\sum_{i} x_{i}",
+    r"\sum_{n}^{m} a",
+    r"\prod_{k} a_{k}",
+    r"\oint_{C} f",
+    r"\int^{1} x",
+]
+
+# A decimal point or comma with a digit behind it reads as a longer number:
+# ``x^{1}.5`` and ``x^{1.5}`` would say the same thing.
+DECIMALS = [
+    r"x^1.5",
+    r"x^{1}.5",
+    r"\frac{1}{2}.5",
+    r"\sqrt{2}.5",
+    r"x_{1}.5",
+    r"x^2.5",
+    r"x^{1},5",
+    r"x^{2}.5",
+    r"\frac{a}{b},5",
+]
+
+# A spoken form that is not closed is accepted only at the end, before a closing
+# parenthesis, a comma or a relation. Anything else could be read into it.
+OPEN_ENDED = [
+    r"x^{n}+1",
+    r"\sqrt{x}+1",
+    r"\frac{a}{b}+c",
+    r"\frac{a}{b}+\frac{c}{d}",
+    r"x^{n} + 1",
+    r"\frac{a}{b} c",
+    r"\frac{a}{b} \cdot c",
+    r"\frac{a}{b} - c",
+    r"a_{n} + b",
+    r"x_{i}^{2}",
+    r"x_i^2",
+    r"\log_{2} 8 = 3",
+    r"\binom{n}{k} + 1",
+    r"y = \frac{1}{2} x + 3",
+    r"\frac{a}{b}\,dx",
+    r"\sqrt[3]{x} + 1",
+    r"x^{n} y",
+    r"\frac{a}{b} / c",
+]
+
 
 @pytest.mark.parametrize(
     "latex",
-    [*RUN_TOGETHER, *COMPOUND_ARGUMENT, *BARE_GROUP, *ERASED_COMMAND, *BRACELESS],
+    [
+        *RUN_TOGETHER,
+        *COMPOUND_ARGUMENT,
+        *BARE_GROUP,
+        *ERASED_COMMAND,
+        *BRACELESS,
+        *LIMITS,
+        *DECIMALS,
+        *OPEN_ENDED,
+    ],
 )
 def test_the_guard_refuses_what_the_label_would_garble(latex):
     assert equation_alt_text_is_ambiguous(latex) is True
@@ -201,13 +262,25 @@ SPOKEN = [
     (r"x^{10}", "x to the power 10"),
     (r"x^{\pi}", "x to the power pi"),
     (r"a_{n}", "a sub n"),
-    (r"x_{i}^{2}", "x sub i squared"),
     (r"\sqrt{2}", "square root of 2"),
     (r"\sqrt{x}", "square root of x"),
-    (r"\int_{1}^{x} z", "integral sub 1 to the power x z"),
-    (r"y = \frac{1}{2} x + 3", "y = 1 over 2 x + 3"),
-    (r"\frac{a}{b}+\frac{c}{d}", "a over b+c over d"),
+    (r"x^{1.5}", "x to the power 1.5"),
+    # Closed forms may be followed by anything the other rules allow.
     (r"x^{2}+y^{2}=r^{2}", "x squared+y squared=r squared"),
+    (r"x^{3} - 1", "x cubed - 1"),
+    (r"x^{2}_{i}", "x squared sub i"),
+    (r"x^2_{i}", "x squared sub i"),
+    (r"x^3_i", "x cubed sub i"),
+    (r"y + \frac{1}{2} = 4", "y + 1 over 2 = 4"),
+    (r"1 - \sqrt{x} = 3", "1 - square root of x = 3"),
+    (r"x_{1} = x_{2}", "x sub 1 = x sub 2"),
+    # An open-ended form at the end, before a relation, a comma or a parenthesis.
+    (r"\frac{a}{b} = c", "a over b = c"),
+    (r"x^{n} = 1", "x to the power n = 1"),
+    (r"x^{n} \le y", "x to the power n less than or equal to y"),
+    (r"\frac{a}{b}, c", "a over b, c"),
+    (r"(\frac{a}{b})", "(a over b)"),
+    (r"a_{n} \neq b", "a sub n not equal to b"),
     (r"x^{2} y", "x squared y"),
     # A spoken form is kept apart from the letter or digit before it.
     (r"2\pi r", "2 pi r"),
@@ -227,15 +300,24 @@ SPOKEN = [
     (r"a \approx b", "a approximately equal to b"),
     (r"a \pm b", "a plus or minus b"),
     (r"a \times b", "a times b"),
-    (r"a \cdot b", "a times b"),
+    (r"a \cdot b", "a dot b"),
+    (r"1 \cdots n", "1 centered ellipsis n"),
+    (r"1 \ldots n", "1 ellipsis n"),
+    (r"\partial f", "partial f"),
     (r"\infty + 1", "infinity + 1"),
+    # A root index is a word, or a letter.
+    (r"\sqrt[2]{x}", "square root of x"),
+    (r"\sqrt[3]{x}", "cube root of x"),
+    (r"\sqrt[4]{x}", "fourth root of x"),
+    (r"\sqrt[10]{x}", "tenth root of x"),
+    (r"\sqrt[n]{x}", "nth root of x"),
     # Functions, one command at a time.
     (r"\sin x = 0", "sine x = 0"),
     (r"\cos x = 0", "cosine x = 0"),
     (r"\tan x = 0", "tangent x = 0"),
     (r"\log x = 0", "log x = 0"),
     (r"\ln x = 0", "natural log x = 0"),
-    (r"\log_{2} 8 = 3", "log sub 2 8 = 3"),
+    (r"y = \log_{b}", "y = log sub b"),
     (r"\sin^{2} x", "sine squared x"),
     # Commands that only change how the equation is drawn.
     (r"\left( x+1 \right)", "( x+1 )"),
@@ -250,7 +332,7 @@ SPOKEN = [
     (r"a\:b", "a b"),
     (r"a\!b", "a b"),
     (r"\int x^{2}\,dx", "integral x squared dx"),
-    (r"\int_{0}^{1} x \, dx", "integral sub 0 to the power 1 x dx"),
+    (r"\int x \, dx", "integral x dx"),
 ]
 
 
@@ -271,7 +353,10 @@ def test_every_command_the_vocabulary_names_has_exactly_one_spoken_form():
         "approx": "approximately equal to",
         "pm": "plus or minus",
         "times": "times",
-        "cdot": "times",
+        "cdot": "dot",
+        "cdots": "centered ellipsis",
+        "ldots": "ellipsis",
+        "partial": "partial",
         "infty": "infinity",
         "sin": "sine",
         "cos": "cosine",
@@ -283,6 +368,37 @@ def test_every_command_the_vocabulary_names_has_exactly_one_spoken_form():
         label = generate_equation_alt_text("a \\" + command + " b")
         assert label == f"a {words} b", command
         assert math_speech._unspoken_commands("\\" + command) == [], command
+
+
+def test_no_two_commands_in_the_vocabulary_share_a_spoken_form_unless_they_are_aliases():
+    forms = {
+        "le": "leq",
+        "ge": "geq",
+        "ne": "neq",
+    }
+    seen: dict[str, str] = {}
+    for command in (
+        "times", "cdot", "cdots", "ldots", "pm", "mp", "div", "approx", "equiv",
+        "sum", "prod", "int", "oint", "partial", "nabla", "infty", "sin", "cos",
+        "tan", "log", "ln", "le", "leq", "ge", "geq", "ne", "neq",
+    ):  # fmt: skip
+        label = generate_equation_alt_text("a \\" + command + " b")
+        previous = seen.setdefault(label, command)
+        assert previous == command or forms.get(previous) == command, (
+            previous,
+            command,
+        )
+
+
+def test_a_root_index_without_a_word_is_refused():
+    for latex in (
+        r"\sqrt[11]{x}",
+        r"\sqrt[1.5]{x}",
+        r"\sqrt[\alpha]{x}",
+        r"\sqrt[0]{x}",
+    ):
+        assert equation_alt_text_is_ambiguous(latex) is True, latex
+    assert generate_equation_alt_text(r"\sqrt[3]{x}") == "cube root of x"
 
 
 def test_the_typography_commands_are_the_only_ones_dropped_without_words():
@@ -327,19 +443,26 @@ def _refused(latex: str) -> bool:
 COLLISIONS = [
     (r"y = \frac{1}{2}x + 3", r"y = \frac{1}{2x} + 3", "both"),
     (r"x^{n}y", r"x^{ny}", "both"),
+    (r"x^{n} y", r"x^{ny}", "both"),
     (r"\sqrt{2}x", r"\sqrt{2x}", "both"),
     (r"a_{n}x^{n}", r"a_{nx}^{n}", "both"),
     (r"\frac{a}{b}^{2}", r"\frac{a}{b^{2}}", "both"),
-    (r"\sqrt{x}+1", r"\sqrt{x+1}", "right"),
-    (r"x^{n}+1", r"x^{n+1}", "right"),
-    (r"a_{n}+1", r"a_{n+1}", "right"),
-    (r"\frac{a}{b}+c", r"\frac{a}{b+c}", "right"),
+    (r"\frac{a}{b} c", r"\frac{a}{bc}", "both"),
+    (r"x_{i}^{2}", r"x_{i^{2}}", "both"),
+    (r"\sqrt{x}+1", r"\sqrt{x+1}", "both"),
+    (r"x^{n}+1", r"x^{n+1}", "both"),
+    (r"a_{n}+1", r"a_{n+1}", "both"),
+    (r"\frac{a}{b}+c", r"\frac{a}{b+c}", "both"),
     (r"a+\frac{b}{c}", r"\frac{a+b}{c}", "right"),
     (r"a\frac{b}{c}", r"\frac{ab}{c}", "right"),
     (r"ab^{2}", r"{ab}^{2}", "right"),
+    (r"x^{1}.5", r"x^{1.5}", "left"),
+    (r"\frac{1}{2}.5", r"\frac{1}{2.5}", "left"),
+    (r"\frac{1}{2} 3", r"\frac{1}{23}", "left"),
     (r"1\frac{2}{3}", r"\frac{12}{3}", "neither"),
-    (r"\frac{1}{2} 3", r"\frac{1}{23}", "neither"),
     (r"\sin x^{2}", r"\sin^{2} x", "neither"),
+    (r"a \cdot b", r"a \times b", "neither"),
+    (r"1 \cdots n", r"1 \ldots n", "neither"),
 ]
 
 
@@ -368,7 +491,15 @@ def test_a_pair_that_used_to_read_the_same_is_refused_or_reads_differently(
 # The single-symbol and different-pair corpora of the other test modules. Every
 # member the guard refuses is named here, so a new refusal or a new acceptance
 # shows up as a failure.
-REUSED_REFUSED = {r"\frac12", r"\frac21", "x^{ab}", "{-}x", "a{+}b", "{ab}^2"}
+REUSED_REFUSED = {
+    r"\frac12",
+    r"\frac21",
+    "x^{ab}",
+    "x^a b",
+    "{-}x",
+    "a{+}b",
+    "{ab}^2",
+}
 
 
 def test_the_reused_corpora_are_refused_or_read_differently_and_every_refusal_is_listed():
@@ -393,6 +524,8 @@ BASES = [
     r"\frac{a}{b}",
     r"\frac{1}{2}",
     r"\frac{12}{3}",
+    r"\frac{1.5}{2}",
+    r"\frac{1}{2.5}",
     r"\frac{a+b}{c}",
     r"\frac{a}{b+c}",
     r"\frac{ab}{c}",
@@ -400,13 +533,20 @@ BASES = [
     r"\sqrt{x+1}",
     r"\sqrt{2x}",
     r"\sqrt{2}",
+    r"\sqrt{2.5}",
+    r"\sqrt[3]{x}",
+    r"\sqrt[n]{x}",
     r"x^{n}",
     r"x^{n+1}",
     r"x^{ny}",
     r"x^{2}",
+    r"x^{3}",
     r"x^{10}",
+    r"x^{1}",
+    r"x^{1.5}",
     r"x^2",
     r"x_i",
+    r"x_{1}",
     r"a_{n}",
     r"a_{n+1}",
     r"a_{nx}",
@@ -415,35 +555,109 @@ BASES = [
     r"\binom{n}{k}",
     r"\alpha",
     r"\pi",
+    r"\partial f",
+    r"a \cdot b",
+    r"a \times b",
+    r"a\cdot b",
+    r"a\times b",
+    r"1 \cdots n",
+    r"1 \ldots n",
     r"{ab}",
     r"{x}",
 ]
-BEFORE = ["", "a", "1", "a ", "1 ", "a+", "x", r"\alpha", "("]
-AFTER = ["", "b", "1", " b", " 1", "+c", " + c", "^{2}", "_{i}", r"\,y", ")"]
+BEFORE = ["", "a", "1", "a ", "1 ", "a+", "x", r"\alpha", "(", "y = ", "1."]
+AFTER = [
+    "",
+    "b",
+    "1",
+    " b",
+    " 1",
+    "+c",
+    " + c",
+    "^{2}",
+    "_{i}",
+    r"\,y",
+    ")",
+    ".5",
+    ",5",
+    ", c",
+    " = c",
+    r" \le c",
+    r" \cdot c",
+    r" \times c",
+]
+
+_RELATION_WORDS = (
+    "less than or equal to",
+    "greater than or equal to",
+    "not equal to",
+    "approximately equal to",
+    "equivalent to",
+)
+_OPEN_PHRASE = re.compile(
+    r"\b(?:over|choose|root of|to the power|sub)\s+([^\s=<>,)+*/-]+)"
+)
+
+
+def _open_phrases_are_terminal(words: str) -> bool:
+    """Whether every open-ended spoken group ends where nothing can be read in.
+
+    This reads the words alone, not the LaTeX: after the last word of "over",
+    "choose", "root of", "to the power" or "sub" there must be the end, a closing
+    parenthesis, a comma, or a relation.
+    """
+    for match in _OPEN_PHRASE.finditer(words):
+        rest = words[match.end() :].lstrip()
+        if rest and rest[0] not in "=<>,)" and not rest.startswith(_RELATION_WORDS):
+            return False
+    return True
+
+
+def _accepted_placements():
+    for base in BASES:
+        for before in BEFORE:
+            for after in AFTER:
+                latex = f"{before}{base}{after}"
+                if not _refused(latex):
+                    yield latex
 
 
 def test_no_two_accepted_equations_with_different_mathml_share_their_words():
     """Generate every placement of each base and group what the label says."""
     by_words: dict[str, dict[str, str]] = {}
     accepted = 0
-    for base in BASES:
-        for before in BEFORE:
-            for after in AFTER:
-                latex = f"{before}{base}{after}"
-                if _refused(latex):
-                    continue
-                try:
-                    mathml = _canonical(latex)
-                except Exception:
-                    continue
-                accepted += 1
-                by_words.setdefault(generate_equation_alt_text(latex), {})[
-                    mathml
-                ] = latex
-    assert accepted > 500, "the corpus no longer exercises the guard"
+    for latex in _accepted_placements():
+        try:
+            mathml = _canonical(latex)
+        except Exception:
+            continue
+        accepted += 1
+        by_words.setdefault(generate_equation_alt_text(latex), {})[mathml] = latex
+    assert accepted > 400, "the corpus no longer exercises the guard"
     collisions = {
         words: sorted(readings.values())
         for words, readings in by_words.items()
         if len(readings) > 1
     }
     assert collisions == {}
+
+
+def test_every_accepted_open_ended_group_is_terminal():
+    """No accepted text reads naturally as a form the guard refuses."""
+    checked = 0
+    for latex in _accepted_placements():
+        words = generate_equation_alt_text(latex)
+        assert _open_phrases_are_terminal(words), (latex, words)
+        checked += 1
+    assert checked > 400
+
+
+def test_the_terminal_check_itself_catches_an_open_ended_group_followed_by_more():
+    assert _open_phrases_are_terminal("x to the power n = 1")
+    assert _open_phrases_are_terminal("a over b, c")
+    assert _open_phrases_are_terminal("(a over b) squared")
+    assert _open_phrases_are_terminal("x sub 1 less than or equal to y")
+    assert not _open_phrases_are_terminal("x to the power n+1")
+    assert not _open_phrases_are_terminal("a over b c")
+    assert not _open_phrases_are_terminal("square root of x plus 1")
+    assert not _open_phrases_are_terminal("x sub i squared")

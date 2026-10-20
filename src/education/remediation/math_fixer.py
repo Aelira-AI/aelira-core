@@ -456,6 +456,15 @@ class MathFixer:
                 "</math>"
             )
 
+        # A label the generator cannot get right is refused, never guessed.
+        if equation_alt_text_is_ambiguous(equation_text):
+            return MathFixResult(
+                success=False,
+                error=IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
+                equation_text=equation_text,
+                page_number=page_number,
+            )
+
         # Generate human-readable ARIA label
         aria_label = self._generate_aria_label(equation_text)
 

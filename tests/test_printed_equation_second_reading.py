@@ -857,12 +857,12 @@ def test_the_second_reading_cannot_bind_a_different_staged_equation(monkeypatch)
 # truthful second reading. None may be staged.
 SINGLE_SYMBOL_EDITS = [
     ("x^{3} + 3x - 7 = 0", "x^{2} + 3x - 7 = 0"),
-    (r"\frac{1}{2} + y = 4", r"\frac{1}{3} + y = 4"),
+    (r"y + \frac{1}{2} = 4", r"y + \frac{1}{3} = 4"),
     ("n(n+1) = 2k", "n(n-1) = 2k"),
     ("a + b = c", "a - b = c"),
-    ("x_{1} + x_{2} = 0", "x_{1} + x_{3} = 0"),
+    ("x_{1} = x_{2}", "x_{1} = x_{3}"),
     ("y = 2x + 1", "y = 2x + 7"),
-    (r"\sqrt{x} + 1 = 3", r"\sqrt{x} - 1 = 3"),
+    (r"1 + \sqrt{x} = 3", r"1 - \sqrt{x} = 3"),
     ("a < b", "a > b"),
 ]
 
@@ -918,6 +918,22 @@ AMBIGUOUS = [
     # A compound argument reads the same as a group that ends earlier.
     r"\sqrt{x+1}",
     r"a_{ij}",
+    # A script after a limit symbol, a decimal run together, an open-ended group
+    # that more text could be read into.
+    r"\int_0^1 x^2 dx",
+    r"\int_{0}^{1} x^{2} dx",
+    r"\sum_{i} x_{i}",
+    r"x_i^2",
+    r"x^1.5",
+    r"x^{1}.5",
+    r"\frac{1}{2}.5",
+    r"\sqrt{2}.5",
+    r"x_{1}.5",
+    r"x^2.5",
+    r"x^{n}+1",
+    r"\sqrt{x}+1",
+    r"\frac{a}{b}+c",
+    r"\frac{a}{b}+\frac{c}{d}",
     r"3x^{2}y + 2xy^{2} = 0",
     r"y = \frac{1}{2}x + 3",
     r"x^{n}y",
@@ -939,15 +955,15 @@ UNAMBIGUOUS = [
     r"\sqrt[3]{x}",
     r"\binom{n}{k}",
     r"\dbinom{n}{k}",
-    r"x_i^2",
-    r"\int_0^1 x^2 dx",
     r"E = mc^{2}",
     r"$x^2 + 1$",
     r"\(a+b\)",
     r"a-b",
     r"x=y",
     r"x^{2}+y^{2}=r^{2}",
-    r"\frac{a}{b}+\frac{c}{d}",
+    r"\frac{a}{b} = c",
+    r"x^{n} = 1",
+    r"a_{n} \neq b",
 ]
 
 
@@ -983,7 +999,8 @@ def test_a_binomial_reads_as_a_choice():
         (r"x \le 3", "x less than or equal to 3"),
         (r"x \ne 0", "x not equal to 0"),
         (r"\sin x = 0", "sine x = 0"),
-        (r"\log_{2} 8 = 3", "log sub 2 8 = 3"),
+        (r"\ln x = 0", "natural log x = 0"),
+        (r"a \cdot b = c", "a dot b = c"),
         (r"a \pm b", "a plus or minus b"),
     ],
 )
@@ -1051,8 +1068,8 @@ def test_an_ambiguous_first_reading_is_refused_before_the_second_provider_call(l
 
 def test_an_ambiguous_second_reading_is_refused_even_when_the_first_is_clean():
     # Same equation, different notation: the second reading writes \frac12.
-    reader = StubSecondReader(r"\frac12 + y = 4")
-    result = _fix(_fixer(r"\frac{1}{2} + y = 4", reader))
+    reader = StubSecondReader(r"y = \frac12")
+    result = _fix(_fixer(r"y = \frac{1}{2}", reader))
 
     assert reader.calls == 1
     assert result.error == "image_equation_alt_text_ambiguous"
@@ -1061,12 +1078,10 @@ def test_an_ambiguous_second_reading_is_refused_even_when_the_first_is_clean():
 
 
 def test_a_clean_pair_is_not_refused_for_alt_text():
-    result = _fix(
-        _fixer(r"\frac{1}{2} + y = 4", StubSecondReader(r"\frac{1}{2} + y = 4"))
-    )
+    result = _fix(_fixer(r"y = \frac{1}{2}", StubSecondReader(r"y = \frac{1}{2}")))
 
     assert result.error == "image_equation_association_pending"
-    assert result.aria_label == "1 over 2 + y = 4"
+    assert result.aria_label == "y = 1 over 2"
 
 
 # ---------------------------------------------------------------------------
@@ -1227,6 +1242,19 @@ def test_an_unusable_response_identity_falls_back_to_the_attribute():
 
     assert recognition.provider == "lms-remediation"
     assert recognition.model is None
+
+
+def test_an_identity_with_leading_or_trailing_space_is_not_accepted():
+    client = _LmsLikeClient(_printed("x^2"), provider=" routed", model="routed-v1 ")
+
+    recognition = EquationRecognizer(client).recognize(_raster())
+
+    # Both response values are rejected, the same rule the second reader applies.
+    assert recognition.provider == "lms-remediation"
+    assert recognition.model is None
+    with_attribute = EquationRecognizer(_Client(_printed("x^2")))
+    with_attribute.alt_text_client.model = "padded "
+    assert with_attribute.recognize(_raster()).model is None
 
 
 def test_a_client_that_names_its_model_in_the_answer_stages_with_one_second_reading():

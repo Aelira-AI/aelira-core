@@ -27,7 +27,10 @@ from src.education.remediation.content_tagger_v2 import (
     preflight_scanned_region_render_budget,
 )
 from src.education.remediation.equation_image_source import _deterministic_jpeg
-from src.education.remediation.math_fixer import generate_equation_alt_text
+from src.education.math_speech import (
+    equation_alt_text_is_ambiguous,
+    generate_equation_alt_text,
+)
 from src.education.remediation.pdf_structure import PDFStructureTree
 from src.education.vector_equation_cluster import (
     MAX_VECTOR_OPERATOR_SPANS,
@@ -172,6 +175,10 @@ def plan_vector_equation_semantics(
             or bounded_evidence.mathml_sha256 != mathml_sha256
         ):
             raise ValueError
+        # A reading whose spoken label would garble or mislead is refused, not
+        # described.
+        if equation_alt_text_is_ambiguous(recognition.latex):
+            raise VectorEquationSemanticRejected("vector_equation_alt_text_ambiguous")
         semantic = MathMLExpressionV1(
             semantic_kind="mathml_expression_v1",
             mathml=mathml,
@@ -190,6 +197,8 @@ def plan_vector_equation_semantics(
             provider=provider,
             model=model,
         )
+    except VectorEquationSemanticRejected:
+        raise
     except Exception as exc:
         raise VectorEquationSemanticRejected(
             "vector_equation_verification_mismatch"

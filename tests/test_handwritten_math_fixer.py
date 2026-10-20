@@ -363,9 +363,7 @@ def test_an_ambiguous_agreed_handwritten_reading_is_refused_before_any_associati
 
 
 def test_an_ambiguous_first_reading_is_refused_even_when_the_second_is_clean():
-    client = Client(
-        _json_latex(r"\frac12 + y = 4"), _json_latex(r"\frac{1}{2} + y = 4")
-    )
+    client = Client(_json_latex(r"y = \frac12"), _json_latex(r"y = \frac{1}{2}"))
     result = _fixer("legible-linear", client)._fix_math_issue(
         SimpleNamespace(metadata=METADATA)
     )
@@ -376,9 +374,7 @@ def test_an_ambiguous_first_reading_is_refused_even_when_the_second_is_clean():
 
 def test_an_ambiguous_second_reading_is_refused_even_when_the_first_is_clean():
     # Same equation written two ways; only the verifier's form is untranslatable.
-    client = Client(
-        _json_latex(r"\frac{1}{2} + y = 4"), _json_latex(r"\frac12 + y = 4")
-    )
+    client = Client(_json_latex(r"y = \frac{1}{2}"), _json_latex(r"y = \frac12"))
     result = _fixer("legible-linear", client)._fix_math_issue(
         SimpleNamespace(metadata=METADATA)
     )
@@ -391,17 +387,15 @@ def test_an_ambiguous_second_reading_is_refused_even_when_the_first_is_clean():
 
 
 def test_clear_handwritten_readings_still_stage_with_spoken_alt_text():
-    client = Client(
-        _json_latex(r"\frac{1}{2} + y = 4"), _json_latex(r"\frac{1}{2}+y=4")
-    )
+    client = Client(_json_latex(r"y = \frac{1}{2}"), _json_latex(r"y=\frac{1}{2}"))
     result = _fixer("legible-linear", client)._fix_math_issue(
         SimpleNamespace(metadata=METADATA)
     )
 
     assert result.error == "image_equation_association_pending"
-    assert result.aria_label == "1 over 2 + y = 4"
+    assert result.aria_label == "y = 1 over 2"
     assert result.pending_association is not None
-    assert result.pending_association.alt_text == "1 over 2 + y = 4"
+    assert result.pending_association.alt_text == "y = 1 over 2"
     assert result.needs_review is True
 
 

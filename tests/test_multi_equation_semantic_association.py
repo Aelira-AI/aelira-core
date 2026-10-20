@@ -809,3 +809,47 @@ def test_real_ocr_form_keeps_group_formula_order_and_search_layer(tmp_path) -> N
     )
     with fitz.open(output) as delivered:
         assert delivered[0].get_text("text").strip()
+
+
+class _LatexRecognizer(_Recognizer):
+    def __init__(self, latex: str) -> None:
+        super().__init__()
+        self.latex = latex
+
+    def recognize(self, source):
+        self.calls.append(source)
+        return EquationRecognition(
+            classification="printed_equation",
+            latex=self.latex,
+            provider="provider",
+            model="model",
+        )
+
+
+@pytest.mark.parametrize(
+    "latex", [r"x^{n}+1", r"\frac12", r"x^{n}y", r"\bar{x} = 5", r"x^1.5"]
+)
+def test_a_reading_whose_label_would_garble_returns_no_owner(tmp_path, latex) -> None:
+    group = _group(tmp_path)
+    document = fitz.open(tmp_path / "split.pdf")
+    recognizer = _LatexRecognizer(latex)
+
+    with pytest.raises(
+        MultiEquationSemanticRejected, match="multi_equation_alt_text_ambiguous"
+    ):
+        MultiEquationSemanticPlanner(recognizer, _Verifier()).plan(document, group)
+    document.close()
+    # The first child was refused, so no owner exists for it or for any other.
+    assert len(recognizer.calls) == 1
+
+
+def test_a_reading_with_a_clear_label_still_gets_its_owner(tmp_path) -> None:
+    group = _group(tmp_path)
+    document = fitz.open(tmp_path / "split.pdf")
+
+    owners = MultiEquationSemanticPlanner(
+        _LatexRecognizer(r"x^{2} = 1"), _Verifier()
+    ).plan(document, group)
+    document.close()
+
+    assert {owner.semantic_output.alt_text for owner in owners} == {"x squared = 1"}
