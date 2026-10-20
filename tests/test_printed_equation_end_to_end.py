@@ -482,8 +482,9 @@ async def test_unrelated_reading_is_published_without_equation_content_or_gate(
     assert run.published == [run.claimed]
     run.service.abort_staging.assert_not_called()
     assert run.gate_calls == []
-    # No stored row carries an image-equation kind, and none belongs to the image.
-    assert all(row.source_kind != "image_equation" for row in run.rows)
+    # The three verified fixes are stored, none with a review-gated kind, and
+    # none belongs to the image.
+    assert [row.source_kind for row in run.rows] == [None, None, None]
     assert not {row.issue_id for row in run.rows} & set(ids.values())
     assert "image_equation_not_human_approved" not in artifact_review_blockers(run.rows)
 

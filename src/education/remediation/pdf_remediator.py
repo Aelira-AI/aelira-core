@@ -169,6 +169,33 @@ _IMAGE_IN_MARKED_CONTENT = "image_in_marked_content"
 # The finding carries no occurrence identity and its page holds other images.
 _IMAGE_OCCURRENCE_UNIDENTIFIED = "image_occurrence_unidentified"
 
+# What a person should do next for each of those reasons.
+_IMAGE_BINDING_RECOMMENDATIONS = {
+    _IMAGE_DRAW_UNRESOLVED: (
+        "This image could not be matched to exactly one drawing operation in "
+        "the page content. Describe it manually in the source document, or "
+        "re-export the document, then rescan."
+    ),
+    _IMAGE_DRAW_AMBIGUOUS: (
+        "Another image is drawn over this one at nearly the same place, so a "
+        "description could not be bound to this image alone. Describe the "
+        "images manually, or separate the overlapping images in the source "
+        "document and rescan."
+    ),
+    _IMAGE_IN_MARKED_CONTENT: (
+        "This image is drawn inside a marked-content scope in the page "
+        "content, such as an artifact or span, where a description cannot be "
+        "attached to it. Describe it in the source document, or correct how it "
+        "is marked, then rescan."
+    ),
+    _IMAGE_OCCURRENCE_UNIDENTIFIED: (
+        "The finding does not say which image on its page it describes, and "
+        "the page holds other images. Rescan the document so each image is "
+        "reported with its own identity, then describe this image if it is "
+        "still undescribed."
+    ),
+}
+
 
 class ReviewGatedContentError(RuntimeError):
     """Review-gated visual content was written without a verified gated fix."""
@@ -1799,11 +1826,14 @@ class PdfRemediator(BaseRemediator):
                 self._add_manual_issue(
                     issue,
                     reason=source_refusal,
-                    recommendation=(
-                        "Review the image's actual Figure and marked-content ownership before editing its description."
-                        if issue.category
-                        in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
-                        else "Review the source text and split its content runs before applying heading or list structure."
+                    recommendation=_IMAGE_BINDING_RECOMMENDATIONS.get(
+                        source_refusal,
+                        (
+                            "Review the image's actual Figure and marked-content ownership before editing its description."
+                            if issue.category
+                            in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
+                            else "Review the source text and split its content runs before applying heading or list structure."
+                        ),
                     ),
                 )
                 return
@@ -4525,7 +4555,8 @@ class PdfRemediator(BaseRemediator):
             # refused with the reason: no Figure, no HTML sidecar, and the issue
             # is never recorded as fixed. An issue that carries no occurrence
             # identity gets a Figure with no position, which the tagger can only
-            # pair by order, so it is written only for the page's single image.
+            # pair by order, so it is written only when the page holds exactly
+            # one image draw of any kind.
             from .pdf_image_finding_identity import _identity
 
             layout_bbox = None
@@ -4533,14 +4564,10 @@ class PdfRemediator(BaseRemediator):
                 layout_bbox, refusal = self._image_layout_bbox(issue)
                 if layout_bbox is None:
                     return self._refuse_source_binding(issue, refusal)
-            elif (
-                self._struct_tree
-                and alt_text
-                and not self._is_sole_image_block(page_num)
-            ):
-                return self._refuse_source_binding(
-                    issue, _IMAGE_OCCURRENCE_UNIDENTIFIED
-                )
+            elif self._struct_tree and alt_text:
+                refusal = self._lone_image_refusal(page_num)
+                if refusal:
+                    return self._refuse_source_binding(issue, refusal)
             if self._struct_tree and alt_text:
                 if self._struct_tree.add_alt_text_to_image(
                     page_num=page_num,
@@ -4600,8 +4627,7 @@ class PdfRemediator(BaseRemediator):
         """
         from .content_tagger_v2 import (
             POSITION_MATCH_IOU,
-            _draw_states,
-            _draws_image_xobject,
+            _image_draws,
             _rect_iou,
             _resolved_image_do_indices,
         )
@@ -4645,36 +4671,42 @@ class PdfRemediator(BaseRemediator):
                     return None, _IMAGE_DRAW_UNRESOLVED
                 if not 0 <= ordinal < len(draws):
                     return None, _IMAGE_DRAW_UNRESOLVED
-                states = _draw_states(ops)
+                images = _image_draws(page, ops)
                 chosen = draws[ordinal]
-                if chosen not in states:
+                if chosen not in images:
                     return None, _IMAGE_DRAW_UNRESOLVED
-                rect, depth = states[chosen]
+                rect, depth = images[chosen]
                 if depth > 0:
                     return None, _IMAGE_IN_MARKED_CONTENT
-                for index, (other, _) in states.items():
-                    if index == chosen or not (
-                        _draws_image_xobject(page, ops[index])
-                        or str(ops[index].operator) in ("INLINE IMAGE", "INLINE_IMAGE")
-                    ):
-                        continue
-                    if _rect_iou(rect, other) >= POSITION_MATCH_IOU:
+                for index, (other, _) in images.items():
+                    if index != chosen and _rect_iou(rect, other) >= POSITION_MATCH_IOU:
                         return None, _IMAGE_DRAW_AMBIGUOUS
                 return rect, ""
         except Exception:
             return None, _IMAGE_DRAW_UNRESOLVED
 
-    def _is_sole_image_block(self, page_number: int) -> bool:
-        """Whether the page holds exactly one image the tagger will make a block of."""
-        from .content_tagger_v2 import _taggable_image_draws
+    def _lone_image_refusal(self, page_number: int) -> str:
+        """Return why an unidentified finding cannot get a Figure, or "" if it can.
+
+        A finding with no occurrence identity gets a Figure with no position,
+        which the tagger can only pair with a block by order. That is safe only
+        when the page holds exactly one image draw of any kind, whatever its
+        marked-content depth or spelling, and that draw is one the tagger makes
+        a block of. Another image, an artifact among them, would otherwise take
+        the description. A page that cannot be read counts as not identified.
+        """
+        from .content_tagger_v2 import _image_draws
 
         try:
             with pikepdf.open(self.file_path, attempt_recovery=False) as source_pdf:
                 page = source_pdf.pages[page_number - 1]
-                ops = list(pikepdf.parse_content_stream(page))
-                return len(_taggable_image_draws(page, ops)) == 1
+                images = _image_draws(page, list(pikepdf.parse_content_stream(page)))
         except Exception:
-            return False
+            return _IMAGE_OCCURRENCE_UNIDENTIFIED
+        if len(images) != 1:
+            return _IMAGE_OCCURRENCE_UNIDENTIFIED
+        ((_, depth),) = images.values()
+        return _IMAGE_IN_MARKED_CONTENT if depth > 0 else ""
 
     def _refuse_source_binding(self, issue: RemediationIssue, reason: str) -> bool:
         refusals = getattr(self, "_source_binding_refusals", {})

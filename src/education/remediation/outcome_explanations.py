@@ -80,8 +80,8 @@ EXPLANATIONS = {
         "not_applied",
     ),
     "image_in_marked_content": (
-        "The image is already inside marked content, such as an artifact, where a description cannot be attached to it, so none was written.",
-        "Describe the image in the element that contains it, or correct how the image is marked in the source document, then rescan.",
+        "The image is drawn inside a marked-content scope in the page content, such as an artifact or span, where a description cannot be attached to it, so none was written.",
+        "Describe the image in the source document, or correct how it is marked there, then rescan.",
         "not_applied",
     ),
     "image_occurrence_unidentified": (

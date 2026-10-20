@@ -587,6 +587,229 @@ def _phantom_figures(path: str) -> list[str]:
     return phantoms
 
 
+def _orphan(pdf: pikepdf.Pdf, page: Any, parent: Any, alt: str) -> Dictionary:
+    """A Figure with an /Alt, a position that fits no image, and no content."""
+    return Dictionary(
+        S=Name.Figure,
+        Alt=pikepdf.String(alt),
+        Pg=page.obj,
+        P=parent,
+        A=Dictionary(O=Name.Layout, BBox=Array([500, 500, 600, 600])),
+    )
+
+
+def _tag_structure(tmp_path: Path, build: Any) -> tuple[dict, Path]:
+    """Tag a one-image page whose generated structure ``build`` supplies."""
+    source = tmp_path / "source.pdf"
+    _write_source(source, 1)
+    with pikepdf.open(source) as pdf:
+        PDFStructureTree(pdf)
+        root = pdf.Root.StructTreeRoot
+        root.K = Array(build(pdf, pdf.pages[0], root))
+        staged = tmp_path / "staged.pdf"
+        pdf.save(staged)
+    output = tmp_path / "tagged.pdf"
+    with pikepdf.open(staged) as pdf, fitz.open(staged) as doc:
+        stats = ContentTaggerV2(
+            pdf, doc, order_generated_structure=True
+        ).tag_all_pages()
+        pdf.save(output)
+    return stats, output
+
+
+def _elements(path: str) -> list[tuple[str, str | None]]:
+    """Every structure element as (role, its /Alt or /ActualText), in order."""
+    found: list[tuple[str, str | None]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, Dictionary) and "/S" in node:
+            text = node.get("/Alt", node.get("/ActualText"))
+            found.append((str(node.S), str(text) if text is not None else None))
+            kids = node.get("/K")
+            for kid in list(kids) if isinstance(kids, Array) else [kids]:
+                walk(kid)
+
+    with pikepdf.open(path) as pdf:
+        kids = pdf.Root.StructTreeRoot.get("/K")
+        for kid in list(kids) if isinstance(kids, Array) else [kids]:
+            walk(kid)
+    return found
+
+
+def _assert_parent_tree_matches_structure(path: str) -> None:
+    """Every ParentTree entry is a reachable element, and the page's key exists."""
+    with pikepdf.open(path) as pdf:
+        root = pdf.Root.StructTreeRoot
+        reachable: set = set()
+
+        def walk(node: Any) -> None:
+            if isinstance(node, Dictionary) and "/S" in node:
+                if node.is_indirect:
+                    reachable.add(node.objgen)
+                kids = node.get("/K")
+                for kid in list(kids) if isinstance(kids, Array) else [kids]:
+                    walk(kid)
+
+        kids = root.get("/K")
+        for kid in list(kids) if isinstance(kids, Array) else [kids]:
+            walk(kid)
+        numbers = list(root.ParentTree.Nums)
+        assert int(pdf.pages[0].obj.StructParents) in [
+            int(key) for key in numbers[0::2]
+        ]
+        for value in numbers[1::2]:
+            for element in list(value) if isinstance(value, Array) else [value]:
+                if isinstance(element, Dictionary):
+                    assert element.objgen in reachable
+
+
+def test_a_direct_orphan_is_removed_by_what_it_is_not_by_object_number(
+    tmp_path: Path,
+) -> None:
+    """A direct dictionary has no object number, so none may stand for another.
+
+    The root holds an indirect heading, a direct paragraph with replacement text
+    and a direct orphan Figure. Comparing object numbers saw (0, 0) for both
+    direct kids and removed the paragraph along with the Figure.
+    """
+
+    def build(pdf: pikepdf.Pdf, page: Any, root: Any) -> list[Any]:
+        heading = pdf.make_indirect(
+            Dictionary(
+                S=Name.H1,
+                ActualText=pikepdf.String("Heading text"),
+                Pg=page.obj,
+                P=root,
+            )
+        )
+        paragraph = Dictionary(
+            S=Name.P,
+            ActualText=pikepdf.String("Some other paragraph"),
+            Pg=page.obj,
+            P=root,
+        )
+        return [heading, paragraph, _orphan(pdf, page, root, "Direct orphan")]
+
+    stats, output = _tag_structure(tmp_path, build)
+
+    assert stats["figures_unbound_removed"] == 1
+    elements = _elements(str(output))
+    assert ("/H1", "Heading text") in elements
+    assert ("/P", "Some other paragraph") in elements
+    assert not [alt for role, alt in elements if alt == "Direct orphan"]
+    assert _phantom_figures(str(output)) == []
+    _assert_parent_tree_matches_structure(str(output))
+
+
+def test_an_orphan_nested_in_the_structure_is_removed_from_its_own_parent(
+    tmp_path: Path,
+) -> None:
+    def build(pdf: pikepdf.Pdf, page: Any, root: Any) -> list[Any]:
+        section = pdf.make_indirect(Dictionary(S=Name.Sect, Pg=page.obj, P=root))
+        orphan = pdf.make_indirect(_orphan(pdf, page, section, "Nested orphan"))
+        sibling = pdf.make_indirect(
+            Dictionary(
+                S=Name.P,
+                ActualText=pikepdf.String("Inside the section"),
+                Pg=page.obj,
+                P=section,
+            )
+        )
+        section.K = Array([orphan, sibling])
+        return [section]
+
+    stats, output = _tag_structure(tmp_path, build)
+
+    assert stats["figures_unbound_removed"] == 1
+    elements = _elements(str(output))
+    assert ("/P", "Inside the section") in elements
+    assert not [alt for role, alt in elements if alt == "Nested orphan"]
+    with pikepdf.open(output) as pdf:
+        section = next(
+            kid
+            for kid in pikepdf.Array(
+                next(
+                    item
+                    for item in pdf.Root.StructTreeRoot.K
+                    if str(item.S) == "/Document"
+                ).K
+            )
+            if str(kid.S) == "/Sect"
+        )
+        # The parent's /K stays a well-formed array of what is left.
+        assert isinstance(section.K, Array)
+        assert [str(kid.S) for kid in section.K] == ["/P"]
+    _assert_parent_tree_matches_structure(str(output))
+
+
+@pytest.mark.parametrize("shape", ["only_child_in_an_array", "single_dictionary"])
+def test_a_parent_left_without_kids_loses_its_k(tmp_path: Path, shape: str) -> None:
+    def build(pdf: pikepdf.Pdf, page: Any, root: Any) -> list[Any]:
+        section = pdf.make_indirect(Dictionary(S=Name.Sect, Pg=page.obj, P=root))
+        orphan = pdf.make_indirect(_orphan(pdf, page, section, "Only child"))
+        section.K = Array([orphan]) if shape == "only_child_in_an_array" else orphan
+        return [section]
+
+    stats, output = _tag_structure(tmp_path, build)
+
+    assert stats["figures_unbound_removed"] == 1
+    assert not [alt for role, alt in _elements(str(output)) if alt == "Only child"]
+    with pikepdf.open(output) as pdf:
+        document = next(
+            item for item in pdf.Root.StructTreeRoot.K if str(item.S) == "/Document"
+        )
+        section = next(kid for kid in document.K if str(kid.S) == "/Sect")
+        assert "/K" not in section
+    _assert_parent_tree_matches_structure(str(output))
+
+
+def test_an_orphan_deep_in_the_structure_is_found(tmp_path: Path) -> None:
+    def build(pdf: pikepdf.Pdf, page: Any, root: Any) -> list[Any]:
+        outer = pdf.make_indirect(Dictionary(S=Name.Sect, Pg=page.obj, P=root))
+        inner = pdf.make_indirect(Dictionary(S=Name.Div, Pg=page.obj, P=outer))
+        inner.K = Array([_orphan(pdf, page, inner, "Deep orphan")])
+        outer.K = Array([inner])
+        return [outer]
+
+    stats, output = _tag_structure(tmp_path, build)
+
+    assert stats["figures_unbound_removed"] == 1
+    assert not [alt for role, alt in _elements(str(output)) if alt == "Deep orphan"]
+    _assert_parent_tree_matches_structure(str(output))
+
+
+def test_an_orphan_formula_with_alt_is_removed_too(tmp_path: Path) -> None:
+    """The predicate covers every tag a block can be paired with, Formula included."""
+
+    def build(pdf: pikepdf.Pdf, page: Any, root: Any) -> list[Any]:
+        orphan = _orphan(pdf, page, root, "Orphan formula")
+        orphan.S = Name.Formula
+        return [orphan]
+
+    stats, output = _tag_structure(tmp_path, build)
+
+    assert stats["figures_unbound_removed"] == 1
+    assert not [alt for role, alt in _elements(str(output)) if alt == "Orphan formula"]
+
+
+def test_elements_that_are_not_orphans_are_left_alone(tmp_path: Path) -> None:
+    """No /Alt, a content child, or no page: none of these is an unbound orphan."""
+
+    def build(pdf: pikepdf.Pdf, page: Any, root: Any) -> list[Any]:
+        without_alt = Dictionary(S=Name.Figure, Pg=page.obj, P=root)
+        with_content = Dictionary(
+            S=Name.Figure, Alt=pikepdf.String("Has content"), Pg=page.obj, P=root, K=7
+        )
+        on_no_page = Dictionary(S=Name.Figure, Alt=pikepdf.String("No page"), P=root)
+        return [without_alt, with_content, on_no_page]
+
+    stats, output = _tag_structure(tmp_path, build)
+
+    assert stats["figures_unbound_removed"] == 0
+    alts = [alt for role, alt in _elements(str(output)) if role == "/Figure"]
+    assert "Has content" in alts and "No page" in alts
+
+
 def test_generated_figure_with_alt_that_binds_to_nothing_is_removed(
     tmp_path: Path,
 ) -> None:
