@@ -399,3 +399,70 @@ def test_renderer_rejects_oversized_element_before_screenshot():
     renderer = OfflineMathMLRenderer(max_width=100)
     with pytest.raises(RuntimeError, match="renderer_failed"):
         renderer.render('<math><mspace width="1000px"/></math>')
+
+
+@pytest.fixture(scope="module")
+def chromium_ready():
+    """Drive the pinned renderer to a success once before reading its failures."""
+    from src.education.remediation.equation_verifier import OfflineMathMLRenderer
+
+    try:
+        OfflineMathMLRenderer().render("<math><mi>x</mi></math>")
+    except RuntimeError as exc:
+        pytest.skip(f"pinned Chromium unavailable in this developer environment: {exc}")
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        r"x^{2}",
+        r"\frac{1}{2}",
+        r"\sqrt{x}",
+        r"x_{i}^{2}",
+        r"{x}+1",
+        r"{{x}}",
+        r"{f}^{2}",
+        r"e^{-x}",
+        r"\left(x\right)^{2}",
+        r"\binom{n}{k}",
+        r"\dbinom{n}{k}",
+        r"\tbinom{n}{k}",
+        r"\dfrac{1}{2}",
+        r"\cfrac{1}{1+\cfrac{1}{2}}",
+        r"\displaystyle x",
+    ],
+)
+def test_collapsed_groups_render_identically_to_the_uncollapsed_reference(
+    chromium_ready, latex
+):
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        OfflineMathMLRenderer,
+        canonicalize_mathml,
+    )
+
+    renderer = OfflineMathMLRenderer()
+    raw = convert(latex)
+    canonical = canonicalize_mathml(raw)
+
+    assert renderer.render(canonical) == renderer.render(raw)
+
+
+@pytest.mark.parametrize("latex", [r"\binom{n}{k}", r"\dbinom{n}{k}", r"\tbinom{n}{k}"])
+def test_binomial_coefficients_pass_the_real_round_trip(chromium_ready, latex):
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+
+    renderer = OfflineMathMLRenderer()
+    verifier = EquationVerifier(renderer=renderer.render)
+    source = _validated(renderer.render(convert(latex)))
+
+    evidence = verifier.verify(source, latex)
+
+    assert evidence.passed is True
+    assert evidence.ink_iou >= verifier.config.required_ink_iou

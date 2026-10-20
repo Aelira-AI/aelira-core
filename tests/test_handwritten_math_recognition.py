@@ -216,7 +216,7 @@ def test_verifier_uses_fresh_context_and_accepts_exact_canonical_agreement():
     assert evidence.verifier_policy_sha256 == HANDWRITTEN_VERIFIER_POLICY_SHA256
     assert (
         HANDWRITTEN_VERIFIER_POLICY_SHA256
-        == "ed0a0f880bb14ee9bc30947ec29cb1d8bb54c7bdcf1eee33bb2cec92be2aa9dc"
+        == "33e2ae7168e9d3b345088b375edffdde12ffa0f69ba8e9a445447aea589dbe81"
     )
     assert evidence.agreement_count == evidence.required_agreement_count == 2
     assert evidence.primary_mathml_sha256 == evidence.verifier_mathml_sha256

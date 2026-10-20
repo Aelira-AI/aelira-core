@@ -374,7 +374,7 @@ class HandwrittenVerificationEvidence(BaseModel):
     suitability_evidence: HandwrittenMathSuitabilityEvidence
     suitability_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     suitability_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    verifier_policy_version: Literal["handwritten-equation-consensus-v1"]
+    verifier_policy_version: Literal["handwritten-equation-consensus-v2"]
     verifier_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     agreement_count: Literal[2]
     required_agreement_count: Literal[2]
