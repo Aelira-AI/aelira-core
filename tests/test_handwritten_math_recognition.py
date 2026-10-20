@@ -348,3 +348,66 @@ def test_hmer_documentation_names_every_trust_boundary_and_probe():
         "non-math handwriting",
     ):
         assert required in text
+
+
+def _verify_pair(primary_latex: str, verifier_latex: str, **options):
+    from src.education.remediation.handwritten_equation_recognizer import (
+        HandwrittenEquationRecognizer,
+    )
+    from src.education.remediation.handwritten_equation_verifier import (
+        HandwrittenEquationVerifier,
+    )
+
+    raster = _raster()
+    suitability = _evidence(raster)
+
+    def reading(latex: str) -> str:
+        return _success(
+            '{"classification":"handwritten_equation","latex":"'
+            + latex.replace("\\", "\\\\")
+            + '"}'
+        )
+
+    primary = HandwrittenEquationRecognizer(Client(reading(primary_latex))).recognize(
+        raster, suitability
+    )
+    return HandwrittenEquationVerifier(
+        Client(reading(verifier_latex)), **options
+    ).verify(raster, suitability, primary)
+
+
+def test_verifier_reading_refusal_runs_only_after_the_readings_agree():
+    from src.education.remediation.handwritten_equation_verifier import (
+        ALT_TEXT_AMBIGUOUS,
+        HandwrittenEquationVerificationRejected,
+    )
+
+    seen: list[str] = []
+
+    def refuse(latex: str) -> bool:
+        seen.append(latex)
+        return "frac12" in latex
+
+    # Without the check, the agreed pair passes as before.
+    assert _verify_pair(r"\frac{1}{2}+y=4", r"\frac12+y=4").passed is True
+
+    with pytest.raises(HandwrittenEquationVerificationRejected) as agreed:
+        _verify_pair(r"\frac{1}{2}+y=4", r"\frac12+y=4", reading_refusal=refuse)
+    assert str(agreed.value) == ALT_TEXT_AMBIGUOUS
+    assert seen == [r"\frac12+y=4"]
+
+    # A clean verifier reading passes the same check.
+    assert (
+        _verify_pair(
+            r"\frac{1}{2}+y=4", r"\frac{1}{2}+y=4", reading_refusal=refuse
+        ).passed
+        is True
+    )
+
+    # A disagreement is reported as a disagreement and never reaches the check.
+    seen.clear()
+    with pytest.raises(
+        HandwrittenEquationVerificationRejected, match="semantic_disagreement"
+    ):
+        _verify_pair(r"\frac{1}{2}+y=4", r"\frac12+y=5", reading_refusal=refuse)
+    assert seen == []

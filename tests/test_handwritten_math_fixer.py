@@ -308,3 +308,109 @@ def test_a_real_difference_between_readings_still_stays_manual():
 
     assert result.error == "handwritten_equation_verification_failed"
     assert result.pending_association is None
+
+
+# ---------------------------------------------------------------------------
+# The alternative text is built by regular expressions, so a handwritten
+# reading the label cannot translate is refused, exactly as for printed ones.
+# ---------------------------------------------------------------------------
+
+
+def _json_latex(latex: str) -> str:
+    """Escape LaTeX so it can sit inside the fake provider's JSON string."""
+    return latex.replace("\\", "\\\\")
+
+
+AMBIGUOUS_HANDWRITTEN = [
+    r"\frac12 + y = 4",
+    r"\sqrt x + y = 4",
+    r"\binom nk = 10",
+    r"x^10 + y = 4",
+    r"a_ij + y = 4",
+    r"x^2y + y = 4",
+    "x",
+]
+
+
+@pytest.mark.parametrize("latex", AMBIGUOUS_HANDWRITTEN)
+def test_an_ambiguous_agreed_handwritten_reading_is_refused_before_any_association(
+    latex, monkeypatch
+):
+    from src.education.remediation import math_fixer
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("an ambiguous reading must not reach association")
+
+    monkeypatch.setattr(
+        math_fixer.MathFixer,
+        "_pending_visual_equation_association",
+        staticmethod(never),
+    )
+    client = Client(_json_latex(latex), _json_latex(latex))
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_alt_text_ambiguous"
+    assert result.success is False
+    assert result.pending_association is None
+    assert result.verification_evidence is None
+    assert result.aria_label == ""
+    # The equation was recognised, so a generic description must not stand in.
+    assert result.equation_recognized is True
+    # Both readings were taken: the refusal comes after agreement.
+    assert len(client.calls) == 2
+
+
+def test_an_ambiguous_first_reading_is_refused_even_when_the_second_is_clean():
+    client = Client(
+        _json_latex(r"\frac12 + y = 4"), _json_latex(r"\frac{1}{2} + y = 4")
+    )
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_alt_text_ambiguous"
+    assert result.pending_association is None
+
+
+def test_an_ambiguous_second_reading_is_refused_even_when_the_first_is_clean():
+    # Same equation written two ways; only the verifier's form is untranslatable.
+    client = Client(
+        _json_latex(r"\frac{1}{2} + y = 4"), _json_latex(r"\frac12 + y = 4")
+    )
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_alt_text_ambiguous"
+    assert result.pending_association is None
+    assert result.verification_evidence is None
+    assert result.equation_recognized is True
+    assert len(client.calls) == 2
+
+
+def test_clear_handwritten_readings_still_stage_with_spoken_alt_text():
+    client = Client(
+        _json_latex(r"\frac{1}{2} + y = 4"), _json_latex(r"\frac{1}{2}+y=4")
+    )
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_association_pending"
+    assert result.aria_label == "1 over 2 + y = 4"
+    assert result.pending_association is not None
+    assert result.pending_association.alt_text == "1 over 2 + y = 4"
+    assert result.needs_review is True
+
+
+def test_a_disagreement_is_still_reported_as_a_failed_verification():
+    """An ambiguous first reading does not hide a real disagreement."""
+    client = Client(_json_latex(r"\frac12 + y = 4"), _json_latex(r"\frac12 + y = 5"))
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "handwritten_equation_verification_failed"
+    assert result.pending_association is None

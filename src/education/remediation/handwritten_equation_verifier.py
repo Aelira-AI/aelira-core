@@ -32,6 +32,11 @@ from .handwritten_equation_recognizer import (
 _VERIFIER_PROMPT = """Independently transcribe this single bounded handwritten mathematical expression. You are verifying from the pixels alone and have not been shown another answer. Return exactly one JSON object and no markdown or prose. The only accepted forms are {\"classification\":\"handwritten_equation\",\"latex\":\"...\"}, {\"classification\":\"not_handwritten_math\",\"latex\":null}, or {\"classification\":\"unsupported_notation\",\"latex\":null}. Use handwritten_equation only when the complete expression can be represented without guessing. Preserve mathematical meaning in LaTeX."""
 
 
+# Reason carried by a rejection when the two readings agreed but the verifier's
+# own LaTeX cannot be turned into plain-language alternative text reliably.
+ALT_TEXT_AMBIGUOUS = "alt_text_ambiguous"
+
+
 class HandwrittenEquationVerificationRejected(ValueError):
     """Independent HMER verification did not establish exact agreement."""
 
@@ -70,11 +75,16 @@ class HandwrittenEquationVerifier:
         converter: Callable[[str], str] = latex_to_mathml,
         max_latex_chars: int = 4096,
         max_response_chars: int = 8192,
+        reading_refusal: Callable[[str], bool] | None = None,
     ) -> None:
         self.alt_text_client = alt_text_client
         self.converter = converter
         self.max_latex_chars = max_latex_chars
         self.max_response_chars = max_response_chars
+        # Optional check on the verifier's own LaTeX, run once the readings are
+        # known to agree. It only ever refuses: the caller that builds the
+        # alternative text decides what counts as unreliable.
+        self.reading_refusal = reading_refusal
 
     def verify(
         self,
@@ -130,6 +140,8 @@ class HandwrittenEquationVerifier:
             raise HandwrittenEquationVerificationRejected(
                 "semantic_disagreement"
             ) from None
+        if self.reading_refusal is not None and self.reading_refusal(latex):
+            raise HandwrittenEquationVerificationRejected(ALT_TEXT_AMBIGUOUS)
         return HandwrittenEquationVerificationEvidence(
             passed=True,
             source_sha256=str(source.normalized_sha256),
@@ -155,6 +167,7 @@ class HandwrittenEquationVerifier:
 
 
 __all__ = [
+    "ALT_TEXT_AMBIGUOUS",
     "HANDWRITTEN_VERIFIER_POLICY_SHA256",
     "HANDWRITTEN_VERIFIER_POLICY_VERSION",
     "HandwrittenEquationVerificationEvidence",

@@ -37,7 +37,9 @@ from src.education.remediation.equation_verifier import (
     EquationVerificationRejected,
 )
 from src.education.remediation.handwritten_equation_verifier import (
+    ALT_TEXT_AMBIGUOUS as HANDWRITTEN_ALT_TEXT_AMBIGUOUS,
     HandwrittenEquationVerificationEvidence,
+    HandwrittenEquationVerificationRejected,
 )
 from src.education.remediation.printed_equation_verifier import (
     SEMANTIC_DISAGREEMENT,
@@ -458,7 +460,9 @@ class MathFixer:
         if handwritten_verifier is None and alt_text_client is not None:
             from .handwritten_equation_verifier import HandwrittenEquationVerifier
 
-            handwritten_verifier = HandwrittenEquationVerifier(alt_text_client)
+            handwritten_verifier = HandwrittenEquationVerifier(
+                alt_text_client, reading_refusal=equation_alt_text_is_ambiguous
+            )
         if printed_equation_second_reader is None and alt_text_client is not None:
             from .printed_equation_verifier import PrintedEquationSecondReader
 
@@ -1017,6 +1021,16 @@ class MathFixer:
             verification = self.handwritten_verifier.verify(
                 validated, suitability, recognition
             )
+        except HandwrittenEquationVerificationRejected as exc:
+            return MathFixResult(
+                success=False,
+                error=(
+                    IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR
+                    if str(exc) == HANDWRITTEN_ALT_TEXT_AMBIGUOUS
+                    else "handwritten_equation_verification_failed"
+                ),
+                page_number=page_number,
+            )
         except Exception:
             return MathFixResult(
                 success=False,
@@ -1063,6 +1077,17 @@ class MathFixer:
             return MathFixResult(
                 success=False,
                 error="handwritten_equation_verification_mismatch",
+                page_number=page_number,
+            )
+        # The two readings agree, so the equation itself is established. Its
+        # description is still built by regular expressions, and ``\frac12``
+        # would read "12", so an agreed reading whose notation the label cannot
+        # translate is refused here, before anything is staged. The verifier
+        # has already applied the same check to its own LaTeX.
+        if equation_alt_text_is_ambiguous(recognition.latex):
+            return MathFixResult(
+                success=False,
+                error=IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
                 page_number=page_number,
             )
         aria_label = self._generate_aria_label(recognition.latex)
