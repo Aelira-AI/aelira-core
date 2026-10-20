@@ -18,3 +18,8 @@ def test_published_dashboard_installs_available_runtime_security_fixes():
     dockerfile = (ROOT / "dashboard" / "Dockerfile").read_text()
 
     assert "apk upgrade --no-cache libcrypto3 libssl3 libuuid libexpat" in dockerfile
+    upgrade = next(
+        line for line in dockerfile.splitlines() if "apk upgrade --no-cache" in line
+    )
+    # CVE-2026-88806 is fixed in Alpine libx11 1.8.14-r0, after the pinned base.
+    assert "libx11" in upgrade.split()
