@@ -183,8 +183,8 @@ async def test_generator_and_html_remediator_share_normalized_alt_text(tmp_path)
     "model_text",
     [
         "Blue\x00square",
-        "Blue\tsquare",
-        "Blue\nsquare",
+        "Blue\x0csquare",
+        "Blue\x0bsquare",
         "Blue\x1bsquare",
         "Blue\x85square",
         "Blue\u202esquare",
@@ -216,8 +216,8 @@ def test_ordinary_spaces_non_ascii_letters_and_emoji_are_accepted():
         "A blue square…",
         "x" * 501,
         "Blue\x00square",
-        "Blue\tsquare",
-        "Blue\nsquare",
+        "Blue\x0csquare",
+        "Blue\x0bsquare",
         "Blue\x1bsquare",
         "Blue\x85square",
         "Blue\u202esquare",
@@ -271,7 +271,7 @@ def test_html_remediator_leaves_control_bearing_alt_text_for_manual_fix(tmp_path
     remediator._load_document()
     remediator._image_was_reachable = lambda _src: True
 
-    applied = remediator._apply_alt_text_fix(_alt_issue("chart.png"), "Blue\tsquare")
+    applied = remediator._apply_alt_text_fix(_alt_issue("chart.png"), "Blue\x0csquare")
 
     assert applied is False
     assert remediator._soup.find("img").get("alt") is None

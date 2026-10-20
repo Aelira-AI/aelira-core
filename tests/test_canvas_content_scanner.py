@@ -2323,6 +2323,52 @@ async def test_canvas_file_boundary_variants_use_course_inventory_once(source):
     alt_text_client.analyze_image_sync.assert_called_once()
 
 
+async def _describe_with_generated(generated):
+    """Run `_describe_images` for one inventoried image with a canned result."""
+    from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
+
+    body = _task15_image_bytes()
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [_task15_canvas_image_info(size=len(body))]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
+    scanner = CanvasContentScanner(canvas, MagicMock(), "dept-1", "cred-1")
+    with patch(
+        "src.education.image_alt_text.ImageAltTextGenerator.generate_alt_text",
+        new=AsyncMock(return_value=generated),
+    ):
+        return await scanner._describe_images(
+            SimpleNamespace(
+                id="cloud-1", file_name="Page", provider_parent_id="course-101"
+            ),
+            '<img src="/files/42">',
+            alt_text_client=MagicMock(provider="gemini"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_multi_line_description_is_written_as_one_line():
+    """A table description is folded to one line, not dropped."""
+    html, described = await _describe_with_generated(
+        {"success": True, "alt_text": "Table of marks:\nWeek 1: 72\r\nWeek 2:\t80\n"}
+    )
+
+    assert described == 1
+    assert 'alt="Table of marks: Week 1: 72 Week 2: 80"' in html
+
+
+@pytest.mark.asyncio
+async def test_description_with_a_form_feed_is_still_left_for_review():
+    html, described = await _describe_with_generated(
+        {"success": True, "alt_text": "Row 1\nThe fraction \x0crac{1}{2}"}
+    )
+
+    assert described == 0
+    assert "alt=" not in html
+
+
 @pytest.mark.asyncio
 async def test_image_description_downloads_only_course_inventory_members_once():
     """Mixed embedded IDs are bound to the stored course at operation time."""
@@ -2554,7 +2600,7 @@ async def test_control_bearing_image_description_stays_manual_and_unfixed_on_res
     alt_text_client = MagicMock(provider="gemini")
     alt_text_client.analyze_image_sync.return_value = {
         "success": True,
-        "content": "Blue\tsquare",
+        "content": "Blue\x0csquare",
         "provider": "gemini",
         "model": "vision-safe",
         "inference_time": 0.1,
