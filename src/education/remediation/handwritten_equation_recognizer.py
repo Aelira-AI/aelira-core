@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -15,6 +14,7 @@ from src.education.handwritten_math_suitability import (
 )
 
 from .equation_image_source import ValidatedEquationRaster
+from .equation_response_parser import parse_equation_response_json
 
 HandwrittenEquationClassification = Literal[
     "handwritten_equation", "not_handwritten_math", "unsupported_notation"
@@ -81,24 +81,9 @@ def _parse_hmer_content(
     ):
         raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
 
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise HandwrittenEquationRecognitionRejected(
-                    "invalid_provider_response"
-                )
-            result[key] = value
-        return result
-
-    try:
-        parsed = json.loads(content, object_pairs_hook=reject_duplicates)
-    except HandwrittenEquationRecognitionRejected:
-        raise
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise HandwrittenEquationRecognitionRejected(
-            "invalid_provider_response"
-        ) from exc
+    parsed = parse_equation_response_json(
+        content, rejection_type=HandwrittenEquationRecognitionRejected
+    )
     if not isinstance(parsed, dict) or set(parsed) != {"classification", "latex"}:
         raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
     classification = parsed["classification"]
