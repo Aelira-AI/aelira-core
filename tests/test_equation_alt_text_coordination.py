@@ -724,14 +724,18 @@ def test_artifact_with_a_property_list_is_refused_before_any_equation_reading(
             manual_explanation(equation)["reason_code"]
             == IMAGE_EQUATION_EXISTING_OWNER_ERROR
         )
-        # Both images are described by the ordinary pass, the equation's too.
+        # The other image is described by the ordinary pass. The equation image
+        # sits inside marked content, so its own finding is refused with that
+        # reason and no Figure is left behind for it.
         assert remediator._equation_holds == {}
-        assert sorted(provider.generic_images) == sorted(
-            [_image_sha(source, EQUATION_INDEX), _image_sha(source, OTHER_INDEX)]
+        assert _manual(result, ids["missing_alt_text"]).reason == (
+            "image_in_marked_content"
         )
-        assert _fixed(result, ids["missing_alt_text"]).fixed_content == GENERIC_ALT
         assert not contains_image_equation_fixes(result.fixed_issues)
         assert result.fixed_count > 0
+        assert [
+            alt for role, alt in _structure(result.output_file) if role == "/Figure"
+        ] == [GENERIC_ALT]
     finally:
         result.close_output_claim()
 
@@ -764,14 +768,18 @@ def test_plain_artifact_around_the_draw_is_refused_before_any_equation_reading(
             manual_explanation(equation)["reason_code"]
             == IMAGE_EQUATION_EXISTING_OWNER_ERROR
         )
-        # The other findings are handled as usual, the equation image's included.
+        # The other findings are handled as usual. The equation image sits
+        # inside marked content, where no Figure can carry a description, so its
+        # own finding is refused with that reason and leaves nothing behind.
         assert remediator._equation_holds == {}
-        assert sorted(provider.generic_images) == sorted(
-            [_image_sha(source, EQUATION_INDEX), _image_sha(source, OTHER_INDEX)]
+        assert _manual(result, ids["missing_alt_text"]).reason == (
+            "image_in_marked_content"
         )
-        assert _fixed(result, ids["missing_alt_text"]).fixed_content == GENERIC_ALT
         assert result.fixed_count > 0
         assert not contains_image_equation_fixes(result.fixed_issues)
+        assert [
+            alt for role, alt in _structure(result.output_file) if role == "/Figure"
+        ] == [GENERIC_ALT]
         # The output was published and nothing was set aside.
         assert result.output_file and Path(result.output_file).is_file()
         assert list((tmp_path / "out").rglob("*failed-output*")) == []
@@ -818,13 +826,18 @@ def test_unresolvable_draw_is_refused_before_any_equation_reading(
         assert not contains_image_equation_fixes(result.fixed_issues)
         if not verify_fixes:
             # With the saved-file rescan off, the page's other findings are
-            # applied as usual, the equation image's description included.
+            # applied as usual. A stream whose marked content does not balance
+            # cannot be resolved to one draw, so no description is placed on
+            # either image of the page. Their findings are refused with that
+            # reason, never credited, and the page's own scope is not guessed.
             assert result.fixed_count > 0
-            described = _fixed(result, ids["missing_alt_text"])
-            assert described.fixed_content == GENERIC_ALT
-            assert sorted(provider.generic_images) == sorted(
-                [_image_sha(source, EQUATION_INDEX), _image_sha(source, OTHER_INDEX)]
-            )
+            if case == "marked_content_never_closed":
+                described = _fixed(result, ids["missing_alt_text"])
+                assert described.fixed_content == GENERIC_ALT
+            else:
+                assert _manual(result, ids["missing_alt_text"]).reason == (
+                    "image_draw_unresolved"
+                )
     finally:
         result.close_output_claim()
 

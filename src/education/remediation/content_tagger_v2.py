@@ -329,6 +329,8 @@ class ContentTaggerV2:
         self.fitz_doc = fitz_doc
         self._order_generated_structure = order_generated_structure
         self._content_positions: Dict[tuple, tuple[int, int]] = {}
+        # Elements of the structure that a content block was bound to.
+        self._bound_elements: set = set()
         self._marked_positions: Dict[tuple, tuple[int, int]] = {}
         self._excluded_image_occurrences: Dict[int, set[tuple[int, int]]] = {}
         for pending in excluded_image_occurrences or []:
@@ -760,6 +762,12 @@ class ContentTaggerV2:
             stats["blocks_matched"] += page_stats.get("matched", 0)
             stats["blocks_created"] += page_stats.get("created", 0)
 
+        stats["figures_unbound_removed"] = (
+            self._remove_unbound_generated_figures(struct_root, by_page)
+            if self._order_generated_structure
+            else 0
+        )
+
         self._build_parent_tree(struct_root)
         if self._order_generated_structure:
             self._order_new_structure(struct_root)
@@ -785,6 +793,43 @@ class ContentTaggerV2:
         # existing declaration; do not invent one without independent validation.
 
         return stats
+
+    def _remove_unbound_generated_figures(
+        self, struct_root: Any, by_page: Dict[int, List[Any]]
+    ) -> int:
+        """Drop a generated Figure that no image block was bound to.
+
+        A Figure written for a description that never reached its image would
+        stay in the saved file with an /Alt and no content to carry it, which a
+        reader or a validator could take for a described image. Every Figure of
+        a generated structure comes from this run, so one that holds an /Alt and
+        was bound to nothing is removed. The image keeps no description, and the
+        saved-file check then finds it undescribed instead of crediting text
+        that no image carries. Returns the number removed.
+        """
+        unbound = {
+            elem.objgen
+            for elems in by_page.values()
+            for elem in elems
+            if Name.S in elem
+            and str(elem[Name.S]).lstrip("/") in FIGURE_TAGS
+            and Name.Alt in elem
+            and Name.K not in elem
+            and elem.objgen not in self._bound_elements
+        }
+        kids = struct_root.get(Name.K)
+        if not unbound or not isinstance(kids, Array):
+            return 0
+        kept = [kid for kid in kids if getattr(kid, "objgen", None) not in unbound]
+        removed = len(kids) - len(kept)
+        if removed:
+            struct_root[Name.K] = Array(kept)
+            logger.warning(
+                "Removed %d generated Figure(s) with alt text that no image was "
+                "bound to",
+                removed,
+            )
+        return removed
 
     # ------------------------------------------------------------------
     # Element collection
@@ -896,6 +941,14 @@ class ContentTaggerV2:
         }
         fitz_blocks = self._get_fitz_blocks(page_idx)
         image_rects = _image_draw_rects(ops)
+        figure_claims = self._positioned_figure_claims(
+            elements,
+            {
+                start: image_rects.get(start)
+                for start, _, block_kind in content_blocks
+                if block_kind == "image"
+            },
+        )
         used_elem_indices: set = set()
         matches: List[MatchedBlock] = []
 
@@ -947,7 +1000,7 @@ class ContentTaggerV2:
                 used_elem_indices,
                 kind,
                 decoded_text=decoded.get(cb_start) if kind == "text" else None,
-                block_rect=image_rects.get(cb_start) if kind == "image" else None,
+                claimed_figure=figure_claims.get(cb_start) if kind == "image" else None,
             )
 
             if result is not None:
@@ -1029,6 +1082,7 @@ class ContentTaggerV2:
 
         page.obj[Name.StructParents] = struct_parent
         self._parent_tree_entries[struct_parent] = page_entries
+        self._bound_elements.update(match.struct_elem.objgen for match in matches)
 
         return page_stats
 
@@ -1206,28 +1260,7 @@ class ContentTaggerV2:
 
     def _is_image_xobject(self, page: Any, op: Any) -> bool:
         """Check whether a ``Do`` operator draws an image (not a Form XObject)."""
-        if page is None:
-            return False
-        try:
-            operands = list(op.operands)
-            if not operands:
-                return False
-            raw = str(operands[0])
-            key = raw if raw.startswith("/") else f"/{raw}"
-
-            resources = page.obj.get(Name.Resources)
-            if resources is None:
-                return False
-            xobjects = resources.get(Name.XObject)
-            if xobjects is None:
-                return False
-
-            xobj = xobjects.get(Name(key))
-            if xobj is None:
-                return False
-            return str(xobj.get(Name.Subtype, "")) == "/Image"
-        except Exception:
-            return False
+        return _draws_image_xobject(page, op)
 
     # ------------------------------------------------------------------
     # Element matching
@@ -1242,7 +1275,7 @@ class ContentTaggerV2:
         kind: str = "text",
         *,
         decoded_text: Optional[str] = None,
-        block_rect: Optional[Tuple[float, float, float, float]] = None,
+        claimed_figure: Optional[int] = None,
     ) -> Optional[Tuple[Any, str, float]]:
         """Match a content block to a structure element.
 
@@ -1251,22 +1284,22 @@ class ContentTaggerV2:
            Accept if IoU >= 0.7 (confidence = 0.90).
         2. Text fallback: NFKD + ligature normalization (confidence = 0.75).
 
-        An image block takes ``_match_figure_to_image``, which compares a Figure
-        with the block's own rectangle only.
+        An image block takes ``_match_figure_to_image``, which uses only the
+        Figure that was paired with this block by position, if there is one.
 
         Args:
             elements: Candidate structure elements for this page.
             block_ops: Operators for this content block.
             fitz_blocks: PyMuPDF text blocks (x0, y0, x1, y1, text) in PDF coords.
             used_indices: Set of already-matched element indices (by list position).
-            block_rect: For an image block, the draw's rectangle in default user
-                space, or None when it cannot be determined.
+            claimed_figure: For an image block, the index in ``elements`` of the
+                positioned Figure paired with it, or None.
 
         Returns:
             (struct_elem, match_type, confidence) or None if no match found.
         """
         if kind == "image":
-            return self._match_figure_to_image(elements, used_indices, block_rect)
+            return self._match_figure_to_image(elements, used_indices, claimed_figure)
 
         for elem_idx, elem in enumerate(elements):
             if elem_idx in used_indices:
@@ -1343,41 +1376,65 @@ class ContentTaggerV2:
 
         return None
 
-    def _match_figure_to_image(
+    def _positioned_figure_claims(
         self,
         elements: List[Any],
-        used_indices: set,
-        block_rect: Optional[Tuple[float, float, float, float]],
-    ) -> Optional[Tuple[Any, str, float]]:
-        """Bind one image draw to the Figure written for exactly that image.
+        block_rects: Dict[int, Optional[Tuple[float, float, float, float]]],
+    ) -> Dict[int, int]:
+        """Pair each positioned Figure with the one image block it can only be.
 
         The alt-text pass records each Figure's position as a /BBox in default
-        user space. The block's own rectangle comes from the content stream, so
-        a Figure binds to a draw only where its box overlaps that draw's
-        rectangle and no other image's. The best overlap wins, and a draw whose
-        rectangle is unknown binds no positioned Figure.
-
-        A Figure that carries a /BBox is never paired by order. Its position
-        says which image it describes, so another image must not take it when
-        its own draw does not match. Only a Figure with no position at all can
-        be paired by order, which keeps a single image or a hand-built
-        structure working as before.
+        user space, and each block's own rectangle comes from the content
+        stream. A Figure and a block are paired only when they reach the overlap
+        threshold with each other and with nothing else: the Figure overlaps no
+        other image block of the page, and no other Figure overlaps the block.
+        Two images drawn on top of each other, at the same place or mostly so,
+        make every Figure for them ambiguous, because a box that fits one draw
+        fits the other. Such Figures are left unbound, never guessed. Returns
+        block start index to element index.
         """
-        best: Optional[Tuple[float, int, Any]] = None
+        eligible = {
+            start: rect for start, rect in block_rects.items() if rect is not None
+        }
+        reaches: Dict[int, List[int]] = {}
+        claimed_by: Dict[int, List[int]] = {}
         for elem_idx, elem in enumerate(elements):
-            if elem_idx in used_indices or Name.S not in elem:
+            if Name.S not in elem:
                 continue
             if str(elem[Name.S]).lstrip("/") not in FIGURE_TAGS:
                 continue
             elem_bbox = self._get_element_bbox(elem)
-            if elem_bbox is None or block_rect is None:
+            if elem_bbox is None:
                 continue
-            iou = self._compute_iou(elem_bbox, block_rect)
-            if iou >= POSITION_MATCH_IOU and (best is None or iou > best[0]):
-                best = (iou, elem_idx, elem)
-        if best is not None:
-            used_indices.add(best[1])
-            return (best[2], "position", 0.90)
+            for start, rect in eligible.items():
+                if _rect_iou(elem_bbox, rect) >= POSITION_MATCH_IOU:
+                    reaches.setdefault(elem_idx, []).append(start)
+                    claimed_by.setdefault(start, []).append(elem_idx)
+        return {
+            starts[0]: elem_idx
+            for elem_idx, starts in reaches.items()
+            if len(starts) == 1 and claimed_by[starts[0]] == [elem_idx]
+        }
+
+    def _match_figure_to_image(
+        self,
+        elements: List[Any],
+        used_indices: set,
+        claimed: Optional[int],
+    ) -> Optional[Tuple[Any, str, float]]:
+        """Bind one image draw to the Figure written for exactly that image.
+
+        ``claimed`` is the positioned Figure ``_positioned_figure_claims``
+        paired with this block, if any. A Figure that carries a /BBox is bound
+        only that way and never by order. Its position says which image it
+        describes, so another image must not take it, and an image whose Figure
+        is ambiguous or absent is left without one. Only a Figure with no
+        position at all can be paired by order, which keeps a single image or a
+        hand-built structure working as before.
+        """
+        if claimed is not None and claimed not in used_indices:
+            used_indices.add(claimed)
+            return (elements[claimed], "position", 0.90)
 
         # --- Ordinal fallback for images ---
         # A Figure written without a position carries nothing but its place in
@@ -1469,22 +1526,7 @@ class ContentTaggerV2:
 
         Each bbox is (x0, y0, x1, y1) in PDF coordinates.
         """
-        x0 = max(bbox1[0], bbox2[0])
-        y0 = max(bbox1[1], bbox2[1])
-        x1 = min(bbox1[2], bbox2[2])
-        y1 = min(bbox1[3], bbox2[3])
-
-        if x1 <= x0 or y1 <= y0:
-            return 0.0
-
-        intersection = (x1 - x0) * (y1 - y0)
-        area1 = max(0.0, (bbox1[2] - bbox1[0])) * max(0.0, (bbox1[3] - bbox1[1]))
-        area2 = max(0.0, (bbox2[2] - bbox2[0])) * max(0.0, (bbox2[3] - bbox2[1]))
-        union = area1 + area2 - intersection
-
-        if union <= 0.0:
-            return 0.0
-        return intersection / union
+        return _rect_iou(bbox1, bbox2)
 
     # ------------------------------------------------------------------
     # Marker injection
@@ -1696,21 +1738,64 @@ def _multiply_matrices(
     )
 
 
-def _image_draw_rects(
+def _rect_iou(
+    first: Tuple[float, float, float, float],
+    second: Tuple[float, float, float, float],
+) -> float:
+    """Intersection over union of two axis-aligned rectangles (x0, y0, x1, y1)."""
+    x0 = max(first[0], second[0])
+    y0 = max(first[1], second[1])
+    x1 = min(first[2], second[2])
+    y1 = min(first[3], second[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    intersection = (x1 - x0) * (y1 - y0)
+    area1 = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
+    area2 = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
+    union = area1 + area2 - intersection
+    return intersection / union if union > 0.0 else 0.0
+
+
+def _draws_image_xobject(page: Any, op: Any) -> bool:
+    """Whether a ``Do`` operator draws an image XObject of the page's resources."""
+    if page is None:
+        return False
+    try:
+        operands = list(op.operands)
+        if not operands:
+            return False
+        raw = str(operands[0])
+        key = raw if raw.startswith("/") else f"/{raw}"
+        resources = page.obj.get(Name.Resources)
+        xobjects = resources.get(Name.XObject) if resources is not None else None
+        xobject = xobjects.get(Name(key)) if xobjects is not None else None
+        return xobject is not None and str(xobject.get(Name.Subtype, "")) == "/Image"
+    except Exception:
+        return False
+
+
+def _draw_states(
     ops: List[Any],
-) -> Dict[int, Tuple[float, float, float, float]]:
-    """Return each image draw's rectangle in default user space, by operator index.
+) -> Dict[int, Tuple[Tuple[float, float, float, float], int]]:
+    """Return each draw's rectangle and marked-content depth, by operator index.
 
     An image fills the unit square of the current transformation matrix, so the
     rectangle follows from the matrices that ``q``, ``Q`` and ``cm`` leave in
-    force at the draw. The rectangle is therefore the draw's own, in the space
-    a structure element's /BBox is written in. A stream whose graphics state
-    cannot be followed (an unbalanced ``Q``, malformed or non-finite operands)
-    yields no rectangles, so nothing is matched by position.
+    force at the draw. It is the draw's own rectangle in default user space,
+    the space a structure element's /BBox is written in. The depth is the
+    number of ``BMC``/``BDC`` scopes open at the draw: only a draw outside
+    every scope becomes a block the tagger can bind a Figure to.
+
+    Every ``Do`` and inline image is listed, whatever it draws. The graphics
+    state is followed strictly: an unbalanced ``Q`` or ``EMC``, or malformed or
+    non-finite operands, yield no states at all. A viewer would ignore a stray
+    ``Q``, but a rectangle derived from a stream that is not understood could
+    point at the wrong image, so nothing is matched by position instead.
     """
-    rects: Dict[int, Tuple[float, float, float, float]] = {}
+    states: Dict[int, Tuple[Tuple[float, float, float, float], int]] = {}
     matrix: Tuple[float, ...] = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     stack: List[Tuple[float, ...]] = []
+    depth = 0
     try:
         for index, op in enumerate(ops):
             name = str(op.operator)
@@ -1720,6 +1805,12 @@ def _image_draw_rects(
                 if not stack:
                     return {}
                 matrix = stack.pop()
+            elif name in ("BMC", "BDC"):
+                depth += 1
+            elif name == "EMC":
+                if depth <= 0:
+                    return {}
+                depth -= 1
             elif name == "cm":
                 values = tuple(float(value) for value in op.operands)
                 if len(values) != 6 or not all(math.isfinite(v) for v in values):
@@ -1729,10 +1820,39 @@ def _image_draw_rects(
                 a, b, c, d, e, f = matrix
                 xs = (e, a + e, c + e, a + c + e)
                 ys = (f, b + f, d + f, b + d + f)
-                rects[index] = (min(xs), min(ys), max(xs), max(ys))
+                states[index] = ((min(xs), min(ys), max(xs), max(ys)), depth)
     except Exception:
         return {}
-    return rects
+    return states
+
+
+def _image_draw_rects(
+    ops: List[Any],
+) -> Dict[int, Tuple[float, float, float, float]]:
+    """Return each draw's rectangle in default user space, by operator index."""
+    return {index: rect for index, (rect, _) in _draw_states(ops).items()}
+
+
+def _taggable_image_draws(
+    page: Any, ops: List[Any]
+) -> Dict[int, Tuple[float, float, float, float]]:
+    """Return the rectangle of every image draw the tagger will make a block of.
+
+    These are the direct image draws outside every marked-content scope, which
+    is what ``_find_content_blocks`` turns into image blocks. A draw inside an
+    ``/Artifact``, ``/OC`` or table scope is not among them, and no Figure can
+    be bound to it.
+    """
+    return {
+        index: rect
+        for index, (rect, depth) in _draw_states(ops).items()
+        if depth == 0
+        and (
+            # Named as ``_find_content_blocks`` names it.
+            str(ops[index].operator) == "INLINE_IMAGE"
+            or _draws_image_xobject(page, ops[index])
+        )
+    }
 
 
 def _resolved_image_do_indices(page: Any, ops: List[Any], image_xref: int) -> List[int]:

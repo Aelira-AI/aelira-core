@@ -456,7 +456,7 @@ async def test_unrelated_reading_is_published_without_equation_content_or_gate(
         # keeps only the alt-less Figure the generic tagger gives every image.
         structure = _structure(result.output_file)
         assert "/Formula" not in [role for role, _ in structure]
-        assert all(alt is None for role, alt in structure if role == "/Figure")
+        assert [alt for role, alt in structure if role == "/Figure"] == [None]
         readable = _readable_bytes(result.output_file, tmp_path)
         for marker in EQUATION_CONTENT_MARKERS:
             assert marker not in readable, marker

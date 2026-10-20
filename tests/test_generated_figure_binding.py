@@ -5,8 +5,9 @@ content tagger later binds it to a draw in the page content. The tagger used to
 pair them by order of appearance, so when an earlier image stayed undescribed
 the next image's description landed on the wrong image's Figure. A Figure now
 records the box of the one image it describes, in default user space, and binds
-to the draw with that rectangle and no other. A Figure that carries a box is
-never paired by order.
+only to the image block that box fits and nothing else. A Figure that carries a
+box is never paired by order, and images that one box could fit are refused
+(see test_ambiguous_figure_binding).
 
 The integration tests run the real scanner, remediator and saved-file rescan.
 The provider is the only stand-in, and it answers each image by the pixel width
@@ -40,6 +41,7 @@ from src.education.remediation.content_tagger_v2 import (
 )
 from src.education.remediation.pdf_remediator import PdfRemediator
 from src.education.remediation.pdf_structure import PDFStructureTree
+from tests.test_equation_alt_text_coordination import _structure
 from src.education.validation.matterhorn import MatterhornValidator
 
 pytestmark = pytest.mark.unit
@@ -210,6 +212,7 @@ def test_each_description_sits_on_the_image_it_was_written_for(
         # The saved file verifies, so nothing is withheld. A layout with an
         # undescribed image passes only through the untagged-source proof.
         assert result.verification_passed, (layout, result.verification_result)
+        assert _phantom_figures(result.output_file) == []
         assert result.verification_result.unavailable_checks == []
         undescribed = len(layout) - len(described)
         if undescribed:
@@ -441,53 +444,168 @@ def _figure(*box: float, role: str = "/Figure") -> Dictionary:
 RECT = (0.0, 0.0, 100.0, 100.0)
 
 
-def test_matcher_never_pairs_a_positioned_figure_by_order(tmp_path: Path) -> None:
-    tagger = _tagger(tmp_path)
-    elements = [_figure(500, 500, 600, 600)]
-    assert tagger._match_figure_to_image(elements, set(), RECT) is None
-    assert tagger._match_figure_to_image(elements, set(), None) is None
-
-
-def test_matcher_skips_positioned_figures_to_pair_an_unpositioned_one(
+def test_matcher_binds_only_the_claimed_figure_and_never_a_positioned_one_by_order(
     tmp_path: Path,
 ) -> None:
     tagger = _tagger(tmp_path)
-    elements = [_figure(500, 500, 600, 600), _figure()]
+    elements = [_figure(500, 500, 600, 600), _figure(0, 0, 100, 98)]
     used: set = set()
-    element, kind, _ = tagger._match_figure_to_image(elements, used, RECT)
-    assert element is elements[1] and kind == "ordinal" and used == {1}
-    # An image whose rectangle is unknown still gets an unpositioned Figure.
-    other = [_figure(500, 500, 600, 600), _figure()]
-    assert tagger._match_figure_to_image(other, set(), None)[0] is other[1]
-
-
-def test_matcher_binds_the_figure_with_the_best_overlap(tmp_path: Path) -> None:
-    tagger = _tagger(tmp_path)
-    elements = [_figure(0, 0, 100, 75), _figure(0, 0, 100, 98), _figure()]
-    used: set = set()
-    element, kind, confidence = tagger._match_figure_to_image(elements, used, RECT)
+    element, kind, confidence = tagger._match_figure_to_image(elements, used, 1)
     assert element is elements[1] and kind == "position" and confidence == 0.90
     assert used == {1}
+    # Nothing claimed: a positioned Figure is never taken by order.
+    assert (
+        tagger._match_figure_to_image([_figure(500, 500, 600, 600)], set(), None)
+        is None
+    )
+    # A claim already used is not bound twice.
+    assert tagger._match_figure_to_image(elements, {1}, 1) is None
 
 
-def test_matcher_uses_the_text_tolerance_for_position(tmp_path: Path) -> None:
+def test_matcher_pairs_an_unpositioned_figure_by_order_past_positioned_ones(
+    tmp_path: Path,
+) -> None:
     tagger = _tagger(tmp_path)
-    inside = [_figure(0, 0, 100, 70)]
-    outside = [_figure(0, 0, 100, 69)]
-    assert tagger._match_figure_to_image(inside, set(), RECT)[1] == "position"
-    assert tagger._match_figure_to_image(outside, set(), RECT) is None
+    elements = [_figure(500, 500, 600, 600), _figure(), _figure(role="/P")]
+    used: set = set()
+    element, kind, _ = tagger._match_figure_to_image(elements, used, None)
+    assert element is elements[1] and kind == "ordinal" and used == {1}
+    assert tagger._match_figure_to_image(elements, used, None) is None
 
 
-def test_matcher_ignores_used_and_non_figure_elements(tmp_path: Path) -> None:
+def _claims(tagger: ContentTaggerV2, elements: list, rects: dict) -> dict:
+    return tagger._positioned_figure_claims(elements, rects)
+
+
+def test_a_figure_is_claimed_by_the_one_block_it_fits(tmp_path: Path) -> None:
     tagger = _tagger(tmp_path)
-    elements = [
-        _figure(0, 0, 100, 100),
-        _figure(0, 0, 100, 100, role="/P"),
-        _figure(0, 0, 100, 100),
-    ]
-    used = {0}
-    assert tagger._match_figure_to_image(elements, used, RECT)[0] is elements[2]
-    assert tagger._match_figure_to_image(elements, used, RECT) is None
+    rects = {10: (0.0, 0.0, 100.0, 100.0), 20: (200.0, 0.0, 300.0, 100.0)}
+    elements = [_figure(200, 0, 300, 100), _figure(0, 0, 100, 100), _figure()]
+    assert _claims(tagger, elements, rects) == {20: 0, 10: 1}
+
+
+def test_the_threshold_is_the_text_tolerance(tmp_path: Path) -> None:
+    tagger = _tagger(tmp_path)
+    rects = {10: RECT}
+    assert _claims(tagger, [_figure(0, 0, 100, 70)], rects) == {10: 0}
+    assert _claims(tagger, [_figure(0, 0, 100, 69)], rects) == {}
+
+
+def test_coincident_blocks_leave_every_figure_for_them_unclaimed(
+    tmp_path: Path,
+) -> None:
+    """A box that fits one of two images drawn on top of each other fits both."""
+    tagger = _tagger(tmp_path)
+    rects = {10: RECT, 20: RECT}
+    assert _claims(tagger, [_figure(*RECT)], rects) == {}
+    assert _claims(tagger, [_figure(*RECT), _figure(*RECT)], rects) == {}
+
+
+def test_partly_overlapping_blocks_leave_the_figure_unclaimed(tmp_path: Path) -> None:
+    """Two 200 by 100 draws 20 apart overlap at 0.818, above the threshold."""
+    tagger = _tagger(tmp_path)
+    first, second = (100.0, 600.0, 300.0, 700.0), (120.0, 600.0, 320.0, 700.0)
+    rects = {10: first, 20: second}
+    assert _claims(tagger, [_figure(*second)], rects) == {}
+    assert _claims(tagger, [_figure(*first)], rects) == {}
+    # Draws that overlap less than the threshold are still told apart.
+    apart = {10: first, 20: (200.0, 600.0, 400.0, 700.0)}
+    assert _claims(tagger, [_figure(200, 600, 400, 700)], apart) == {20: 0}
+
+
+def test_two_figures_for_one_block_leave_both_unclaimed(tmp_path: Path) -> None:
+    tagger = _tagger(tmp_path)
+    assert (
+        _claims(tagger, [_figure(0, 0, 100, 98), _figure(0, 0, 100, 96)], {10: RECT})
+        == {}
+    )
+
+
+def test_blocks_without_a_known_rectangle_claim_nothing(tmp_path: Path) -> None:
+    tagger = _tagger(tmp_path)
+    assert _claims(tagger, [_figure(*RECT)], {10: None, 20: None}) == {}
+    # An unknown block does not stop the others from being claimed.
+    assert _claims(tagger, [_figure(*RECT)], {10: RECT, 20: None}) == {10: 0}
+
+
+def test_non_figures_and_unpositioned_figures_are_never_claimed(
+    tmp_path: Path,
+) -> None:
+    tagger = _tagger(tmp_path)
+    elements = [_figure(*RECT, role="/P"), _figure()]
+    assert _claims(tagger, elements, {10: RECT}) == {}
+
+
+# ---------------------------------------------------------------------------
+# A generated Figure that no image was bound to does not survive
+# ---------------------------------------------------------------------------
+
+
+def _tag_with_figures(tmp_path: Path, *, generated: bool) -> tuple[Path, dict]:
+    source = tmp_path / "source.pdf"
+    _write_source(source, 1)
+    with pikepdf.open(source) as pdf:
+        tree = PDFStructureTree(pdf)
+        # One Figure that fits the image, one whose box fits nothing.
+        ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+        fits = list(_image_draw_rects(ops).values())[0]
+        tree.add_alt_text_to_image(
+            page_num=1, alt_text="Fits the image", image_index=0, image_bbox=fits
+        )
+        tree.add_alt_text_to_image(
+            page_num=1,
+            alt_text="Fits nothing",
+            image_index=1,
+            image_bbox=(500.0, 500.0, 600.0, 600.0),
+        )
+        staged = tmp_path / "staged.pdf"
+        pdf.save(staged)
+    output = tmp_path / "tagged.pdf"
+    with pikepdf.open(staged) as pdf, fitz.open(staged) as doc:
+        stats = ContentTaggerV2(
+            pdf, doc, order_generated_structure=generated
+        ).tag_all_pages()
+        pdf.save(output)
+    return output, stats
+
+
+def _phantom_figures(path: str) -> list[str]:
+    """Figures that hold an /Alt and no content to carry it."""
+    phantoms: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, Dictionary) and "/S" in node:
+            if str(node.S) == "/Figure" and "/Alt" in node and "/K" not in node:
+                phantoms.append(str(node.Alt))
+            kids = node.get("/K")
+            for kid in list(kids) if isinstance(kids, Array) else [kids]:
+                walk(kid)
+
+    with pikepdf.open(path) as pdf:
+        for kid in list(pdf.Root.StructTreeRoot.K):
+            walk(kid)
+    return phantoms
+
+
+def test_generated_figure_with_alt_that_binds_to_nothing_is_removed(
+    tmp_path: Path,
+) -> None:
+    output, stats = _tag_with_figures(tmp_path, generated=True)
+    assert stats["figures_unbound_removed"] == 1
+    assert _phantom_figures(str(output)) == []
+    assert _carried(str(output))[0] == (True, "Fits the image")
+    assert [
+        alt
+        for role, alt in _structure(str(output))
+        if role == "/Figure" and alt is not None
+    ] == ["Fits the image"]
+
+
+def test_a_tagged_source_keeps_figures_it_already_had(tmp_path: Path) -> None:
+    """Only a structure generated in this run is cleaned up."""
+    output, stats = _tag_with_figures(tmp_path, generated=False)
+    assert stats["figures_unbound_removed"] == 0
+    assert _phantom_figures(str(output)) == ["Fits nothing"]
 
 
 # ---------------------------------------------------------------------------
