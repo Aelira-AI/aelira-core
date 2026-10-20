@@ -120,6 +120,17 @@ class EquationVerificationRejected(ValueError):
     """Round-trip verification could not produce bounded trustworthy evidence."""
 
 
+RENDERER_DIMENSION_LIMIT = "renderer_dimension_limit"
+
+
+class RendererDimensionLimit(RuntimeError):
+    """The rendered formula was larger than the configured width or height."""
+
+
+class _RenderedElementTooLarge(Exception):
+    """Worker-side signal that the formula box exceeded the size bound."""
+
+
 def _expanded_mathml_name(tag: str) -> tuple[Optional[str], str]:
     if not tag.startswith("{"):
         if "{" in tag or "}" in tag:
@@ -308,18 +319,16 @@ html,body{{margin:0;background:#fff;color:#000}}
                 page.evaluate("document.fonts.ready")
                 locator = page.locator("#formula")
                 box = locator.bounding_box(timeout=5_000)
-                if (
-                    box is None
-                    or box["width"] <= 0
-                    or box["height"] <= 0
-                    or box["width"] > max_width
-                    or box["height"] > max_height
-                ):
-                    raise RuntimeError("renderer_dimension_limit")
+                if box is None or box["width"] <= 0 or box["height"] <= 0:
+                    raise RuntimeError("renderer_empty_element")
+                if box["width"] > max_width or box["height"] > max_height:
+                    raise _RenderedElementTooLarge
                 output = locator.screenshot(animations="disabled", timeout=5_000)
             finally:
                 browser.close()
         connection.send(("ok", output, network_requests))
+    except _RenderedElementTooLarge:
+        connection.send(("dimension_limit", b"", network_requests))
     except Exception:
         connection.send(("error", b"", network_requests))
     finally:
@@ -369,7 +378,7 @@ class OfflineMathMLRenderer:
             if not receiving.poll() or process.exitcode != 0:
                 raise RuntimeError("renderer_failed")
             status, output, self.network_requests = receiving.recv()
-            if status != "ok":
+            if status not in {"ok", "dimension_limit"}:
                 raise RuntimeError("renderer_failed")
         finally:
             receiving.close()
@@ -378,6 +387,8 @@ class OfflineMathMLRenderer:
                 process.join()
         if self.network_requests:
             raise RuntimeError("renderer_network_attempt")
+        if status == "dimension_limit":
+            raise RendererDimensionLimit(RENDERER_DIMENSION_LIMIT)
         return output
 
 
@@ -411,6 +422,8 @@ class EquationVerifier:
         mathml = self.canonicalize_mathml(mathml)
         try:
             rendered = self.renderer(mathml)
+        except RendererDimensionLimit:
+            raise EquationVerificationRejected(RENDERER_DIMENSION_LIMIT) from None
         except Exception:
             raise EquationVerificationRejected("renderer_failed") from None
         if not isinstance(rendered, bytes) or not rendered:

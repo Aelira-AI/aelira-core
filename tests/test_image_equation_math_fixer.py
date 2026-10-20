@@ -2,6 +2,8 @@ import dataclasses
 import hashlib
 from types import SimpleNamespace
 
+import pytest
+
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
 from src.education.remediation.math_fixer import MathFixer
 
@@ -233,3 +235,41 @@ def test_printed_path_embeds_exactly_the_canonical_form_the_verifier_rendered():
         alt_text=result.aria_label,
         mathml_sha256=sha,
     )
+
+
+@pytest.mark.parametrize(
+    ("reason", "error"),
+    [
+        ("renderer_dimension_limit", "equation_too_large_for_verification"),
+        ("renderer_failed", "equation_verification_failed"),
+        ("render_dimension_limit", "equation_verification_failed"),
+        ("render_byte_limit", "equation_verification_failed"),
+        ("blank_render", "equation_verification_failed"),
+        ("comparison_failed", "equation_verification_failed"),
+        ("conversion_failed", "equation_verification_failed"),
+        ("invalid_mathml", "equation_verification_failed"),
+    ],
+)
+def test_only_the_renderer_size_bound_reports_an_equation_too_large(reason, error):
+    from src.education.remediation.equation_verifier import EquationVerificationRejected
+
+    class Rejecting:
+        def verify(self, image, latex):
+            raise EquationVerificationRejected(reason)
+
+    result = fixer(Rejecting())._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.success is False
+    assert result.error == error
+    assert result.pending_association is None
+
+
+def test_an_untyped_failure_with_the_same_text_keeps_the_generic_error():
+    class Crashing:
+        def verify(self, image, latex):
+            raise RuntimeError("renderer_dimension_limit")
+
+    result = fixer(Crashing())._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.error == "equation_verification_failed"
+    assert result.pending_association is None
