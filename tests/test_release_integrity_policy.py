@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from scripts.download_piper_voice import VOICE_ASSETS
+from scripts.verify_final_os_packages import PLACEHOLDER_PACKAGE, PLACEHOLDER_PROVIDES
 
 ROOT = Path(__file__).parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -597,6 +598,77 @@ def test_api_runtime_omits_unused_packages_and_verifies_their_absence() -> None:
     publish = (WORKFLOWS / "publish-docker.yml").read_text()
     assert ci_docker.count("/app/scripts/verify_final_os_packages.py") == 1
     assert publish.count("/app/scripts/verify_final_os_packages.py") == 1
+
+
+def test_api_runtime_satisfies_texlive_base_with_an_offline_placeholder() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    runtime = api.split("# Stage 2: Runtime", 1)[1]
+    purge = "&& dpkg --purge --force-depends xdg-utils"
+    cleanup = "&& rm -rf /var/lib/apt/lists/*"
+    install = "&& dpkg --install /tmp/aelira-xdg-utils-absent.deb"
+    remove = "&& rm -rf /tmp/aelira-xdg-utils-absent /tmp/aelira-xdg-utils-absent.deb"
+    build = "dpkg-deb --root-owner-group --build /tmp/aelira-xdg-utils-absent "
+
+    # Built, installed and cleaned up inside the RUN that purges xdg-utils, so
+    # neither the recipe's files nor a broken dpkg state reach a later layer.
+    assert runtime.count(purge) == 1
+    start = runtime.index(purge)
+    block = runtime[start : runtime.index(cleanup, start)]
+    assert block.count(build) == 1
+    assert block.index(build) < block.index(install) < block.index(remove)
+
+    # The control file declares exactly the reviewed fields. No Depends,
+    # Conflicts, Replaces or Source can pull in or hide behind another package.
+    fields = dict(re.findall(r"^\s+'([A-Za-z-]+): ([^']*)' \\$", block, re.MULTILINE))
+    assert set(fields) == {
+        "Package",
+        "Version",
+        "Architecture",
+        "Maintainer",
+        "Provides",
+        "Description",
+    }
+    assert fields["Package"] == PLACEHOLDER_PACKAGE
+    assert fields["Version"] == "1.0"
+    assert fields["Architecture"] == "all"
+    assert (fields["Provides"],) == PLACEHOLDER_PROVIDES
+    assert fields["Maintainer"] and fields["Description"]
+    assert fields["Package"] != "xdg-utils"
+
+    # It needs no network, and the release safety gate rejects any address at
+    # the vendor domain, so the recipe carries no email address at all.
+    for forbidden in ("apt-get", "curl", "wget", "http", "@"):
+        assert forbidden not in block
+
+
+def test_final_image_acceptance_runs_apt_get_check_on_both_architectures() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text().split("  docker:\n", 1)[1]
+    publish = (WORKFLOWS / "publish-docker.yml").read_text()
+    ci_step = ci.split(
+        "      - name: Verify production package state and baked Piper synthesis\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    publish_step = publish.split(
+        "      - name: Verify final API image package state\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    ci_verifier = "--entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_os_packages.py"
+    ci_check = "docker run --rm --network none --user 0 --entrypoint apt-get aelira-worker-isolation:test check"
+    publish_check = 'docker run --rm --user 0 --entrypoint apt-get "$IMAGE" check'
+
+    # apt needs root to open its state, and runs next to the dpkg-level check.
+    assert ci.count(ci_check) == 1
+    assert publish.count(publish_check) == 1
+    assert ci_step.index(ci_verifier) < ci_step.index(ci_check)
+    assert publish_step.index("verify_final_os_packages.py") < publish_step.index(
+        publish_check
+    )
+    # Neither step is conditional on one architecture, and both jobs run a
+    # native amd64 and a native arm64 leg.
+    for step in (ci_step, publish_step):
+        assert "matrix.platform" not in step
+        assert "matrix.arch" not in step
+        assert "continue-on-error" not in step
+    assert "platform: linux/amd64" in ci and "platform: linux/arm64" in ci
+    assert "platform: linux/amd64" in publish and "platform: linux/arm64" in publish
 
 
 def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:

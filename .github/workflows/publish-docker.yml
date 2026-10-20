@@ -100,6 +100,7 @@ jobs:
             /app/scripts/verify_final_python_packages.py venv
           docker run --rm --entrypoint /usr/local/bin/python "$IMAGE" \
             /app/scripts/verify_final_os_packages.py
+          docker run --rm --user 0 --entrypoint apt-get "$IMAGE" check
           bun run scripts/verify_python_expat_layers.ts "$IMAGE"
           bun run scripts/verify_libxml2_6653.ts "$IMAGE"
           bun run scripts/verify_native_media_components.ts "$IMAGE"
