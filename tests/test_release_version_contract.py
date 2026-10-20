@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 VERSION = "0.9.13"
-RELEASE_HEADING = "## [0.9.13] - 2026-10-19"
+RELEASE_HEADING = "## [0.9.13] - 2026-10-20"
 RELEASE_BODY = ROOT / "docs/releases/v0.9.13.md"
 PREVIOUS_HEADING = "## [0.9.12] - 2026-10-15"
 
@@ -23,7 +23,8 @@ def test_authoritative_release_versions_are_0_9_13():
     cli_readme = (ROOT / "cli/README.md").read_text()
     compose = (ROOT / "docker-compose.prod.yml").read_text()
 
-    assert f"**Status: {VERSION} beta candidate.**" in readme
+    assert f"**Status: {VERSION} beta.**" in readme
+    assert "beta candidate" not in readme
     assert "A future release may include them" not in readme
     assert f'api_version: str = "{VERSION}"' in settings
     assert project["project"]["version"] == VERSION
@@ -112,6 +113,8 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
     assert body.startswith(f"# Aelira v{VERSION}\n")
+    assert "release candidate as of" not in body
+    assert "open draft" not in body
     for phrase in (
         "20261020_media_captions",
         "20261018_media_truth",
