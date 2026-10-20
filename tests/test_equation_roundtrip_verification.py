@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import time
 from io import BytesIO
 from pathlib import Path
@@ -393,9 +394,298 @@ def test_renderer_has_killable_end_to_end_deadline():
     assert time.monotonic() - started < 2
 
 
-def test_renderer_rejects_oversized_element_before_screenshot():
+def _worker_that_crashes(mathml, font_data, connection, max_width, max_height):
+    os._exit(3)
+
+
+def _worker_that_reports_an_error(mathml, font_data, connection, max_width, max_height):
+    connection.send(("error", b"", 0))
+    connection.close()
+
+
+def _worker_with_an_unknown_status(
+    mathml, font_data, connection, max_width, max_height
+):
+    connection.send(("surprise", b"", 0))
+    connection.close()
+
+
+def _worker_that_reports_the_size_bound(
+    mathml, font_data, connection, max_width, max_height
+):
+    connection.send(("dimension_limit", b"", 0))
+    connection.close()
+
+
+def _worker_that_reports_the_size_bound_after_a_network_attempt(
+    mathml, font_data, connection, max_width, max_height
+):
+    connection.send(("dimension_limit", b"", 1))
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    "worker",
+    [
+        _worker_that_crashes,
+        _worker_that_reports_an_error,
+        _worker_with_an_unknown_status,
+    ],
+)
+def test_a_failing_worker_still_reports_renderer_failed(worker):
+    from src.education.remediation.equation_verifier import (
+        EquationVerificationRejected,
+        EquationVerifier,
+        OfflineMathMLRenderer,
+        RendererDimensionLimit,
+    )
+
+    renderer = OfflineMathMLRenderer(worker_target=worker)
+    with pytest.raises(RuntimeError, match="^renderer_failed$") as direct:
+        renderer.render("<math><mi>x</mi></math>")
+    assert not isinstance(direct.value, RendererDimensionLimit)
+
+    verifier = EquationVerifier(
+        converter=lambda latex: "<math><mi>x</mi></math>", renderer=renderer.render
+    )
+    image = _validated(_png(lambda pen: pen.rectangle((20, 20, 80, 60), fill="black")))
+    with pytest.raises(EquationVerificationRejected, match="^renderer_failed$"):
+        verifier.verify(image, "x")
+
+
+def test_the_workers_size_bound_status_reaches_the_verifier_as_its_own_reason():
+    from src.education.remediation.equation_verifier import (
+        EquationVerificationRejected,
+        EquationVerifier,
+        OfflineMathMLRenderer,
+        RendererDimensionLimit,
+    )
+
+    renderer = OfflineMathMLRenderer(worker_target=_worker_that_reports_the_size_bound)
+    with pytest.raises(RendererDimensionLimit, match="^renderer_dimension_limit$"):
+        renderer.render("<math><mi>x</mi></math>")
+
+    verifier = EquationVerifier(
+        converter=lambda latex: "<math><mi>x</mi></math>", renderer=renderer.render
+    )
+    image = _validated(_png(lambda pen: pen.rectangle((20, 20, 80, 60), fill="black")))
+    with pytest.raises(
+        EquationVerificationRejected, match="^renderer_dimension_limit$"
+    ):
+        verifier.verify(image, "x")
+
+
+def test_a_network_attempt_is_never_reported_as_an_oversized_formula():
+    from src.education.remediation.equation_verifier import (
+        EquationVerificationRejected,
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+
+    renderer = OfflineMathMLRenderer(
+        worker_target=_worker_that_reports_the_size_bound_after_a_network_attempt
+    )
+    with pytest.raises(RuntimeError, match="^renderer_network_attempt$"):
+        renderer.render("<math><mi>x</mi></math>")
+
+    verifier = EquationVerifier(
+        converter=lambda latex: "<math><mi>x</mi></math>", renderer=renderer.render
+    )
+    image = _validated(_png(lambda pen: pen.rectangle((20, 20, 80, 60), fill="black")))
+    with pytest.raises(EquationVerificationRejected, match="^renderer_failed$"):
+        verifier.verify(image, "x")
+
+
+@pytest.fixture(scope="module")
+def chromium_ready():
+    """Drive the pinned renderer to a success once before reading its failures."""
     from src.education.remediation.equation_verifier import OfflineMathMLRenderer
 
-    renderer = OfflineMathMLRenderer(max_width=100)
-    with pytest.raises(RuntimeError, match="renderer_failed"):
-        renderer.render('<math><mspace width="1000px"/></math>')
+    try:
+        OfflineMathMLRenderer().render("<math><mi>x</mi></math>")
+    except RuntimeError as exc:
+        pytest.skip(f"pinned Chromium unavailable in this developer environment: {exc}")
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        r"x^{2}",
+        r"\frac{1}{2}",
+        r"\sqrt{x}",
+        r"x_{i}^{2}",
+        r"{x}+1",
+        r"{{x}}",
+        r"{f}^{2}",
+        r"e^{-x}",
+        r"\left(x\right)^{2}",
+        r"\binom{n}{k}",
+        r"\dbinom{n}{k}",
+        r"\tbinom{n}{k}",
+        r"\dfrac{1}{2}",
+        r"\cfrac{1}{1+\cfrac{1}{2}}",
+        r"\displaystyle x",
+    ],
+)
+def test_collapsed_groups_render_identically_to_the_uncollapsed_reference(
+    chromium_ready, latex
+):
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        OfflineMathMLRenderer,
+        canonicalize_mathml,
+    )
+
+    renderer = OfflineMathMLRenderer()
+    raw = convert(latex)
+    canonical = canonicalize_mathml(raw)
+
+    assert renderer.render(canonical) == renderer.render(raw)
+
+
+@pytest.mark.parametrize("latex", [r"\binom{n}{k}", r"\dbinom{n}{k}", r"\tbinom{n}{k}"])
+def test_binomial_coefficients_pass_the_real_round_trip(chromium_ready, latex):
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+
+    renderer = OfflineMathMLRenderer()
+    verifier = EquationVerifier(renderer=renderer.render)
+    source = _validated(renderer.render(convert(latex)))
+
+    evidence = verifier.verify(source, latex)
+
+    assert evidence.passed is True
+    assert evidence.ink_iou >= verifier.config.required_ink_iou
+
+
+BOX_PADDING_PX = 48  # the formula box carries 24px of padding on every side
+
+
+def _spacer(width_px: int) -> str:
+    return f'<math><mspace width="{width_px}px"/></math>'
+
+
+def test_formula_exactly_at_the_width_bound_renders(chromium_ready):
+    from src.education.remediation.equation_verifier import OfflineMathMLRenderer
+
+    renderer = OfflineMathMLRenderer(max_width=300)
+
+    payload = renderer.render(_spacer(300 - BOX_PADDING_PX))
+
+    with Image.open(BytesIO(payload)) as image:
+        assert image.width == 300
+
+
+def test_formula_one_pixel_over_the_width_bound_reports_the_specific_reason(
+    chromium_ready,
+):
+    from src.education.remediation.equation_verifier import (
+        OfflineMathMLRenderer,
+        RendererDimensionLimit,
+    )
+
+    renderer = OfflineMathMLRenderer(max_width=300)
+
+    with pytest.raises(RendererDimensionLimit, match="^renderer_dimension_limit$"):
+        renderer.render(_spacer(300 - BOX_PADDING_PX + 1))
+    assert renderer.network_requests == 0
+
+
+def test_formula_over_the_height_bound_reports_the_specific_reason(chromium_ready):
+    from src.education.remediation.equation_verifier import (
+        OfflineMathMLRenderer,
+        RendererDimensionLimit,
+    )
+
+    # A line box is 48px (48px font, line-height 1) plus the box padding.
+    height = 48 + BOX_PADDING_PX
+    with Image.open(
+        BytesIO(OfflineMathMLRenderer(max_height=height).render(_spacer(10)))
+    ) as image:
+        assert image.height == height
+    with pytest.raises(RendererDimensionLimit, match="^renderer_dimension_limit$"):
+        OfflineMathMLRenderer(max_height=height - 1).render(_spacer(10))
+
+
+def test_verifier_reports_an_oversized_formula_and_still_verifies_a_fitting_one(
+    chromium_ready,
+):
+    from src.education.remediation.equation_verifier import (
+        EquationVerificationRejected,
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+
+    renderer = OfflineMathMLRenderer(max_width=200)
+    narrow = "<math><mi>x</mi></math>"
+    wide = '<math><mi>x</mi><mspace width="400px"/></math>'
+    source = _validated(renderer.render(narrow))
+
+    fitting = EquationVerifier(converter=lambda latex: narrow, renderer=renderer.render)
+    assert fitting.verify(source, "x").passed is True
+
+    oversized = EquationVerifier(converter=lambda latex: wide, renderer=renderer.render)
+    with pytest.raises(
+        EquationVerificationRejected, match="^renderer_dimension_limit$"
+    ):
+        oversized.verify(source, "x")
+
+
+def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
+    chromium_ready,
+):
+    from types import SimpleNamespace
+
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+    from tests.test_image_equation_math_fixer import METADATA, Verifier, fixer
+
+    class Recognizer:
+        def __init__(self, latex: str) -> None:
+            self.latex = latex
+
+        def recognize(self, payload):
+            return SimpleNamespace(
+                classification="printed_equation",
+                latex=self.latex,
+                provider="gemini",
+                model="vision-model",
+            )
+
+    renderer = OfflineMathMLRenderer(max_width=200)
+    source = renderer.render("<math><mi>x</mi></math>")
+
+    def candidate(latex: str, converter):
+        value = fixer(Verifier("unused"))
+        value.equation_recognizer = Recognizer(latex)
+        value.image_source.payload.jpeg_bytes = source
+        value.image_source.payload.normalized_sha256 = hashlib.sha256(
+            source
+        ).hexdigest()
+        value.equation_verifier = EquationVerifier(
+            converter=converter, renderer=renderer.render
+        )
+        return value
+
+    # Success path first: the same renderer and bound stage a fitting equation.
+    fitting = candidate("x", convert)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+    assert fitting.error == "image_equation_association_pending"
+
+    oversized = candidate(
+        "x",
+        lambda latex: '<math><mi>x</mi><mspace width="400px"/></math>',
+    )._fix_math_issue(SimpleNamespace(metadata=METADATA))
+    assert oversized.success is False
+    assert oversized.error == "equation_too_large_for_verification"
+    assert oversized.pending_association is None

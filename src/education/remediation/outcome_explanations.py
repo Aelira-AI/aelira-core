@@ -79,6 +79,11 @@ EXPLANATIONS = {
         "Simplify or split the table, verify its headers and cell associations, then rescan.",
         "not_applied",
     ),
+    "equation_too_large_for_verification": (
+        "The recognized equation renders larger than the size the automatic equation check supports, so it could not be compared with the image.",
+        "Check the equation against the image, split a long equation into separate lines or images, or add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
     "output_verification_failed": (
         "The change exists only in a candidate file. The document did not pass the required output verification, so that file was not delivered.",
         "Review the unresolved findings and correct the document before running remediation again.",
@@ -190,6 +195,7 @@ _MANUAL_REASON_CODES = {
     "PDF/UA conformance declaration requires independent validation": "pdfua_declaration_requires_validation",
     "table_structure_not_verified": "table_structure_not_verified",
     "table_structure_too_complex": "table_structure_too_complex",
+    "equation_too_large_for_verification": "equation_too_large_for_verification",
 }
 _MANUAL_REASON_CODES.update(
     {code: code for codes, _, _ in _ORDER_GUARD_GROUPS for code in codes}
