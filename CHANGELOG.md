@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The API image installs an empty `aelira-xdg-utils-absent` package that provides `xdg-utils`, so `texlive-base`'s dependency is satisfied again and `apt-get install` works in images built from it. v0.9.13 purged `xdg-utils` with dpkg and left `apt-get check` failing with an unmet `texlive-base` dependency. The package ships no files, and `xdg-utils`, `xdg-email` and `xdg-open` stay absent. The final-image package check now allows no unmet dependency, and CI runs `apt-get check` against the built and the published image on both architectures ([#700](https://github.com/Aelira-AI/aelira-core/issues/700)).
+
 ## [0.9.13] - 2026-10-20
 
 See the [release notes](docs/releases/v0.9.13.md) for operator actions and

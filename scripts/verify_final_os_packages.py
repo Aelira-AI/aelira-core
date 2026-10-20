@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Verify that unused Debian packages are absent from the final API image."""
+"""Verify that unused Debian packages are absent from the final API image.
+
+xdg-utils is removed, yet texlive-base still depends on it. An empty local
+placeholder package provides the name so the dpkg database stays consistent
+and apt keeps working in images built from this one.
+"""
 
 from __future__ import annotations
 
@@ -25,9 +30,13 @@ ABSENT_EXECUTABLES = (
     "xmlcatalog",
     "xmllint",
 )
-# texlive-base declares a hard dependency on xdg-utils, so removing the
-# package leaves exactly this one unmet dependency and nothing else.
-ALLOWED_UNMET = frozenset({("texlive-base", "xdg-utils")})
+# texlive-base declares a hard dependency on xdg-utils. The Dockerfile satisfies
+# it with an empty package that Provides xdg-utils. Its name differs from
+# xdg-utils so vulnerability scanners do not inventory the removed package.
+PLACEHOLDER_PACKAGE = "aelira-xdg-utils-absent"
+PLACEHOLDER_PROVIDES = ("xdg-utils",)
+# dpkg lists the root directory of every package, even one with no payload.
+ROOT_DIRECTORY_ENTRY = "/."
 
 FIELD_SPLIT = re.compile(r"\s*,\s*")
 
@@ -41,6 +50,17 @@ def package_installed(name: str) -> bool:
         check=False,
     )
     return result.returncode == 0 and result.stdout.strip() not in {"", "not-installed"}
+
+
+def package_files(name: str) -> list[str]:
+    """Return every path dpkg records for an installed package."""
+    result = subprocess.run(
+        ["dpkg-query", "-L", name],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
 
 
 def dpkg_records() -> list[tuple[str, str, str]]:
@@ -90,11 +110,37 @@ def unmet_dependencies(
     return unmet
 
 
+def placeholder_errors(
+    records: Iterable[tuple[str, str, str]],
+    files: Callable[[str], list[str]],
+) -> list[str]:
+    """Return every way the xdg-utils placeholder deviates from its contract."""
+    fields = [
+        provides for package, _, provides in records if package == PLACEHOLDER_PACKAGE
+    ]
+    if not fields:
+        return [f"placeholder must be installed: {PLACEHOLDER_PACKAGE}"]
+    errors = []
+    provides = tuple(item.strip() for item in fields[0].split(",") if item.strip())
+    if provides != PLACEHOLDER_PROVIDES:
+        errors.append(
+            f"placeholder must provide exactly {', '.join(PLACEHOLDER_PROVIDES)}: "
+            f"{PLACEHOLDER_PACKAGE} provides {', '.join(provides) or 'nothing'}"
+        )
+    errors.extend(
+        f"placeholder must own no files: {path}"
+        for path in files(PLACEHOLDER_PACKAGE)
+        if path != ROOT_DIRECTORY_ENTRY
+    )
+    return errors
+
+
 def validate(
     *,
     installed: Callable[[str], bool] = package_installed,
     executable: Callable[[str], str | None] = shutil.which,
     records: Callable[[], Iterable[tuple[str, str, str]]] = dpkg_records,
+    files: Callable[[str], list[str]] = package_files,
     packages: Iterable[str] = ABSENT_PACKAGES,
     executables: Iterable[str] = ABSENT_EXECUTABLES,
 ) -> list[str]:
@@ -104,8 +150,10 @@ def validate(
         path = executable(name)
         if path:
             errors.append(f"executable must be absent: {name} at {path}")
-    for package, dependency in sorted(unmet_dependencies(records()) - ALLOWED_UNMET):
-        errors.append(f"unexpected unmet dependency: {package} needs {dependency}")
+    installed_records = list(records())
+    errors.extend(placeholder_errors(installed_records, files))
+    for package, dependency in sorted(unmet_dependencies(installed_records)):
+        errors.append(f"unmet dependency: {package} needs {dependency}")
     return errors
 
 
