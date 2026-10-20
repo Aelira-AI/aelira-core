@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from src.education.remediation.outcome_accounting import outcome_accounting
+from src.education.remediation.outcome_explanations import EXPLANATIONS
 from src.jobs.contracts import JobSuccess, public_job_result
 from src.jobs.remediation_job import _safe_failure_result
 
@@ -85,3 +88,77 @@ def test_reason_cannot_promote_or_relabel_an_outcome():
             }
         )["issue_outcomes"][0]
         assert outcome == {"source_index": 0, "status": status}
+
+
+EQUATION_REASONS = {
+    "image_equation_existing_owner_unsupported": (
+        "already inside other marked content, such as a tagged element or an artifact",
+        "not_attempted",
+    ),
+    "image_equation_draw_unresolved": (
+        "could not be matched to exactly one drawing operation",
+        "not_attempted",
+    ),
+    "image_equation_alt_text_deferred": (
+        "left to the equation fix, and that fix did not complete",
+        "not_applied",
+    ),
+    "image_equation_alt_text_withheld": (
+        "recognised as an equation that could not be verified, so no description was written and it needs review",
+        "not_applied",
+    ),
+}
+
+
+@pytest.mark.parametrize("code", sorted(EQUATION_REASONS))
+def test_image_equation_manual_reasons_reach_the_public_projection(code):
+    """The reason strings the remediator records become canonical public text."""
+    result = SimpleNamespace(
+        manual_issues=[{"issue_id": "equation", "reason": code}], fixed_issues=[]
+    )
+    counts = outcome_accounting([{"id": "equation"}], result, published=False)
+    public = public_job_result(_safe_failure_result("manual_required", counts, None))
+    (outcome,) = public["issue_outcomes"]
+
+    needle, attempt = EQUATION_REASONS[code]
+    assert outcome["status"] == "manual"
+    assert outcome["reason_code"] == code
+    assert outcome["attempt"] == attempt
+    assert needle in outcome["reason"]
+    assert (outcome["reason"], outcome["next_step"], outcome["attempt"]) == (
+        EXPLANATIONS[code]
+    )
+
+
+def test_equation_not_read_reasons_say_the_equation_was_not_read_or_changed():
+    for code in (
+        "image_equation_existing_owner_unsupported",
+        "image_equation_draw_unresolved",
+    ):
+        assert "so the equation was not read or changed" in EXPLANATIONS[code][0]
+    # The deferred and withheld reasons make no such claim: the equation was read.
+    for code in (
+        "image_equation_alt_text_deferred",
+        "image_equation_alt_text_withheld",
+    ):
+        assert "not read" not in EXPLANATIONS[code][0]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "image_equation_something_else",
+        "equation_verification_failed",
+        "Image_equation_draw_unresolved",
+        " image_equation_draw_unresolved",
+        "image_equation_draw_unresolved: provider failed token=SECRET",
+        "image_equation_alt_text_withheld ",
+    ],
+)
+def test_other_equation_reasons_still_map_to_unrecorded(reason):
+    result = SimpleNamespace(manual_issues=[{"issue_id": "a", "reason": reason}])
+    (outcome,) = outcome_accounting([{"id": "a"}], result, published=False)[
+        "issue_outcomes"
+    ]
+    assert outcome["reason_code"] == "manual_reason_unrecorded"
+    assert "SECRET" not in str(outcome)

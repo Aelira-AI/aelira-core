@@ -107,6 +107,7 @@ from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
 from .math_fixer import (
+    IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR,
     IMAGE_EQUATION_EXISTING_OWNER_ERROR,
     MathFixer,
     PendingScannedRegionAssociation,
@@ -149,6 +150,12 @@ _SAVED_FILE_RECEIPT_METHOD = "pdf-finding-presence-v1"
 # still waiting to claim in the saved file.
 _EQUATION_ALT_TEXT_DEFERRED = "image_equation_alt_text_deferred"
 
+# Manual reason for the alt-text finding of an image the specialist recognised as
+# an equation that then failed verification or was rejected. No generic
+# description is written for it, and the equation's own error stays on the
+# equation finding.
+_EQUATION_ALT_TEXT_WITHHELD = "image_equation_alt_text_withheld"
+
 
 class ReviewGatedContentError(RuntimeError):
     """Review-gated visual content was written without a verified gated fix."""
@@ -159,13 +166,14 @@ class _EquationOccurrenceHold:
     """One image draw the equation specialist has taken responsibility for.
 
     ``pending`` marks a verified reading awaiting its saved-file association.
-    ``blocked`` marks an equation that was recognised or refused, so no generic
-    image description may stand in for it. ``alt_text_issue`` is the alt-text
-    finding for the same draw once the alt-text pass has held it back.
+    ``blocked`` marks an equation the specialist recognised but could not prove,
+    so no generic image description may stand in for it. A draw refused before
+    any classification, such as one with an existing owner, is not held at all.
+    ``alt_text_issue`` is the alt-text finding for the same draw once the
+    alt-text pass has held it back.
     """
 
     state: str
-    reason: str
     alt_text_issue: Optional[RemediationIssue] = None
 
 
@@ -1505,9 +1513,7 @@ class PdfRemediator(BaseRemediator):
                         continue
                     if result.pending_association is not None:
                         self._pending_image_equations.append((issue, result))
-                        self._hold_equation_occurrence(
-                            issue, "pending", "image_equation_association_pending"
-                        )
+                        self._hold_equation_occurrence(issue, "pending")
                         self._add_manual_issue(
                             issue,
                             reason="Verified image equation awaits exact content association",
@@ -1517,15 +1523,12 @@ class PdfRemediator(BaseRemediator):
                             ),
                         )
                         continue
-                    if (
-                        result.equation_recognized
-                        or result.error == IMAGE_EQUATION_EXISTING_OWNER_ERROR
-                    ):
-                        self._hold_equation_occurrence(
-                            issue,
-                            "blocked",
-                            result.error or "image_equation_not_verified",
-                        )
+                    # Only an equation the specialist actually recognised holds
+                    # the draw. A refusal made before any classification (an
+                    # existing owner, an unresolved draw) leaves the generic
+                    # alt-text finding for that draw to proceed normally.
+                    if result.equation_recognized:
+                        self._hold_equation_occurrence(issue, "blocked")
                     if result.success:
                         self._structure_modified = True
                         desc = (
@@ -1544,15 +1547,8 @@ class PdfRemediator(BaseRemediator):
                         self._add_manual_issue(
                             issue,
                             reason=result.error or "Could not convert math content",
-                            recommendation=(
-                                "This image already belongs to a tagged structure "
-                                "element. Describe the equation in that element's "
-                                "alternative text, or remediate the source document."
-                                if result.error == IMAGE_EQUATION_EXISTING_OWNER_ERROR
-                                else (
-                                    "Manually add Formula structure elements with "
-                                    "MathML and alt text for mathematical content."
-                                )
+                            recommendation=self._math_manual_recommendation(
+                                result.error
                             ),
                         )
 
@@ -1574,9 +1570,28 @@ class PdfRemediator(BaseRemediator):
                     recommendation="Review and fix manually",
                 )
 
-    def _hold_equation_occurrence(
-        self, issue: RemediationIssue, state: str, reason: str
-    ) -> None:
+    @staticmethod
+    def _math_manual_recommendation(error: Optional[str]) -> str:
+        """Next step for a math finding the specialist left to a person."""
+        if error == IMAGE_EQUATION_EXISTING_OWNER_ERROR:
+            return (
+                "This image is already inside other marked content, such as a "
+                "tagged structure element or an artifact, so the equation was "
+                "not read. Describe the equation in the alternative text of the "
+                "tagged element, or remediate the source document."
+            )
+        if error == IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR:
+            return (
+                "This image could not be matched to exactly one drawing operation "
+                "in the page content, so the equation was not read. Describe the "
+                "equation manually, or remediate the source document."
+            )
+        return (
+            "Manually add Formula structure elements with MathML and alt text "
+            "for mathematical content."
+        )
+
+    def _hold_equation_occurrence(self, issue: RemediationIssue, state: str) -> None:
         """Record that the equation fix owns this image draw.
 
         The key is the displayed-occurrence identity the issue carries, so the
@@ -1591,7 +1606,7 @@ class PdfRemediator(BaseRemediator):
         identity = occurrence_identity(issue.metadata)
         if identity is not None:
             holds = self.__dict__.setdefault("_equation_holds", {})
-            holds[identity] = _EquationOccurrenceHold(state, reason)
+            holds[identity] = _EquationOccurrenceHold(state)
 
     def _defer_alt_text_to_equation(self, issue: RemediationIssue) -> bool:
         """Keep the generic alt-text finding for an equation-held draw manual.
@@ -1628,11 +1643,12 @@ class PdfRemediator(BaseRemediator):
         else:
             self._add_manual_issue(
                 issue,
-                reason=hold.reason,
+                reason=_EQUATION_ALT_TEXT_WITHHELD,
                 recommendation=(
-                    "The image was handled as an equation, so no generic image "
-                    "description was generated for it. Review the equation "
-                    "finding for this image and describe it manually."
+                    "The image was recognised as an equation that could not be "
+                    "verified, so no generic image description was generated "
+                    "for it. Review the equation finding for this image and "
+                    "describe it manually."
                 ),
             )
         return True

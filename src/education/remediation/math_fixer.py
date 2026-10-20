@@ -63,9 +63,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# The target draw already sits inside other semantic marked content, for
-# example the Figure of a tagged source. A Formula cannot be written over it.
+# The target draw already sits inside marked content: a tagged element such as
+# the Figure of a tagged source, or an Artifact scope. A Formula cannot be
+# written over it.
 IMAGE_EQUATION_EXISTING_OWNER_ERROR = "image_equation_existing_owner_unsupported"
+# The target draw cannot be matched to exactly one drawing operation in the page
+# content (an image inside a Form XObject, a draw count that disagrees with the
+# displayed images, or marked content that does not balance). No Formula can be
+# written for it and verified afterwards.
+IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR = "image_equation_draw_unresolved"
 
 
 @dataclass(frozen=True)
@@ -532,12 +538,14 @@ class MathFixer:
         unavailable = self._visual_equation_dependency_error(page_number)
         if unavailable is not None:
             return unavailable
-        # Decide ownership before any provider call can spend on, or describe,
-        # an image that the Formula writer is going to refuse.
-        if self._has_existing_semantic_owner(metadata):
+        # Decide ownership and draw resolution before any provider call can
+        # spend on an image that the Formula writer is going to refuse. Neither
+        # refusal classifies the image, so neither claims it is an equation.
+        refusal = self._image_draw_refusal(metadata)
+        if refusal is not None:
             return MathFixResult(
                 success=False,
-                error=IMAGE_EQUATION_EXISTING_OWNER_ERROR,
+                error=refusal,
                 page_number=page_number,
             )
         try:
@@ -552,32 +560,36 @@ class MathFixer:
             validated, page_number=page_number, scanned_region=False
         )
 
-    def _has_existing_semantic_owner(self, metadata: dict[str, Any]) -> bool:
-        """Whether the target draw is already inside other semantic content.
+    def _image_draw_refusal(self, metadata: dict[str, Any]) -> Optional[str]:
+        """The manual reason for a draw the Formula writer cannot take, if any.
 
-        An undeterminable answer is not a refusal. The writer and the saved-file
-        verification stay authoritative and still fail closed.
+        The target draw is refused when any marked content already encloses it,
+        and when it cannot be resolved to exactly one drawing
+        operation in balanced marked content: the saved-file verification would
+        refuse either one after the provider had been paid. A finding with no
+        usable occurrence identity is not probed here; source extraction rejects
+        it, and the writer and verification stay authoritative.
         """
         from .content_tagger_v2 import image_draw_has_semantic_owner
         from .pdf_image_finding_identity import occurrence_identity
 
         identity = occurrence_identity(metadata)
         if identity is None:
-            return False
+            return None
         page_number, image_xref, image_index, ordinal, bbox, occurrence_id = identity
-        return (
-            image_draw_has_semantic_owner(
-                self.pdf,
-                self.fitz_doc,
-                page_number=page_number,
-                image_xref=image_xref,
-                image_index=image_index,
-                occurrence_ordinal=ordinal,
-                bbox=bbox,
-                occurrence_id=occurrence_id,
-            )
-            is True
+        owned = image_draw_has_semantic_owner(
+            self.pdf,
+            self.fitz_doc,
+            page_number=page_number,
+            image_xref=image_xref,
+            image_index=image_index,
+            occurrence_ordinal=ordinal,
+            bbox=bbox,
+            occurrence_id=occurrence_id,
         )
+        if owned is None:
+            return IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR
+        return IMAGE_EQUATION_EXISTING_OWNER_ERROR if owned else None
 
     def _prepare_scanned_equation_region(
         self, metadata: dict[str, Any]

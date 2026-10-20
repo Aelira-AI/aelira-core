@@ -1725,6 +1725,33 @@ def _form_xobject_reaches_image(
     return False
 
 
+def _marked_content_owner(op: Any) -> tuple[str, int]:
+    """Read one BMC or BDC operator as an owner entry: its tag and its MCID.
+
+    A BMC carries no marked-content id, so its entry is the tag and -1. A BDC
+    needs an inline property dictionary holding an integer /MCID. Anything else
+    cannot be read as a sequence this code can attribute: a property resource
+    name (``/Artifact /MC0 BDC``), a dictionary with no /MCID (``/Artifact
+    << /Type /Layout >> BDC``) or malformed operands. Such a sequence is
+    ``("", -1)``, which is not an Artifact, so it counts as a semantic owner.
+
+    The ownership probe and the saved-file association verification both read
+    every marked-content operator through this one function, so they cannot
+    disagree about what encloses a draw.
+    """
+    try:
+        tag = str(op.operands[0])
+        mcid = int(op.operands[1][Name.MCID]) if str(op.operator) == "BDC" else -1
+        return tag, mcid
+    except Exception:
+        return "", -1
+
+
+def _is_semantic_owner(owner: tuple[str, int]) -> bool:
+    """Whether an owner entry is anything other than a plain Artifact scope."""
+    return owner[0] != "/Artifact"
+
+
 def image_draw_has_semantic_owner(
     pdf: Any,
     fitz_doc: Any,
@@ -1736,18 +1763,23 @@ def image_draw_has_semantic_owner(
     bbox: tuple[float, ...],
     occurrence_id: str,
 ) -> Optional[bool]:
-    """Report whether one exact image draw already sits in semantic marked content.
+    """Report whether one exact image draw already sits inside marked content.
 
-    ``associate_image_formula`` wraps the target ``Do`` in a Formula sequence, and
-    its saved-file verification requires that sequence to be the only marked
-    content around the draw apart from an Artifact scope. A draw that is already
-    inside any other sequence, such as the Figure of a tagged source, can never
-    take that association. The same scope walk and draw resolution are used here
-    so the answer is available before any provider call is made.
+    ``associate_image_formula`` wraps the target ``Do`` in a Formula sequence
+    inside whatever already encloses it. A draw that is inside any marked
+    content, a tagged element such as the Figure of a tagged source or an
+    Artifact scope in any form, cannot take that association. The saved-file
+    verification refuses every sequence except a plain Artifact, and the
+    ownership walk of the saved-file rescan refuses a marked-content id nested
+    in any other sequence, a plain Artifact included. The write would therefore
+    be rejected after the provider had been paid. The same owner parse, scope
+    walk and draw resolution are used here, so the answer is available before
+    any provider call is made.
 
-    Returns True when another non-Artifact sequence encloses the draw, False when
-    none does, and None when the draw cannot be resolved to exactly one content
-    stream operator. None is not an answer about ownership.
+    Returns True when any marked content encloses the draw, False when none
+    does, and None when the draw cannot be resolved to exactly one content
+    stream operator or the page's marked content does not balance. None is not
+    an answer about ownership: the saved file could not be verified either.
     """
     from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 
@@ -1779,19 +1811,22 @@ def image_draw_has_semantic_owner(
             do_indices
         ):
             return None
-        stack: List[str] = []
-        for op in ops[: do_indices[occurrence_ordinal]]:
+        target_index = do_indices[occurrence_ordinal]
+        stack: List[tuple[str, int]] = []
+        owned = False
+        for index, op in enumerate(ops):
             operator = str(op.operator)
             if operator in {"BMC", "BDC"}:
-                try:
-                    stack.append(str(op.operands[0]))
-                except Exception:
-                    stack.append("")
+                stack.append(_marked_content_owner(op))
             elif operator == "EMC":
                 if not stack:
                     return None
                 stack.pop()
-        return any(tag != "/Artifact" for tag in stack)
+            elif index == target_index:
+                owned = bool(stack)
+        if stack:
+            return None
+        return owned
     except Exception:
         return None
 
@@ -4966,14 +5001,7 @@ def verify_image_formula_association(
             for index, op in enumerate(ops):
                 operator = str(op.operator)
                 if operator in {"BMC", "BDC"}:
-                    try:
-                        tag = str(op.operands[0])
-                        mcid_value = (
-                            int(op.operands[1][Name.MCID]) if operator == "BDC" else -1
-                        )
-                        stack.append((tag, mcid_value))
-                    except Exception:
-                        stack.append(("", -1))
+                    stack.append(_marked_content_owner(op))
                 elif operator == "EMC":
                     if not stack:
                         raise ValueError("saved_marked_content_unbalanced")
@@ -4982,7 +5010,7 @@ def verify_image_formula_association(
                     formula_owner = ("/Formula", expected.mcid)
                     has_formula = stack.count(formula_owner) == 1
                     semantic_owners = [
-                        owner for owner in stack if owner[0] != "/Artifact"
+                        owner for owner in stack if _is_semantic_owner(owner)
                     ]
                     if has_formula and semantic_owners != [formula_owner]:
                         raise ValueError("saved_draw_has_additional_semantic_owner")
