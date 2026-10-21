@@ -104,6 +104,39 @@ def _roundtrip(**overrides: object) -> dict[str, object]:
     return value
 
 
+def _consensus(**overrides: object) -> dict[str, object]:
+    from src.education.printed_equation_policy import (
+        PRINTED_VERIFIER_POLICY_SHA256,
+        PRINTED_VERIFIER_POLICY_VERSION,
+        PRINTED_VERIFIER_PROMPT_SHA256,
+    )
+
+    digest = _semantic()["mathml_sha256"]
+    value: dict[str, object] = {
+        "evidence_kind": "printed_equation_consensus_v1",
+        "passed": True,
+        "source_sha256": HASHES[4],
+        "mathml_sha256": digest,
+        "policy_version": PRINTED_VERIFIER_POLICY_VERSION,
+        "policy_sha256": PRINTED_VERIFIER_POLICY_SHA256,
+        "agreement_count": 2,
+        "required_agreement_count": 2,
+        "primary_mathml_sha256": digest,
+        "verifier_mathml_sha256": digest,
+        "primary_response_sha256": HASHES[8],
+        "verifier_response_sha256": HASHES[9],
+        "primary_latex_sha256": HASHES[10],
+        "verifier_latex_sha256": HASHES[11],
+        "primary_provider": "gemini",
+        "primary_model": "vision-model",
+        "verifier_provider": "gemini",
+        "verifier_model": "vision-model",
+        "verifier_prompt_sha256": PRINTED_VERIFIER_PROMPT_SHA256,
+    }
+    value.update(overrides)
+    return value
+
+
 def _standalone_saved(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "evidence_kind": "standalone_formula_saved_v1",
@@ -159,7 +192,7 @@ def _contract(
     contract_kind: str = "printed_equation",
 ) -> dict[str, object]:
     output = semantic or _semantic()
-    proofs = evidence or [_roundtrip(), saved]
+    proofs = evidence or [_roundtrip(), _consensus(), saved]
     specialist = {
         "contract_kind": contract_kind,
         "locator": locator,
@@ -339,7 +372,12 @@ def test_contract_rejects_forged_digests_cross_variants_and_reserved_kinds():
         _contract(
             _embedded_locator(),
             _standalone_saved(),
-            evidence=[_roundtrip(), _roundtrip()],
+            evidence=[_roundtrip(), _roundtrip(), _standalone_saved()],
+        ),
+        _contract(
+            _embedded_locator(),
+            _standalone_saved(),
+            evidence=[_roundtrip(), _standalone_saved()],
         ),
         _contract(
             _embedded_locator(),
@@ -359,7 +397,7 @@ def test_contract_digest_changes_when_ordered_evidence_changes():
     reversed_evidence = _contract(
         _embedded_locator(),
         _standalone_saved(),
-        evidence=[_standalone_saved(), _roundtrip()],
+        evidence=[_standalone_saved(), _roundtrip(), _consensus()],
     )
 
     assert normal["contract_sha256"] != reversed_evidence["contract_sha256"]
@@ -383,7 +421,7 @@ def test_complete_contract_rejects_failed_or_below_threshold_roundtrip(
     raw = _contract(
         _embedded_locator(),
         _standalone_saved(),
-        evidence=[roundtrip, _standalone_saved()],
+        evidence=[roundtrip, _consensus(), _standalone_saved()],
     )
     with pytest.raises(ValidationError):
         PrintedEquationContract.model_validate(raw)
@@ -556,6 +594,10 @@ PRE_V2_MATHML = (
 CANONICAL_V2_MATHML = '<math display="inline"><msup><mi>x</mi><mn>2</mn></msup></math>'
 
 
+def _same(digest: str) -> dict[str, object]:
+    return {"primary_mathml_sha256": digest, "verifier_mathml_sha256": digest}
+
+
 def _printed_contract_for(mathml: str) -> tuple[dict[str, object], dict[str, object]]:
     """Return a self-consistent printed contract and its legacy evidence row."""
     digest = hashlib.sha256(mathml.encode("utf-8")).hexdigest()
@@ -565,7 +607,7 @@ def _printed_contract_for(mathml: str) -> tuple[dict[str, object], dict[str, obj
         _embedded_locator(),
         saved,
         semantic=_semantic(mathml=mathml, mathml_sha256=digest),
-        evidence=[roundtrip, saved],
+        evidence=[roundtrip, _consensus(mathml_sha256=digest, **_same(digest)), saved],
     )
     legacy = {key: value for key, value in roundtrip.items() if key != "evidence_kind"}
     return raw, legacy
@@ -618,3 +660,290 @@ def test_contract_stored_in_the_pre_v2_canonical_form_fails_closed():
     assert "image_equation_visual_contract_invalid" in (
         image_equation_review_blockers([row])
     )
+
+
+# ---------------------------------------------------------------------------
+# Printed-equation second-reading consensus evidence
+# ---------------------------------------------------------------------------
+
+
+def _assert_rejected(model, raw: object, label: str) -> None:
+    try:
+        model.model_validate(raw)
+    except ValidationError:
+        return
+    pytest.fail(f"contract was accepted: {label}")
+
+
+_LOCATOR_SAVED_PAIRS = [
+    pytest.param(_embedded_locator(), _standalone_saved(), id="embedded"),
+    pytest.param(_page_locator(), _scanned_saved(), id="region"),
+]
+
+
+@pytest.mark.parametrize(("locator", "saved"), _LOCATOR_SAVED_PAIRS)
+def test_printed_contract_requires_exactly_roundtrip_consensus_and_saved(
+    locator: dict[str, object], saved: dict[str, object]
+):
+    from src.education.visual_semantic_contract import (
+        PrintedEquationConsensusEvidenceV1,
+        PrintedEquationContract,
+    )
+
+    contract = PrintedEquationContract.model_validate(_contract(locator, saved))
+    kinds = [item.evidence_kind for item in contract.verification_evidence]
+    assert sorted(kinds) == sorted(
+        [
+            "printed_equation_roundtrip_v1",
+            "printed_equation_consensus_v1",
+            saved["evidence_kind"],
+        ]
+    )
+    assert (
+        sum(
+            isinstance(item, PrintedEquationConsensusEvidenceV1)
+            for item in contract.verification_evidence
+        )
+        == 1
+    )
+
+    wrong_shapes = {
+        "no consensus": [_roundtrip(), saved],
+        "no roundtrip": [_consensus(), saved],
+        "no saved": [_roundtrip(), _consensus()],
+        "duplicate consensus": [_roundtrip(), _consensus(), _consensus()],
+        "duplicate consensus beside no roundtrip": [
+            _consensus(),
+            _consensus(verifier_response_sha256=HASHES[12]),
+            saved,
+        ],
+        "duplicate roundtrip": [_roundtrip(), _roundtrip(), saved],
+        "duplicate saved": [_roundtrip(), saved, saved],
+        "four items": [_roundtrip(), _consensus(), saved, _consensus()],
+        "consensus twice, saved once": [_consensus(), _consensus(), saved],
+    }
+    for label, evidence in wrong_shapes.items():
+        _assert_rejected(
+            PrintedEquationContract,
+            _contract(locator, saved, evidence=evidence),
+            label,
+        )
+
+
+def test_consensus_evidence_round_trips_and_is_frozen():
+    from src.education.visual_semantic_contract import VerificationEvidenceAdapter
+
+    evidence = VerificationEvidenceAdapter.validate_python(_consensus())
+
+    assert evidence.model_dump(mode="json") == _consensus()
+    assert evidence.model_config["frozen"] is True
+    assert evidence.model_config["extra"] == "forbid"
+    with pytest.raises(ValidationError):
+        evidence.mathml_sha256 = HASHES[0]
+
+
+def test_consensus_discriminator_is_part_of_the_evidence_union():
+    from src.education.visual_semantic_contract import VerificationEvidenceAdapter
+
+    mapping = VerificationEvidenceAdapter.json_schema()["discriminator"]["mapping"]
+
+    assert mapping["printed_equation_consensus_v1"] == (
+        "#/$defs/PrintedEquationConsensusEvidenceV1"
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"passed": False},
+        {"passed": "yes"},
+        {"agreement_count": 1},
+        {"required_agreement_count": 1},
+        {"agreement_count": 3},
+        {"policy_version": "printed-equation-consensus-v0"},
+        {"policy_sha256": HASHES[0]},
+        {"verifier_prompt_sha256": HASHES[0]},
+        {"source_sha256": "not-a-digest"},
+        {"mathml_sha256": HASHES[0]},
+        {"verifier_mathml_sha256": HASHES[0]},
+        {"primary_mathml_sha256": HASHES[0]},
+        {"primary_response_sha256": "A" * 64},
+        {"verifier_response_sha256": "short"},
+        {"primary_latex_sha256": ""},
+        {"verifier_latex_sha256": HASHES[0][:-1]},
+        {"primary_provider": ""},
+        {"primary_model": ""},
+        {"verifier_provider": ""},
+        {"verifier_model": ""},
+        # A replayed provider answer names its model "cached", which is no model.
+        {"primary_model": "cached"},
+        {"verifier_model": "Cached"},
+        {"primary_provider": " padded "},
+        {"verifier_model": "bad\x00model"},
+        {"verifier_provider": "x" * 201},
+        {"provider_payload": {"secret": True}},
+    ],
+)
+def test_consensus_evidence_rejects_forged_or_incomplete_fields(
+    overrides: dict[str, object],
+):
+    from src.education.visual_semantic_contract import VerificationEvidenceAdapter
+
+    with pytest.raises(ValidationError):
+        VerificationEvidenceAdapter.validate_python(_consensus(**overrides))
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "passed",
+        "source_sha256",
+        "mathml_sha256",
+        "policy_version",
+        "policy_sha256",
+        "agreement_count",
+        "required_agreement_count",
+        "primary_mathml_sha256",
+        "verifier_mathml_sha256",
+        "primary_response_sha256",
+        "verifier_response_sha256",
+        "primary_latex_sha256",
+        "verifier_latex_sha256",
+        "primary_provider",
+        "primary_model",
+        "verifier_provider",
+        "verifier_model",
+        "verifier_prompt_sha256",
+    ],
+)
+def test_consensus_evidence_requires_every_field(missing: str):
+    from src.education.visual_semantic_contract import VerificationEvidenceAdapter
+
+    raw = _consensus()
+    del raw[missing]
+    with pytest.raises(ValidationError):
+        VerificationEvidenceAdapter.validate_python(raw)
+
+
+def test_the_two_readings_must_agree_on_one_mathml_digest():
+    from src.education.visual_semantic_contract import VerificationEvidenceAdapter
+
+    other = HASHES[0]
+    for overrides in (
+        {"verifier_mathml_sha256": other},
+        {"primary_mathml_sha256": other},
+        {"mathml_sha256": other},
+        {"primary_mathml_sha256": other, "verifier_mathml_sha256": other},
+    ):
+        with pytest.raises(ValidationError):
+            VerificationEvidenceAdapter.validate_python(_consensus(**overrides))
+
+
+@pytest.mark.parametrize(("locator", "saved"), _LOCATOR_SAVED_PAIRS)
+def test_contract_binds_consensus_to_its_source_and_semantic_output(
+    locator: dict[str, object], saved: dict[str, object]
+):
+    from src.education.visual_semantic_contract import PrintedEquationContract
+
+    forged = {
+        "consensus for another source": _consensus(source_sha256=HASHES[0]),
+        "consensus for another equation": _consensus(
+            mathml_sha256=HASHES[0],
+            primary_mathml_sha256=HASHES[0],
+            verifier_mathml_sha256=HASHES[0],
+        ),
+    }
+    for label, consensus in forged.items():
+        raw = _contract(locator, saved, evidence=[_roundtrip(), consensus, saved])
+        _assert_rejected(PrintedEquationContract, raw, label)
+
+
+@pytest.mark.parametrize(("locator", "saved"), _LOCATOR_SAVED_PAIRS)
+def test_changing_consensus_evidence_changes_the_contract_digest(
+    locator: dict[str, object], saved: dict[str, object]
+):
+    from src.education.visual_semantic_contract import PrintedEquationContract
+
+    base = _contract(locator, saved)
+    changed = _contract(
+        locator,
+        saved,
+        evidence=[
+            _roundtrip(),
+            _consensus(verifier_response_sha256=HASHES[12]),
+            saved,
+        ],
+    )
+    assert PrintedEquationContract.model_validate(changed)
+    assert changed["contract_sha256"] != base["contract_sha256"]
+    # The specialist output is unchanged, so only the complete contract digest moves.
+    assert changed["specialist_sha256"] == base["specialist_sha256"]
+
+    forged = {**changed, "contract_sha256": base["contract_sha256"]}
+    with pytest.raises(ValidationError):
+        PrintedEquationContract.model_validate(forged)
+
+
+def test_contract_stored_with_only_two_evidence_items_fails_closed():
+    """A contract written before the second reading existed never validates."""
+    from src.education.visual_semantic_contract import (
+        PrintedEquationContract,
+        VisualSemanticContractAdapter,
+    )
+    from src.services.scan_fix_service import (
+        image_equation_review_blockers,
+        validated_visual_semantic_contract,
+        visual_semantic_disposition,
+    )
+
+    current, evidence = _printed_contract_for(CANONICAL_V2_MATHML)
+    digest = hashlib.sha256(CANONICAL_V2_MATHML.encode("utf-8")).hexdigest()
+    saved = _standalone_saved(mathml_sha256=digest)
+    two_items = _contract(
+        _embedded_locator(),
+        saved,
+        semantic=_semantic(mathml=CANONICAL_V2_MATHML, mathml_sha256=digest),
+        evidence=[_roundtrip(mathml_sha256=digest), saved],
+    )
+
+    # Positive control: the same row with its consensus item is complete.
+    assert PrintedEquationContract.model_validate(current)
+    assert visual_semantic_disposition(_stored_row(current, evidence)) == "complete"
+
+    with pytest.raises(ValidationError):
+        PrintedEquationContract.model_validate(two_items)
+    with pytest.raises(ValidationError):
+        VisualSemanticContractAdapter.validate_python(two_items)
+    assert validated_visual_semantic_contract(two_items) is None
+    row = _stored_row(two_items, evidence)
+    assert visual_semantic_disposition(row) == "invalid"
+    blockers = image_equation_review_blockers([row])
+    assert "image_equation_visual_contract_invalid" in blockers
+    assert "image_equation_provenance_invalid" in blockers
+    assert "image_equation_not_human_approved" in blockers
+
+
+def test_service_binding_repeats_the_consensus_policy_pin(monkeypatch):
+    from src.services import scan_fix_service
+
+    current, evidence = _printed_contract_for(CANONICAL_V2_MATHML)
+    row = _stored_row(current, evidence)
+    assert scan_fix_service.visual_semantic_disposition(row) == "complete"
+
+    monkeypatch.setattr(
+        scan_fix_service, "PRINTED_VERIFIER_POLICY_SHA256", HASHES[0], raising=True
+    )
+    assert scan_fix_service.visual_semantic_disposition(row) == "invalid"
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        scan_fix_service, "PRINTED_VERIFIER_PROMPT_SHA256", HASHES[0], raising=True
+    )
+    assert scan_fix_service.visual_semantic_disposition(row) == "invalid"
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        scan_fix_service,
+        "PRINTED_VERIFIER_POLICY_VERSION",
+        "printed-equation-consensus-v0",
+        raising=True,
+    )
+    assert scan_fix_service.visual_semantic_disposition(row) == "invalid"

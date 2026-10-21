@@ -26,6 +26,8 @@ import re
 import logging
 
 from src.ai.providers import get_provider_manager
+from src.education.math_speech import SPOKEN_MATH_INSTRUCTION, refuse_math_markup
+from src.education.model_json import parse_tolerant
 from src.education.color_blindness_simulator import (
     ColorBlindnessSimulator,
     ColorBlindnessAnalysisResult,
@@ -1132,7 +1134,9 @@ Respond in JSON format:
     "issues": ["list of specific issues if any"],
     "reasoning": "brief explanation",
     "suggested_improvement": "improved alt text if needed"
-}}"""
+}}
+
+{SPOKEN_MATH_INSTRUCTION} This applies to suggested_improvement."""
 
                 result = self.llm_client.generate_text_sync(
                     prompt=prompt, max_tokens=300, temperature=0.2
@@ -1147,7 +1151,17 @@ Respond in JSON format:
                         # Extract JSON from response
                         json_match = re.search(r"\{[^}]+\}", content, re.DOTALL)
                         if json_match:
-                            parsed = json.loads(json_match.group())
+                            parsed, swallowed = parse_tolerant(json_match.group())
+                            # A suggested replacement that carries mathematical
+                            # markup, or that comes from an answer with a swallowed
+                            # command repaired in it, is withheld, never rewritten.
+                            suggestion = parsed.get("suggested_improvement")
+                            if isinstance(suggestion, str):
+                                suggestion = (
+                                    None
+                                    if swallowed
+                                    else refuse_math_markup(suggestion)
+                                )
                             if not parsed.get("is_valid", True):
                                 is_valid = False
                                 issues.extend(parsed.get("issues", []))
@@ -1155,9 +1169,7 @@ Respond in JSON format:
                                 "is_valid": parsed.get("is_valid", is_valid),
                                 "issues": list(set(issues + parsed.get("issues", []))),
                                 "reasoning": parsed.get("reasoning", ""),
-                                "suggested_improvement": parsed.get(
-                                    "suggested_improvement"
-                                ),
+                                "suggested_improvement": suggestion,
                             }
                     except json.JSONDecodeError:
                         logger.warning(

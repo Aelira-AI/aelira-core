@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from src.education.remediation.base import FixedIssue, IssueCategory, IssueSeverity
 from tests.test_visual_semantic_contract import (
+    _consensus,
     _contract,
     _roundtrip,
     _scanned_saved,
@@ -142,7 +143,7 @@ def _fix(**overrides):
             locator,
             saved,
             semantic=semantic,
-            evidence=[_roundtrip(), saved],
+            evidence=[_roundtrip(), _consensus(), saved],
         )
     return FixedIssue(**values)
 
@@ -250,17 +251,25 @@ def test_visual_contract_persistence_covers_both_locator_and_saved_variants():
     assert embedded.visual_semantic_contract["locator"]["source_kind"] == (
         "embedded_image_occurrence"
     )
-    assert (
-        embedded.visual_semantic_contract["verification_evidence"][1]["evidence_kind"]
-        == "standalone_formula_saved_v1"
-    )
+    assert [
+        item["evidence_kind"]
+        for item in embedded.visual_semantic_contract["verification_evidence"]
+    ] == [
+        "printed_equation_roundtrip_v1",
+        "printed_equation_consensus_v1",
+        "standalone_formula_saved_v1",
+    ]
     assert scanned.visual_semantic_contract["locator"]["source_kind"] == (
         "page_raster_region"
     )
-    assert (
-        scanned.visual_semantic_contract["verification_evidence"][1]["evidence_kind"]
-        == "scanned_region_formula_saved_v1"
-    )
+    assert [
+        item["evidence_kind"]
+        for item in scanned.visual_semantic_contract["verification_evidence"]
+    ] == [
+        "printed_equation_roundtrip_v1",
+        "printed_equation_consensus_v1",
+        "scanned_region_formula_saved_v1",
+    ]
 
 
 def test_review_digest_is_mapping_order_stable_and_list_order_sensitive():
@@ -1239,3 +1248,231 @@ def test_exact_legacy_nonvisual_replay_bootstraps_digests_without_resetting_appr
     assert not any(
         isinstance(call.args[0], ReviewAuditLog) for call in db.add.call_args_list
     )
+
+
+# ---------------------------------------------------------------------------
+# Printed-equation second-reading consensus in the durable contract
+# ---------------------------------------------------------------------------
+
+_SAVED_KINDS = {"standalone_formula_saved_v1", "scanned_region_formula_saved_v1"}
+
+
+def _contract_with(
+    fix, *, consensus=None, saved_file_sha256=None, drop_consensus=False
+) -> dict:
+    """The fix's contract as JSON, rebuilt with consistent digests."""
+    from src.education.visual_semantic_contract import canonical_sha256
+
+    raw = fix.visual_semantic_contract.model_dump(mode="json")
+    evidence = []
+    for item in raw["verification_evidence"]:
+        item = dict(item)
+        if item["evidence_kind"] == "printed_equation_consensus_v1":
+            if drop_consensus:
+                continue
+            item.update(consensus or {})
+        if item["evidence_kind"] in _SAVED_KINDS and saved_file_sha256:
+            item["saved_file_sha256"] = saved_file_sha256
+        evidence.append(item)
+    material = {**raw, "verification_evidence": evidence}
+    del material["contract_sha256"]
+    material["contract_sha256"] = canonical_sha256(material)
+    return material
+
+
+def _approved_row(fix):
+    from src.services.scan_fix_service import build_scan_fix
+
+    row = build_scan_fix("scan-1", fix)
+    row.review_status = "approved"
+    row.reviewed_by = "user-1"
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.approved_review_digest = row.review_digest
+    return row
+
+
+def test_changing_consensus_evidence_changes_the_review_digest_and_approval():
+    from src.services.scan_fix_service import (
+        bind_fix_review_decision,
+        build_scan_fix,
+        image_equation_review_blockers,
+    )
+
+    base = _fix()
+    changed = _fix(
+        visual_semantic_contract=_contract_with(
+            base, consensus={"verifier_response_sha256": "c" * 64}
+        )
+    )
+    row = _approved_row(base)
+    changed_row = build_scan_fix("scan-1", changed)
+
+    assert row.review_digest != changed_row.review_digest
+    assert changed_row.review_digest is not None
+    # Positive control: the approved original has no blockers.
+    assert image_equation_review_blockers([row]) == []
+
+    # The same occurrence now carries different consensus evidence.
+    row.visual_semantic_contract = changed_row.visual_semantic_contract
+    blockers = image_equation_review_blockers([row])
+    assert "image_equation_review_digest_invalid" in blockers
+    assert "image_equation_approval_digest_invalid" in blockers
+    with pytest.raises(ValueError, match="incomplete or stale"):
+        bind_fix_review_decision(row, "approve")
+    # Re-approving the changed row binds its own digest.
+    bind_fix_review_decision(changed_row, "approve")
+    assert changed_row.approved_review_digest == changed_row.review_digest
+
+
+@pytest.mark.parametrize(
+    "locator", [None, _locator()], ids=["embedded_image", "page_region"]
+)
+def test_rows_stored_before_the_second_reading_fail_closed(locator):
+    """A stored two-item contract is invalid: no approval, no delivery, no crash."""
+    from src.api.education.remediation_routes import _artifact_review_blockers
+    from src.api.review_routes import _fix_summary
+    from src.db.models import RemediationOutcome, Scan, ScanFix, ScanStatus
+    from src.education.visual_semantic_contract import (
+        PrintedEquationContract,
+        VisualSemanticContractAdapter,
+    )
+    from src.services.remediation_artifact_service import (
+        ArtifactAuthorizationError,
+        RemediationArtifactService,
+    )
+    from src.services.scan_fix_service import (
+        image_equation_review_blockers,
+        validate_fix_review_action,
+        validated_visual_semantic_contract,
+        visual_semantic_disposition,
+    )
+
+    fix = _fix(source_locator=locator) if locator else _fix()
+    row = _approved_row(fix)
+    scan = SimpleNamespace(
+        id="scan-1",
+        status=ScanStatus.COMPLETED,
+        remediation_outcome=RemediationOutcome.COMPLETED.value,
+    )
+    artifact = SimpleNamespace(scan_id=scan.id, review_status="pending")
+    db = MagicMock()
+
+    def query(model):
+        chain = MagicMock()
+        chain.filter.return_value = chain
+        chain.with_for_update.return_value = chain
+        chain.populate_existing.return_value = chain
+        if model is Scan:
+            chain.one_or_none.return_value = scan
+        elif model is ScanFix:
+            chain.all.return_value = [row]
+        return chain
+
+    db.query.side_effect = query
+    service = RemediationArtifactService.__new__(RemediationArtifactService)
+
+    # Positive control: the approved current-format row delivers.
+    assert visual_semantic_disposition(row) == "complete"
+    assert image_equation_review_blockers([row]) == []
+    assert not [
+        blocker
+        for blocker in _artifact_review_blockers(db, scan, artifact)
+        if blocker.startswith("image_equation_")
+    ]
+    assert _fix_summary(row).visual_semantic_contract is not None
+
+    # The same row as an older release stored it: two evidence items.
+    legacy = _contract_with(fix, drop_consensus=True)
+    assert len(legacy["verification_evidence"]) == 2
+    row.visual_semantic_contract = legacy
+
+    with pytest.raises(ValidationError):
+        PrintedEquationContract.model_validate(legacy)
+    with pytest.raises(ValidationError):
+        VisualSemanticContractAdapter.validate_python(legacy)
+    assert validated_visual_semantic_contract(legacy) is None
+    assert visual_semantic_disposition(row) == "invalid"
+
+    # Approval is refused, even though the stored row says it was approved.
+    with pytest.raises(ValueError, match="incomplete or stale"):
+        validate_fix_review_action(row, "approve")
+    blockers = image_equation_review_blockers([row])
+    assert "image_equation_visual_contract_invalid" in blockers
+    assert "image_equation_provenance_invalid" in blockers
+    assert "image_equation_review_digest_invalid" in blockers
+    assert "image_equation_approval_digest_invalid" in blockers
+
+    # Download stays gated, on the same path the routes and the service use.
+    route_blockers = _artifact_review_blockers(db, scan, artifact)
+    assert "image_equation_visual_contract_invalid" in route_blockers
+    with pytest.raises(ArtifactAuthorizationError, match="human review"):
+        service._require_approvable_review(db, artifact, scan)
+
+    # The review routes can still describe the row, and say it is invalid.
+    summary = _fix_summary(row).model_dump(mode="json")
+    assert summary["visual_semantic_disposition"] == "invalid"
+    assert summary["visual_semantic_contract"] is None
+
+
+def test_consensus_evidence_survives_the_subprocess_wire_and_persistence(tmp_path):
+    from src.education.remediation.output_claim import DescriptorBoundOutputClaim
+    from src.jobs.remediation_subprocess import (
+        RemediationSubprocessError,
+        SubprocessRemediationResult,
+        _json_record,
+    )
+    from src.services.scan_fix_service import build_scan_fix
+
+    artifact = tmp_path / "queued.pdf"
+    artifact.write_bytes(b"exact queued artifact bytes")
+    artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    base = _fix()
+    fix = _fix(
+        visual_semantic_contract=_contract_with(base, saved_file_sha256=artifact_sha256)
+    )
+    expected = next(
+        item
+        for item in fix.visual_semantic_contract.model_dump(mode="json")[
+            "verification_evidence"
+        ]
+        if item["evidence_kind"] == "printed_equation_consensus_v1"
+    )
+
+    wire = json.loads(
+        json.dumps(
+            {"fixed_issues": [_json_record(fix)]},
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    )
+    claim = DescriptorBoundOutputClaim.from_path(
+        artifact, display_path=str(artifact), mime="application/pdf"
+    )
+    result = SubprocessRemediationResult(wire, claim)
+    queued = result.fixed_issues[0]
+    persisted = build_scan_fix("scan-queued", queued)
+
+    kinds = [
+        item["evidence_kind"]
+        for item in persisted.visual_semantic_contract["verification_evidence"]
+    ]
+    assert kinds == [
+        "printed_equation_roundtrip_v1",
+        "printed_equation_consensus_v1",
+        "standalone_formula_saved_v1",
+    ]
+    assert persisted.visual_semantic_contract["verification_evidence"][1] == expected
+    result.close_output_claim()
+
+    # A forged consensus digest in the child's record is refused at the boundary.
+    forged = json.loads(json.dumps(wire))
+    consensus = forged["fixed_issues"][0]["visual_semantic_contract"][
+        "verification_evidence"
+    ][1]
+    consensus["verifier_mathml_sha256"] = "0" * 64
+    claim = DescriptorBoundOutputClaim.from_path(
+        artifact, display_path=str(artifact), mime="application/pdf"
+    )
+    with pytest.raises(RemediationSubprocessError, match="^remediation_failed$"):
+        SubprocessRemediationResult(forged, claim)
+    claim.close()

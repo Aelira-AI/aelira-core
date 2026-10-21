@@ -1701,6 +1701,10 @@ async def _finish_brightspace_pdf_remediation(
         try:
             claim_metadata = _safe_pdf_claim_metadata(result)
             _validate_brightspace_pdf_claim(result, claim_metadata)
+            from ..education.remediation.image_equation_gate import (
+                contains_image_equation_fixes,
+            )
+
             artifact_service = RemediationArtifactService.from_settings()
             with result.open_output_stream() as source_stream:
                 published = artifact_service.claim_and_publish_stream(
@@ -1724,6 +1728,9 @@ async def _finish_brightspace_pdf_remediation(
                         "manual_count": manual,
                         "failed_count": failed,
                         "remaining_count": manual + failed,
+                        "requires_approval": contains_image_equation_fixes(
+                            getattr(result, "fixed_issues", ())
+                        ),
                     },
                     commit=False,
                 )

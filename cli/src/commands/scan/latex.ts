@@ -14,7 +14,7 @@ export default class ScanLatex extends Command {
       required: true,
     }),
   }
-static description = 'Convert LaTeX equations to accessible MathML with ARIA labels (supports ChemFig, mhchem, physics notation, TikZ)'
+static description = 'Convert LaTeX equations to MathML (supports ChemFig, mhchem, physics notation, TikZ). Model-drafted equation descriptions are kept as review drafts and never written as ARIA labels.'
 static examples = [
     '<%= config.bin %> <%= command.id %> equations.tex',
     '<%= config.bin %> <%= command.id %> ./latex-files/',
@@ -179,10 +179,6 @@ static flags = {
 
     if (result.mathml_content) {
       this.log(`  ✓ MathML generated successfully`)
-    }
-
-    if (result.aria_labels_generated > 0) {
-      this.log(`  ✓ ${result.aria_labels_generated} ARIA labels generated`)
     }
 
     if (result.errors && result.errors.length > 0) {

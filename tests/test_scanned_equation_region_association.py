@@ -37,6 +37,7 @@ from src.education.remediation.math_fixer import (
     PendingScannedRegionAssociation,
 )
 from src.education.remediation.pdf_structure import PDFStructureTree
+from tests.printed_equation_fixtures import consensus_evidence_for
 
 MATHML = "<math><mrow><mi>x</mi><mo>+</mo><mi>y</mi><mo>=</mo><mn>2</mn></mrow></math>"
 
@@ -136,6 +137,9 @@ def _pending(
         provider_used="test-provider",
         model_used="test-model",
         verification_evidence=evidence,
+        consensus_evidence=consensus_evidence_for(
+            MATHML, source_sha256=validated.normalized_sha256
+        ),
     )
 
 
@@ -602,6 +606,7 @@ def _configured_region_writer(
         model_used=pending.model_used,
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator(
         str(source),

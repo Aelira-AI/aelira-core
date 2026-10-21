@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+from src.education.remediation.equation_verifier import canonicalize_mathml
 from src.education.remediation.math_fixer import MathFixer
+from tests.printed_equation_fixtures import (
+    PRIMARY_RESPONSE_SHA256,
+    StubSecondReader,
+    primary_reading,
+)
 
 METADATA = {
     "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
@@ -39,6 +45,7 @@ class Recognizer:
             latex="x^2 + 1 = 0",
             provider="gemini",
             model="vision-model",
+            response_sha256=PRIMARY_RESPONSE_SHA256,
         )
 
 
@@ -65,7 +72,13 @@ class LeakyEvidence(Evidence):
 
 
 class Verifier:
+    """A passing visual check over the canonical MathML the real one renders."""
+
     def __init__(self, mathml, *, passed=True):
+        try:
+            mathml = canonicalize_mathml(mathml)
+        except ValueError:
+            pass
         self.evidence = Evidence(
             passed=passed,
             source_sha256="a" * 64,
@@ -76,13 +89,16 @@ class Verifier:
     def verify(self, image, latex):
         return self.evidence
 
+    def canonicalize_mathml(self, mathml):
+        return canonicalize_mathml(mathml)
+
 
 class StructTree:
     def add_formula(self, **kwargs):
         raise AssertionError("staged image equation must not mutate before Task 7")
 
 
-def fixer(verifier):
+def fixer(verifier, second_reader=None):
     return MathFixer(
         SimpleNamespace(pages=[object()]),
         SimpleNamespace(),
@@ -91,12 +107,13 @@ def fixer(verifier):
         image_source=Source(),
         equation_recognizer=Recognizer(),
         equation_verifier=verifier,
+        printed_equation_second_reader=second_reader or StubSecondReader(),
     )
 
 
 def test_verified_image_equation_stages_typed_mandatory_review_request():
     candidate = fixer(Verifier("unused"))
-    mathml = candidate._convert_to_mathml("x^2 + 1 = 0")
+    mathml = canonicalize_mathml(candidate._convert_to_mathml("x^2 + 1 = 0"))
     candidate.equation_verifier = Verifier(mathml)
 
     result = candidate._fix_math_issue(SimpleNamespace(metadata=METADATA))
@@ -115,6 +132,11 @@ def test_verified_image_equation_stages_typed_mandatory_review_request():
     assert result.pending_association.provider_used == "gemini"
     assert result.pending_association.model_used == "vision-model"
     assert result.pending_association.mathml_string == mathml
+    assert result.consensus_evidence is not None
+    assert result.pending_association.consensus_evidence == result.consensus_evidence
+    assert result.consensus_evidence.mathml_sha256 == (
+        result.verification_evidence.mathml_sha256
+    )
     assert "<mtext" not in mathml
     assert result.verification_evidence.passed is True
     assert not hasattr(result.verification_evidence, "latex")
@@ -154,7 +176,9 @@ def test_mathml_digest_mismatch_fails_closed():
 
 
 def test_injected_verification_extra_fields_cannot_enter_pending_evidence():
-    mathml = fixer(Verifier("unused"))._convert_to_mathml("x^2 + 1 = 0")
+    mathml = canonicalize_mathml(
+        fixer(Verifier("unused"))._convert_to_mathml("x^2 + 1 = 0")
+    )
 
     class LeakyVerifier(Verifier):
         def __init__(self):
@@ -204,18 +228,15 @@ def test_printed_path_embeds_exactly_the_canonical_form_the_verifier_rendered():
 
     class BracedRecognizer:
         def recognize(self, payload):
-            return SimpleNamespace(
-                classification="printed_equation",
-                latex="x^{2} + 1 = 0",
-                provider="gemini",
-                model="vision-model",
-            )
+            return primary_reading("x^{2} + 1 = 0")
 
     candidate = fixer(Verifier("unused"))
     assert "<mrow><mn>2</mn></mrow>" in candidate._convert_to_mathml("x^{2} + 1 = 0")
     candidate.equation_recognizer = BracedRecognizer()
     candidate.image_source.payload.jpeg_bytes = payload
     candidate.image_source.payload.normalized_sha256 = digest
+    # The second reading writes the same equation without braces.
+    candidate.printed_equation_second_reader = StubSecondReader("x^2 + 1 = 0")
     candidate.equation_verifier = EquationVerifier(
         renderer=lambda mathml: rendered_inputs.append(mathml) or payload
     )

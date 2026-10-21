@@ -12,6 +12,7 @@ This module provides functionality to:
 8. Full transcript generation combining audio and visual descriptions
 """
 
+import hashlib
 from typing import List, Dict, Literal, Optional, Tuple
 from pydantic import BaseModel, model_validator
 import subprocess
@@ -23,6 +24,11 @@ import math
 from datetime import timedelta
 
 # Import speaker diarization module
+from src.education.math_speech import (
+    MATH_NOT_SPEAKABLE_ERROR,
+    SPOKEN_MATH_INSTRUCTION,
+    refuse_math_markup,
+)
 from src.education.speaker_diarization import (
     SpeakerDiarizer,
     DiarizationResult,
@@ -35,6 +41,14 @@ from src.education.media_inputs import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The durable recorder returns a stored result for a repeated request without
+# calling the provider. The scene-description prompt now asks for plain spoken
+# words and the answer is refused when it carries mathematical markup, so a
+# description stored under the old prompt is not replayed.
+_AUDIO_DESCRIPTION_FINGERPRINT = hashlib.sha256(
+    b"audio-description-request-spoken-math-v2"
+).hexdigest()
 
 
 class TranscriptionSegment(BaseModel):
@@ -1655,7 +1669,7 @@ class MultimediaProcessor:
                 image_data = f.read()
 
             # Create prompt for audio description
-            prompt = """Analyze this video frame and provide an audio description for blind users.
+            prompt = f"""Analyze this video frame and provide an audio description for blind users.
 
 Focus on:
 1. Main actions happening in the scene
@@ -1664,6 +1678,8 @@ Focus on:
 4. Any visual information essential to understanding the content
 
 Provide a concise description (1-2 sentences) suitable for reading aloud between dialogue.
+
+{SPOKEN_MATH_INSTRUCTION}
 
 Format: Just the description text, no labels or explanations."""
 
@@ -1684,6 +1700,16 @@ Format: Just the description text, no labels or explanations."""
                         "model": raw_result.get("model"),
                     }
                 description = description.strip()
+                # A refused chart description does not fall back to an unchecked
+                # scene description: this one is held to the same rule and is
+                # dropped when it carries mathematical markup.
+                if refuse_math_markup(description) is None:
+                    return {
+                        "success": False,
+                        "error": MATH_NOT_SPEAKABLE_ERROR,
+                        "provider": raw_result.get("provider"),
+                        "model": raw_result.get("model"),
+                    }
                 return {
                     "success": True,
                     "description": description,
@@ -1704,6 +1730,7 @@ Format: Just the description text, no labels or explanations."""
                             "kind": "media_frame",
                             "timestamp_ms": max(0, int(timestamp * 1000)),
                         },
+                        request_fingerprint=_AUDIO_DESCRIPTION_FINGERPRINT,
                         invoke=invoke_audio_description,
                     )
                 )

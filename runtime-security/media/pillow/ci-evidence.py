@@ -53,7 +53,7 @@ CONSUMERS = (
     "src/education/handwritten_math_suitability.py",
 )
 ACCEPTED_CONSUMERS = {
-    "src/education/remediation/pdf_remediator.py": "07fa041ffb1a7194d37aeef5f3f7aab0da3f2ae169f33e923abea28b06467f8e",
+    "src/education/remediation/pdf_remediator.py": "afdc34838658a7d854c84791317a71767637947127465aaaf2750c4dde61277c",
     "src/education/handwritten_math_suitability.py": "310e239e7837e12e22a3ee14a831f38cf163360959675f7ae0ad149c4a5ddf50",
 }
 PYTHON_INPUTS = (

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -15,6 +13,12 @@ from src.education.handwritten_math_suitability import (
 )
 
 from .equation_image_source import ValidatedEquationRaster
+from .equation_reading_parser import (
+    EquationReadingRejected,
+    parse_equation_reading,
+    reading_max_tokens,
+    response_is_cached,
+)
 
 HandwrittenEquationClassification = Literal[
     "handwritten_equation", "not_handwritten_math", "unsupported_notation"
@@ -52,6 +56,9 @@ def _bounded_identity(value: Any) -> str | None:
         or value != value.strip()
         or not value.isprintable()
         or "\x00" in value
+        # The provider manager names a replayed answer's model "cached", which is
+        # not the name of any model.
+        or value.casefold() == "cached"
     ):
         return None
     return value
@@ -73,51 +80,22 @@ def _validate_source(source: ValidatedEquationRaster) -> bytes:
 def _parse_hmer_content(
     content: Any, *, max_latex_chars: int, max_response_chars: int
 ) -> tuple[HandwrittenEquationClassification, str | None]:
-    if (
-        not isinstance(content, str)
-        or not content
-        or len(content) > max_response_chars
-        or content.strip() != content
-    ):
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise HandwrittenEquationRecognitionRejected(
-                    "invalid_provider_response"
-                )
-            result[key] = value
-        return result
-
     try:
-        parsed = json.loads(content, object_pairs_hook=reject_duplicates)
-    except HandwrittenEquationRecognitionRejected:
-        raise
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        classification, latex = parse_equation_reading(
+            content,
+            equation_classification="handwritten_equation",
+            null_classifications=frozenset(
+                {"not_handwritten_math", "unsupported_notation"}
+            ),
+            max_latex_chars=max_latex_chars,
+            max_response_chars=max_response_chars,
+            require_clean_latex=True,
+        )
+    except EquationReadingRejected:
         raise HandwrittenEquationRecognitionRejected(
             "invalid_provider_response"
-        ) from exc
-    if not isinstance(parsed, dict) or set(parsed) != {"classification", "latex"}:
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-    classification = parsed["classification"]
-    latex = parsed["latex"]
-    if classification in {"not_handwritten_math", "unsupported_notation"}:
-        if latex is not None:
-            raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-        return classification, None
-    if classification != "handwritten_equation" or not isinstance(latex, str):
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-    if (
-        not latex
-        or latex != latex.strip()
-        or len(latex) > max_latex_chars
-        or any(not character.isprintable() for character in latex)
-        or re.search(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069]", latex)
-    ):
-        raise HandwrittenEquationRecognitionRejected("invalid_provider_response")
-    return classification, latex
+        ) from None
+    return classification, latex  # type: ignore[return-value]
 
 
 def _call_hmer_client(
@@ -137,7 +115,7 @@ def _call_hmer_client(
         response = client.analyze_image_sync(
             image_data=payload,
             prompt=prompt,
-            max_tokens=500,
+            max_tokens=reading_max_tokens(max_latex_chars),
         )
     except Exception:
         raise HandwrittenEquationRecognitionRejected("provider_failure") from None
@@ -152,8 +130,13 @@ def _call_hmer_client(
     provider = _bounded_identity(response.get("provider")) or _bounded_identity(
         getattr(client, "provider", None)
     )
-    model = _bounded_identity(response.get("model")) or _bounded_identity(
-        getattr(client, "model", None)
+    # A replayed answer names no model, and the client's own model is not evidence
+    # of who wrote it, so no model is recorded for it and the reading is refused.
+    model = (
+        None
+        if response_is_cached(response)
+        else _bounded_identity(response.get("model"))
+        or _bounded_identity(getattr(client, "model", None))
     )
     if provider is None or model is None:
         raise HandwrittenEquationRecognitionRejected("provider_identity_unavailable")

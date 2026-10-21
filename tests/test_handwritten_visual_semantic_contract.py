@@ -328,3 +328,24 @@ def test_stored_policy_v1_handwritten_row_is_invalid_not_a_crash():
     blockers = image_equation_review_blockers([legacy])
     assert "image_equation_visual_contract_invalid" in blockers
     assert "image_equation_evidence_invalid" in blockers
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # A replayed provider answer is labelled "cached", which names no model.
+        {"primary_model": "cached"},
+        {"verifier_model": "Cached"},
+        {"primary_model": "CACHED"},
+    ],
+)
+def test_handwritten_consensus_evidence_refuses_a_cached_model(overrides):
+    from pydantic import ValidationError
+
+    from src.education.visual_semantic_contract import (
+        HandwrittenEquationConsensusEvidenceV1,
+    )
+
+    assert HandwrittenEquationConsensusEvidenceV1.model_validate(_consensus())
+    with pytest.raises(ValidationError):
+        HandwrittenEquationConsensusEvidenceV1.model_validate(_consensus(**overrides))

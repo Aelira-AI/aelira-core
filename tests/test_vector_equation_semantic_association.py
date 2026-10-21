@@ -492,3 +492,53 @@ def test_existing_semantic_owner_around_vector_span_is_ambiguous(tmp_path):
             for stream in streams
         )
         assert after == before
+
+
+class _AmbiguousRecognizer(_Recognizer):
+    def __init__(self, latex: str) -> None:
+        super().__init__()
+        self.latex = latex
+
+    def recognize(self, raster):
+        from src.education.remediation.equation_recognizer import EquationRecognition
+
+        self.calls += 1
+        return EquationRecognition(
+            classification="printed_equation",
+            latex=self.latex,
+            provider="fixture-provider",
+            model="fixture-model",
+        )
+
+
+class _AnyReadingVerifier(_Verifier):
+    def verify(self, raster, latex):
+        return super().verify(raster, "x = y")
+
+
+@pytest.mark.parametrize("latex", [r"x^{n}+1", r"\frac12", r"x^{n}y", r"\bar{x} = y"])
+def test_a_reading_whose_label_would_garble_is_rejected_before_association(
+    tmp_path, latex
+):
+    source = tmp_path / "source.pdf"
+    _write_vector_pdf(source)
+    cluster = VectorEquationClusterDetector().find_clusters(source)[0]
+    recognizer = _AmbiguousRecognizer(latex)
+
+    with pytest.raises(ValueError, match="vector_equation_alt_text_ambiguous"):
+        plan_vector_equation_semantics(
+            source, cluster, recognizer, _AnyReadingVerifier()
+        )
+    assert recognizer.calls == 1
+
+
+def test_a_reading_with_a_clear_label_still_gets_its_plan(tmp_path):
+    source = tmp_path / "source.pdf"
+    _write_vector_pdf(source)
+    cluster = VectorEquationClusterDetector().find_clusters(source)[0]
+
+    owner = plan_vector_equation_semantics(
+        source, cluster, _AmbiguousRecognizer("x = y"), _AnyReadingVerifier()
+    )
+
+    assert owner.semantic_output.alt_text == "x = y"

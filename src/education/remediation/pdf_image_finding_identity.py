@@ -13,7 +13,7 @@ import math
 import re
 import zlib
 from io import BytesIO
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, cast
@@ -23,7 +23,10 @@ import pymupdf as fitz
 from PIL import Image
 
 from ..pdf_checks.image_checker import _displayed_image_occurrences
-from ..pdf_checks.image_semantics import structured_image_semantics
+from ..pdf_checks.image_semantics import (
+    FigureFailureEvidence,
+    structured_image_semantics,
+)
 from ..pdf_checks.completeness import require_complete_pdf_scan
 from .base import IssueCategory, RemediationIssue
 from .content_tagger_v2 import (
@@ -40,6 +43,9 @@ _RENDER_DPI = (72, 144)
 _MAX_RENDER_BYTES = 256 * 1024 * 1024
 _MAX_IMAGE_WORK_BYTES = 256 * 1024 * 1024
 _IGNORED_STREAM_KEYS = frozenset({"/Length", "/StructParent", "/StructParents"})
+_FIGURE_FAILURE_DETAILS = re.compile(
+    r"([0-9]+) of ([0-9]+) figures missing /Alt or /ActualText"
+)
 
 
 @dataclass(frozen=True)
@@ -59,8 +65,14 @@ class SavedImageCorrespondence:
     accessible: frozenset[tuple[int, int]]
 
 
-def _identity(issue: RemediationIssue) -> tuple[Any, ...] | None:
-    metadata = issue.metadata
+def occurrence_identity(metadata: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """Return the displayed-occurrence identity carried in finding metadata.
+
+    The identity is page, image xref, image index, occurrence ordinal, bounding
+    box and occurrence id. Any missing, mistyped or malformed part yields None.
+    Findings that describe the same draw agree on this tuple even when they
+    word their location differently.
+    """
     values = [
         metadata.get(key)
         for key in ("page_number", "image_xref", "image_index", "occurrence_ordinal")
@@ -85,9 +97,17 @@ def _identity(issue: RemediationIssue) -> tuple[Any, ...] | None:
         r"imgocc-v1-[0-9a-f]{24}", occurrence_id
     ):
         return None
+    return page, xref, index, ordinal, bbox, occurrence_id
+
+
+def _identity(issue: RemediationIssue) -> tuple[Any, ...] | None:
+    identity = occurrence_identity(issue.metadata)
+    if identity is None:
+        return None
+    page, index = identity[0], identity[2]
     if issue.location != f"Page {page}, Image {index + 1}":
         return None
-    return page, xref, index, ordinal, bbox, occurrence_id
+    return identity
 
 
 def _is_image_finding(issue: RemediationIssue) -> bool:
@@ -610,4 +630,92 @@ def output_image_key(
         IssueCategory.ALT_TEXT.value,
         issue.location or "",
         "Image missing alternative text",
+    )
+
+
+def undescribed_figures_are_recorded_manual(
+    figures: FigureFailureEvidence,
+    saved: SavedImageCorrespondence,
+    manual: Sequence[ImageFindingBinding],
+    verified: Sequence[ImageFindingBinding],
+    failure_details: Any,
+) -> bool:
+    """Prove that every Figure still missing /Alt is a source image left for review.
+
+    An untagged source has no Figures to compare, so a Matterhorn 13-004 failure
+    in the tagged output has no baseline. Every image was already undescribed in
+    the source, and tagging only made that visible. The failure is accepted only
+    when the saved output accounts for the source's images exactly, each
+    undescribed Figure is a missing-alt finding already recorded as manual work,
+    and each described image carries the description of its own verified fix.
+
+    The output's Figures must each own exactly one displayed image of the
+    preserved source inventory, and no image may be left over: every source
+    image is either one of the undescribed Figures or credited with a
+    description in the saved file. The validator's own count must agree with
+    that evidence.
+
+    ``manual`` and ``verified`` hold the bindings of the manual findings and of
+    the findings fixed and verified in the saved file. A binding is a source
+    finding whose full occurrence identity (page, xref, index, ordinal, box and
+    occurrence id) was proven, by ``preserve_image_pages``, to be one source
+    draw that the output still shows at the same index and box. Object numbers
+    and occurrence ids do not survive a save, so that proof is the identity
+    link. Each undescribed Figure must be claimed by exactly one manual
+    binding, and each credited image by exactly one verified binding. A
+    description that no verified fix of that image accounts for, such as one
+    attached to the wrong Figure, therefore refuses the proof, as does a
+    verified fix claiming an image that is still undescribed. Never by list
+    position or by a location string.
+    """
+    undescribed = figures.missing
+    images = set(saved.occurrences)
+    reported = (
+        _FIGURE_FAILURE_DETAILS.fullmatch(failure_details)
+        if isinstance(failure_details, str)
+        else None
+    )
+    if (
+        not undescribed
+        or undescribed & figures.described
+        or not (undescribed | figures.described) <= images
+        or figures.figure_count != len(undescribed) + len(figures.described)
+        or undescribed & saved.accessible
+        or images != undescribed | saved.accessible
+        or reported is None
+        or (int(reported[1]), int(reported[2]))
+        != (len(undescribed), figures.figure_count)
+    ):
+        return False
+
+    def claims(bindings: Sequence[ImageFindingBinding]) -> dict[tuple[Any, ...], int]:
+        counted: dict[tuple[Any, ...], int] = {}
+        for binding in bindings:
+            key = (
+                binding.page_number,
+                binding.image_index,
+                binding.occurrence_ordinal,
+                binding.bbox,
+            )
+            counted[key] = counted.get(key, 0) + 1
+        return counted
+
+    def key_of(position: tuple[int, int]) -> tuple[Any, ...]:
+        current = saved.occurrences[position]
+        return (
+            current["page_number"],
+            current["image_index"],
+            current["occurrence_ordinal"],
+            current["bbox"],
+        )
+
+    manual_claims, verified_claims = claims(manual), claims(verified)
+    return all(
+        manual_claims.get(key_of(position)) == 1
+        and key_of(position) not in verified_claims
+        for position in undescribed
+    ) and all(
+        verified_claims.get(key_of(position)) == 1
+        and key_of(position) not in manual_claims
+        for position in saved.accessible
     )

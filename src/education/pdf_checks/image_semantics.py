@@ -3,6 +3,10 @@
 Resource-level Alt strings and nearby bounding boxes cannot establish ownership
 of a particular draw. Unsupported scopes remain missing and mark strict scans
 incomplete, rather than silently excluding images from review.
+
+A Formula element with its own Alt text is credited only when it owns this one
+image draw outright. Formula ownership never makes a draw eligible for a Figure
+Alt write, so only the scan result differs.
 """
 
 from __future__ import annotations
@@ -77,6 +81,11 @@ def _resolve_image_ownership(
     figures: dict[tuple[int, int], Any] = {}
     figure_keys: dict[tuple[int, int], set[tuple[int, int]]] = {}
     blocked_figures: set[tuple[int, int]] = set()
+    # Formula elements that may describe a draw: directly resolved role, not
+    # inside a Figure or another replacement scope, usable /Alt, no /ActualText.
+    # formula_keys collects every marked-content key in the Formula's subtree.
+    formula_alts: dict[tuple[int, int], str] = {}
+    formula_keys: dict[tuple[int, int], set[tuple[int, int]]] = {}
     seen: set[tuple[int, int]] = set()
     visits = 0
 
@@ -87,6 +96,7 @@ def _resolve_image_ownership(
         figure: Any,
         depth: int,
         replacement_ancestor: bool = False,
+        formula: Any = None,
     ) -> None:
         nonlocal visits
         visits += 1
@@ -129,6 +139,26 @@ def _resolve_image_ownership(
             blocked_figures.add(figure.objgen)
         if figure is not None and unresolved_role:
             blocked_figures.add(figure.objgen)
+        if (
+            role == pikepdf.Name.Formula
+            and figure is None
+            and not replacement_ancestor
+            and not unresolved_role
+            and "/ActualText" not in node
+        ):
+            formula_alt = node.get("/Alt")
+            formula_text = ""
+            if isinstance(formula_alt, pikepdf.String):
+                try:
+                    formula_text = str(formula_alt).strip()
+                except ValueError:
+                    # An undecodable Alt describes nothing. It must not make
+                    # the page unreadable for every other draw, as before.
+                    formula_text = ""
+            if formula_text:
+                formula = node
+                formula_alts[node.objgen] = formula_text
+                formula_keys[node.objgen] = set()
         replacement_scope = (
             replacement_ancestor
             or unresolved_role
@@ -160,7 +190,15 @@ def _resolve_image_ownership(
                     node, child.MCID, child_page, invalid_page=child_page == -2
                 )
             elif isinstance(child, pikepdf.Dictionary) and "/S" in child:
-                walk(child, node, current, figure, depth + 1, replacement_scope)
+                walk(
+                    child,
+                    node,
+                    current,
+                    figure,
+                    depth + 1,
+                    replacement_scope,
+                    formula,
+                )
                 continue
             else:
                 # Object references/custom stream ownership need a
@@ -173,6 +211,8 @@ def _resolve_image_ownership(
             owners[key] = (node, figure, alt_text or None)
             if figure is not None:
                 figure_keys[figure.objgen].add(key)
+            if formula is not None:
+                formula_keys[formula.objgen].add(key)
 
     root = pdf.Root.StructTreeRoot
     kids = root.get("/K")
@@ -253,7 +293,17 @@ def _resolve_image_ownership(
             if any(value[2] for value in stack):
                 non_image_mcids.update(mcids)
             draws.append((image.objgen[0], artifact, mcids[0] if mcids else None))
-        elif name in {"BI", "BX", "EX"}:
+        elif name in {"BI", "INLINE IMAGE"}:
+            # pikepdf parses BI..ID..EI into one instruction named
+            # "INLINE IMAGE", so "BI" itself never reaches this loop. An inline
+            # image has no resource name, so it is never a draw that can be
+            # bound to an occurrence. It is paint, like text: every MCID open
+            # here stops being image-only content, so a Formula cannot be
+            # credited for it and a Figure cannot be an exclusive owner. Outside
+            # marked content the stack is empty and nothing is marked. The page
+            # stays resolvable, so every other draw keeps its credit.
+            non_image_mcids.update(value[1] for value in stack if value[1] is not None)
+        elif name in {"BX", "EX"}:
             raise ValueError("scope")
         elif name in {
             "Tj",
@@ -288,8 +338,21 @@ def _resolve_image_ownership(
             binding = owners.get((page_index, mcid))
             if binding is None:
                 raise ValueError("owner")
+            owner = binding[0]
             if binding[2]:
                 result[occurrence["occurrence_id"]] = (True, binding[2])
+            elif (
+                owner.objgen in formula_alts
+                and formula_keys[owner.objgen] == {(page_index, mcid)}
+                and mcid not in non_image_mcids
+                and sum(draw[2] == mcid for draw in draws) == 1
+            ):
+                # Credit only; the Formula is deliberately not an exclusive
+                # Figure, so no Figure Alt can be written over it.
+                result[occurrence["occurrence_id"]] = (
+                    True,
+                    formula_alts[owner.objgen],
+                )
             figure = binding[1]
             if (
                 figure is not None
@@ -300,6 +363,21 @@ def _resolve_image_ownership(
             ):
                 exclusive_figures[occurrence["occurrence_id"]] = figure
     return ImageOwnership(result, exclusive_figures, figures)
+
+
+def is_untagged_pdf(path: str) -> bool:
+    """Return True only when the PDF opens and has no structure tree at all.
+
+    ``missing_figure_occurrences`` returns None both for an untagged file and for
+    a tagged one it cannot resolve. A caller that treats the first differently
+    from the second must prove it here. Any failure to open or read the file
+    answers False, so an unreadable source is never taken for an untagged one.
+    """
+    try:
+        with pikepdf.open(path, attempt_recovery=False) as pdf:
+            return "/StructTreeRoot" not in pdf.Root
+    except Exception:
+        return False
 
 
 def missing_figure_occurrences(

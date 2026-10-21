@@ -183,7 +183,11 @@ export function outcomePresentation(
   if (outcomeSource === 'recorded_job' && recordedOutcome) {
     if (recordedOutcome === 'fixed' && details?.verification_scope === 'saved_file_finding'
       && details.verification_passed === true) {
-      return { label: 'Change applied · automated check passed',
+      // The saved-file rescan shows that the finding is no longer detected. It
+      // does not show that the change is correct, and a change that needs review
+      // still needs a person.
+      const review = details.needs_review === true ? ' · human review required' : '';
+      return { label: `Change applied · finding no longer detected${review}`,
         className: 'bg-[var(--feature-success-surface)] text-[var(--feature-success-content)]' };
     }
     const labels = {

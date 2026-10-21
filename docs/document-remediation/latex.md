@@ -1,12 +1,12 @@
 # LaTeX scanning and remediation
 
-LaTeX source is first-class: remediation writes `.tex` by default. MathML/ARIA conversion and optional HTML/PDF generation are related outputs, not replacements for the source.
+LaTeX source is first-class: remediation writes `.tex` by default. MathML conversion and optional HTML/PDF generation are related outputs, not replacements for the source.
 
 ## Verified capabilities
 
-The [LaTeX processor](../../src/education/latex_processor.py) detects inline/display math and common math environments, converts supported expressions with latex2mathml, creates ARIA labels, and checks source for metadata/language, figure/caption, table, equation-label, color-only/possible contrast, bare-link, and list-structure issues. The API stores source findings alongside equation conversion results and generated HTML.
+The [LaTeX processor](../../src/education/latex_processor.py) detects inline/display math and common math environments, converts supported expressions with latex2mathml, optionally drafts an equation description for review, and checks source for metadata/language, figure/caption, table, equation cross-reference label, color-only/possible contrast, bare-link, and list-structure issues. The API stores source findings alongside equation conversion results and generated HTML. The `aria_label` field of a conversion result is deprecated and always empty, and a drafted description is a review draft that is never stored as a label.
 
-The [LaTeX remediator](../../src/education/remediation/latex_remediator.py) can make bounded source edits for supported language, figure description, heading, table, title, equation/ARIA, color, and link cases. Figure descriptions can use the issue location and nearby source context when AI is configured; filename-based text is only a fallback and still needs review.
+The [LaTeX remediator](../../src/education/remediation/latex_remediator.py) can make bounded source edits for supported language, figure description, heading, table, title, equation cross-reference label, color, and link cases. For equations it adds only source `\label{}` cross-reference labels; it never writes a generated description or an ARIA label, and mathematical meaning stays manual. Figure descriptions can use the issue location and nearby source context when AI is configured; filename-based text is only a fallback and still needs review.
 
 The [converter](../../src/education/remediation/latex_converter.py) can request additional HTML and PDF files. HTML prefers LaTeXML/latexmlpost for MathML. PDF prefers LuaLaTeX with document metadata/tagging, then can fall back to LaTeXML → HTML → Playwright, then pdflatex with more limited accessibility.
 
@@ -75,7 +75,7 @@ Diff the TeX source. Compile it in a restricted environment, inspect logs, verif
 
 ## Tests
 
-- [`tests/test_latex_processor_e2e.py`](../../tests/test_latex_processor_e2e.py) — equation detection, MathML, ARIA, compliance data, and HTML export; module is opt-in via `RUN_E2E_TESTS`.
+- [`tests/test_latex_processor_e2e.py`](../../tests/test_latex_processor_e2e.py) — equation detection, MathML, review drafts, compliance data, and HTML export; module is opt-in via `RUN_E2E_TESTS`.
 - [`tests/test_latex_pdf_ua.py`](../../tests/test_latex_pdf_ua.py) — source metadata injection and PDF conversion paths.
 - [`tests/test_latex_siunitx.py`](../../tests/test_latex_siunitx.py) — SI-unit notation handling.
 - [`tests/test_remediation_downloads.py`](../../tests/test_remediation_downloads.py) — default/custom output format configuration and converter behavior.
