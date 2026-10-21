@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 import json
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from scripts.download_piper_voice import VOICE_ASSETS
 from scripts.verify_final_os_packages import PLACEHOLDER_PACKAGE, PLACEHOLDER_PROVIDES
@@ -669,6 +672,189 @@ def test_final_image_acceptance_runs_apt_get_check_on_both_architectures() -> No
         assert "continue-on-error" not in step
     assert "platform: linux/amd64" in ci and "platform: linux/arm64" in ci
     assert "platform: linux/amd64" in publish and "platform: linux/arm64" in publish
+
+
+DISTRUST_STEP_START = "RUN if grep -q '^mozilla/emSign_ECC_Root_CA_-_G3"
+DISTRUST_STEP_END = "\n    fi"
+
+
+def _distrust_step(dockerfile: str) -> str:
+    """Return the shell of the step that deselects emSign ECC Root CA - G3."""
+    start = dockerfile.index(DISTRUST_STEP_START)
+    end = dockerfile.index(DISTRUST_STEP_END, start) + len(DISTRUST_STEP_END)
+    return dockerfile[start + len("RUN ") : end]
+
+
+def _runtime_stage(dockerfile: str) -> str:
+    assert dockerfile.count("AS runtime\n") == 1
+    return dockerfile.split("AS runtime\n", 1)[1]
+
+
+@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.dev"])
+def test_runtime_images_distrust_emsign_ecc_g3_after_the_last_apt_operation(
+    name: str,
+) -> None:
+    stage = _runtime_stage((ROOT / name).read_text())
+    step = _distrust_step(stage)
+    before, after = stage.split(DISTRUST_STEP_START, 1)
+
+    # Reproduced verbatim in both images, so a fix in one cannot miss the other.
+    assert step == _distrust_step((ROOT / "Dockerfile").read_text())
+    assert step == _distrust_step((ROOT / "Dockerfile.dev").read_text())
+    # Only the G3 line is deselected, with a "!" prefix, then the store is
+    # rebuilt from scratch so the bundle and the hashed links both drop it.
+    assert step.count("emSign_ECC_Root_CA_-_G3") == 2
+    for unaffected in (
+        "emSign_Root_CA_-_G1",
+        "emSign_Root_CA_-_C1",
+        "emSign_ECC_Root_CA_-_C3",
+    ):
+        assert unaffected not in step
+    assert "|!&|" in step
+    assert step.count("update-ca-certificates --fresh") == 1
+    assert step.index("sed -i") < step.index("update-ca-certificates --fresh")
+    # A later apt upgrade could re-enable the root, so nothing installs after.
+    assert "apt-get" in before
+    assert "apt-get" not in after
+
+
+def test_dockerfiles_verify_the_trust_store_where_each_image_is_built() -> None:
+    api = _runtime_stage((ROOT / "Dockerfile").read_text())
+    dev = _runtime_stage((ROOT / "Dockerfile.dev").read_text())
+    os_assertion = "/usr/local/bin/python /app/scripts/verify_final_os_packages.py"
+
+    # Production runs every check, including the trust store, after the step.
+    assert api.count(os_assertion) == 1
+    assert api.index(DISTRUST_STEP_START) < api.index(os_assertion)
+    assert f"{os_assertion} trust-store" not in api
+    # The developer image has no xdg-utils placeholder, so it runs only the
+    # trust-store check, in the same layer as the step it verifies.
+    copy = (
+        "COPY scripts/verify_final_os_packages.py "
+        "/app/scripts/verify_final_os_packages.py"
+    )
+    assert dev.count(copy) == 1
+    assert dev.count(os_assertion) == 1
+    step_start = dev.index(DISTRUST_STEP_START)
+    layer = dev[step_start : dev.index("\n\n", step_start)]
+    assert dev.index(copy) < step_start
+    assert layer.endswith(f"&& {os_assertion} trust-store")
+
+
+def test_quickstart_ci_checks_the_developer_image_trust_store() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text()
+    quickstart = ci.split("\n  quickstart:\n", 1)[1].split("\n  docker:\n", 1)[0]
+    check = (
+        "docker compose -f docker-compose.quickstart.yml exec -T api \\\n"
+        "            /usr/local/bin/python /app/scripts/verify_final_os_packages.py "
+        "trust-store"
+    )
+
+    assert quickstart.count(check) == 1
+    assert quickstart.index(
+        "verify_final_python_packages.py quickstart"
+    ) < quickstart.index(check)
+
+
+def _gnu_sed() -> bool:
+    result = subprocess.run(["sed", "--version"], capture_output=True, check=False)
+    return result.returncode == 0 and b"GNU" in result.stdout
+
+
+def _run_distrust_step(
+    tmp_path: Path, conf_text: str
+) -> tuple[subprocess.CompletedProcess[str], str, list[str]]:
+    conf = tmp_path / "ca-certificates.conf"
+    conf.write_text(conf_text)
+    log = tmp_path / "update.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    tool = stub / "update-ca-certificates"
+    tool.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\n')
+    tool.chmod(0o755)
+    shell = _distrust_step((ROOT / "Dockerfile").read_text()).replace(
+        "/etc/ca-certificates.conf", str(conf)
+    )
+    result = subprocess.run(
+        ["sh", "-c", shell],
+        env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return result, conf.read_text(), calls
+
+
+EMSIGN_CONF = (
+    "# Debian ca-certificates.conf\n"
+    "mozilla/Entrust_Root_Certification_Authority.crt\n"
+    "mozilla/emSign_ECC_Root_CA_-_C3.crt\n"
+    "{g3}\n"
+    "mozilla/emSign_Root_CA_-_C1.crt\n"
+    "mozilla/emSign_Root_CA_-_G1.crt\n"
+)
+
+
+@pytest.mark.skipif(not _gnu_sed(), reason="the image build uses GNU sed")
+def test_distrust_step_deselects_only_the_g3_root_and_rebuilds_the_store(
+    tmp_path: Path,
+) -> None:
+    result, conf, calls = _run_distrust_step(
+        tmp_path, EMSIGN_CONF.format(g3="mozilla/emSign_ECC_Root_CA_-_G3.crt")
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert conf == EMSIGN_CONF.format(g3="!mozilla/emSign_ECC_Root_CA_-_G3.crt")
+    assert calls == ["--fresh"]
+
+
+@pytest.mark.skipif(not _gnu_sed(), reason="the image build uses GNU sed")
+@pytest.mark.parametrize(
+    "g3",
+    [
+        # Debian's update that still ships the file but marks it deselected.
+        "!mozilla/emSign_ECC_Root_CA_-_G3.crt",
+        # Debian's update that removed the root from the list altogether.
+        None,
+    ],
+)
+def test_distrust_step_does_nothing_once_the_package_has_dropped_the_root(
+    tmp_path: Path, g3: str | None
+) -> None:
+    template = EMSIGN_CONF if g3 else EMSIGN_CONF.replace("{g3}\n", "")
+    text = template.format(g3=g3)
+
+    result, conf, calls = _run_distrust_step(tmp_path, text)
+
+    assert result.returncode == 0, result.stderr
+    assert conf == text
+    assert calls == []
+
+
+@pytest.mark.skipif(not _gnu_sed(), reason="the image build uses GNU sed")
+def test_distrust_step_fails_the_build_when_the_store_cannot_be_rebuilt(
+    tmp_path: Path,
+) -> None:
+    conf = tmp_path / "ca-certificates.conf"
+    conf.write_text(EMSIGN_CONF.format(g3="mozilla/emSign_ECC_Root_CA_-_G3.crt"))
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    tool = stub / "update-ca-certificates"
+    tool.write_text("#!/bin/sh\nexit 7\n")
+    tool.chmod(0o755)
+    shell = _distrust_step((ROOT / "Dockerfile").read_text()).replace(
+        "/etc/ca-certificates.conf", str(conf)
+    )
+
+    result = subprocess.run(
+        ["sh", "-c", shell],
+        env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 7
 
 
 def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
