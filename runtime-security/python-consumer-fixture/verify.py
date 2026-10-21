@@ -72,7 +72,7 @@ def linked(extension: Path) -> dict[str, dict[str, str]]:
 def main() -> None:
     public = pins(Path("/fixture/requirements.txt"))
     selected = pins(Path("/fixture/pins.txt"))
-    selected.update({"pillow": "12.3.0", "psycopg2-binary": "2.9.13"})
+    selected.update({"pillow": "13.0.0", "psycopg2-binary": "2.9.13"})
     assert all(public.get(name) == version for name, version in selected.items())
     assert all(
         importlib.metadata.version(name) == version

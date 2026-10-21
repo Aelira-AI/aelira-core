@@ -30,7 +30,7 @@ LINKS = {
 
 def validate(wheel: Path, arch: str) -> dict[str, object]:
     tag = {"arm64": "linux_aarch64", "amd64": "linux_x86_64"}[arch]
-    if wheel.name != f"pillow-12.3.0-cp314-cp314-{tag}.whl":
+    if wheel.name != f"pillow-13.0.0-cp314-cp314-{tag}.whl":
         raise ValueError("wheel name/architecture mismatch")
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
@@ -38,9 +38,9 @@ def validate(wheel: Path, arch: str) -> dict[str, object]:
             name.startswith("pillow.libs/") for name in names
         ):
             raise ValueError("duplicate or private wheel members")
-        record = "pillow-12.3.0.dist-info/RECORD"
-        metadata = "pillow-12.3.0.dist-info/METADATA"
-        if b"Version: 12.3.0\n" not in archive.read(metadata):
+        record = "pillow-13.0.0.dist-info/RECORD"
+        metadata = "pillow-13.0.0.dist-info/METADATA"
+        if b"Version: 13.0.0\n" not in archive.read(metadata):
             raise ValueError("wheel metadata version mismatch")
         rows = list(csv.reader(io.StringIO(archive.read(record).decode())))
         if len(rows) != len(names) or {row[0] for row in rows} != set(names):
@@ -65,7 +65,10 @@ def validate(wheel: Path, arch: str) -> dict[str, object]:
             ):
                 raise ValueError("wheel RECORD payload mismatch")
             hashed += 1
-        if hashed != 119:
+        # 106 PIL package files, 8 extension modules, METADATA, WHEEL, LICENSE
+        # and top_level.txt. 13.0.0 no longer sets zip_safe, so its wheel has
+        # no zip-safe file.
+        if hashed != 118:
             raise ValueError("wheel RECORD entry count mismatch")
         machine = "AArch64" if arch == "arm64" else "Advanced Micro Devices X86-64"
         with tempfile.TemporaryDirectory() as scratch:

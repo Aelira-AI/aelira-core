@@ -1,4 +1,4 @@
-"""Behavior and binding checks for an installed Pillow 12.3.0 candidate.
+"""Behavior and binding checks for an installed Pillow 13.0.0 candidate.
 
 Run inside a disposable, network-disabled, read-only container as UID 1000.
 Uses only synthetic image bytes; no customer inputs or external services.
@@ -399,7 +399,7 @@ def diagnosed(name: str):
 
 def check_record() -> int:
     distribution = importlib.metadata.distribution("pillow")
-    assert distribution.version == "12.3.0"
+    assert distribution.version == "13.0.0"
     count = 0
     for entry in distribution.files or ():
         if entry.hash is None:
@@ -409,13 +409,13 @@ def check_record() -> int:
         digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=")
         assert digest.decode("ascii") == entry.hash.value, entry
         count += 1
-    assert count == 122, count
+    assert count == 121, count
     print(f"RECORD verified: {count} SHA-256 entries")
     return count
 
 
 def check_wheel_payloads() -> tuple[int, str]:
-    wheels = list(Path("/wheel").glob("pillow-12.3.0-*.whl"))
+    wheels = list(Path("/wheel").glob("pillow-13.0.0-*.whl"))
     assert len(wheels) == 1, wheels
     wheel = wheels[0]
     wheel_sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
@@ -423,16 +423,16 @@ def check_wheel_payloads() -> tuple[int, str]:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert len(names) == len(set(names))
-        record = "pillow-12.3.0.dist-info/RECORD"
+        record = "pillow-13.0.0.dist-info/RECORD"
         assert record in names
         payloads = [name for name in names if name != record]
-        assert len(payloads) == 119, len(payloads)
+        assert len(payloads) == 118, len(payloads)
         for name in payloads:
             assert not name.startswith("/") and ".." not in Path(name).parts, name
             assert (
                 archive.read(name) == Path(distribution.locate_file(name)).read_bytes()
             ), name
-    print(f"installed_wheel_payloads=pass entries=119 wheel_sha256={wheel_sha}")
+    print(f"installed_wheel_payloads=pass entries=118 wheel_sha256={wheel_sha}")
     return len(payloads), wheel_sha
 
 

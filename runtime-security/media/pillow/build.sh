@@ -64,8 +64,8 @@ for run in a b; do
 done
 python3 "$recipe/proof.py" check-inventory "$output" "$arch"
 python3 "$recipe/recipe-lock.py" verify "$recipe"
-wheel_a=("$output"/build-a/wheels/pillow-12.3.0-*.whl)
-wheel_b=("$output"/build-b/wheels/pillow-12.3.0-*.whl)
+wheel_a=("$output"/build-a/wheels/pillow-13.0.0-*.whl)
+wheel_b=("$output"/build-b/wheels/pillow-13.0.0-*.whl)
 [[ ${#wheel_a[@]} = 1 && ${#wheel_b[@]} = 1 ]]
 cmp "${wheel_a[0]}" "${wheel_b[0]}"
 sha256sum "${wheel_a[0]}" "${wheel_b[0]}" > "$output/reproducible-sha256.txt"

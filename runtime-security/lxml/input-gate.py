@@ -42,7 +42,7 @@ PINNED = {
     "python-docx": "1.2.0",
     "python-pptx": "1.0.2",
     "openpyxl": "3.1.5",
-    "pillow": "12.3.0",
+    "pillow": "13.0.0",
     "setuptools": "84.0.0",
 }
 HEX = re.compile(r"[0-9a-f]{64}\Z")
