@@ -50,8 +50,8 @@ for run in a b; do
     > "$replay/build-$run/console.log" 2>&1
 done
 python3 "$recipe/proof.py" check-inventory "$replay" "$arch"
-wheel_a=("$replay"/build-a/wheels/pillow-12.3.0-*.whl)
-wheel_b=("$replay"/build-b/wheels/pillow-12.3.0-*.whl)
+wheel_a=("$replay"/build-a/wheels/pillow-13.0.0-*.whl)
+wheel_b=("$replay"/build-b/wheels/pillow-13.0.0-*.whl)
 [[ ${#wheel_a[@]} = 1 && ${#wheel_b[@]} = 1 ]]
 cmp "${wheel_a[0]}" "${wheel_b[0]}"
 sha256sum "${wheel_a[0]}" "${wheel_b[0]}" > "$replay/reproducible-sha256.txt"

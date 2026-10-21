@@ -33,8 +33,8 @@ test -f "$output/build-a/wheel-verification.log"
 test "$(cat "$output/build-exit.txt")" = 0
 python3 "$recipe/recipe-lock.py" verify "$recipe"
 python3 "$recipe/proof.py" check-build "$output" "$arch"
-wheel_a=("$output"/build-a/wheels/pillow-12.3.0-*.whl)
-wheel_b=("$output"/build-b/wheels/pillow-12.3.0-*.whl)
+wheel_a=("$output"/build-a/wheels/pillow-13.0.0-*.whl)
+wheel_b=("$output"/build-b/wheels/pillow-13.0.0-*.whl)
 [[ ${#wheel_a[@]} = 1 && ${#wheel_b[@]} = 1 ]]
 cmp "${wheel_a[0]}" "${wheel_b[0]}"
 grep -F "$(sha256sum "${wheel_a[0]}" | cut -d ' ' -f1)" "$output/reproducible-sha256.txt" > /dev/null

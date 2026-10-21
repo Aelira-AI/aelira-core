@@ -217,7 +217,7 @@ def validate_members(
     ):
         raise ValueError("selected pins differ from public requirements")
     if (
-        public.get("pillow") != "12.3.0"
+        public.get("pillow") != "13.0.0"
         or public.get("psycopg2-binary") != "2.9.13"
         or selected.get("sqlalchemy") != "2.1.4"
     ):
