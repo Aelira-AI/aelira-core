@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CI: each native LaTeXML capture attempt now records a bounded refusal class in its public attempt receipt (`aelira-latexml-capture-attempts-v4`): `upstream_http_auth` for a 401/403 from the snapshot host, `upstream_http_5xx`, `upstream_http_4xx`, `upstream_http_other`, `transport`, `timeout`, `tls`, `integrity` or `unknown`. The job summary prints each attempt's exit, retry eligibility and class, so a red run shows whether the refusal came from upstream. No URL, header or body is recorded. Refusals that APT reports are `unknown`, because APT's exit does not identify an HTTP cause. Retry eligibility and gating are unchanged. Refs [#737](https://github.com/Aelira-AI/aelira-core/issues/737).
+
 ### Security
 
 - The application's `certifi` moves from 2026.7.22 to 2026.10.19. Earlier versions include the `emSign ECC Root CA - G3` root, and eight intermediate CAs that chain to it have compromised private keys ([GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2)), so someone holding one of those keys could issue a certificate for any hostname and intercept TLS from clients that trust the `certifi` bundle, which includes the application's outbound HTTP through `httpx`. `certifi` 2026.10.19 removes that root and keeps the three emSign roots that are not affected ([#723](https://github.com/Aelira-AI/aelira-core/issues/723)).

@@ -923,6 +923,31 @@ jobs:
             cp "$RUNNER_TEMP/latexml-capture-attempts.json" \
               "$RUNNER_TEMP/latexml-native-public-evidence/capture-attempts.json"
           fi
+      - name: Summarise capture refusal classes
+        if: always() && steps.checkout.outcome == 'success'
+        # The summary is informational; it never changes the job's result.
+        continue-on-error: true
+        env:
+          AELIRA_NATIVE_ARCH: ${{ matrix.arch }}
+        run: |
+          receipt="$RUNNER_TEMP/latexml-capture-attempts.json"
+          {
+            printf '### Native LaTeXML capture attempts (%s)\n\n' "$AELIRA_NATIVE_ARCH"
+            if jq -e '.schema == "aelira-latexml-capture-attempts-v4" and (.attempts | type == "array")' \
+              "$receipt" > /dev/null 2>&1; then
+              printf '| Attempt | Exit | Retry eligible | Refusal class |\n| --- | --- | --- | --- |\n'
+              # Only declared classes are printed; anything else reads as invalid.
+              jq -r '
+                ["upstream_http_auth", "upstream_http_5xx", "upstream_http_4xx",
+                 "upstream_http_other", "transport", "timeout", "tls", "integrity",
+                 "unknown"] as $classes
+                | .attempts[]
+                | "| \((.attempt | numbers | tostring) // "?") | \((.exit | numbers | tostring) // "?") | \(if .capture_refusal == true then "yes" else "no" end) | `\(if .refusal_class == null then "none" elif (.refusal_class as $c | any($classes[]; . == $c)) then .refusal_class else "invalid" end)` |"
+              ' "$receipt"
+            else
+              echo "No valid capture attempt receipt: the capture did not run or its receipt is unreadable."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload only validated bounded LaTeXML evidence
         if: always() && steps.checkout.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
