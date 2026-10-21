@@ -775,6 +775,9 @@ def test_consensus_discriminator_is_part_of_the_evidence_union():
         {"primary_model": ""},
         {"verifier_provider": ""},
         {"verifier_model": ""},
+        # A replayed provider answer names its model "cached", which is no model.
+        {"primary_model": "cached"},
+        {"verifier_model": "Cached"},
         {"primary_provider": " padded "},
         {"verifier_model": "bad\x00model"},
         {"verifier_provider": "x" * 201},

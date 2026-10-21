@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .equation_image_source import ValidatedEquationRaster
-from .equation_reading_parser import EquationReadingRejected, parse_equation_reading
+from .equation_reading_parser import (
+    EquationReadingRejected,
+    parse_equation_reading,
+    reading_max_tokens,
+    response_is_cached,
+)
 
 
 class EquationRecognitionRejected(ValueError):
@@ -67,7 +72,7 @@ class EquationRecognizer:
             response = client.analyze_image_sync(
                 image_data=image.jpeg_bytes,
                 prompt=prompt,
-                max_tokens=500,
+                max_tokens=reading_max_tokens(self.max_latex_chars),
             )
         except Exception:
             raise EquationRecognitionRejected("provider_failure") from None
@@ -86,8 +91,14 @@ class EquationRecognizer:
             latex=parsed["latex"],
             provider=self._bounded_identity(response.get("provider"))
             or self._bounded_identity(getattr(client, "provider", None)),
-            model=self._bounded_identity(response.get("model"))
-            or self._bounded_identity(getattr(client, "model", None)),
+            # A replayed answer names no model, and the client's own model is not
+            # evidence of who wrote it, so no model is recorded for it.
+            model=(
+                None
+                if response_is_cached(response)
+                else self._bounded_identity(response.get("model"))
+                or self._bounded_identity(getattr(client, "model", None))
+            ),
             response_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
@@ -111,5 +122,9 @@ class EquationRecognizer:
         if value != value.strip():
             return None
         if not value.isprintable() or "\x00" in value:
+            return None
+        # The provider manager names a replayed answer's model "cached", which is
+        # not the name of any model.
+        if value.casefold() == "cached":
             return None
         return value

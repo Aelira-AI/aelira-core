@@ -1394,3 +1394,137 @@ def test_a_full_flow_with_a_client_that_names_no_model_pays_for_no_second_readin
         ] == []
     finally:
         result.close_output_claim()
+
+
+# ---------------------------------------------------------------------------
+# The reading is not cut off, and a replayed answer names no model
+# ---------------------------------------------------------------------------
+
+
+def test_both_readers_ask_for_enough_tokens_to_finish_the_longest_reading():
+    from src.education.remediation.equation_reading_parser import reading_max_tokens
+
+    wanted = reading_max_tokens(4096)
+    assert wanted > 500
+    first = _Client(_printed("x^{2} + 1 = 0"))
+    EquationRecognizer(first).recognize(_raster())
+    second = _Client(_printed("x^{2} + 1 = 0"))
+    PrintedEquationSecondReader(second).read(_raster())
+
+    assert first.calls[0]["max_tokens"] == wanted
+    assert second.calls[0]["max_tokens"] == wanted
+    # A reader that accepts shorter readings asks for fewer tokens, to a floor.
+    short = _Client(_printed("x"))
+    PrintedEquationSecondReader(short, max_latex_chars=200).read(_raster())
+    assert short.calls[0]["max_tokens"] == reading_max_tokens(200) == 500
+
+
+def test_the_token_allowance_is_not_part_of_the_pinned_policy():
+    """The policy digest names the prompt, the agreement and the form, not requests."""
+    from src.education import printed_equation_policy
+
+    policy = dict(printed_equation_policy._VERIFIER_POLICY)
+    assert not [key for key in policy if "token" in key]
+    assert PRINTED_VERIFIER_POLICY_SHA256 == POLICY_SHA256_PIN
+
+
+REPLAYED_ANSWERS = [
+    {"model": "cached"},
+    {"model": " CACHED "},
+    {"metadata": {"cached": True}},
+    {"cached": True},
+]
+
+
+@pytest.mark.parametrize("replayed", REPLAYED_ANSWERS)
+def test_a_replayed_second_reading_records_no_model_and_is_refused(replayed):
+    answer = {"success": True, "content": _printed("x^{2} + 1 = 0"), **replayed}
+    client = _Client(answer)
+
+    with pytest.raises(
+        PrintedEquationVerificationRejected, match="^provider_identity_unavailable$"
+    ):
+        PrintedEquationSecondReader(client).read(_raster())
+
+
+@pytest.mark.parametrize("replayed", REPLAYED_ANSWERS)
+def test_a_replayed_first_reading_records_no_model(replayed):
+    answer = {"success": True, "content": _printed("x^{2} + 1 = 0"), **replayed}
+
+    recognition = EquationRecognizer(_Client(answer)).recognize(_raster())
+
+    # The client's own model is not evidence of who wrote a replayed answer.
+    assert recognition.model is None
+    assert recognition.provider == _Client.provider
+    assert verifier_module.primary_reading_is_complete(recognition) is False
+
+
+def test_a_client_that_declares_the_model_cached_has_no_model_either():
+    class CachedClient(_Client):
+        model = "cached"
+
+    answer = _printed("x^{2} + 1 = 0")
+    assert EquationRecognizer(CachedClient(answer)).recognize(_raster()).model is None
+    with pytest.raises(
+        PrintedEquationVerificationRejected, match="^provider_identity_unavailable$"
+    ):
+        PrintedEquationSecondReader(CachedClient(answer)).read(_raster())
+
+
+def test_a_fresh_answer_that_names_its_model_is_still_recorded():
+    answer = {"success": True, "content": _printed("x^{2} + 1 = 0"), "model": "m-1"}
+
+    assert EquationRecognizer(_Client(answer)).recognize(_raster()).model == "m-1"
+    assert PrintedEquationSecondReader(_Client(answer)).read(_raster()).model == "m-1"
+
+
+@pytest.mark.parametrize("model", ["cached", "Cached", " cached", "", None])
+def test_agreement_refuses_a_first_reading_with_no_real_model(model):
+    with pytest.raises(
+        PrintedEquationVerificationRejected, match="^primary_evidence_incomplete$"
+    ):
+        printed_equation_agreement(
+            primary_reading("x^2 + 1 = 0", model=model),
+            _reading("x^2 + 1 = 0"),
+        )
+
+
+@pytest.mark.parametrize("model", ["cached", "Cached"])
+def test_agreement_refuses_a_second_reading_with_no_real_model(model):
+    second = _reading("x^2 + 1 = 0", model=model)
+
+    with pytest.raises(
+        PrintedEquationVerificationRejected, match="^second_reading_invalid$"
+    ):
+        printed_equation_agreement(primary_reading("x^2 + 1 = 0"), second)
+
+
+def test_a_full_flow_with_a_replayed_first_reading_never_pays_for_a_second_one():
+    from src.education.remediation.math_fixer import MathFixer
+
+    class _Source:
+        payload = _raster()
+
+        def extract(self, document, metadata):
+            return self.payload
+
+    replayed = {
+        "success": True,
+        "content": _printed("x^{2} + 1 = 0"),
+        "model": "cached",
+    }
+    client = _Client(replayed, _printed("x^{2} + 1 = 0"))
+    fixer = MathFixer(
+        SimpleNamespace(pages=[object()]),
+        SimpleNamespace(),
+        struct_tree=SimpleNamespace(),
+        alt_text_client=client,
+        image_source=_Source(),
+        equation_verifier=_Verifier(True),
+    )
+
+    result = fixer._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.error == "printed_equation_verifier_failed"
+    assert result.pending_association is None
+    assert len(client.calls) == 1, "the second reading must not be requested"

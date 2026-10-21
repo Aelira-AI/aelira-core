@@ -30,7 +30,12 @@ from src.education.printed_equation_policy import (
 )
 
 from .equation_image_source import ValidatedEquationRaster
-from .equation_reading_parser import EquationReadingRejected, parse_equation_reading
+from .equation_reading_parser import (
+    EquationReadingRejected,
+    parse_equation_reading,
+    reading_max_tokens,
+    response_is_cached,
+)
 from .equation_recognizer import _PROMPT as _PRIMARY_PROMPT
 from .equation_recognizer import _SYSTEM_PROMPT as _PRIMARY_SYSTEM_PROMPT
 from .equation_verifier import canonicalize_mathml
@@ -94,6 +99,9 @@ def _bounded_identity(value: Any) -> Optional[str]:
         or len(value) > 200
         or value != value.strip()
         or not value.isprintable()
+        # The provider manager names a replayed answer's model "cached", which is
+        # not the name of any model.
+        or value.casefold() == "cached"
     ):
         return None
     return value
@@ -146,7 +154,7 @@ class PrintedEquationSecondReader:
             response = client.analyze_image_sync(
                 image_data=payload,
                 prompt=_VERIFIER_PROMPT,
-                max_tokens=500,
+                max_tokens=reading_max_tokens(self.max_latex_chars),
             )
         except Exception:
             raise PrintedEquationVerificationRejected("provider_failure") from None
@@ -168,8 +176,13 @@ class PrintedEquationSecondReader:
         provider = _bounded_identity(response.get("provider")) or _bounded_identity(
             getattr(client, "provider", None)
         )
-        model = _bounded_identity(response.get("model")) or _bounded_identity(
-            getattr(client, "model", None)
+        # A replayed answer names no model, and the client's own model is not
+        # evidence of who wrote it, so no model is recorded for it.
+        model = (
+            None
+            if response_is_cached(response)
+            else _bounded_identity(response.get("model"))
+            or _bounded_identity(getattr(client, "model", None))
         )
         if provider is None or model is None:
             raise PrintedEquationVerificationRejected("provider_identity_unavailable")

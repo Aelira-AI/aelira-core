@@ -11,7 +11,11 @@ printable check rejects.
 The parse here is strict first. Only when that fails, or when the parsed LaTeX
 holds a non-printable character, are the unescaped backslashes doubled and the
 answer parsed one more time. A strict parse that already produced printable
-LaTeX is never repaired, so a correctly escaped answer keeps its meaning.
+LaTeX is never repaired, so it keeps the meaning JSON gives it. That is the
+meaning the model had for a correctly escaped answer, but not always for a
+sloppy one: ``\\/`` is a valid JSON escape for a slash, so ``f\\/(x)`` arrives as
+``f/(x)``, and a pair of backslashes arrives as one. Only an escape that JSON
+rejects, or that decodes to a control character, is repaired.
 
 One case is not repaired and cannot be: a LaTeX row break ``\\\\`` written with
 its two backslashes is a valid JSON escape for one backslash, so the reading
@@ -35,6 +39,43 @@ class EquationReadingRejected(ValueError):
 
 _INVISIBLE_LATEX = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 _INVALID = "invalid_provider_response"
+
+# The answer is one JSON object around the LaTeX: the two keys, a classification
+# and the braces take well under this many characters.
+_JSON_OVERHEAD_CHARS = 128
+# LaTeX averages a little over two characters to a token, because the command
+# names and braces tokenise in pieces, so half of the characters is the allowance.
+# A reading that is longer than that in tokens is cut off, no longer parses, and
+# stays manual, which is the safe outcome.
+_CHARS_PER_TOKEN = 2
+_MIN_READING_TOKENS = 500
+
+
+def reading_max_tokens(max_latex_chars: int) -> int:
+    """The token allowance that covers a reading of ``max_latex_chars`` characters."""
+    needed = (max_latex_chars + _JSON_OVERHEAD_CHARS + _CHARS_PER_TOKEN - 1) // (
+        _CHARS_PER_TOKEN
+    )
+    return max(_MIN_READING_TOKENS, needed)
+
+
+def response_is_cached(response: Any) -> bool:
+    """Whether a provider answer was replayed from a cache, not read afresh.
+
+    The provider manager answers a repeated image and prompt from its cache with
+    the model name ``cached``. Such an answer names no model: the model that wrote
+    it is not known and need not be the one now configured, so no identity may be
+    recorded for it.
+    """
+    if not isinstance(response, dict):
+        return False
+    model = response.get("model")
+    if isinstance(model, str) and model.strip().casefold() == "cached":
+        return True
+    metadata = response.get("metadata")
+    return response.get("cached") is True or (
+        isinstance(metadata, dict) and metadata.get("cached") is True
+    )
 
 
 def _parse_once(
@@ -125,4 +166,6 @@ __all__ = [
     "EquationReadingRejected",
     "double_unescaped_backslashes",
     "parse_equation_reading",
+    "reading_max_tokens",
+    "response_is_cached",
 ]

@@ -7,10 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from src.education.remediation import equation_reading_parser
 from src.education.remediation.equation_reading_parser import (
     EquationReadingRejected,
     double_unescaped_backslashes,
     parse_equation_reading,
+    reading_max_tokens,
+    response_is_cached,
 )
 from tests.test_handwritten_math_recognition import (
     Client as HandwrittenClient,
@@ -427,3 +430,64 @@ def test_a_row_break_written_with_two_backslashes_arrives_as_one_and_is_refused(
         assert classification.endswith("_equation")
         assert latex == "a = b " + BS + " c = d"
         assert equation_alt_text_is_ambiguous(latex) is True
+
+
+# ---------------------------------------------------------------------------
+# What a strict parse keeps, and the token allowance for a long reading
+# ---------------------------------------------------------------------------
+
+
+def test_a_valid_json_escape_keeps_its_json_meaning_even_when_the_model_meant_latex():
+    """``\\/`` is a slash in JSON, so ``f\\/(x)`` arrives as ``f/(x)``.
+
+    The strict parse keeps the meaning JSON gives an escape, and so does the
+    module's account of it. The repair is only for an escape JSON rejects or
+    decodes to a control character.
+    """
+    content = _printed("f" + BS + "/(x)")
+    assert _parse(content) == ("printed_equation", "f/(x)")
+    # Two backslashes are one backslash, which is not what the model drew.
+    assert _parse(_printed("a" + BS * 2 + "b")) == ("printed_equation", "a" + BS + "b")
+    doc = equation_reading_parser.__doc__
+    assert "keeps the meaning JSON gives it" in doc
+    assert "valid JSON escape for a slash" in doc
+    assert "so a correctly escaped answer keeps its meaning" not in doc
+
+
+def test_the_token_allowance_covers_a_reading_of_the_longest_accepted_length():
+    longest = 4096
+    allowance = reading_max_tokens(longest)
+    # At two characters to a token the longest reading and its JSON fit.
+    assert allowance * 2 >= longest + len(
+        '{"classification":"printed_equation","latex":""}'
+    )
+    assert allowance > 500, "the old allowance of 500 tokens cut long readings off"
+    assert reading_max_tokens(100) == 500
+    assert reading_max_tokens(8192) > reading_max_tokens(4096)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"success": True, "content": "{}", "model": "cached"},
+        {"success": True, "content": "{}", "model": " Cached "},
+        {"success": True, "content": "{}", "metadata": {"cached": True}},
+        {"success": True, "content": "{}", "cached": True},
+    ],
+)
+def test_a_replayed_answer_is_recognised(response):
+    assert response_is_cached(response) is True
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"success": True, "content": "{}", "model": "qwen2.5vl:3b"},
+        {"success": True, "content": "{}", "metadata": {"cached": False}},
+        {"success": True, "content": "{}"},
+        "not a mapping",
+        None,
+    ],
+)
+def test_a_fresh_answer_is_not_taken_for_a_replayed_one(response):
+    assert response_is_cached(response) is False
