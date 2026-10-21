@@ -873,7 +873,7 @@ def test_quickstart_builds_all_native_pins_before_dev_requirements() -> None:
     assert list(map(source.index, builds)) == sorted(map(source.index, builds))
     for wheel in (
         "lxml-6.1.3-*.whl",
-        "pillow-12.3.0-*.whl",
+        "pillow-13.0.0-*.whl",
         "psycopg2_binary-2.9.13-*.whl",
         "av-18.1.0-*.whl",
         "opencv_python-5.0.0.93-*.whl",

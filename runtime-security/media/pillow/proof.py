@@ -188,7 +188,7 @@ def run_wheel(root: Path, wheel: Path, arch: str) -> str:
         env=env,
     )
     expected = (
-        f"wheel_record=pass entries=119 arch={arch} elf_modules=5 "
+        f"wheel_record=pass entries=118 arch={arch} elf_modules=5 "
         "libtiff_needed=libtiff.so.6"
     )
     if text.splitlines() != [expected]:
@@ -207,7 +207,7 @@ def build_data(root: Path, arch: str) -> dict[str, object]:
     wheels = []
     for run in "ab":
         folder = root / f"build-{run}/wheels"
-        found = list(folder.glob("pillow-12.3.0-*.whl"))
+        found = list(folder.glob("pillow-13.0.0-*.whl"))
         if len(found) != 1 or len(list(folder.iterdir())) != 1:
             raise ValueError("wheel directory incomplete")
         wheel = regular(found[0])
@@ -226,7 +226,7 @@ def build_data(root: Path, arch: str) -> dict[str, object]:
                 "path": wheel.relative_to(root).as_posix(),
                 "sha256": sha(wheel),
                 "bytes": wheel.stat().st_size,
-                "record_entries": 119,
+                "record_entries": 118,
                 "elf_modules": 5,
                 "libtiff_needed": "libtiff.so.6",
                 "input_chain_log_sha256": sha(root / f"build-{run}/input-chain.log"),
@@ -294,8 +294,8 @@ def semantic_result(raw: object, arch: str, wheel_sha: str) -> dict[str, object]
     if data["schema"] != "pillow-installed-semantics-v1":
         raise ValueError("semantic schema mismatch")
     if (
-        integer(data["record_entries"]) != 122
-        or integer(data["wheel_payload_entries"]) != 119
+        integer(data["record_entries"]) != 121
+        or integer(data["wheel_payload_entries"]) != 118
     ):
         raise ValueError("installed RECORD/wheel payload counts mismatch")
     if (
@@ -445,13 +445,13 @@ def public_replay(root: Path, arch: str) -> None:
             },
         )
         if item["run"] != run or item["path"] != (
-            f"build-{run}/wheels/pillow-12.3.0-cp314-cp314-linux_"
+            f"build-{run}/wheels/pillow-13.0.0-cp314-cp314-linux_"
             f"{'aarch64' if arch == 'arm64' else 'x86_64'}.whl"
         ):
             raise ValueError("copied wheel path mismatch")
         if (
             integer(item["bytes"], 1) > 128 * 1024 * 1024
-            or integer(item["record_entries"]) != 119
+            or integer(item["record_entries"]) != 118
             or integer(item["elf_modules"]) != 5
             or item["libtiff_needed"] != "libtiff.so.6"
         ):

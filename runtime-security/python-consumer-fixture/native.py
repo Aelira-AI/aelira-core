@@ -84,7 +84,7 @@ cp /var/lib/apt/lists/* /bundle/apt-lists/ 2>/dev/null || true
 cp /var/cache/apt/archives/*.deb /bundle/apt-debs/
 dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\n' > /bundle/installed-packages.txt
 python3 -m venv /tmp/fixture-venv
-/tmp/fixture-venv/bin/python -m pip download --isolated --no-cache-dir --only-binary=:all: --no-deps --index-url https://pypi.org/simple/ --dest /bundle/wheels -r /context/pins.txt pillow==12.3.0 psycopg2-binary==2.9.13 > /bundle/pip-download.log 2>&1
+/tmp/fixture-venv/bin/python -m pip download --isolated --no-cache-dir --only-binary=:all: --no-deps --index-url https://pypi.org/simple/ --dest /bundle/wheels -r /context/pins.txt pillow==13.0.0 psycopg2-binary==2.9.13 > /bundle/pip-download.log 2>&1
 chown -R "$OPERATOR_UID:$OPERATOR_GID" /bundle
 """
     args = [
@@ -458,7 +458,7 @@ def main() -> None:
     try:
         capture_input(root, context, arch)
         selected = pins(members["pins.txt"])
-        selected.update({"pillow": "12.3.0", "psycopg2-binary": "2.9.13"})
+        selected.update({"pillow": "13.0.0", "psycopg2-binary": "2.9.13"})
         metadata = authenticate_pypi(root / "input", selected, arch)
         frozen = lock_input(root / "input")
         stage = "offline-build"
