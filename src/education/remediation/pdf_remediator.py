@@ -107,8 +107,13 @@ from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
 from .math_fixer import (
+    IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
     IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR,
     IMAGE_EQUATION_EXISTING_OWNER_ERROR,
+    PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
+    PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
+    PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
+    PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
     MathFixer,
     PendingScannedRegionAssociation,
 )
@@ -118,6 +123,12 @@ from src.education.math_contracts import (
     CONCRETE_MATH_ISSUE_TYPES,
     IMAGE_EQUATION_ISSUE_TYPE,
 )
+from src.education.math_speech import (
+    IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON,
+    MATH_DESCRIPTION_RECOMMENDATION,
+    SPOKEN_MATH_INSTRUCTION,
+    refuse_math_markup,
+)
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.visual_semantic_contract import (
     EmbeddedImageOccurrenceLocator,
@@ -125,6 +136,7 @@ from src.education.visual_semantic_contract import (
     HandwrittenEquationConsensusEvidenceV1,
     HandwrittenEquationContract,
     MathMLExpressionV1,
+    PrintedEquationConsensusEvidenceV1,
     PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
     ScannedRegionFormulaSavedEvidenceV1,
@@ -385,12 +397,19 @@ def _printed_equation_contract(
     path: str | Path, pending: Any, association: Any
 ) -> PrintedEquationContract:
     """Build a printed contract from bytes that passed reverse verification."""
+    consensus_evidence = getattr(pending, "consensus_evidence", None)
+    if consensus_evidence is None:
+        raise ValueError("printed equation lacks its second-reading agreement")
     semantic, locator, saved, normalized_source_sha256 = (
         _visual_equation_contract_parts(path, pending, association)
     )
     roundtrip = PrintedEquationRoundtripEvidenceV1(
         evidence_kind="printed_equation_roundtrip_v1",
         **asdict(pending.verification_evidence),
+    )
+    consensus = PrintedEquationConsensusEvidenceV1(
+        evidence_kind="printed_equation_consensus_v1",
+        **asdict(consensus_evidence),
     )
 
     specialist_material = {
@@ -402,7 +421,7 @@ def _printed_equation_contract(
     specialist_sha256 = canonical_sha256(specialist_material)
     contract_material = {
         **specialist_material,
-        "verification_evidence": (roundtrip, saved),
+        "verification_evidence": (roundtrip, consensus, saved),
         "specialist_sha256": specialist_sha256,
     }
     return PrintedEquationContract(
@@ -1626,6 +1645,23 @@ class PdfRemediator(BaseRemediator):
                 "in the page content, so the equation was not read. Describe the "
                 "equation manually, or remediate the source document."
             )
+        if error in {
+            PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
+            PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
+            PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
+            PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
+        }:
+            return (
+                "A second, independent reading of this equation did not confirm "
+                "the first, so no Formula was written. Check the equation against "
+                "the image and add its Formula tag and alt text manually."
+            )
+        if error == IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR:
+            return (
+                "The equation's notation cannot be turned into reliable "
+                "plain-language alt text automatically. Write the alt text and "
+                "add the Formula tag manually."
+            )
         return (
             "Manually add Formula structure elements with MathML and alt text "
             "for mathematical content."
@@ -1776,12 +1812,20 @@ class PdfRemediator(BaseRemediator):
                     (
                         "Alt-text AI provider unavailable"
                         if self.alt_text_client is None
-                        else "No usable image description was returned"
+                        else (
+                            IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON
+                            if self._math_description_refused(issue)
+                            else "No usable image description was returned"
+                        )
                     )
                     if issue.category == IssueCategory.ALT_TEXT
                     else "Could not generate appropriate fix"
                 ),
-                recommendation=self._get_manual_recommendation(issue),
+                recommendation=(
+                    MATH_DESCRIPTION_RECOMMENDATION
+                    if self._math_description_refused(issue)
+                    else self._get_manual_recommendation(issue)
+                ),
             )
             return
 
@@ -5514,6 +5558,7 @@ class PdfRemediator(BaseRemediator):
                         "Describe the image's content and purpose. "
                         "Don't start with 'Image of' or 'Picture of'. "
                         "Focus on what's important for understanding the document. "
+                        f"{SPOKEN_MATH_INSTRUCTION} "
                         "Generate only the alt text, nothing else."
                     )
                     result = client.analyze_image_sync(
@@ -5524,6 +5569,12 @@ class PdfRemediator(BaseRemediator):
                     if result.get("success") and result.get("content"):
                         alt_text = result["content"].strip().strip("\"'")
                         if alt_text:
+                            # A description that carries mathematical markup
+                            # is refused, whole and before it is truncated,
+                            # and the image stays open for review.
+                            if refuse_math_markup(alt_text) is None:
+                                self._record_math_description_refusal(issue)
+                                return None
                             return alt_text[:125]
             except Exception as e:
                 logger.warning(

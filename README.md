@@ -59,8 +59,8 @@ For document work, scan an original file, apply supported changes, and review an
 |---|---|
 | **PDF** | Scans text/OCR and structure; applies bounded metadata, tag, bookmark, table, and alt-text fixes where the file exposes a safe target. Eligible image-only pages are OCR'd in a private working copy and the searchable text is preserved in the delivered PDF; ambiguous or unsupported cases fail closed. |
 | **Word, PowerPoint, Excel** | Format-specific structure, alternative-text, contrast, table, slide, and workbook checks with partial original-format remediation |
-| **LaTeX** | Remediates and returns `.tex` source directly, converts supported equations to MathML/ARIA descriptions, and can optionally produce PDF/HTML |
-| **General STEM visuals** | Uses source-bound, specialist-specific contracts for printed, multi-equation, vector, and handwritten mathematics; chemical formulas and molecular structures; commutative diagrams; and mixed visuals. Saved-file verification and exact-candidate human approval remain mandatory. |
+| **LaTeX** | Remediates and returns `.tex` source directly, converts supported equations to MathML, keeps any model-drafted equation description as a review draft that is never written as a label, and can optionally produce PDF/HTML |
+| **General STEM visuals** | Defines source-bound, specialist-specific contracts for printed, multi-equation, vector, and handwritten mathematics; chemical formulas and molecular structures; commutative diagrams; and mixed visuals. The PDF remediation pipeline runs the printed equation and handwritten mathematics paths in this release; the multi-equation, vector, chemical formula, molecular structure, commutative diagram and mixed visual paths are not used by it. Saved-file verification and exact-candidate human approval remain mandatory. |
 | **Web pages** | axe-core and Pa11y detection, with generated code fixes |
 | **Video and audio** | Transcription, with generated WebVTT captions delivered as a separate file for human review; structure is checked, accuracy is not |
 | **Images** | Context-aware alt text, not filename echoes |

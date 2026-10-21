@@ -119,6 +119,7 @@ def _write_saved_equation(source: Path, output: Path) -> None:
         model_used=pending.model_used,
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator(
         str(source),

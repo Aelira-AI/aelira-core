@@ -18,6 +18,7 @@ from src.education.remediation.math_fixer import (
     MathVerificationEvidence,
     PendingEquationAssociation,
 )
+from tests.printed_equation_fixtures import consensus_evidence_for
 
 MATHML = "<math><msup><mi>x</mi><mn>2</mn></msup></math>"
 
@@ -89,6 +90,7 @@ def _pending(document: fitz.Document, page_number: int, display_index: int):
         provider_used="gemini",
         model_used="vision-model",
         verification_evidence=_evidence(),
+        consensus_evidence=consensus_evidence_for(MATHML),
     )
 
 
@@ -192,6 +194,7 @@ def test_reconciliation_promotes_only_postsave_verified_staged_result():
         provider_used="gemini",
         model_used="vision-model",
         verification_evidence=_evidence(),
+        consensus_evidence=consensus_evidence_for(MATHML),
     )
     staged = MathFixResult(
         success=False,
@@ -207,6 +210,7 @@ def test_reconciliation_promotes_only_postsave_verified_staged_result():
         model_used="vision-model",
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator.__new__(PdfRemediator)
     remediator.result = RemediationResult(
@@ -275,6 +279,7 @@ def test_pdf_writer_consumes_pending_after_generic_tagger_and_postverifies(tmp_p
         model_used=pending.model_used,
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator(
         str(source),
@@ -309,6 +314,20 @@ def test_pdf_writer_consumes_pending_after_generic_tagger_and_postverifies(tmp_p
     assert contract.locator.image_xref == saved_occurrence["image_xref"]
     assert contract.locator.occurrence_id == saved_occurrence["occurrence_id"]
     assert saved.image_xref == saved_occurrence["image_xref"]
+    consensus = next(
+        item
+        for item in contract.verification_evidence
+        if item.evidence_kind == "printed_equation_consensus_v1"
+    )
+    assert consensus.model_dump(
+        mode="json", exclude={"evidence_kind"}
+    ) == dataclasses.asdict(pending.consensus_evidence)
+    assert consensus.source_sha256 == contract.normalized_source_sha256
+    assert [item.evidence_kind for item in contract.verification_evidence] == [
+        "printed_equation_roundtrip_v1",
+        "printed_equation_consensus_v1",
+        "standalone_formula_saved_v1",
+    ]
     from src.education.remediation.base import FixedIssue
     from src.jobs.remediation_subprocess import (
         SubprocessRemediationResult,
@@ -415,6 +434,7 @@ def test_pdf_writer_preserves_destination_when_contract_construction_fails(
         model_used=pending.model_used,
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator(
         str(source),
@@ -442,6 +462,87 @@ def test_pdf_writer_preserves_destination_when_contract_construction_fails(
     assert list(tmp_path.glob(".serialized.pdf.verify-*.pdf")) == []
     remediator._pikepdf_doc.close()
     fitz_doc.close()
+
+
+def test_pending_without_second_reading_agreement_fails_the_provenance_contract(
+    tmp_path,
+):
+    """No agreement evidence, no contract: the saved candidate is never kept."""
+    from src.education.remediation.base import (
+        IssueCategory,
+        IssueSeverity,
+        RemediationConfig,
+        RemediationIssue,
+    )
+    from src.education.remediation.pdf_remediator import PdfRemediator
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    output = tmp_path / "serialized.pdf"
+    prior_bytes = b"prior approved destination"
+    _make_reused_image_pdf(source)
+    output.write_bytes(prior_bytes)
+    fitz_doc = fitz.open(source)
+    pending = dataclasses.replace(_pending(fitz_doc, 1, 1), consensus_evidence=None)
+    issue = RemediationIssue(
+        id="equation-1",
+        category=IssueCategory.STRUCTURE,
+        severity=IssueSeverity.HIGH,
+        description="Equation image is inaccessible",
+        metadata={"page_number": 1},
+    )
+    staged = MathFixResult(
+        success=False,
+        error="image_equation_association_pending",
+        aria_label=pending.alt_text,
+        page_number=1,
+        has_mathml=True,
+        source_kind="image_equation",
+        fix_method="ai_vision",
+        confidence=0.55,
+        needs_review=True,
+        provider_used=pending.provider_used,
+        model_used=pending.model_used,
+        verification_evidence=pending.verification_evidence,
+        pending_association=pending,
+    )
+    remediator = PdfRemediator(
+        str(source),
+        [issue],
+        RemediationConfig(create_backup=False, verify_fixes=False),
+    )
+    remediator._pdf = fitz_doc
+    remediator._pikepdf_doc = pikepdf.open(source)
+    remediator._struct_tree = PDFStructureTree(remediator._pikepdf_doc)
+    remediator._structure_modified = True
+    remediator._pending_image_equations = [(issue, staged)]
+
+    with pytest.raises(
+        RuntimeError, match="Verified image equation provenance contract failed"
+    ):
+        remediator._write_pdf_output(fitz_doc, str(output))
+
+    assert output.read_bytes() == prior_bytes
+    assert remediator._verified_image_equations == []
+    assert list(tmp_path.glob(".serialized.pdf.verify-*.pdf")) == []
+    remediator._pikepdf_doc.close()
+    fitz_doc.close()
+
+
+def test_printed_contract_builder_requires_the_second_reading_agreement(tmp_path):
+    from types import SimpleNamespace
+
+    from src.education.remediation import pdf_remediator
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    with fitz.open(source) as fitz_doc:
+        pending = dataclasses.replace(_pending(fitz_doc, 1, 1), consensus_evidence=None)
+
+    with pytest.raises(ValueError, match="second-reading agreement"):
+        pdf_remediator._printed_equation_contract(
+            source, pending, SimpleNamespace(success=True)
+        )
 
 
 def test_mixed_table_image_contract_failure_preserves_prior_destination(
@@ -485,6 +586,7 @@ def test_mixed_table_image_contract_failure_preserves_prior_destination(
         model_used=pending.model_used,
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator(
         str(source),
@@ -576,6 +678,7 @@ def test_public_remediation_preserves_prior_output_on_visual_contract_failure(
         model_used=pending.model_used,
         verification_evidence=pending.verification_evidence,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator._pending_image_equations = [(issue, staged)]
     monkeypatch.setattr(remediator, "_prepare_table_fixes", lambda: None)
@@ -1404,6 +1507,7 @@ def test_pdf_writer_emits_handwritten_contract_from_hmer_evidence(tmp_path):
         model_used=pending.model_used,
         verification_evidence=consensus,
         pending_association=pending,
+        consensus_evidence=pending.consensus_evidence,
     )
     remediator = PdfRemediator(
         str(source),

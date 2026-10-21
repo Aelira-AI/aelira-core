@@ -97,7 +97,8 @@ it('renders separate anchored groups and source-authored manual guidance in norm
 
 it('renders saved automated checks independently from human approval and never infers missing proof', () => {
   const markup = render(RecordedOutcomeGroups, { rows });
-  assert.match(markup, /Change applied · automated check passed/);
+  assert.match(markup, /Change applied · finding no longer detected · human review required/);
+  assert.doesNotMatch(markup, /automated check passed/);
   assert.match(markup, /Human review required/);
   assert.match(markup, /Change applied · verification not reported/);
   assert.doesNotMatch(markup, /Approved for publication|fully compliant|certified/i);

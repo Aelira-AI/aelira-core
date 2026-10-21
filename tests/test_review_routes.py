@@ -342,6 +342,7 @@ class TestVisualAnalysisSummary:
             "chemical_formula_recognition_v1",
             "commutative_diagram_recognition_v1",
             "handwritten_equation_consensus_v1",
+            "printed_equation_consensus_v1",
             "printed_equation_roundtrip_v1",
             "scanned_region_chemical_structure_saved_v1",
             "scanned_region_chemical_formula_saved_v1",

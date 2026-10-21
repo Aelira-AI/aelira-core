@@ -40,7 +40,10 @@ from src.education.remediation.equation_image_source import (
 )
 from src.education.remediation.equation_recognizer import EquationRecognizer
 from src.education.remediation.equation_verifier import EquationVerifier
-from src.education.remediation.math_fixer import generate_equation_alt_text
+from src.education.math_speech import (
+    equation_alt_text_is_ambiguous,
+    generate_equation_alt_text,
+)
 from src.education.visual_semantic_contract import (
     MathMLExpressionV1,
     PrintedEquationRoundtripEvidenceV1,
@@ -280,6 +283,10 @@ class MultiEquationSemanticPlanner:
         mathml = self.verifier.canonicalize_mathml(
             self.verifier.converter(recognition.latex)
         )
+        # A reading whose spoken label would garble or mislead is refused, not
+        # described, and no owner is returned for the group.
+        if equation_alt_text_is_ambiguous(recognition.latex):
+            raise MultiEquationSemanticRejected("multi_equation_alt_text_ambiguous")
         semantic = MathMLExpressionV1(
             semantic_kind="mathml_expression_v1",
             mathml=mathml,

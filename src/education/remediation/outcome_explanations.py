@@ -29,6 +29,11 @@ EXPLANATIONS = {
         "Review the image and its context, supply an accurate description, and retry remediation.",
         "not_applied",
     ),
+    "image_description_math_not_speakable": (
+        "The image description proposed by the AI contained mathematical notation, such as LaTeX, that a screen reader would announce symbol by symbol, or characters that cannot be read as text, so no description was written.",
+        "Describe the image yourself, writing any mathematics in plain words, or add a Formula tag with alt text if it is an equation, then rescan.",
+        "not_applied",
+    ),
     "image_occurrence_unbound": (
         "The image description could not be attached to one uniquely identified source image occurrence.",
         "Locate the image in the source document or PDF tag tree and verify its Figure and marked-content association before adding a description.",
@@ -107,6 +112,31 @@ EXPLANATIONS = {
     "image_equation_alt_text_withheld": (
         "The image was recognised as an equation that could not be verified, so no description was written and it needs review.",
         "Review the equation finding for this image, then describe the image manually or correct the source document and rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_unavailable": (
+        "The equation was read once and matched its image, but no second, independent reading was available to confirm it, so it was not applied.",
+        "Ask your administrator to check the image AI configuration, or check the equation against the image and add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_failed": (
+        "The equation was read once and matched its image, but a second, independent reading could not be completed, so it was not applied.",
+        "Retry remediation, or check the equation against the image and add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_declined": (
+        "The equation was read once and matched its image, but a second, independent reading did not find a printed equation in it, so it was not applied.",
+        "Check the image. If it is an equation, add its Formula tag and alt text manually; if it is not, describe it as an image, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_semantic_disagreement": (
+        "Two independent readings of the equation did not agree, so neither was applied.",
+        "Check the equation against the image, then add its Formula tag and alt text manually, and rescan.",
+        "not_applied",
+    ),
+    "image_equation_alt_text_ambiguous": (
+        "The equation was read, but its notation cannot be turned into reliable plain-language alternative text automatically, so it was not applied.",
+        "Write the equation's alternative text yourself and add its Formula tag, or rewrite the equation with braced fractions, roots and exponents in the source document, then rescan.",
         "not_applied",
     ),
     "table_structure_not_verified": (
@@ -226,6 +256,7 @@ _MANUAL_REASON_CODES = {
     "Category disabled in configuration": "category_disabled",
     "Alt-text AI provider unavailable": "alt_text_provider_unavailable",
     "No usable image description was returned": "image_description_unavailable",
+    "image_description_math_not_speakable": "image_description_math_not_speakable",
     "The image occurrence could not be uniquely bound to an existing Figure.": "image_occurrence_unbound",
     "The existing Figure has ambiguous, shared or unsupported image ownership.": "image_ownership_unsupported",
     "Decorative image artifact conversion requires source-level review.": "decorative_image_requires_review",
@@ -244,6 +275,11 @@ _MANUAL_REASON_CODES = {
     "image_equation_alt_text_deferred": "image_equation_alt_text_deferred",
     "image_equation_alt_text_withheld": "image_equation_alt_text_withheld",
     "equation_too_large_for_verification": "equation_too_large_for_verification",
+    "printed_equation_verifier_unavailable": "printed_equation_verifier_unavailable",
+    "printed_equation_verifier_failed": "printed_equation_verifier_failed",
+    "printed_equation_verifier_declined": "printed_equation_verifier_declined",
+    "printed_equation_semantic_disagreement": "printed_equation_semantic_disagreement",
+    "image_equation_alt_text_ambiguous": "image_equation_alt_text_ambiguous",
 }
 _MANUAL_REASON_CODES.update(
     {code: code for codes, _, _ in _ORDER_GUARD_GROUPS for code in codes}

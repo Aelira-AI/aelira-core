@@ -52,6 +52,8 @@ The accessible projection lists atoms and bonds in canonical order. It announces
 
 ## Chemical-structure PDF specialist
 
+Not used by the remediation pipeline in this release; the review and gate services still validate stored contracts of this kind. The rest of this section describes the specialist code and its tests.
+
 `ChemicalStructureRecognizer` accepts one bounded JPEG through an injected client whose declared purpose is exactly `alt_text`. Its response is duplicate-key checked, exact-schema JSON and gets at most one retry for provider failure. A successful response must contain a fully expanded `molecular_graph_v1`; graph consistency and derived topology are authoritative, while the pixels remain source evidence only.
 
 The v1 abbreviation vocabulary is deliberately small: `Me`, `Et`, `n-Pr`, `i-Pr`, `t-Bu`, and `Ph`. Each displayed token must identify an exact expanded subgraph and one external single bond at its template anchor. `Ac`, `Ts`, `Bn`, `Bz`, `R`, `*`, unknown tokens, overlapping subgraphs, and multi-attachment uses fail closed. The source token is retained as recognition evidence, but only the fully expanded graph enters canonical molecular identity.

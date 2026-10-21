@@ -42,7 +42,13 @@ The active path keeps six trust boundaries separate:
    LaTeX.
 4. **Independent verifier reading** — a fresh call sees only the pixels and a
    verifier prompt. It is not shown the primary LaTeX or MathML. The two readings
-   pass only under exact canonical MathML agreement.
+   pass only under exact canonical MathML agreement. The canonical form is version
+   2: a brace group around a single item is not part of the meaning, so `x^{2}`
+   and `x^2` agree, while readings that differ in a symbol, sign or position still
+   differ. After the readings agree, and before anything is staged, the closed-form
+   alt text guard described in the [General STEM guide](general-stem.md#equation-alt-text)
+   runs on both readings' LaTeX. An equation whose spoken form could be read two
+   ways stays manual as `image_equation_alt_text_ambiguous`.
 5. **Saved-file association** — the agreed semantics are attached to the exact
    embedded image occurrence or scanned crop, then checked again in the reopened
    saved PDF before the candidate replaces the output.
@@ -55,9 +61,14 @@ The primary and verifier calls can use the same configured provider and model.
 identities, not vendor diversity. Exact agreement is a narrow rejection policy,
 not a proof that both readings are correct.
 
-The immutable handwriting verifier policy requires two successful readings,
-exact canonical MathML equality, and the exact frozen #223 suitability-policy
-digest. The corpus calibration admits all three eligible project-authored variants
+The immutable handwriting verifier policy (`handwritten-equation-consensus-v2`)
+requires two successful readings, exact canonical MathML equality, and the exact
+frozen #223 suitability-policy digest. The canonical-form version is part of the
+policy digest, so evidence stored under the earlier policy no longer validates.
+It reads as an invalid contract and blocks approval; run remediation again on the
+affected documents. No database migration is involved.
+
+The corpus calibration admits all three eligible project-authored variants
 and makes zero HMER calls for the other thirteen fixtures. In particular, low
 contrast, strike-through, annotations, multiple lines, unsupported notation, and
 non-math handwriting remain human work rather than threshold exceptions.

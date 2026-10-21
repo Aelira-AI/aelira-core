@@ -26,6 +26,11 @@ from ..education.equation_region_contract import (
     canonical_region_locator,
     valid_region_locator,
 )
+from ..education.printed_equation_policy import (
+    PRINTED_VERIFIER_POLICY_SHA256,
+    PRINTED_VERIFIER_POLICY_VERSION,
+    PRINTED_VERIFIER_PROMPT_SHA256,
+)
 from ..education.remediation.base import (
     FixedIssue,
     HandwrittenVerificationEvidence,
@@ -42,6 +47,7 @@ from ..education.visual_semantic_contract import (
     FrozenPageRasterRegionLocator,
     HandwrittenEquationConsensusEvidenceV1,
     HandwrittenEquationContract,
+    PrintedEquationConsensusEvidenceV1,
     PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
     VisualSemanticContract,
@@ -394,6 +400,22 @@ def _valid_image_contract_binding(
         expected_type = CommutativeDiagramRecognitionEvidenceV1
         exclude_evidence_kind = False
     elif isinstance(contract, PrintedEquationContract):
+        # A contract stored before the second reading existed has two evidence
+        # items and never validates. The pin is repeated here so that a
+        # contract carrying any other consensus policy cannot bind either.
+        consensus = [
+            evidence
+            for evidence in contract.verification_evidence
+            if isinstance(evidence, PrintedEquationConsensusEvidenceV1)
+        ]
+        if (
+            len(consensus) != 1
+            or consensus[0].policy_version != PRINTED_VERIFIER_POLICY_VERSION
+            or consensus[0].policy_sha256 != PRINTED_VERIFIER_POLICY_SHA256
+            or consensus[0].verifier_prompt_sha256 != PRINTED_VERIFIER_PROMPT_SHA256
+            or consensus[0].source_sha256 != contract.normalized_source_sha256
+        ):
+            return False
         contract_evidence = next(
             (
                 evidence
