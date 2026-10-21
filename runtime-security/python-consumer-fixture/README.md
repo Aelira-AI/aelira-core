@@ -2,7 +2,7 @@
 
 This disposable fixture is the **before replacement** state for the existing
 Pillow and psycopg2 component consumer wrappers. It installs official PyPI
-Pillow 12.3.0 and psycopg2-binary 2.9.13 native wheels with their original
+Pillow 13.0.0 and psycopg2-binary 2.9.13 native wheels with their original
 wheel-private library directories. It also installs a selected exact subset of
 the public application requirements and exact committed `src` bytes, so the
 real PDF and handwritten-math modules load. It is not a production runtime.

@@ -1,4 +1,4 @@
-# Native Pillow 12.3.0 source-wheel candidate
+# Native Pillow 13.0.0 source-wheel candidate
 
 `build.sh` is the native ARM64/AMD64 CI entrypoint. It needs a Linux host with
 a matching native Docker daemon, an empty output directory, and the `build-a`
@@ -28,7 +28,7 @@ toolchain DEB, installed package manifest and exact PyPI release metadata.
 signed indexes, checks DEB controls, verifies the TIFF inputs, and checks the
 Python files against the retained PyPI HTTPS metadata. Pillow's source
 archive has the additional fixed SHA-256
-`3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce`.
+`cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510`.
 PyPI metadata and downloads are authenticated by TLS and digest comparison;
 no Pillow publisher signature is asserted.
 
@@ -174,13 +174,19 @@ proof checks; a complete offline rebuild also requires the separately retained
 private builder archive. A failed or
 incomplete run is never published as complete.
 
-This recipe preserves Pillow 12.3.0 and supported media features. Its system
-codec versions differ from the previous wheel-private set, so source/advisory
-review and broader semantic parity remain release work. A passing component
-run does not clear a vulnerability, prove the final API image or authorize
-publication.
+This recipe builds Pillow 13.0.0 and preserves supported media features. Its
+system codec versions differ from the previous wheel-private set, so
+source/advisory review and broader semantic parity remain release work. A
+passing component run does not clear a vulnerability, prove the final API image
+or authorize publication.
 
-The accepted isolated ARM64 candidate has wheel SHA-256
-`86f9273a8b532f4d2eff08fddf764364164ecee9d81e69204cc0106ac2560fa3`.
-This is a native ARM component result; AMD64 and final application image
-acceptance remain separate gates.
+Pillow 13.0.0 keeps 12.3.0's build requirements (setuptools 77 or later and
+pybind11) and C library checks. Its `setup.py` no longer sets `zip_safe`, so
+the source wheel has 118 hashed RECORD entries instead of 119 and the
+installed distribution 121 instead of 122.
+
+The ARM64 candidate accepted earlier, wheel SHA-256
+`86f9273a8b532f4d2eff08fddf764364164ecee9d81e69204cc0106ac2560fa3`, was built
+from Pillow 12.3.0 and does not apply to this recipe. A 13.0.0 wheel has no
+accepted native result yet; each architecture's CI evidence records its own
+wheel hash, and final application image acceptance remains a separate gate.

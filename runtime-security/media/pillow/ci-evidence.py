@@ -57,8 +57,8 @@ ACCEPTED_CONSUMERS = {
     "src/education/handwritten_math_suitability.py": "310e239e7837e12e22a3ee14a831f38cf163360959675f7ae0ad149c4a5ddf50",
 }
 PYTHON_INPUTS = (
-    "pillow-12.3.0.tar.gz",
-    "pillow-12.3.0.json",
+    "pillow-13.0.0.tar.gz",
+    "pillow-13.0.0.json",
     "pip-26.2.1-py3-none-any.whl",
     "pip-26.2.1.json",
     "setuptools-84.0.0-py3-none-any.whl",
@@ -359,7 +359,7 @@ def export(
     for name in py:
         safe(source, name)
     package_version = re.compile(
-        r"pillow-12\.3\.0-cp314-cp314-linux_(?:aarch64|x86_64)\.whl"
+        r"pillow-13\.0\.0-cp314-cp314-linux_(?:aarch64|x86_64)\.whl"
     )
     expected_tag = "aarch64" if arch == "arm64" else "x86_64"
     wheels = []
