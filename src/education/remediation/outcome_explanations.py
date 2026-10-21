@@ -34,6 +34,11 @@ EXPLANATIONS = {
         "Review the image and its context, supply an accurate description, and retry remediation.",
         "not_applied",
     ),
+    "image_description_math_not_speakable": (
+        "The image description proposed by the AI contained mathematical notation, such as LaTeX, that a screen reader would announce symbol by symbol, or characters that cannot be read as text, so no description was written.",
+        "Describe the image yourself, writing any mathematics in plain words, or add a Formula tag with alt text if it is an equation, then rescan.",
+        "not_applied",
+    ),
     "image_occurrence_unbound": (
         "The image description could not be attached to one uniquely identified source image occurrence.",
         "Locate the image in the source document or PDF tag tree and verify its Figure and marked-content association before adding a description.",
@@ -72,6 +77,71 @@ EXPLANATIONS = {
     "pdfua_declaration_requires_validation": (
         "A PDF/UA identifier is a conformance declaration; adding it alone would not make the PDF conformant.",
         "Resolve the accessibility findings and complete independent PDF/UA validation before declaring conformance.",
+        "not_applied",
+    ),
+    "image_draw_unresolved": (
+        "The image could not be matched to exactly one drawing operation in the page content that structure can mark, so its description was not written.",
+        "Describe the image manually, or re-export the source document and rescan.",
+        "not_applied",
+    ),
+    "image_draw_ambiguous": (
+        "Another image is drawn over this one at nearly the same place, so a description could not be bound to this image alone and was not written.",
+        "Describe the image manually, or separate the overlapping images in the source document and rescan.",
+        "not_applied",
+    ),
+    "image_in_marked_content": (
+        "The image is drawn inside a marked-content scope in the page content, such as an artifact or span, where a description cannot be attached to it, so none was written.",
+        "Describe the image in the source document, or correct how it is marked there, then rescan.",
+        "not_applied",
+    ),
+    "image_occurrence_unidentified": (
+        "The finding does not identify which image on its page it describes, and the page holds other images, so no description was written.",
+        "Rescan the document so each image is reported with its own identity, then describe the image manually if it is still undescribed.",
+        "not_applied",
+    ),
+    "image_equation_existing_owner_unsupported": (
+        "The image is already inside other marked content, such as a tagged element or an artifact, so the equation was not read or changed.",
+        "Describe the equation in the alternative text of the tagged element that contains the image, or correct how the image is marked in the source document, then rescan.",
+        "not_attempted",
+    ),
+    "image_equation_draw_unresolved": (
+        "The image could not be matched to exactly one drawing operation in the page content, so the equation was not read or changed.",
+        "Describe the equation manually, or re-export the source document and rescan.",
+        "not_attempted",
+    ),
+    "image_equation_alt_text_deferred": (
+        "The alternative text for this image was left to the equation fix, and that fix did not complete.",
+        "Review the equation finding for this image and describe the image manually, then rescan.",
+        "not_applied",
+    ),
+    "image_equation_alt_text_withheld": (
+        "The image was recognised as an equation that could not be verified, so no description was written and it needs review.",
+        "Review the equation finding for this image, then describe the image manually or correct the source document and rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_unavailable": (
+        "The equation was read once and matched its image, but no second, independent reading was available to confirm it, so it was not applied.",
+        "Ask your administrator to check the image AI configuration, or check the equation against the image and add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_failed": (
+        "The equation was read once and matched its image, but a second, independent reading could not be completed, so it was not applied.",
+        "Retry remediation, or check the equation against the image and add its Formula tag and alt text manually, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_verifier_declined": (
+        "The equation was read once and matched its image, but a second, independent reading did not find a printed equation in it, so it was not applied.",
+        "Check the image. If it is an equation, add its Formula tag and alt text manually; if it is not, describe it as an image, then rescan.",
+        "not_applied",
+    ),
+    "printed_equation_semantic_disagreement": (
+        "Two independent readings of the equation did not agree, so neither was applied.",
+        "Check the equation against the image, then add its Formula tag and alt text manually, and rescan.",
+        "not_applied",
+    ),
+    "image_equation_alt_text_ambiguous": (
+        "The equation was read, but its notation cannot be turned into reliable plain-language alternative text automatically, so it was not applied.",
+        "Write the equation's alternative text yourself and add its Formula tag, or rewrite the equation with braced fractions, roots and exponents in the source document, then rescan.",
         "not_applied",
     ),
     "table_structure_not_verified": (
@@ -251,6 +321,7 @@ _MANUAL_REASON_CODES = {
     "Category disabled in configuration": "category_disabled",
     "Alt-text AI provider unavailable": "alt_text_provider_unavailable",
     "No usable image description was returned": "image_description_unavailable",
+    "image_description_math_not_speakable": "image_description_math_not_speakable",
     "The image occurrence could not be uniquely bound to an existing Figure.": "image_occurrence_unbound",
     "The existing Figure has ambiguous, shared or unsupported image ownership.": "image_ownership_unsupported",
     "Decorative image artifact conversion requires source-level review.": "decorative_image_requires_review",
@@ -260,9 +331,22 @@ _MANUAL_REASON_CODES = {
     "PDF/UA conformance declaration requires independent validation": "pdfua_declaration_requires_validation",
     "table_structure_not_verified": "table_structure_not_verified",
     "table_structure_too_complex": "table_structure_too_complex",
+    "image_draw_unresolved": "image_draw_unresolved",
+    "image_draw_ambiguous": "image_draw_ambiguous",
+    "image_in_marked_content": "image_in_marked_content",
+    "image_occurrence_unidentified": "image_occurrence_unidentified",
+    "image_equation_existing_owner_unsupported": "image_equation_existing_owner_unsupported",
+    "image_equation_draw_unresolved": "image_equation_draw_unresolved",
+    "image_equation_alt_text_deferred": "image_equation_alt_text_deferred",
+    "image_equation_alt_text_withheld": "image_equation_alt_text_withheld",
     "equation_too_large_for_verification": "equation_too_large_for_verification",
     "alt_text_client_unavailable": "alt_text_client_unavailable",
     "Verified image equation awaits exact content association": "equation_association_unverified",
+    "printed_equation_verifier_unavailable": "printed_equation_verifier_unavailable",
+    "printed_equation_verifier_failed": "printed_equation_verifier_failed",
+    "printed_equation_verifier_declined": "printed_equation_verifier_declined",
+    "printed_equation_semantic_disagreement": "printed_equation_semantic_disagreement",
+    "image_equation_alt_text_ambiguous": "image_equation_alt_text_ambiguous",
 }
 _MANUAL_REASON_CODES.update(
     {

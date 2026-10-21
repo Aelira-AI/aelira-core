@@ -16,8 +16,31 @@ from PIL import Image
 
 from src.config.settings import get_settings
 from src.education.alt_text_quality import normalize_usable_alt_text
+from src.education.math_speech import (
+    MATH_NOT_SPEAKABLE_ERROR,
+    SPOKEN_MATH_INSTRUCTION,
+    refuse_math_markup,
+)
+from src.education.model_json import parse_tolerant
 
 logger = logging.getLogger(__name__)
+
+
+# Prompt and acceptance contracts that changed after analyses were first
+# recorded. The recorder returns a stored result for a repeated request without
+# calling the provider, and the request hash covers the arguments but not the
+# prompt text or the rules that decide whether an answer is used. A method whose
+# prompt or acceptance rules changed therefore carries a revision, so an analysis
+# recorded under the old prompt or the old rules, which may hold raw LaTeX or a
+# rewritten description, is never replayed as if it came from the new ones.
+# Methods that did not change keep their original hash. Version 2 adds the
+# refusal of mathematical markup in place of rewriting it.
+_PROMPT_REVISIONS = {
+    "generate_alt_text": "spoken-math-v2",
+    "describe_chart_or_graph": "spoken-math-v2",
+    "validate_alt_text": "spoken-math-v2",
+    "detect_image_type": "spoken-math-v2",
+}
 
 
 def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
@@ -28,6 +51,9 @@ def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
         "positional": list(args[1:]),
         "keyword": {key: value for key, value in kwargs.items() if key != "image_path"},
     }
+    revision = _PROMPT_REVISIONS.get(method_name)
+    if revision is not None:
+        parameters["prompt_revision"] = revision
     try:
         encoded = json.dumps(
             parameters,
@@ -37,17 +63,20 @@ def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
             allow_nan=False,
         ).encode("ascii")
     except (TypeError, ValueError):
-        encoded = json.dumps(
-            {
-                "version": "image-alt-text-request-v1",
-                "method": method_name,
-                "parameter_types": [type(value).__name__ for value in args[1:]],
-                "keyword_types": {
-                    key: type(value).__name__
-                    for key, value in sorted(kwargs.items())
-                    if key != "image_path"
-                },
+        typed = {
+            "version": "image-alt-text-request-v1",
+            "method": method_name,
+            "parameter_types": [type(value).__name__ for value in args[1:]],
+            "keyword_types": {
+                key: type(value).__name__
+                for key, value in sorted(kwargs.items())
+                if key != "image_path"
             },
+        }
+        if revision is not None:
+            typed["prompt_revision"] = revision
+        encoded = json.dumps(
+            typed,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("ascii")
@@ -102,6 +131,17 @@ def _tracked_analysis(method):
             self._analysis_depth -= 1
 
     return wrapped
+
+
+def _json_holds_markup(value: Any) -> bool:
+    """Whether any string in a parsed model answer carries mathematical markup."""
+    if isinstance(value, str):
+        return refuse_math_markup(value) is None
+    if isinstance(value, list):
+        return any(_json_holds_markup(item) for item in value)
+    if isinstance(value, dict):
+        return any(_json_holds_markup(item) for item in value.values())
+    return False
 
 
 class ImageAltTextGenerator:
@@ -627,10 +667,12 @@ class ImageAltTextGenerator:
         if educational_context:
             prompt = f"""Describe this image for a screen reader user who cannot see it.
 If it contains text, diagrams, charts, equations, or code, describe the content clearly.
+{SPOKEN_MATH_INSTRUCTION}
 Be concise but accurate (1-3 sentences, under 150 characters for simple images, longer for complex content).
 Focus on what's important for understanding the educational content.{context_info}"""
         else:
             prompt = f"""Describe this image for a screen reader user who cannot see it.
+{SPOKEN_MATH_INSTRUCTION}
 Be concise but accurate (1-2 sentences, under 125 characters).
 Focus on the main visual elements and purpose.{context_info}"""
 
@@ -652,6 +694,16 @@ Focus on the main visual elements and purpose.{context_info}"""
             return {
                 "success": False,
                 "error": "Unusable or incomplete alt text response",
+                "inference_time": elapsed,
+                "provider": provider,
+            }
+
+        # A description that carries mathematical markup is refused, never
+        # rewritten. A refusal is a failed generation: no description is written.
+        if refuse_math_markup(alt_text) is None:
+            return {
+                "success": False,
+                "error": MATH_NOT_SPEAKABLE_ERROR,
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -780,7 +832,9 @@ Common issues to check for:
 - Text that describes the wrong thing entirely
 - Missing important visual elements (text in image, people, actions)
 - Decorative images marked as informative or vice versa
-- Alt text that's too long or too short for the image complexity"""
+- Alt text that's too long or too short for the image complexity
+
+{SPOKEN_MATH_INSTRUCTION} This applies to suggested_improvement."""
 
         response_text, elapsed, provider, model = await self._generate_vision(
             image_path, prompt, max_tokens=500
@@ -807,16 +861,23 @@ Common issues to check for:
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
 
-            import json
+            result, swallowed = parse_tolerant(cleaned)
 
-            result = json.loads(cleaned)
+            # A suggested replacement is alternative text, so it is withheld when
+            # it carries mathematical markup, and always when the answer had a
+            # swallowed command repaired in it. Withholding it leaves the verdict
+            # intact and suggests nothing, which every caller already treats as
+            # no suggestion.
+            suggestion = result.get("suggested_improvement")
+            if isinstance(suggestion, str):
+                suggestion = None if swallowed else refuse_math_markup(suggestion)
 
             return {
                 "success": True,
                 "is_accurate": result.get("is_accurate", False),
                 "accuracy_score": result.get("accuracy_score", 0.0),
                 "issues": result.get("issues", []),
-                "suggested_improvement": result.get("suggested_improvement"),
+                "suggested_improvement": suggestion,
                 "reasoning": result.get("reasoning", ""),
                 "existing_alt_text": existing_alt_text,
                 "inference_time": elapsed,
@@ -906,7 +967,9 @@ Respond in this exact JSON format:
     "reasoning": "brief explanation of why this classification",
     "recommended_alt": "suggested alt text, or empty string for decorative",
     "visual_elements": ["list", "of", "key", "elements", "detected"]
-}}"""
+}}
+
+{SPOKEN_MATH_INSTRUCTION} This applies to recommended_alt."""
 
         response_text, elapsed, provider, model = await self._generate_vision(
             image_path, prompt, max_tokens=500
@@ -923,8 +986,6 @@ Respond in this exact JSON format:
 
         # Parse JSON response
         try:
-            import json
-
             cleaned = response_text.strip()
             if cleaned.startswith("```json"):
                 cleaned = cleaned[7:]
@@ -934,7 +995,15 @@ Respond in this exact JSON format:
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
 
-            result = json.loads(cleaned)
+            result, swallowed = parse_tolerant(cleaned)
+
+            # A suggested alt text that carries mathematical markup, or that comes
+            # from an answer with a swallowed command repaired in it, is withheld:
+            # None says no suggestion was made, which an empty string, the mark
+            # of a decorative image, does not.
+            recommended = result.get("recommended_alt", "")
+            if isinstance(recommended, str):
+                recommended = None if swallowed else refuse_math_markup(recommended)
 
             return {
                 "success": True,
@@ -942,7 +1011,7 @@ Respond in this exact JSON format:
                 "image_purpose": result.get("image_purpose", "informative"),
                 "confidence": result.get("confidence", 0.7),
                 "reasoning": result.get("reasoning", ""),
-                "recommended_alt": result.get("recommended_alt", ""),
+                "recommended_alt": recommended,
                 "visual_elements": result.get("visual_elements", []),
                 "inference_time": elapsed,
                 "provider": provider,
@@ -1054,7 +1123,8 @@ Important guidelines:
 - For pie charts, describe percentages and segments
 - For bar/line charts, describe the axes and trends
 - For infographics, describe the logical flow and key points
-- For maps, describe regions and what data is shown"""
+- For maps, describe regions and what data is shown
+- {SPOKEN_MATH_INSTRUCTION}"""
 
         max_tokens = 1500 if detail_level == "detailed" else 1000
         response_text, elapsed, provider, model = await self._generate_vision(
@@ -1072,8 +1142,6 @@ Important guidelines:
 
         # Parse JSON response
         try:
-            import json
-
             cleaned = response_text.strip()
             if cleaned.startswith("```json"):
                 cleaned = cleaned[7:]
@@ -1083,7 +1151,18 @@ Important guidelines:
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
 
-            result = json.loads(cleaned)
+            result, swallowed = parse_tolerant(cleaned)
+
+            # Any field that carries mathematical markup refuses the whole
+            # description, and so does an answer with a swallowed command
+            # repaired in it. Nothing in it is rewritten.
+            if swallowed or _json_holds_markup(result):
+                return {
+                    "success": False,
+                    "error": MATH_NOT_SPEAKABLE_ERROR,
+                    "inference_time": elapsed,
+                    "provider": provider,
+                }
 
             return {
                 "success": True,
@@ -1102,7 +1181,15 @@ Important guidelines:
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse chart description as JSON: {e}")
-            # Return raw text as description
+            # Return raw text as description, refused like any other that carries
+            # mathematical markup
+            if refuse_math_markup(response_text) is None:
+                return {
+                    "success": False,
+                    "error": MATH_NOT_SPEAKABLE_ERROR,
+                    "inference_time": elapsed,
+                    "provider": provider,
+                }
             return {
                 "success": True,
                 "chart_type": "unknown",
@@ -1225,13 +1312,17 @@ Important guidelines:
 
             if validation_result.get("success"):
                 if not validation_result.get("is_accurate"):
-                    result["recommendation"]["needs_update"] = True
-                    result["recommendation"]["validation_issues"] = (
-                        validation_result.get("issues", [])
+                    # No description may have been written for the image, for
+                    # example when it was refused, so there may be no
+                    # recommendation yet. The verdict is still reported.
+                    recommendation = result.setdefault("recommendation", {})
+                    recommendation["needs_update"] = True
+                    recommendation["validation_issues"] = validation_result.get(
+                        "issues", []
                     )
                     if validation_result.get("suggested_improvement"):
-                        result["recommendation"]["suggested_improvement"] = (
-                            validation_result.get("suggested_improvement")
+                        recommendation["suggested_improvement"] = validation_result.get(
+                            "suggested_improvement"
                         )
 
         for candidate_name in ("description", "type_detection", "validation"):

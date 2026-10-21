@@ -32,6 +32,8 @@ These outputs describe what the verified graph declares. They do not prove that 
 
 ## PDF recognition and saved-file proof
 
+Not used by the remediation pipeline in this release; the review and gate services still validate stored contracts of this kind. The rest of this section describes the specialist code and its tests.
+
 `CommutativeDiagramRecognizer` accepts one exact embedded-image occurrence or page-raster region as a bounded JPEG through a purpose-bound `alt_text` client. Provider output must match the exact graph schema; unknown topology, unresolved crossings, incomplete paths, ambiguous attachments, and invalid commutativity relationships are refused rather than guessed.
 
 An accepted result is associated with the exact source as a PDF `Figure`. The deterministic accessible description and canonical graph attachment are bound to the recognition and source digests. The saved file is reopened to verify source identity, structure ownership, reading order, attachment bytes, metadata, and applicable render or OCR evidence.

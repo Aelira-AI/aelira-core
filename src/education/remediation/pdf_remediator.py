@@ -31,7 +31,7 @@ import stat
 import tempfile
 import warnings
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -106,10 +106,29 @@ from .table_tagger import (
 from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
-from .math_fixer import MathFixer, PendingScannedRegionAssociation
+from .math_fixer import (
+    IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
+    IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR,
+    IMAGE_EQUATION_EXISTING_OWNER_ERROR,
+    PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
+    PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
+    PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
+    PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
+    MathFixer,
+    PendingScannedRegionAssociation,
+)
 from .handwritten_equation_verifier import HandwrittenEquationVerificationEvidence
 from .equation_image_source import WorkingEquationRegionOccurrence
-from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
+from src.education.math_contracts import (
+    CONCRETE_MATH_ISSUE_TYPES,
+    IMAGE_EQUATION_ISSUE_TYPE,
+)
+from src.education.math_speech import (
+    IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON,
+    MATH_DESCRIPTION_RECOMMENDATION,
+    SPOKEN_MATH_INSTRUCTION,
+    refuse_math_markup,
+)
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.visual_semantic_contract import (
     EmbeddedImageOccurrenceLocator,
@@ -117,6 +136,7 @@ from src.education.visual_semantic_contract import (
     HandwrittenEquationConsensusEvidenceV1,
     HandwrittenEquationContract,
     MathMLExpressionV1,
+    PrintedEquationConsensusEvidenceV1,
     PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
     ScannedRegionFormulaSavedEvidenceV1,
@@ -133,6 +153,80 @@ logger = logging.getLogger(__name__)
 _MAX_SCANNED_REGION_ASSOCIATIONS = 32
 _MAX_SCANNED_REGION_ASSOCIATIONS_PER_PAGE = 1
 _MAX_SCANNED_REGION_PAGES = 8
+
+# Version tag of the receipt recorded for each fix whose finding was shown to be
+# resolved by rescanning the saved bytes.
+_SAVED_FILE_RECEIPT_METHOD = "pdf-finding-presence-v1"
+
+# Manual reason for the alt-text finding of an image that an equation fix is
+# still waiting to claim in the saved file.
+_EQUATION_ALT_TEXT_DEFERRED = "image_equation_alt_text_deferred"
+
+# Manual reason for the alt-text finding of an image the specialist recognised as
+# an equation that then failed verification or was rejected. No generic
+# description is written for it, and the equation's own error stays on the
+# equation finding.
+_EQUATION_ALT_TEXT_WITHHELD = "image_equation_alt_text_withheld"
+
+# Manual reasons for an image whose description cannot be bound to that image
+# alone in a newly generated structure. Each is recorded before any Figure is
+# written, so the finding is never credited and no description is placed.
+# The draw is not one direct drawing operation the structure can mark.
+_IMAGE_DRAW_UNRESOLVED = "image_draw_unresolved"
+# Another image is drawn over it at nearly the same place, so a Figure for one
+# fits both.
+_IMAGE_DRAW_AMBIGUOUS = "image_draw_ambiguous"
+# The draw already sits inside marked content, such as an artifact.
+_IMAGE_IN_MARKED_CONTENT = "image_in_marked_content"
+# The finding carries no occurrence identity and its page holds other images.
+_IMAGE_OCCURRENCE_UNIDENTIFIED = "image_occurrence_unidentified"
+
+# What a person should do next for each of those reasons.
+_IMAGE_BINDING_RECOMMENDATIONS = {
+    _IMAGE_DRAW_UNRESOLVED: (
+        "This image could not be matched to exactly one drawing operation in "
+        "the page content. Describe it manually in the source document, or "
+        "re-export the document, then rescan."
+    ),
+    _IMAGE_DRAW_AMBIGUOUS: (
+        "Another image is drawn over this one at nearly the same place, so a "
+        "description could not be bound to this image alone. Describe the "
+        "images manually, or separate the overlapping images in the source "
+        "document and rescan."
+    ),
+    _IMAGE_IN_MARKED_CONTENT: (
+        "This image is drawn inside a marked-content scope in the page "
+        "content, such as an artifact or span, where a description cannot be "
+        "attached to it. Describe it in the source document, or correct how it "
+        "is marked, then rescan."
+    ),
+    _IMAGE_OCCURRENCE_UNIDENTIFIED: (
+        "The finding does not say which image on its page it describes, and "
+        "the page holds other images. Rescan the document so each image is "
+        "reported with its own identity, then describe this image if it is "
+        "still undescribed."
+    ),
+}
+
+
+class ReviewGatedContentError(RuntimeError):
+    """Review-gated visual content was written without a verified gated fix."""
+
+
+@dataclass
+class _EquationOccurrenceHold:
+    """One image draw the equation specialist has taken responsibility for.
+
+    ``pending`` marks a verified reading awaiting its saved-file association.
+    ``blocked`` marks an equation the specialist recognised but could not prove,
+    so no generic image description may stand in for it. A draw refused before
+    any classification, such as one with an existing owner, is not held at all.
+    ``alt_text_issue`` is the alt-text finding for the same draw once the
+    alt-text pass has held it back.
+    """
+
+    state: str
+    alt_text_issue: Optional[RemediationIssue] = None
 
 
 def _file_sha256(path: str | Path) -> str:
@@ -303,12 +397,19 @@ def _printed_equation_contract(
     path: str | Path, pending: Any, association: Any
 ) -> PrintedEquationContract:
     """Build a printed contract from bytes that passed reverse verification."""
+    consensus_evidence = getattr(pending, "consensus_evidence", None)
+    if consensus_evidence is None:
+        raise ValueError("printed equation lacks its second-reading agreement")
     semantic, locator, saved, normalized_source_sha256 = (
         _visual_equation_contract_parts(path, pending, association)
     )
     roundtrip = PrintedEquationRoundtripEvidenceV1(
         evidence_kind="printed_equation_roundtrip_v1",
         **asdict(pending.verification_evidence),
+    )
+    consensus = PrintedEquationConsensusEvidenceV1(
+        evidence_kind="printed_equation_consensus_v1",
+        **asdict(consensus_evidence),
     )
 
     specialist_material = {
@@ -320,7 +421,7 @@ def _printed_equation_contract(
     specialist_sha256 = canonical_sha256(specialist_material)
     contract_material = {
         **specialist_material,
-        "verification_evidence": (roundtrip, saved),
+        "verification_evidence": (roundtrip, consensus, saved),
         "specialist_sha256": specialist_sha256,
     }
     return PrintedEquationContract(
@@ -815,6 +916,8 @@ class PdfRemediator(BaseRemediator):
         self._content_tagger_stats: Optional[Dict[str, int]] = None
         self._pending_image_equations: List[tuple[Any, Any]] = []
         self._verified_image_equations: List[tuple[Any, Any, Any]] = []
+        # Equation-claimed image draws keyed by displayed-occurrence identity.
+        self._equation_holds: Dict[tuple[Any, ...], _EquationOccurrenceHold] = {}
         # Exact identity of a final PDF published by this remediator instance.
         # Cleanup must never infer ownership merely from the deterministic name.
         self._published_output_binding: Optional[tuple[str, int, int, str]] = None
@@ -1176,6 +1279,10 @@ class PdfRemediator(BaseRemediator):
             if self.config.verify_fixes and output_path:
                 self._verify_fixes(output_path)
 
+            # Last gate before success is reported: review-gated content that
+            # reached the saved file must still be backed by its gated fix.
+            self._require_review_gated_fixes_survive()
+
             self._calculate_scores()
             self.result.complete()
 
@@ -1197,6 +1304,15 @@ class PdfRemediator(BaseRemediator):
                 if getattr(self, "_pre_table_pikepdf_doc", None) is not None:
                     self._rollback_provisional_table_fixes()
                 self._discard_failed_table_output(self._get_output_path())
+            if isinstance(e, ReviewGatedContentError) or getattr(
+                self, "_verified_image_equations", None
+            ):
+                # Review-gated content was written into the published file.
+                # With the run failed nothing vouches for it, so it must not
+                # stay at the destination.
+                self._quarantine_failed_output(
+                    self._get_output_path(), "review-gated visual content"
+                )
             self.result.success = False
             self.result.error_message = str(e)
             self.result.close_output_claim()
@@ -1205,6 +1321,48 @@ class PdfRemediator(BaseRemediator):
             self._cleanup_working_copy()
 
         return self.result
+
+    def _require_review_gated_fixes_survive(self) -> None:
+        """Fail closed unless every written gated association keeps its gated fix.
+
+        Each association in ``_verified_image_equations`` is already inside the
+        saved PDF. It must still have a fixed issue with a review-gated source
+        kind that passed verification and, when saved-file verification is on,
+        carries that verification's receipt. A rescan that demoted the equation
+        fix, a skipped reconcile, or an unavailable rescan all leave the PDF
+        holding gated content that nothing vouches for. Raising routes the run
+        through the exception branch of ``remediate``, which reports failure,
+        closes the output claim and quarantines the published file.
+        """
+        written = getattr(self, "_verified_image_equations", None) or []
+        if not written:
+            return
+        from .image_equation_gate import REVIEW_GATED_VISUAL_SOURCE_KINDS
+
+        backed = {
+            fixed.issue_id: fixed
+            for fixed in self.result.fixed_issues
+            if fixed.source_kind in REVIEW_GATED_VISUAL_SOURCE_KINDS
+            and fixed.verification_passed is True
+        }
+        unbacked = 0
+        for entry in written:
+            fixed = backed.get(entry[0].id)
+            receipt = fixed.saved_file_verification if fixed is not None else None
+            if fixed is None or (
+                self.config.verify_fixes
+                and not (
+                    isinstance(receipt, dict)
+                    and receipt.get("method_version") == _SAVED_FILE_RECEIPT_METHOD
+                    and receipt.get("issue_id") == fixed.issue_id
+                )
+            ):
+                unbacked += 1
+        if unbacked:
+            raise ReviewGatedContentError(
+                "Review-gated visual content was written to the output without a "
+                f"verified review-gated fix for {unbacked} image(s)"
+            )
 
     def _complete_reviewed_recovery(self, document: Any) -> "RemediationResult":
         """Verify the exact reviewed candidate without heuristic retagging.
@@ -1414,6 +1572,7 @@ class PdfRemediator(BaseRemediator):
                         continue
                     if result.pending_association is not None:
                         self._pending_image_equations.append((issue, result))
+                        self._hold_equation_occurrence(issue, "pending")
                         self._add_manual_issue(
                             issue,
                             reason="Verified image equation awaits exact content association",
@@ -1423,6 +1582,12 @@ class PdfRemediator(BaseRemediator):
                             ),
                         )
                         continue
+                    # Only an equation the specialist actually recognised holds
+                    # the draw. A refusal made before any classification (an
+                    # existing owner, an unresolved draw) leaves the generic
+                    # alt-text finding for that draw to proceed normally.
+                    if result.equation_recognized:
+                        self._hold_equation_occurrence(issue, "blocked")
                     if result.success:
                         self._structure_modified = True
                         desc = (
@@ -1441,9 +1606,8 @@ class PdfRemediator(BaseRemediator):
                         self._add_manual_issue(
                             issue,
                             reason=result.error or "Could not convert math content",
-                            recommendation=(
-                                "Manually add Formula structure elements with MathML "
-                                "and alt text for mathematical content."
+                            recommendation=self._math_manual_recommendation(
+                                result.error
                             ),
                         )
 
@@ -1464,6 +1628,106 @@ class PdfRemediator(BaseRemediator):
                     reason=f"Specialist module '{name}' raised an error: {e}",
                     recommendation="Review and fix manually",
                 )
+
+    @staticmethod
+    def _math_manual_recommendation(error: Optional[str]) -> str:
+        """Next step for a math finding the specialist left to a person."""
+        if error == IMAGE_EQUATION_EXISTING_OWNER_ERROR:
+            return (
+                "This image is already inside other marked content, such as a "
+                "tagged structure element or an artifact, so the equation was "
+                "not read. Describe the equation in the alternative text of the "
+                "tagged element, or remediate the source document."
+            )
+        if error == IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR:
+            return (
+                "This image could not be matched to exactly one drawing operation "
+                "in the page content, so the equation was not read. Describe the "
+                "equation manually, or remediate the source document."
+            )
+        if error in {
+            PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
+            PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
+            PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
+            PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
+        }:
+            return (
+                "A second, independent reading of this equation did not confirm "
+                "the first, so no Formula was written. Check the equation against "
+                "the image and add its Formula tag and alt text manually."
+            )
+        if error == IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR:
+            return (
+                "The equation's notation cannot be turned into reliable "
+                "plain-language alt text automatically. Write the alt text and "
+                "add the Formula tag manually."
+            )
+        return (
+            "Manually add Formula structure elements with MathML and alt text "
+            "for mathematical content."
+        )
+
+    def _hold_equation_occurrence(self, issue: RemediationIssue, state: str) -> None:
+        """Record that the equation fix owns this image draw.
+
+        The key is the displayed-occurrence identity the issue carries, so the
+        alt-text finding for the same draw can be matched without comparing
+        page or image positions. Region findings carry no such identity and are
+        not held.
+        """
+        from .pdf_image_finding_identity import occurrence_identity
+
+        if issue.metadata.get("issue_type") != IMAGE_EQUATION_ISSUE_TYPE:
+            return
+        identity = occurrence_identity(issue.metadata)
+        if identity is not None:
+            holds = self.__dict__.setdefault("_equation_holds", {})
+            holds[identity] = _EquationOccurrenceHold(state)
+
+    def _defer_alt_text_to_equation(self, issue: RemediationIssue) -> bool:
+        """Keep the generic alt-text finding for an equation-held draw manual.
+
+        Returns True when the finding was handled. No provider is called and no
+        Figure is created: a Figure would be a second owner of the same draw, and
+        a generic description must never stand in for an equation that was
+        recognised but not proven. A verified equation later supplies the
+        description itself, through ``_reconcile_verified_image_equations``.
+        """
+        holds = getattr(self, "_equation_holds", None)
+        if not holds or issue.category != IssueCategory.ALT_TEXT:
+            return False
+        from .pdf_image_finding_identity import _identity, _is_image_finding
+
+        if not _is_image_finding(issue):
+            return False
+        identity = _identity(issue)
+        hold = holds.get(identity) if identity is not None else None
+        if hold is None:
+            return False
+        hold.alt_text_issue = issue
+        if hold.state == "pending":
+            self._add_manual_issue(
+                issue,
+                reason=_EQUATION_ALT_TEXT_DEFERRED,
+                recommendation=(
+                    "This image is an equation with a verified reading awaiting "
+                    "its saved-file check. Its alternative text comes from that "
+                    "reading. If the equation fix was not applied, describe the "
+                    "image manually."
+                ),
+            )
+        else:
+            self._add_manual_issue(
+                issue,
+                reason=_EQUATION_ALT_TEXT_WITHHELD,
+                recommendation=(
+                    "The image was recognised as an equation that could not be "
+                    "verified, so no generic image description was generated "
+                    "for it. Review the equation finding for this image and "
+                    "describe it manually."
+                ),
+            )
+        return True
 
     def _process_issue(self, issue: RemediationIssue, document: Any):
         """Process a single issue with confidence scoring.
@@ -1511,6 +1775,8 @@ class PdfRemediator(BaseRemediator):
                 recommendation="Review the issue category and apply the fix manually.",
             )
             return
+        if self._defer_alt_text_to_equation(issue):
+            return
 
         # Delegate to base for category-disabled / can't-auto-fix checks
         if not self._is_category_enabled(issue.category):
@@ -1546,12 +1812,20 @@ class PdfRemediator(BaseRemediator):
                     (
                         "Alt-text AI provider unavailable"
                         if self.alt_text_client is None
-                        else "No usable image description was returned"
+                        else (
+                            IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON
+                            if self._math_description_refused(issue)
+                            else "No usable image description was returned"
+                        )
                     )
                     if issue.category == IssueCategory.ALT_TEXT
                     else "Could not generate appropriate fix"
                 ),
-                recommendation=self._get_manual_recommendation(issue),
+                recommendation=(
+                    MATH_DESCRIPTION_RECOMMENDATION
+                    if self._math_description_refused(issue)
+                    else self._get_manual_recommendation(issue)
+                ),
             )
             return
 
@@ -1596,11 +1870,14 @@ class PdfRemediator(BaseRemediator):
                 self._add_manual_issue(
                     issue,
                     reason=source_refusal,
-                    recommendation=(
-                        "Review the image's actual Figure and marked-content ownership before editing its description."
-                        if issue.category
-                        in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
-                        else "Review the source text and split its content runs before applying heading or list structure."
+                    recommendation=_IMAGE_BINDING_RECOMMENDATIONS.get(
+                        source_refusal,
+                        (
+                            "Review the image's actual Figure and marked-content ownership before editing its description."
+                            if issue.category
+                            in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
+                            else "Review the source text and split its content runs before applying heading or list structure."
+                        ),
                     ),
                 )
                 return
@@ -3526,7 +3803,16 @@ class PdfRemediator(BaseRemediator):
             )
 
     def _discard_failed_table_output(self, output_path: str) -> None:
-        """Remove only exact output bytes published by this remediation task."""
+        """Quarantine a table remediation's published output after it failed."""
+        self._quarantine_failed_output(output_path, "table")
+
+    def _quarantine_failed_output(self, output_path: str, label: str) -> None:
+        """Move exactly the output bytes this remediation task published aside.
+
+        ``label`` names what failed, for the log and warning text. Output the
+        task did not publish is never touched, and nothing is deleted: the
+        entry is renamed into a private directory beside the destination.
+        """
         source = Path(self.file_path)
         destination = Path(output_path)
         configured_directory = (
@@ -3539,7 +3825,7 @@ class PdfRemediator(BaseRemediator):
             resolved_parent = destination.parent.resolve(strict=False)
             resolved_source = source.resolve(strict=False)
         except OSError as exc:
-            logger.warning("Could not resolve failed table output safely: %s", exc)
+            logger.warning("Could not resolve failed %s output safely: %s", label, exc)
             return
 
         candidate = resolved_parent / destination.name
@@ -3547,7 +3833,8 @@ class PdfRemediator(BaseRemediator):
             candidate.relative_to(resolved_directory)
         except ValueError:
             logger.warning(
-                "Refusing to remove failed table output outside its directory: %s",
+                "Refusing to remove failed %s output outside its directory: %s",
+                label,
                 output_path,
             )
             return
@@ -3566,7 +3853,7 @@ class PdfRemediator(BaseRemediator):
         try:
             self._require_descriptor_publication_support()
             parent_fd = self._open_bound_directory(
-                str(resolved_parent), purpose="failed table output directory"
+                str(resolved_parent), purpose=f"failed {label} output directory"
             )
             quarantine_name, quarantine_identity = self._create_candidate_directory(
                 parent_fd,
@@ -3607,7 +3894,8 @@ class PdfRemediator(BaseRemediator):
                 or _descriptor_sha256(output_fd) != binding[3]
             ):
                 logger.warning(
-                    "Refusing to remove failed table output whose identity changed: %s",
+                    "Refusing to remove failed %s output whose identity changed: %s",
+                    label,
                     candidate,
                 )
                 return
@@ -3616,13 +3904,13 @@ class PdfRemediator(BaseRemediator):
         except FileNotFoundError:
             return
         except (OSError, RuntimeError) as exc:
-            logger.warning("Could not verify failed table output safely: %s", exc)
+            logger.warning("Could not verify failed %s output safely: %s", label, exc)
             return
         finally:
             if quarantined_entry and quarantine_dir_fd is not None:
                 self._published_output_binding = None
                 warning = (
-                    "Failed table cleanup retained unverified output at "
+                    f"Failed {label} cleanup retained unverified output at "
                     f"'{quarantine_path}' rather than deleting mutable pathname bytes"
                 )
                 if descriptor_matched_task:
@@ -3737,7 +4025,51 @@ class PdfRemediator(BaseRemediator):
                 wcag_criteria="1.1.1",
                 page_number=staged.page_number,
             )
+            self._promote_deferred_alt_text(issue, staged, remaining_manual)
         self.result.manual_issues = remaining_manual
+
+    def _promote_deferred_alt_text(
+        self, equation_issue: RemediationIssue, staged: Any, remaining_manual: list
+    ) -> None:
+        """Give the held alt-text finding the verified equation's description.
+
+        The finding is promoted only when this exact draw's equation contract was
+        verified in the saved candidate. The new fix carries no source kind: the
+        equation fix is the review-gated record for the draw, and a second gated
+        record would claim the same occurrence twice. It stays flagged for human
+        review at the equation's own confidence ceiling, and the saved-file
+        rescan still has to credit the description before it counts.
+        """
+        from .pdf_image_finding_identity import occurrence_identity
+
+        identity = occurrence_identity(equation_issue.metadata)
+        holds = getattr(self, "_equation_holds", None)
+        hold = holds.get(identity) if holds and identity is not None else None
+        if hold is None or hold.state != "pending" or hold.alt_text_issue is None:
+            return
+        alt_issue = hold.alt_text_issue
+        matching = [
+            manual
+            for manual in remaining_manual
+            if manual.issue_id == alt_issue.id
+            and manual.reason == _EQUATION_ALT_TEXT_DEFERRED
+        ]
+        if len(matching) != 1:
+            return
+        remaining_manual.remove(matching[0])
+        self.result.manual_count -= 1
+        self._add_fixed_issue(
+            alt_issue,
+            fixed_content=staged.aria_label,
+            fix_method="ai_vision",
+            confidence=min(float(staged.confidence), 0.55),
+            notes="Alternative text taken from the verified equation reading.",
+            needs_review=True,
+            provider_used=staged.provider_used,
+            model_used=staged.model_used,
+            wcag_criteria="1.1.1",
+            page_number=staged.page_number,
+        )
 
     def _reload_pikepdf_doc(self) -> None:
         """Reload the pikepdf document handle from disk.
@@ -4190,7 +4522,6 @@ class PdfRemediator(BaseRemediator):
         try:
             page_num = issue.metadata.get("page_number", 1)
             image_index = issue.metadata.get("image_index", 0)
-            image_bbox = issue.metadata.get("bbox")
 
             # An existing tagged image must keep its actual content owner.
             # A new root-level Figure cannot describe an already owned draw.
@@ -4260,12 +4591,33 @@ class PdfRemediator(BaseRemediator):
 
             # Newly generated structure is bound by the content tagger and
             # independently checked after save; no existing owner is replaced.
+            # The Figure records the rectangle of the one draw it describes, in
+            # default user space, and the tagger binds it to the block that
+            # rectangle alone fits. When the occurrence is known but its draw
+            # cannot be resolved to one unambiguous, markable drawing operation
+            # there is nothing safe to bind the Figure by, so the finding is
+            # refused with the reason: no Figure, no HTML sidecar, and the issue
+            # is never recorded as fixed. An issue that carries no occurrence
+            # identity gets a Figure with no position, which the tagger can only
+            # pair by order, so it is written only when the page holds exactly
+            # one image draw of any kind.
+            from .pdf_image_finding_identity import _identity
+
+            layout_bbox = None
+            if _identity(issue) is not None:
+                layout_bbox, refusal = self._image_layout_bbox(issue)
+                if layout_bbox is None:
+                    return self._refuse_source_binding(issue, refusal)
+            elif self._struct_tree and alt_text:
+                refusal = self._lone_image_refusal(page_num)
+                if refusal:
+                    return self._refuse_source_binding(issue, refusal)
             if self._struct_tree and alt_text:
                 if self._struct_tree.add_alt_text_to_image(
                     page_num=page_num,
                     alt_text=alt_text,
                     image_index=image_index,
-                    image_bbox=image_bbox,
+                    image_bbox=layout_bbox,
                 ):
                     self._structure_modified = True
                     logger.info(
@@ -4295,6 +4647,110 @@ class PdfRemediator(BaseRemediator):
         except Exception as e:
             logger.error(f"Error applying alt text fix: {e}")
             return False
+
+    def _image_layout_bbox(
+        self, issue: RemediationIssue
+    ) -> tuple[Optional[tuple[float, float, float, float]], str]:
+        """Return the rectangle of the one draw this finding describes, or why not.
+
+        The occurrence identity names a displayed image and its ordinal among
+        the draws of that image. The draw is the ordinal-th direct ``Do`` of the
+        image's resource in the source page content, and its rectangle follows
+        from the transformation matrices in force there. That is default user
+        space, the space a /BBox is written in and the space the content tagger
+        derives for every draw, whatever the page's rotation or crop box.
+
+        The rectangle is returned only when a Figure written with it can be
+        bound to this draw and no other. The answer is a refusal reason when:
+        the identity matches no single displayed occurrence, or the page's
+        direct draws of that image and its displayed occurrences disagree in
+        number (``image_draw_unresolved``); the draw sits inside marked content,
+        where the tagger makes no block (``image_in_marked_content``); or any
+        other image draw on the page overlaps it at the tagger's position
+        threshold, so one box would fit both (``image_draw_ambiguous``).
+        """
+        from .content_tagger_v2 import (
+            POSITION_MATCH_IOU,
+            _image_draws,
+            _rect_iou,
+            _resolved_image_do_indices,
+        )
+        from .pdf_image_finding_identity import _identity
+
+        identity = _identity(issue)
+        if identity is None:
+            return None, _IMAGE_DRAW_UNRESOLVED
+        page_number, xref, _, ordinal = (
+            identity[0],
+            identity[1],
+            identity[2],
+            identity[3],
+        )
+        try:
+            with (
+                fitz.open(self.file_path) as source_document,
+                pikepdf.open(self.file_path, attempt_recovery=False) as source_pdf,
+            ):
+                occurrences = _displayed_image_occurrences(
+                    source_document[page_number - 1], page_number
+                )
+                matches = [
+                    occurrence
+                    for occurrence in occurrences
+                    if (
+                        occurrence["page_number"],
+                        occurrence["image_xref"],
+                        occurrence["image_index"],
+                        occurrence["occurrence_ordinal"],
+                        tuple(occurrence["bbox"]),
+                        occurrence["occurrence_id"],
+                    )
+                    == identity
+                ]
+                displayed = [item for item in occurrences if item["image_xref"] == xref]
+                page = source_pdf.pages[page_number - 1]
+                ops = list(pikepdf.parse_content_stream(page))
+                draws = _resolved_image_do_indices(page, ops, xref)
+                if len(matches) != 1 or len(draws) != len(displayed):
+                    return None, _IMAGE_DRAW_UNRESOLVED
+                if not 0 <= ordinal < len(draws):
+                    return None, _IMAGE_DRAW_UNRESOLVED
+                images = _image_draws(page, ops)
+                chosen = draws[ordinal]
+                if chosen not in images:
+                    return None, _IMAGE_DRAW_UNRESOLVED
+                rect, depth = images[chosen]
+                if depth > 0:
+                    return None, _IMAGE_IN_MARKED_CONTENT
+                for index, (other, _) in images.items():
+                    if index != chosen and _rect_iou(rect, other) >= POSITION_MATCH_IOU:
+                        return None, _IMAGE_DRAW_AMBIGUOUS
+                return rect, ""
+        except Exception:
+            return None, _IMAGE_DRAW_UNRESOLVED
+
+    def _lone_image_refusal(self, page_number: int) -> str:
+        """Return why an unidentified finding cannot get a Figure, or "" if it can.
+
+        A finding with no occurrence identity gets a Figure with no position,
+        which the tagger can only pair with a block by order. That is safe only
+        when the page holds exactly one image draw of any kind, whatever its
+        marked-content depth or spelling, and that draw is one the tagger makes
+        a block of. Another image, an artifact among them, would otherwise take
+        the description. A page that cannot be read counts as not identified.
+        """
+        from .content_tagger_v2 import _image_draws
+
+        try:
+            with pikepdf.open(self.file_path, attempt_recovery=False) as source_pdf:
+                page = source_pdf.pages[page_number - 1]
+                images = _image_draws(page, list(pikepdf.parse_content_stream(page)))
+        except Exception:
+            return _IMAGE_OCCURRENCE_UNIDENTIFIED
+        if len(images) != 1:
+            return _IMAGE_OCCURRENCE_UNIDENTIFIED
+        ((_, depth),) = images.values()
+        return _IMAGE_IN_MARKED_CONTENT if depth > 0 else ""
 
     def _refuse_source_binding(self, issue: RemediationIssue, reason: str) -> bool:
         refusals = getattr(self, "_source_binding_refusals", {})
@@ -5102,6 +5558,7 @@ class PdfRemediator(BaseRemediator):
                         "Describe the image's content and purpose. "
                         "Don't start with 'Image of' or 'Picture of'. "
                         "Focus on what's important for understanding the document. "
+                        f"{SPOKEN_MATH_INSTRUCTION} "
                         "Generate only the alt text, nothing else."
                     )
                     result = client.analyze_image_sync(
@@ -5112,6 +5569,12 @@ class PdfRemediator(BaseRemediator):
                     if result.get("success") and result.get("content"):
                         alt_text = result["content"].strip().strip("\"'")
                         if alt_text:
+                            # A description that carries mathematical markup
+                            # is refused, whole and before it is truncated,
+                            # and the image stays open for review.
+                            if refuse_math_markup(alt_text) is None:
+                                self._record_math_description_refusal(issue)
+                                return None
                             return alt_text[:125]
             except Exception as e:
                 logger.warning(
@@ -5253,6 +5716,7 @@ class PdfRemediator(BaseRemediator):
                     bind_missing_image_findings,
                     output_image_key,
                     preserve_image_pages,
+                    undescribed_figures_are_recorded_manual,
                 )
 
                 source_rule_issues = [
@@ -5478,6 +5942,7 @@ class PdfRemediator(BaseRemediator):
                             and after_evidence != before_evidence
                         ):
                             from ..pdf_checks.image_semantics import (
+                                is_untagged_pdf,
                                 missing_figure_occurrences,
                             )
 
@@ -5500,6 +5965,41 @@ class PdfRemediator(BaseRemediator):
                                     )
                                     and (before_missing - after_missing).issubset(
                                         saved_images.accessible
+                                    )
+                                )
+                            elif (
+                                before_figures is None
+                                and after_figures is not None
+                                and is_untagged_pdf(self.file_path)
+                            ):
+                                # An untagged source has no Figures to compare, so
+                                # tagging turned "cannot check figures" into a
+                                # count of undescribed ones. That is not a defect
+                                # remediation introduced when each of those images
+                                # was already undescribed and is recorded as
+                                # manual work, and every image the output does
+                                # describe is backed by its own verified fix. A
+                                # tagged source that merely could not be resolved
+                                # never reaches this branch.
+                                fixed_ids = {
+                                    fixed.issue_id for fixed in self.result.fixed_issues
+                                }
+                                verified_partial_figure_repair = (
+                                    undescribed_figures_are_recorded_manual(
+                                        after_figures,
+                                        saved_images,
+                                        [
+                                            image_bindings[record.issue_id]
+                                            for record in self.result.manual_issues
+                                            if record.issue_id in image_bindings
+                                            and record.issue_id not in fixed_ids
+                                        ],
+                                        [
+                                            image_bindings[fixed.issue_id]
+                                            for fixed in self.result.fixed_issues
+                                            if fixed.issue_id in image_bindings
+                                        ],
+                                        after_records[0].details,
                                     )
                                 )
                         if any(
@@ -5571,7 +6071,7 @@ class PdfRemediator(BaseRemediator):
             for fixed in self.result.fixed_issues:
                 if fixed.verification_passed is True:
                     fixed.saved_file_verification = {
-                        "method_version": "pdf-finding-presence-v1",
+                        "method_version": _SAVED_FILE_RECEIPT_METHOD,
                         "issue_id": fixed.issue_id,
                         "source_sha256": measurement["source_sha256"],
                         "output_sha256": measurement["output_sha256"],

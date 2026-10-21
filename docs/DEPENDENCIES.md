@@ -304,17 +304,50 @@ Pillow's formats and text shaping, and real OCR.
 The published Pillow wheel reports `zlib_ng` as its zlib implementation; this
 build uses Debian's maintained `zlib1g` while retaining PNG and Deflate support.
 
-The developer image keeps pip 26.2.1 as an installer. Its published wheel
-(SHA-256 `71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e`)
+The developer image keeps pip 26.2.2 as an installer. Its published wheel
+(SHA-256 `fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70`)
 vendors CacheControl 0.14.4, distlib 0.4.2, distro 1.9.0, msgpack 1.1.2,
 packaging 26.2, platformdirs 4.10.0, pyproject-hooks 1.2.0, requests 2.34.2,
-certifi 2026.6.17, idna 3.18, urllib3 2.7.0, rich 14.2.0, pygments 2.20.0,
+certifi 2026.10.19, idna 3.18, urllib3 2.7.0, rich 14.2.0, pygments 2.20.0,
 resolvelib 1.2.1, setuptools 70.3.0, tomli 2.4.1, tomli-w 1.2.0 and
-truststore 0.10.4. The quickstart verifier requires this exact vendor manifest
-and urllib3 code version; production still requires pip and its vendor tree to
-be absent. The separately installed application urllib3 remains pinned to
-2.8.0. This native-library change does not resolve findings in pip's bundled
-pure-Python dependencies; broader dependency work remains open under #578.
+truststore 0.10.4. Only certifi differs from pip 26.2.1, whose vendored
+certifi 2026.6.17 still trusts `emSign ECC Root CA - G3`
+([GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2),
+[#725](https://github.com/Aelira-AI/aelira-core/issues/725)). The quickstart
+verifier requires this exact vendor manifest and urllib3 code version;
+production still requires pip and its vendor tree to be absent. The separately
+installed application urllib3 remains pinned to 2.8.0. This native-library
+change does not resolve findings in pip's bundled pure-Python dependencies;
+broader dependency work remains open under #578.
+
+Build-only pip pins stay at 26.2.1 and are not shipped. The native evidence
+pipelines under `runtime-security/` (`lxml`, `lxml-native-ci`, `psycopg2` and
+`media/pillow`) install pip 26.2.1 offline from hash-pinned inputs into
+disposable build containers, and `docker/build-opencv-wheel.sh` installs it into
+a temporary build virtual environment that the script deletes on exit. No
+shipped image keeps any of them. The evidence pipelines record those exact pip
+inputs, so a new pip version there means a new evidence run, not a pin edit.
+
+### System trust store
+
+Debian trixie `ca-certificates` 20250419 ships `emSign ECC Root CA - G3`
+(SHA-256
+`86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b`). The
+security update 20250419+deb13u1 removes it, but an image built from an older
+package index, such as a cached apt layer, still installs 20250419. Clients
+that read the system store trust the root: `curl`, Python's default SSL context
+and the Hugging Face Hub client through `truststore`. The runtime and developer
+Dockerfiles deselect it with a `!` line in `/etc/ca-certificates.conf` and
+rebuild `/etc/ssl/certs`, after the last apt operation of the stage and leaving
+the other emSign roots (G1, C1 and C3) trusted. The step does nothing once the
+installed package no longer lists the root, which is the case with
+20250419+deb13u1. `scripts/verify_final_os_packages.py` fails the build if the
+bundle or any certificate in `/etc/ssl/certs`, including its hashed lookup
+link, has that fingerprint, or if one of the three retained emSign roots is
+missing from either. CI and publication run it against the API image, and the
+developer build runs `verify_final_os_packages.py trust-store`. Node.js carries
+its own root store, so pa11y's Node still trusts the root
+([#726](https://github.com/Aelira-AI/aelira-core/issues/726)).
 
 ### Transitive dependencies, grouped by what pulls them in
 

@@ -1386,10 +1386,10 @@ class CanvasContentScanner:
                         trusted_mime_type=observed_mime,
                         trusted_suffix=observed_suffix,
                     )
-                    alt_text = (generated or {}).get("alt_text", "")
-                    if not generated.get(
-                        "success"
-                    ) or not HtmlRemediator.is_usable_alt_text(alt_text):
+                    alt_text = HtmlRemediator.normalize_usable_alt_text(
+                        (generated or {}).get("alt_text", "")
+                    )
+                    if not generated.get("success") or alt_text is None:
                         logger.info(
                             "No usable image description; manual review required",
                             extra={
@@ -1402,7 +1402,7 @@ class CanvasContentScanner:
                         )
                         continue
 
-                    img["alt"] = alt_text.strip()
+                    img["alt"] = alt_text
                     described += 1
                 except Exception as exc:
                     logger.warning(

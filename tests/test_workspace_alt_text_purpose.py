@@ -9,7 +9,6 @@ selection and the PDF remediator.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -33,6 +32,7 @@ VISION_MODEL = "stub-vision"
 DESCRIPTION = "Bar chart of course enrolment by year."
 PRINTED_PROMPT_START = "Classify this single bounded image."
 HANDWRITTEN_PROMPT_START = "Independently transcribe this single bounded handwritten"
+SECOND_READING_PROMPT_START = "Independently transcribe the printed mathematics"
 
 
 class _StubVisionProvider:
@@ -53,6 +53,8 @@ class _StubVisionProvider:
         self.ledger["prompts"].append(prompt)
         if prompt.startswith(PRINTED_PROMPT_START):
             content = self.ledger["printed"]
+        elif prompt.startswith(SECOND_READING_PROMPT_START):
+            content = self.ledger["second"]
         elif prompt.startswith(HANDWRITTEN_PROMPT_START):
             content = self.ledger["handwritten"].pop(0)
         else:
@@ -60,7 +62,7 @@ class _StubVisionProvider:
         return LLMResponse.success_response(
             content=content,
             provider="ollama",
-            model=self.config.vision_model,
+            model=self.ledger["model"] or self.config.vision_model,
             inference_time=0.01,
         )
 
@@ -78,13 +80,19 @@ class _StubVisionProvider:
 
 
 def _runtime(
-    *, printed='{"classification":"not_equation","latex":null}', handwritten=()
+    *,
+    printed='{"classification":"not_equation","latex":null}',
+    second=None,
+    handwritten=(),
+    model=None,
 ):
     ledger = {
         "prompts": [],
         "closed": 0,
         "printed": printed,
+        "second": printed if second is None else second,
         "handwritten": list(handwritten),
+        "model": model,
     }
     snapshot = WorkspaceProviderSnapshot(
         workspace_id=WORKSPACE,
@@ -308,32 +316,21 @@ def test_local_pdf_reaches_equation_recognition_and_describes_its_other_image(
 def test_printed_equation_records_the_answering_provider_and_model():
     from src.ai.workspace_provider_runtime import WorkspaceAltTextClient
     from src.education.remediation.math_fixer import MathFixer
+    from tests.test_equation_alt_text_coordination import _Verifier
     from tests.test_handwritten_math_fixer import METADATA, Source
-    from tests.test_image_equation_math_fixer import Evidence
 
     runtime, ledger = _runtime(
         printed='{"classification":"printed_equation","latex":"x^2 + 1 = 0"}'
     )
-    source = Source("legible-linear")
     fixer = MathFixer(
         SimpleNamespace(pages=[object()]),
         SimpleNamespace(),
         struct_tree=SimpleNamespace(),
         alt_text_client=WorkspaceAltTextClient(runtime),
-        image_source=source,
+        image_source=Source("legible-linear"),
+        # Stands in for the browser round trip only.
+        equation_verifier=_Verifier(True),
     )
-    mathml = fixer._convert_to_mathml("x^2 + 1 = 0")
-
-    class Verifier:
-        def verify(self, image, latex):
-            return Evidence(
-                passed=True,
-                source_sha256=image.normalized_sha256,
-                rendered_sha256="b" * 64,
-                mathml_sha256=hashlib.sha256(mathml.encode()).hexdigest(),
-            )
-
-    fixer.equation_verifier = Verifier()
     result = fixer._fix_math_issue(SimpleNamespace(metadata=METADATA))
 
     assert result.error == "image_equation_association_pending"
@@ -341,8 +338,10 @@ def test_printed_equation_records_the_answering_provider_and_model():
     assert (result.provider_used, result.model_used) == ("ollama", VISION_MODEL)
     assert result.pending_association.provider_used == "ollama"
     assert result.pending_association.model_used == VISION_MODEL
-    assert len(ledger["prompts"]) == 1
+    # The first reading and the blind second reading both went through the view.
+    assert len(ledger["prompts"]) == 2
     assert ledger["prompts"][0].startswith(PRINTED_PROMPT_START)
+    assert ledger["prompts"][1].startswith(SECOND_READING_PROMPT_START)
 
 
 def test_handwritten_equation_takes_both_readings_through_the_view():

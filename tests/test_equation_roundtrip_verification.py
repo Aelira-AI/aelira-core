@@ -647,6 +647,7 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
         EquationVerifier,
         OfflineMathMLRenderer,
     )
+    from tests.printed_equation_fixtures import StubSecondReader, primary_reading
     from tests.test_image_equation_math_fixer import METADATA, Verifier, fixer
 
     class Recognizer:
@@ -654,18 +655,14 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
             self.latex = latex
 
         def recognize(self, payload):
-            return SimpleNamespace(
-                classification="printed_equation",
-                latex=self.latex,
-                provider="gemini",
-                model="vision-model",
-            )
+            return primary_reading(self.latex)
 
     renderer = OfflineMathMLRenderer(max_width=200)
-    source = renderer.render("<math><mi>x</mi></math>")
+    # Two letters, because a one-letter equation has no usable generated alt text.
+    source = renderer.render(convert("xx"))
 
     def candidate(latex: str, converter):
-        value = fixer(Verifier("unused"))
+        value = fixer(Verifier("unused"), StubSecondReader(latex))
         value.equation_recognizer = Recognizer(latex)
         value.image_source.payload.jpeg_bytes = source
         value.image_source.payload.normalized_sha256 = hashlib.sha256(
@@ -677,13 +674,13 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
         return value
 
     # Success path first: the same renderer and bound stage a fitting equation.
-    fitting = candidate("x", convert)._fix_math_issue(
+    fitting = candidate("xx", convert)._fix_math_issue(
         SimpleNamespace(metadata=METADATA)
     )
     assert fitting.error == "image_equation_association_pending"
 
     oversized = candidate(
-        "x",
+        "xx",
         lambda latex: '<math><mi>x</mi><mspace width="400px"/></math>',
     )._fix_math_issue(SimpleNamespace(metadata=METADATA))
     assert oversized.success is False

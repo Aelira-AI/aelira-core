@@ -24,6 +24,11 @@ from docx.oxml import OxmlElement
 from docx.shared import Pt
 from docx.enum.style import WD_STYLE_TYPE
 
+from src.education.math_speech import (
+    SPOKEN_MATH_INSTRUCTION,
+    refuse_math_markup,
+)
+
 from .base import (
     BaseRemediator,
     RemediationIssue,
@@ -830,6 +835,7 @@ Requirements:
 - Describe the image's content and purpose
 - Don't start with "Image of" or "Picture of"
 - Focus on what's important for understanding the document
+- {SPOKEN_MATH_INSTRUCTION}
 
 Generate only the alt text, nothing else:"""
 
@@ -855,7 +861,14 @@ Generate only the alt text, nothing else:"""
                                 max_tokens=200,
                             )
                             if result.get("success") and result.get("content"):
-                                return result["content"].strip().strip("\"'")[:125]
+                                description = result["content"].strip().strip("\"'")
+                                # A description that carries mathematical markup
+                                # is refused, whole and before it is truncated,
+                                # and the image stays open for review.
+                                if refuse_math_markup(description) is None:
+                                    self._record_math_description_refusal(issue)
+                                    return None
+                                return description[:125]
                 except Exception as e:
                     logger.warning(
                         f"DOCX vision AI failed, leaving for human review: {e}"

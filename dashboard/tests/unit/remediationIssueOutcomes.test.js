@@ -38,7 +38,21 @@ describe('persisted remediation issue outcomes', () => {
     assert.deepEqual(rows.map(outcomeGroup), ['review', 'applied', 'manual']);
     assert.equal(reviewRequirement(rows[0]), 'Human review required');
     assert.equal(reviewRequirement(rows[1]), null);
-    assert.equal(outcomePresentation(undefined, rows[0].outcomeSource, rows[0].recordedOutcome, rows[0].recordedDetails).label, 'Change applied · automated check passed');
+    assert.equal(outcomePresentation(undefined, rows[0].outcomeSource, rows[0].recordedOutcome, rows[0].recordedDetails).label, 'Change applied · finding no longer detected · human review required');
+    assert.equal(outcomePresentation(undefined, rows[1].outcomeSource, rows[1].recordedOutcome, rows[1].recordedDetails).label, 'Change applied · finding no longer detected');
+  });
+
+  it('adds the human review note only when the record says so, and never claims a passed check', () => {
+    const label = (needsReview) => outcomePresentation(undefined, 'recorded_job', 'fixed', {
+      status: 'fixed', verification_passed: true, verification_scope: 'saved_file_finding', ...needsReview,
+    }).label;
+    assert.equal(label({ needs_review: true }), 'Change applied · finding no longer detected · human review required');
+    for (const unknown of [{ needs_review: false }, {}, { needs_review: undefined }, { needs_review: 'true' }, { needs_review: 1 }]) {
+      assert.equal(label(unknown), 'Change applied · finding no longer detected');
+    }
+    for (const fields of [{ needs_review: true }, { needs_review: false }, {}]) {
+      assert.doesNotMatch(label(fields), /automated check passed/);
+    }
   });
 
   it('does not infer saved-file verification or approval from applied status or a bare boolean', () => {

@@ -35,6 +35,8 @@ MathML is generated only from an exact validated contract. The generator emits a
 
 ## PDF recognition and saved-file proof
 
+Not used by the remediation pipeline in this release; the review and gate services still validate stored contracts of this kind. The rest of this section describes the specialist code and its tests.
+
 `ChemicalFormulaRecognizer` accepts one exact embedded-image occurrence or page-raster region as a bounded JPEG. The provider may return only a positive source transcription or a negative classification. It cannot author speech, MathML, typed chemistry, confidence, or extra prose. Invalid notation is refused without a retry; only provider or transport failure receives one retry.
 
 An accepted result is associated with the exact source as a PDF `/Formula`. The verified speech is stored in `/Alt`, and the verifier-generated MathML is stored as the sole `/AF` supplementary attachment. `/AeliraChemicalFormula` binds the notation kind and the source, semantic, speech, MathML, and aggregate metadata digests. The saved file is reopened to verify source identity, marked-content ownership, ParentTree linkage, attachment bytes, metadata, and render parity.

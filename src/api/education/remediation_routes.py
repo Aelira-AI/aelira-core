@@ -2848,6 +2848,10 @@ async def remediate_scan(
                     "artifact_id": None,
                 }
             artifact_service = RemediationArtifactService.from_settings()
+            from ...education.remediation.image_equation_gate import (
+                contains_image_equation_fixes,
+            )
+
             publication_kwargs = {
                 "department_id": str(department_id),
                 "scan_id": str(scan.id),
@@ -2867,6 +2871,9 @@ async def remediate_scan(
                 "provider_result": {
                     "verification_passed": True,
                     **latex_result_fields(result),
+                    "requires_approval": contains_image_equation_fixes(
+                        result.fixed_issues
+                    ),
                 },
                 "commit": False,
             }

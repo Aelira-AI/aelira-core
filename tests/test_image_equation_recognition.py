@@ -109,7 +109,7 @@ def test_not_equation_requires_null_latex():
         '{"classification":"not_equation","latex":"x"}',
         '{"classification":"printed_equation","latex":null}',
         '{"classification":"printed_equation","latex":""}',
-        '{"classification":"printed_equation","latex":"x\\n+y"}',
+        '{"classification":"printed_equation","latex":"x\n+y"}',
         '{"classification":"printed_equation","latex":"x\\u0085y"}',
         '{"classification":"printed_equation","latex":"x\\u202ey"}',
         '{"classification":"printed_equation","latex":"x\\u200by"}',
@@ -141,14 +141,14 @@ def test_oversized_latex_fails_closed():
 
 
 def test_oversized_provider_response_is_rejected_before_json_parse(monkeypatch):
-    from src.education.remediation import equation_recognizer
+    from src.education.remediation import equation_reading_parser
     from src.education.remediation.equation_recognizer import (
         EquationRecognitionRejected,
         EquationRecognizer,
     )
 
     monkeypatch.setattr(
-        equation_recognizer.json,
+        equation_reading_parser.json,
         "loads",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("oversized response must not be parsed")
@@ -220,10 +220,10 @@ def test_provider_exception_is_not_chained_or_exposed():
 @pytest.mark.parametrize(
     ("bound", "expected"),
     [
-        # A client bound to one provider stays the authority for its identity.
+        # The answer's identity wins over what the client declares.
         (
             {"provider": "gemini", "model": "bound-model"},
-            ("gemini", "bound-model"),
+            ("gemini", "vision-model"),
         ),
         # An LMS client names its provider only; the model comes from the answer.
         ({"provider": "gemini"}, ("gemini", "vision-model")),

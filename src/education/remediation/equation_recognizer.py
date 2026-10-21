@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from .equation_image_source import ValidatedEquationRaster
+from .equation_reading_parser import (
+    EquationReadingRejected,
+    parse_equation_reading,
+    reading_max_tokens,
+    response_is_cached,
+)
 
 
 class EquationRecognitionRejected(ValueError):
@@ -19,6 +25,8 @@ class EquationRecognition:
     latex: Optional[str]
     provider: Optional[str] = None
     model: Optional[str] = None
+    # sha256 of the provider's answer exactly as received, before any parsing.
+    response_sha256: Optional[str] = None
 
 
 _PROMPT = """Classify this single bounded image. Return exactly one JSON object and no markdown or prose. The only accepted forms are {\"classification\":\"printed_equation\",\"latex\":\"...\"} or {\"classification\":\"not_equation\",\"latex\":null}. Use printed_equation only for one standalone printed mathematical equation. Preserve mathematical meaning in LaTeX."""
@@ -64,7 +72,7 @@ class EquationRecognizer:
             response = client.analyze_image_sync(
                 image_data=image.jpeg_bytes,
                 prompt=prompt,
-                max_tokens=500,
+                max_tokens=reading_max_tokens(self.max_latex_chars),
             )
         except Exception:
             raise EquationRecognitionRejected("provider_failure") from None
@@ -74,61 +82,49 @@ class EquationRecognizer:
         if not isinstance(content, str):
             raise EquationRecognitionRejected("provider_failure")
         parsed = self._parse(content)
-        # A client bound to one provider is the authority for its identity. A
-        # workspace runtime resolves its provider per call, so where the client
-        # carries no identity the response names the provider and model that
-        # answered. Verified equation fixes cannot be recorded without both.
+        # Identity comes from the provider's own answer first, then from what
+        # the client declares. A client that routes to a provider chosen per
+        # call, such as the LMS remediation client, has no fixed model to
+        # declare, so its answer is the only place the model is named.
         return EquationRecognition(
             classification=parsed["classification"],
             latex=parsed["latex"],
-            provider=self._bounded_identity(getattr(client, "provider", None))
-            or self._bounded_identity(response.get("provider")),
-            model=self._bounded_identity(getattr(client, "model", None))
-            or self._bounded_identity(response.get("model")),
+            provider=self._bounded_identity(response.get("provider"))
+            or self._bounded_identity(getattr(client, "provider", None)),
+            # A replayed answer names no model, and the client's own model is not
+            # evidence of who wrote it, so no model is recorded for it.
+            model=(
+                None
+                if response_is_cached(response)
+                else self._bounded_identity(response.get("model"))
+                or self._bounded_identity(getattr(client, "model", None))
+            ),
+            response_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
     def _parse(self, content: str) -> dict[str, Any]:
-        if (
-            not content
-            or len(content) > self.max_response_chars
-            or content.strip() != content
-        ):
-            raise EquationRecognitionRejected("invalid_provider_response")
-
-        def reject_duplicates(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise EquationRecognitionRejected("invalid_provider_response")
-                result[key] = value
-            return result
-
         try:
-            parsed = json.loads(content, object_pairs_hook=reject_duplicates)
-        except EquationRecognitionRejected:
-            raise
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise EquationRecognitionRejected("invalid_provider_response") from exc
-        if not isinstance(parsed, dict) or set(parsed) != {"classification", "latex"}:
-            raise EquationRecognitionRejected("invalid_provider_response")
-        classification = parsed["classification"]
-        latex = parsed["latex"]
-        if classification == "not_equation":
-            if latex is not None:
-                raise EquationRecognitionRejected("invalid_provider_response")
-            return parsed
-        if classification != "printed_equation" or not isinstance(latex, str):
-            raise EquationRecognitionRejected("invalid_provider_response")
-        if not latex or len(latex) > self.max_latex_chars:
-            raise EquationRecognitionRejected("invalid_provider_response")
-        if any(not character.isprintable() for character in latex):
-            raise EquationRecognitionRejected("invalid_provider_response")
-        return parsed
+            classification, latex = parse_equation_reading(
+                content,
+                equation_classification="printed_equation",
+                null_classifications=frozenset({"not_equation"}),
+                max_latex_chars=self.max_latex_chars,
+                max_response_chars=self.max_response_chars,
+            )
+        except EquationReadingRejected:
+            raise EquationRecognitionRejected("invalid_provider_response") from None
+        return {"classification": classification, "latex": latex}
 
     @staticmethod
     def _bounded_identity(value: Any) -> Optional[str]:
         if not isinstance(value, str) or not value or len(value) > 200:
             return None
+        if value != value.strip():
+            return None
         if not value.isprintable() or "\x00" in value:
+            return None
+        # The provider manager names a replayed answer's model "cached", which is
+        # not the name of any model.
+        if value.casefold() == "cached":
             return None
         return value

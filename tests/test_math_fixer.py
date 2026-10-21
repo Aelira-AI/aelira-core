@@ -91,7 +91,9 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     from types import SimpleNamespace
 
     from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.equation_verifier import canonicalize_mathml
     from src.education.remediation.math_fixer import MathFixer
+    from tests.printed_equation_fixtures import StubSecondReader, primary_reading
 
     calls = []
     validated = SimpleNamespace(
@@ -115,11 +117,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     class Recognizer:
         def recognize(self, image):
             calls.append(("recognizer", image))
-            return SimpleNamespace(
-                classification="printed_equation",
-                latex="x^2 + 1 = 0",
-                model="vision-model",
-            )
+            return primary_reading("x^2 + 1 = 0")
 
     class Verifier:
         def verify(self, image, latex):
@@ -128,7 +126,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
             from latex2mathml.converter import convert
 
             calls.append(("verifier", image, latex))
-            mathml = convert(latex)
+            mathml = canonicalize_mathml(convert(latex))
             return SimpleNamespace(
                 passed=True,
                 source_sha256="a" * 64,
@@ -144,6 +142,14 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
                 required_pixel_similarity=0.98,
             )
 
+        def canonicalize_mathml(self, mathml):
+            return canonicalize_mathml(mathml)
+
+    class RecordingSecondReader(StubSecondReader):
+        def read(self, source):
+            calls.append(("second_reader", source))
+            return super().read(source)
+
     class StructTree:
         def add_formula(self, **kwargs):
             raise AssertionError("association is deferred and must not mutate")
@@ -157,6 +163,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
         image_source=Source(),
         equation_recognizer=Recognizer(),
         equation_verifier=Verifier(),
+        printed_equation_second_reader=RecordingSecondReader("x^2 + 1 = 0"),
     )
     result = fixer._fix_math_issue(
         SimpleNamespace(
@@ -175,7 +182,12 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     assert not result.success
     assert result.error == "image_equation_association_pending"
     assert result.pending_association is not None
-    assert [call[0] for call in calls] == ["source", "recognizer", "verifier"]
+    assert [call[0] for call in calls] == [
+        "source",
+        "recognizer",
+        "verifier",
+        "second_reader",
+    ]
 
 
 def test_image_equation_unexpected_metadata_error_is_stable_and_redacted():
@@ -204,3 +216,66 @@ def test_image_equation_unexpected_metadata_error_is_stable_and_redacted():
 
     assert results[0].error == "math_fix_failed"
     assert "private-invalid-page" not in results[0].error
+
+
+def _page_text_fixer():
+    from types import SimpleNamespace
+
+    from src.education.remediation.math_fixer import MathFixer
+
+    formulas: list[str] = []
+
+    class StructTree:
+        @staticmethod
+        def add_formula(*, page_num, alt_text, mathml_string):
+            formulas.append(alt_text)
+            return True
+
+    fixer = object.__new__(MathFixer)
+    fixer.pdf = SimpleNamespace(pages=[object()])
+    fixer.struct_tree = StructTree()
+    return fixer, formulas
+
+
+def _page_text_issue(equation_text):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        metadata={
+            "issue_type": "math_content_accessibility",
+            "equation_text": equation_text,
+        }
+    )
+
+
+def test_page_text_equation_is_refused_when_its_label_would_garble():
+    for equation in (
+        r"x^{n}+1",
+        r"\frac12",
+        r"\sin x \le y",
+        r"\bar{x} = 5",
+        r"x^{2}y",
+    ):
+        fixer, formulas = _page_text_fixer()
+
+        result = fixer._fix_math_issue(_page_text_issue(equation))
+
+        if equation == r"\sin x \le y":
+            # Every command here has a spoken form and nothing runs together.
+            assert result.success is True
+            assert formulas == ["sine x less than or equal to y"]
+            continue
+        assert result.success is False
+        assert result.error == "image_equation_alt_text_ambiguous"
+        assert result.equation_text == equation
+        assert formulas == []
+
+
+def test_page_text_equation_with_a_clear_label_still_gets_its_formula():
+    fixer, formulas = _page_text_fixer()
+
+    result = fixer._fix_math_issue(_page_text_issue(r"x^{2} + 1 = 0"))
+
+    assert result.success is True
+    assert result.aria_label == "x squared + 1 = 0"
+    assert formulas == ["x squared + 1 = 0"]

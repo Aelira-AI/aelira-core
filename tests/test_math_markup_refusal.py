@@ -1,0 +1,545 @@
+"""A generated description is used unchanged or refused, never rewritten.
+
+A prompt that asks for plain spoken words removes LaTeX from a model's answer. A
+description that still carries mathematical markup is not trusted, and the image
+is left for a person. These tests pin what counts as markup, what must never be
+taken for it, and that nothing is ever converted.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from src.education.math_speech import (
+    holds_math_markup,
+    holds_unreadable_characters,
+    refuse_math_markup,
+)
+from src.education.model_json import loads_tolerant
+
+# ---------------------------------------------------------------------------
+# Text without mathematical markup comes back as the same string
+# ---------------------------------------------------------------------------
+
+UNCHANGED = [
+    "",
+    "A photograph of a laboratory bench with three beakers.",
+    "Line one\nLine two with  double  spaces and a tab\there.",
+    "Naïve café menu: crème brûlée, 12°C, 5 × 4 and 10 ÷ 2.",
+    # Units in parentheses, which a dollar-pair reading would swallow.
+    "Bar chart of revenue ($) and cost ($) by year",
+    "Revenue ($M) and profit ($M) by quarter",
+    "Revenue ($K) vs expenses ($K)",
+    "Salaries ($) and bonuses ($)",
+    "Plans: $0, 1 user ... $29 per month",
+    "Restaurant rated $$ or $$$ overall",
+    "Price tiers run from $$ to $$$ and up to $$$$",
+    "Rated $$$ and $$ in two guides",
+    "Tickets: $5, $10, $15.",
+    "Prices rose from $3.50 to $4.25.",
+    "Converted from US$100 in A$ terms",
+    "Fees: A$5 vs US$ amounts",
+    "S$5 or HK$",
+    "From NZ$20 to CA$30 and back",
+    "A bill of US$1,200 or A$1,800",
+    "Two plans, $5 for one and $10 for ten users.",
+    "Revenue ($M) and costs ($K) are shown.",
+    # Prices.
+    "It costs $5 and $10.",
+    "Between $5-$10 per item",
+    "Prices $5/$10 and $5.00 or $6.50",
+    "Total: $5 + $3 = $8",
+    "A $5 coupon and a $10 coupon",
+    "US$5, A$10 and NZ$15",
+    "Cost is \\$5 and \\$10 here",
+    # Windows paths.
+    r"Open C:\Users\bob\notes.txt now",
+    r"Open C:\Program Files\App\run.exe now",
+    r"Saved to D:\Projects\report-final.docx.",
+    r"Share \\fileserver\share\docs is mapped",
+    r"File src\education\math.py changed",
+    r'Path "C:\Temp\out.log" was written',
+    # Code and symbols in prose with no markup in them.
+    'Call print("hello") and then x = a * b.',
+    "The block if (x > 1) { return; } runs once.",
+    'A JSON object looks like {"key": "value"}.',
+    "Use snake_case_name for a variable and array[0] for the first item.",
+    "Open my_file.txt and the_other_one.txt",
+    "Press ^C to stop, or Ctrl + C.",
+    "Run echo $HOME and echo $PATH, or use $HOME/$USER.",
+    "Unbalanced { brace and } another",
+    "A chart of x and y with a title",
+]
+
+
+@pytest.mark.parametrize("text", UNCHANGED)
+def test_text_without_markup_is_returned_as_the_same_string(text):
+    assert holds_math_markup(text) is False
+    result = refuse_math_markup(text)
+    assert result == text
+    assert result is text
+
+
+# ---------------------------------------------------------------------------
+# Mathematical markup is refused
+# ---------------------------------------------------------------------------
+
+REFUSED = [
+    # A backslash command.
+    r"The equation \frac{a}{b} = c",
+    r"The area is \pi r^2",
+    r"y = x^2 + \sin x",
+    r"Greek \alpha, \beta and \Omega",
+    r"All \forall x here",
+    r"Reals \mathbb{R} here",
+    r"Words \text{if} here",
+    r"Longer \alphabet here",
+    r"Open the Documents\Projects folder",
+    r"The regex \d+ matches digits",
+    r"Doubled \\frac{a}{b} here",
+    # A path rule that must not swallow LaTeX after a colon.
+    r"Part B:\frac{1}{2}",
+    r"Part B:\frac12",
+    r"Case A:\alpha + 1",
+    # Display and bracket delimiters.
+    r"Value \(a+b\) here",
+    r"Value \[a+b\] here",
+    r"Display $$x^{2}+1$$ shown",
+    "Display\n$$\n\\frac{a}{b}\n$$\nends",
+    # A braced script.
+    r"x^{2} and y",
+    r"The term a_{n} grows",
+    r"A file named image_{index}.png",
+    # A bare script with a symbol on both sides.
+    r"The slope r^2 matters",
+    r"Then x_i is positive",
+    r"The index a_ij and b_10",
+    r"The value (a+b)^2 is large",
+    r"Growth is 2^10 per year",
+    # A dollar span with mathematics between the signs.
+    r"$\int_0^1 x\,dx$",
+    r"$|x|$",
+    r"The value $|x|$ is positive",
+    r"$a+b$ is the sum",
+    r"$f(x) = 2x + 3$ is a line",
+    r"$x^2$",
+    r"$x$ is a variable",
+    r"Both $a$ and $b$ appear",
+    r"$a \ne b$",
+    r"Shown as $\sqrt{x}$ here",
+    r"$$x^2$$",
+    # Spaced operators and bare letters between dollar signs. These came back
+    # unchanged before, so a screen reader announced the dollar signs.
+    "The slope-intercept form $y = mx + b$ is shown.",
+    "Display math $$y = mx + b$$",
+    "$x + y = z$",
+    "$a = 5$",
+    "$ab$",
+    "Here $a < b$ holds",
+    "So $5 + 3$ is eight",
+    "Solve $2x - 1 = 0$ for x",
+    "Then $$x = 1$$ follows",
+    "The set $S$ is open",
+]
+
+
+@pytest.mark.parametrize("text", REFUSED)
+def test_mathematical_markup_is_refused(text):
+    assert holds_math_markup(text) is True
+    assert refuse_math_markup(text) is None
+
+
+def test_nothing_is_ever_rewritten():
+    """Every answer is the string that went in, or a refusal."""
+    for text in [*UNCHANGED, *REFUSED]:
+        result = refuse_math_markup(text)
+        assert result is None or result is text
+
+
+# Forms that an earlier version converted to spoken words. They are refused now.
+PREVIOUSLY_CONVERTED = [
+    r"Plot of $x^{2}+1$.",
+    r"Graph of $$x^{2}+y^{2}=r^{2}$$ shown",
+    r"Value \(\alpha+\beta\) here",
+    r"Value \[\frac{1}{2}+y=4\] here",
+    r"Both $\frac{a}{b}$ and $\sqrt{x}$ appear",
+    r"$f(x) = 2x + 3$ is a line",
+    r"The equation \frac{a}{b} = c",
+    r"The equation \dfrac{a}{b}.",
+    r"Area is \pi r^{2} here",
+    r"Roots of \sqrt{x} and \binom{n}{k}",
+    r"The term a_{n} grows",
+    r"Values x^{3} and y^{n}",
+    r"Greek \alpha, \beta and \Omega",
+    r"Total \sum_{i} x_{i}",
+    r"a$x^{2}$b",
+    r"The solution is $x \le 3$ for $\sin x = 0$",
+]
+
+
+@pytest.mark.parametrize("text", PREVIOUSLY_CONVERTED)
+def test_a_form_that_used_to_be_converted_is_refused_not_rewritten(text):
+    assert refuse_math_markup(text) is None
+
+
+def test_one_span_of_markup_refuses_the_whole_description():
+    assert refuse_math_markup(r"A fine description, but \frac12 is not") is None
+    assert refuse_math_markup(r"Fine $5 and $10 but $x^2$ is not") is None
+
+
+# ---------------------------------------------------------------------------
+# Windows paths, and the rule that keeps LaTeX from hiding in one
+# ---------------------------------------------------------------------------
+
+
+def test_a_path_next_to_markup_does_not_excuse_the_markup():
+    text = r"Open C:\Users\bob\notes.txt to see \frac{a}{b} there"
+    assert refuse_math_markup(text) is None
+
+
+def test_a_drive_path_that_starts_with_a_latex_command_is_not_a_path():
+    for text in (
+        r"Part B:\frac{1}{2}",
+        r"Part B:\frac12",
+        r"Item C:\sqrt{2}",
+        r"Item C:\pi r",
+    ):
+        assert holds_math_markup(text) is True
+
+
+def test_a_real_drive_path_with_a_space_in_it_stays_whole():
+    for text in (
+        r"C:\Program Files\Common Files\app.dll",
+        r"Open D:\My Documents\Reports\q3.xlsx now",
+    ):
+        assert refuse_math_markup(text) is text
+
+
+def test_a_value_that_is_not_text_is_refused():
+    assert refuse_math_markup(None) is None
+    assert refuse_math_markup(5) is None
+
+
+# ---------------------------------------------------------------------------
+# Independently compiled cases, used as data
+# ---------------------------------------------------------------------------
+
+# Spans an independent list expected a spoken-label table to refuse, plus spans it
+# expected to convert. None is rewritten here, so every one of them is refused as
+# markup. Wrapped in dollar signs, as a model writes them.
+INDEPENDENT_SPANS = [
+    r"\frac{x^{2}}{y}",
+    r"\frac13",
+    r"\frac{a}{\sqrt{b}}",
+    r"\sqrt{x^{2}}",
+    r"x^{\frac{a}{b}}",
+    r"x_{i_{j}}",
+    r"\frac{90}{\sum_{k=0}^{m} 5}",
+    r"A^{t} > B^{\lim_{n \to \infty} V}",
+    r"x^10",
+    r"x_10",
+    r"\sqrt2",
+    r"\frac{a}b",
+    r"x^\alpha",
+    r"x^{2}y",
+    r"\frac{a}{b}c",
+    r"a\frac{b}{c}",
+    r"d\theta",
+    r"2\pi",
+    r"\sqrt[3]{x}",
+    r"\sin x",
+    r"\lim_{n \to \infty} V",
+    r"\int_{0}^{1} x \, dx",
+    r"u \le v",
+    r"\text{hello}",
+    r"\left( x \right)",
+    r"{a}{b}",
+    r"\frac{a}{b",
+    r"\frac{a}{b}",
+    r"x^{2}",
+    r"x^2",
+    r"x^3",
+    r"x^{n}",
+    r"x^{10}",
+    r"x_{i}",
+    r"x_1",
+    r"\sqrt{x}",
+    r"\alpha + \beta = \gamma",
+    r"\pi r^2",
+    r"\sum_{k=1}^{m} 87",
+    r"\int_{1}^{x} z",
+    r"\Theta_{4}^{m} \neq \sqrt{0 \times y + 9}",
+    r"(s \times 4 \times \Phi)^{\sigma^{6}}",
+]
+
+
+@pytest.mark.parametrize("latex", INDEPENDENT_SPANS)
+def test_every_independently_compiled_span_is_refused_not_converted(latex):
+    assert refuse_math_markup(f"${latex}$") is None
+    if latex != "{a}{b}":
+        # Braces alone, with no command, script or dollar sign, are ordinary text.
+        assert refuse_math_markup(f"The image shows {latex} here") is None
+
+
+MODEL_ANSWERS_REFUSED = [
+    r"Mathematical inequality: $A^t > B^{\lim_{n \to \infty} V}$.",
+    "An inequality written in mathematical notation: \n\n"
+    r"$$\sum_{k=1}^{m} 87 > \int_{1}^{x} z \, d\theta + \Sigma$$",
+    r"Mathematical inequality: $u \le \frac{90}{\sum_{k=0}^m 5}$",
+    r"Inequality ($\Theta^\Delta \le Y_0 \times \Psi$).",
+    r"Mathematical equation: $\sqrt{w} = \arctan((\log(X)))$",
+    r"A mathematical inequality: \Theta_4^m \neq \sqrt{0 \times y + 9}",
+    r"Written as: (4) < (s \times 4 \times \Phi)^{\sigma^6}.",
+    r"Mathematical inequality: $\frac{\Omega^{5.32}}{(0.90)} \ge \int_{1}^{-\infty} 4.11 \, du$",
+]
+
+
+@pytest.mark.parametrize("answer", MODEL_ANSWERS_REFUSED)
+def test_model_answers_with_markup_are_refused(answer):
+    assert refuse_math_markup(answer) is None
+
+
+MODEL_ANSWERS_PLAIN = [
+    "An inequality: the sum from k equals 1 to m of 87 is greater than the integral.",
+    "The graph of x squared opens upward.",
+    "Capital Theta with superscript m is not equal to the square root of 0 times y plus 9.",
+    "The mathematical equation is: H sub t equals open parenthesis 1.99 close parenthesis.",
+    "A to the power of t is greater than B to the power of the limit of V.",
+]
+
+
+@pytest.mark.parametrize("answer", MODEL_ANSWERS_PLAIN)
+def test_model_answers_in_plain_words_pass_unchanged(answer):
+    assert refuse_math_markup(answer) is answer
+
+
+# ---------------------------------------------------------------------------
+# Dollar signs: mathematics is told apart from prices, tiers and units
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The slope-intercept form $y = mx + b$ is shown.",
+        "Display math $$y = mx + b$$",
+        "$x + y = z$",
+        "$a = 5$",
+        "$ab$",
+    ],
+)
+def test_dollar_delimited_mathematics_is_refused_whatever_the_spacing(text):
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$5 and $10",
+        "It costs $5 and $10.",
+        "costs $3.50",
+        "Between $5-$10 per unit.",
+        "Price tiers run from $$ to $$$.",
+        "Revenue ($M) and costs ($K) are shown.",
+    ],
+)
+def test_prices_tiers_and_units_beside_dollar_signs_still_pass(text):
+    assert refuse_math_markup(text) is text
+
+
+# ---------------------------------------------------------------------------
+# Characters that cannot be read as text
+# ---------------------------------------------------------------------------
+
+UNREADABLE = [
+    ("nul", "a\x00b"),
+    ("escape", "a\x1bb"),
+    ("bell", "a\x07b"),
+    ("delete", "a\x7fb"),
+    ("c1 control", "a\x85b"),
+    ("right-to-left override", "a\u202eb"),
+    ("left-to-right embedding", "a\u202ab"),
+    ("isolate", "a\u2066b"),
+    ("direction mark", "a\u200fb"),
+    ("zero-width space", "a\u200bb"),
+    ("byte order mark", "\ufeffa"),
+    ("private use", "a\ue000b"),
+]
+FOLDED = [
+    ("line feed", "First line.\nSecond line."),
+    ("carriage return and line feed", "First line.\r\nSecond line."),
+    ("lone carriage return", "First line.\rSecond line."),
+    ("tab", "Column one\tcolumn two"),
+    ("line separator", "First line.\u2028Second line."),
+    ("paragraph separator", "First paragraph.\u2029Second paragraph."),
+    ("no-break space", "Distance of 5\u00a0km"),
+]
+
+
+@pytest.mark.parametrize(("name", "text"), UNREADABLE, ids=[n for n, _ in UNREADABLE])
+def test_a_description_with_an_unreadable_character_is_refused(name, text):
+    assert holds_unreadable_characters(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(("name", "text"), FOLDED, ids=[n for n, _ in FOLDED])
+def test_line_breaks_tabs_and_separators_are_ordinary_whitespace(name, text):
+    assert holds_unreadable_characters(text) is False
+    assert refuse_math_markup(text) is text
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [r"\u0000", r"\u001b", r"\u202e", r"\u200b"],
+)
+def test_an_unreadable_character_written_as_a_json_escape_is_refused(escape):
+    """The answer is decoded by the tolerant parser, which keeps a valid escape."""
+    text = loads_tolerant('{"alt_text": "A chart' + escape + ' of sales"}')["alt_text"]
+    assert holds_unreadable_characters(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize("escape", [r"\u2028", r"\u2029", r"\n", r"\t"])
+def test_a_folded_whitespace_character_written_as_a_json_escape_is_kept(escape):
+    text = loads_tolerant('{"alt_text": "A chart' + escape + 'of sales"}')["alt_text"]
+    assert refuse_math_markup(text) == text
+
+
+# ---------------------------------------------------------------------------
+# A Windows path never carries LaTeX with it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "P:\\Rightarrow Q",
+        "Saved to C:\\data \\theta\\cdot\\pi",
+        "Saved to C:\\data \\alpha",
+        "Open C:\\Program Files\\App \\frac{a}{b}",
+        "Part B:\\frac{1}{2}",
+        "Item C:\\Leftrightarrow done",
+        "D:\\nsubset E",
+    ],
+)
+def test_latex_after_or_inside_a_drive_prefix_is_still_markup(text):
+    assert holds_math_markup(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "C:\\Program Files\\App",
+        "C:\\Users\\me\\x.txt",
+        "Open D:\\My Documents\\Reports\\q3.xlsx now",
+        "Saved to C:\\data and then D:\\backup\\old.zip",
+        "Run C:\\Program Files\\Common Files\\app.dll twice",
+    ],
+)
+def test_real_paths_with_spaces_stay_whole(text):
+    assert refuse_math_markup(text) is text
+
+
+# ---------------------------------------------------------------------------
+# Second round: currency prefixes, padded spans and paths that hold a command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Converted from US$100 in A$ terms",
+        "Fees: A$5 vs US$ amounts",
+        "S$5 or HK$",
+        "Worth US$5 and A$ ten",
+        "Prices in C$ and NZ$ differ",
+        "Costs of A$1.50 against US$2",
+    ],
+)
+def test_a_dollar_sign_after_a_letter_or_digit_is_a_currency_prefix_not_a_span(text):
+    assert refuse_math_markup(text) is text
+
+
+def test_a_dollar_sign_after_a_letter_never_opens_an_inline_span():
+    from src.education.math_speech import _DOLLAR_SPAN
+
+    assert _DOLLAR_SPAN.search("US$100 in A$ terms") is None
+    assert _DOLLAR_SPAN.search("a $x$ b") is not None
+    assert _DOLLAR_SPAN.search("($x$)") is not None
+
+
+def test_shell_variables_run_together_stay_refused_as_a_documented_limit():
+    """``$HOME$PATH`` reads as a span, so a code screenshot quoting it is refused."""
+    assert refuse_math_markup("echo $HOME$PATH") is None
+    assert refuse_math_markup("Run echo $HOME and echo $PATH, or use $HOME/$USER.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$ y = mx + b $",
+        "The line $ y = mx + b $ is shown",
+        "$ x $",
+        "A set $ S $ is open",
+        "$ 3.14 $",
+        "$2 \u00d7 3$",
+        "$3.14$",
+        "$a \u2264 b$",
+        "$ 5 + 3 $",
+    ],
+)
+def test_padded_spans_and_numbers_between_dollar_signs_are_refused(text):
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Price tiers: $ or $",
+        "Costs in $ and \u20ac are shown",
+        "Values in $ vs. \u00a3 vs. $ are compared",
+        "Tiers $ , $$ , $$$ apply",
+        "It costs $ 5 and $ 10 in all",
+        "Rated $$ or $$$ overall",
+    ],
+)
+def test_words_set_off_between_dollar_signs_are_not_mathematics(text):
+    assert refuse_math_markup(text) is text
+
+
+def test_a_padded_display_span_of_letters_alone_is_a_known_gap():
+    """``$$ ab $$`` cannot be told from the price tier ``$$ or $$$``; both pass."""
+    assert refuse_math_markup("$$ ab $$") == "$$ ab $$"
+    assert refuse_math_markup("Rated $$ or $$$ overall") is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Three categories.\\ne.g. sales and costs",
+        "Values\\ni.e. the mean",
+        "Line one\\ne.g. two",
+        "Items\\ne.g. one",
+        "see\\nu.txt",
+        "notes\\notin.txt",
+    ],
+)
+def test_a_literal_backslash_command_is_never_a_relative_path(text):
+    """After a swallowed ``\\ne`` is repaired it must not pass for a file path."""
+    assert holds_math_markup(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "File src\\education\\math.py changed",
+        "Open docs\\guide\\readme.md",
+        "Saved to D:\\Projects\\report-final.docx.",
+        "Open C:\\Users\\bob\\notes.txt now",
+        "Path \\\\fileserver\\share\\docs\\plan.xlsx ok",
+    ],
+)
+def test_real_relative_and_drive_paths_still_pass(text):
+    assert refuse_math_markup(text) is text

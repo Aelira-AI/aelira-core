@@ -12,10 +12,12 @@ from PIL import Image, ImageDraw
 from src.education.math_contracts import SCANNED_EQUATION_REGION_ISSUE_TYPE
 from src.education.pdf_checks.equation_region_detector import _pixel_digest
 from src.education.remediation.equation_image_source import EquationRegionSource
+from src.education.remediation.equation_verifier import canonicalize_mathml
 from src.education.remediation.math_fixer import (
     MathFixer,
     PendingScannedRegionAssociation,
 )
+from tests.printed_equation_fixtures import StubSecondReader, primary_reading
 
 
 def _source_and_metadata():
@@ -114,18 +116,16 @@ class _Recognizer:
 
     def recognize(self, payload):
         self.payloads.append(payload)
-        return SimpleNamespace(
-            classification="printed_equation",
-            latex="x^2",
-            provider="ollama",
-            model="local-vision",
-        )
+        return primary_reading("x^2", provider="ollama", model="local-vision")
 
 
 class _Verifier:
     def __init__(self, mathml, source_sha256):
-        self.mathml = mathml
+        self.mathml = canonicalize_mathml(mathml)
         self.source_sha256 = source_sha256
+
+    def canonicalize_mathml(self, mathml):
+        return canonicalize_mathml(mathml)
 
     def verify(self, payload, latex):
         assert payload.width == 30 and payload.height == 20
@@ -157,6 +157,7 @@ def _region_fixer(source, metadata, recognizer):
         region_source=region_source,
         equation_recognizer=recognizer,
         equation_verifier=SimpleNamespace(),
+        printed_equation_second_reader=StubSecondReader("x^2"),
     )
     mathml = fixer._convert_to_mathml("x^2")
     fixer.equation_verifier = _Verifier(mathml, validated.normalized_sha256)
@@ -182,6 +183,12 @@ def test_math_fixer_sends_only_proven_crop_and_stages_distinct_region_request():
     assert result.pending_association.image_xref == 13
     assert result.pending_association.bbox == (10.0, 20.0, 40.0, 40.0)
     assert result.pending_association.parent_bbox == (0.0, 0.0, 100.0, 80.0)
+    # A scanned crop is read a second time like any other printed equation.
+    assert result.pending_association.consensus_evidence is not None
+    assert result.consensus_evidence == result.pending_association.consensus_evidence
+    assert result.consensus_evidence.source_sha256 == (
+        result.pending_association.normalized_crop_sha256
+    )
 
 
 def test_tampered_region_evidence_rejects_before_provider_invocation():
