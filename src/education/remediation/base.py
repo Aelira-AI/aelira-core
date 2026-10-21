@@ -1038,12 +1038,11 @@ class BaseRemediator(ABC):
         )
         self.issues = self._normalize_issues(issues)
         self.ai_client = ai_client
-        self.alt_text_client = (
-            alt_text_client
-            if not has_image_equation
-            or getattr(alt_text_client, "purpose", None) == "alt_text"
-            else None
-        )
+        # The alt_text purpose is enforced where equations are recognized:
+        # MathFixer treats any other client as absent. Dropping the client
+        # here as well would also withhold descriptions of every other image
+        # in a document that merely contains an equation.
+        self.alt_text_client = alt_text_client
         if self.alt_text_client is None and self.config.allow_legacy_nested_ai:
             self.alt_text_client = ai_client
 

@@ -223,4 +223,28 @@ def test_visual_equation_accepts_only_explicit_alt_text_purpose_client(
         allowed.ai_client is manager
     )  # non-equation legacy behavior remains available
     assert allowed.alt_text_client is explicit
-    assert rejected.alt_text_client is None
+    assert rejected.config.allow_legacy_nested_ai is False
+    # A client without the alt_text purpose still describes the document's
+    # other images; it is refused only where equations are recognized.
+    assert rejected.alt_text_client is manager
+
+    from src.education.remediation.math_fixer import MathFixer
+
+    def math_fixer(remediator):
+        return MathFixer(
+            SimpleNamespace(pages=[object()]),
+            SimpleNamespace(),
+            struct_tree=SimpleNamespace(),
+            ai_client=None,
+            alt_text_client=remediator.alt_text_client,
+        )
+
+    accepted_fixer = math_fixer(allowed)
+    assert accepted_fixer.alt_text_client is explicit
+    assert accepted_fixer.equation_recognizer is not None
+    assert accepted_fixer.handwritten_recognizer is not None
+    refused_fixer = math_fixer(rejected)
+    assert refused_fixer.alt_text_client is None
+    assert refused_fixer.equation_recognizer is None
+    assert refused_fixer.handwritten_recognizer is None
+    assert refused_fixer.handwritten_verifier is None

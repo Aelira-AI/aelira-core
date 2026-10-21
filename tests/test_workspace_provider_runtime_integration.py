@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.ai.workspace_provider_runtime import (
+    WorkspaceAltTextClient,
+    WorkspaceProviderRuntime,
+)
 from src.jobs import local_scan_job, remediation_subprocess
 from src.jobs import remediation_job
 from src.db.models import Scan
@@ -102,7 +106,7 @@ def test_non_lms_subprocess_binds_workspace_runtime_without_global_manager(
 ):
     source = tmp_path / "source.html"
     source.write_text("<html lang='en'></html>")
-    runtime = object()
+    runtime = WorkspaceProviderRuntime("workspace-a", snapshot_loader=lambda _: None)
     runtime_factory = MagicMock(return_value=runtime)
     constructor = MagicMock(return_value=object())
     monkeypatch.setattr(
@@ -179,7 +183,7 @@ def test_subprocess_constructs_every_supported_remediator_with_workspace_clients
 ):
     source = tmp_path / f"source{suffix}"
     source.write_bytes(b"bounded fixture")
-    runtime = SimpleNamespace(purpose="workspace")
+    runtime = WorkspaceProviderRuntime("workspace-a", snapshot_loader=lambda _: None)
     runtime_factory = MagicMock(return_value=runtime)
     monkeypatch.setattr(
         "src.ai.workspace_provider_runtime.workspace_provider_runtime",
@@ -204,7 +208,12 @@ def test_subprocess_constructs_every_supported_remediator_with_workspace_clients
 
     assert type(remediator).__name__ == expected_class
     assert remediator.ai_client is runtime
-    assert remediator.alt_text_client is runtime
+    # Image descriptions get a distinct alt_text-purpose view of the same
+    # workspace runtime, never the remediation client itself.
+    assert isinstance(remediator.alt_text_client, WorkspaceAltTextClient)
+    assert remediator.alt_text_client is not remediator.ai_client
+    assert remediator.alt_text_client.purpose == "alt_text"
+    assert remediator.alt_text_client._runtime is runtime
     runtime_factory.assert_called_once_with("workspace-a")
 
 

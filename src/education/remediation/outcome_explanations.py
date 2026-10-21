@@ -21,7 +21,12 @@ EXPLANATIONS = {
     ),
     "alt_text_provider_unavailable": (
         "No image-description AI provider was available to this remediation job.",
-        "Ask your administrator to check the image AI configuration, or supply a reviewed description.",
+        "Run remediation with AI turned on, ask your administrator to check the image AI configuration, or supply a reviewed description.",
+        "not_attempted",
+    ),
+    "alt_text_client_unavailable": (
+        "No AI provider authorized for image descriptions was available to this job, so this finding was not sent for an AI description or equation recognition.",
+        "If your AI policy permits it, run remediation with AI image descriptions turned on. Otherwise describe the image, or add its equation as accessible math, yourself and rescan.",
         "not_attempted",
     ),
     "image_description_unavailable": (
@@ -105,6 +110,66 @@ EXPLANATIONS = {
         "not_recorded",
     ),
 }
+
+# Image-equation recognition reports these codes. Codes in one group share a
+# corrective action; each keeps its own description of what happened.
+_ADD_MATH_MANUALLY = (
+    "Check the equation against the image and add it as accessible math (a Formula "
+    "tag with MathML and alt text) manually, then rescan."
+)
+_EQUATION_GROUPS = (
+    (
+        {
+            "equation_image_source_rejected": "The equation image could not be read back from the PDF as one exactly identified image occurrence, so it was not sent for recognition.",
+            "equation_region_source_rejected": "The equation region could not be read back from the PDF as one exactly identified page region, so it was not sent for recognition.",
+        },
+        "Check the image in a PDF editor. If it shows an equation, add it as accessible math (a Formula tag with MathML and alt text) manually, then rescan.",
+        "not_attempted",
+    ),
+    (
+        {
+            "equation_verifier_unavailable": "The automatic equation check was not available to this job, so the image was not sent for recognition.",
+        },
+        _ADD_MATH_MANUALLY,
+        "not_attempted",
+    ),
+    (
+        {
+            "equation_recognition_rejected": "The AI provider's reading of the image could not be completed or did not follow the required strict format, so no equation was produced.",
+            "handwritten_equation_recognition_rejected": "The AI provider's reading of the handwriting could not be completed or did not follow the required strict format, so no equation was produced.",
+        },
+        "Run remediation again later, or add the equation as accessible math (a Formula tag with MathML and alt text) manually, then rescan.",
+        "not_applied",
+    ),
+    (
+        {
+            "not_printed_equation": "The image was not recognized as one standalone printed equation.",
+            "not_handwritten_equation": "The image was recognized as neither a printed nor a handwritten equation.",
+            "handwritten_math_not_eligible": "The image was not recognized as a printed equation, and it does not meet the conditions for automatic handwritten-equation recognition.",
+            "handwritten_math_suitability_rejected": "The image was not recognized as a printed equation, and the check for automatic handwritten-equation recognition could not assess it.",
+            "handwritten_notation_unsupported": "The handwriting uses notation that automatic handwritten-equation recognition does not support.",
+            "hmer_unavailable": "The image was not recognized as a printed equation, and handwritten-equation recognition was not available to this job.",
+        },
+        "If the image shows an equation, add it as accessible math (a Formula tag with MathML and alt text) manually; otherwise give the image an accurate text alternative. Then rescan.",
+        "not_applied",
+    ),
+    (
+        {
+            "equation_verification_failed": "An equation was recognized, but the automatic check that compares it with the image did not pass or could not run, so it was not applied.",
+            "equation_verification_mismatch": "An equation was recognized, but the automatic check's evidence did not match the converted equation, so it was not applied.",
+            "handwritten_equation_verification_failed": "A handwritten equation was read, but the required independent second reading did not confirm it, so it was not applied.",
+            "handwritten_equation_verification_mismatch": "A handwritten equation was read, but its verification evidence did not match this image, so it was not applied.",
+            "image_equation_conversion_failed": "An equation was recognized, but it could not be converted into valid accessible math (MathML), so it was not applied.",
+            "equation_association_unverified": "An equation was recognized and checked, but its attachment to the exact image in the saved PDF was not verified, so it was not applied.",
+            "math_fix_failed": "The equation step stopped unexpectedly for this finding, so no change was made.",
+        },
+        _ADD_MATH_MANUALLY,
+        "not_applied",
+    ),
+)
+for _reasons, _next_step, _attempt in _EQUATION_GROUPS:
+    for _code, _reason in _reasons.items():
+        EXPLANATIONS[_code] = (_reason, _next_step, _attempt)
 
 # Explicit supported guard codes share guidance only when they have the same
 # corrective action. Unknown exception strings never become public messages.
@@ -196,7 +261,17 @@ _MANUAL_REASON_CODES = {
     "table_structure_not_verified": "table_structure_not_verified",
     "table_structure_too_complex": "table_structure_too_complex",
     "equation_too_large_for_verification": "equation_too_large_for_verification",
+    "alt_text_client_unavailable": "alt_text_client_unavailable",
+    "Verified image equation awaits exact content association": "equation_association_unverified",
 }
+_MANUAL_REASON_CODES.update(
+    {
+        code: code
+        for reasons, _, _ in _EQUATION_GROUPS
+        for code in reasons
+        if code != "equation_association_unverified"
+    }
+)
 _MANUAL_REASON_CODES.update(
     {code: code for codes, _, _ in _ORDER_GUARD_GROUPS for code in codes}
 )

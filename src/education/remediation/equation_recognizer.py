@@ -74,11 +74,17 @@ class EquationRecognizer:
         if not isinstance(content, str):
             raise EquationRecognitionRejected("provider_failure")
         parsed = self._parse(content)
+        # A client bound to one provider is the authority for its identity. A
+        # workspace runtime resolves its provider per call, so where the client
+        # carries no identity the response names the provider and model that
+        # answered. Verified equation fixes cannot be recorded without both.
         return EquationRecognition(
             classification=parsed["classification"],
             latex=parsed["latex"],
-            provider=self._bounded_identity(getattr(client, "provider", None)),
-            model=self._bounded_identity(getattr(client, "model", None)),
+            provider=self._bounded_identity(getattr(client, "provider", None))
+            or self._bounded_identity(response.get("provider")),
+            model=self._bounded_identity(getattr(client, "model", None))
+            or self._bounded_identity(response.get("model")),
         )
 
     def _parse(self, content: str) -> dict[str, Any]:

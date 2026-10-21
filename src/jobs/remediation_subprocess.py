@@ -212,6 +212,17 @@ def _purpose_clients(binding: Any) -> tuple[Any, Any]:
     return remediation, alt_text
 
 
+def workspace_alt_text_requested(options: Any) -> bool:
+    """Whether a non-LMS request leaves AI image descriptions on.
+
+    Requests that are not LMS-backed have always described images whenever AI
+    is on, and the API records ``generate_alt_text`` as true for them unless
+    the caller sends false. Only that explicit false declines the alt-text
+    purpose; equation recognition belongs to the same purpose.
+    """
+    return not (isinstance(options, dict) and options.get("generate_alt_text") is False)
+
+
 def _reject_recovery_options(options: Any) -> None:
     if isinstance(options, dict) and _PRIVATE_RECOVERY_OPTIONS.intersection(options):
         raise RemediationSubprocessError("invalid_job_payload")
@@ -261,21 +272,30 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
         and reviewed_pptx is None
         and recovery is None
     )
+    workspace_alt_text = not authoritative and workspace_alt_text_requested(options)
     if not authoritative and use_ai:
         workspace_id = request.get("workspace_id")
         if not isinstance(workspace_id, str) or not workspace_id:
             raise RemediationSubprocessError("workspace_identity_required")
-        from src.ai.workspace_provider_runtime import workspace_provider_runtime
+        from src.ai.workspace_provider_runtime import (
+            WorkspaceAltTextClient,
+            workspace_provider_runtime,
+        )
 
         ai_client = workspace_provider_runtime(workspace_id)
-        alt_text_client = ai_client
+        # Re-derived from this request's own options, never from a parent
+        # flag. The alt-text purpose gets its own view of the runtime so the
+        # two purposes stay distinct objects, as they are for LMS jobs.
+        alt_text_client = (
+            WorkspaceAltTextClient(ai_client) if workspace_alt_text else None
+        )
     config = RemediationConfig(
         use_ai=(use_ai if not authoritative else ai_client is not None)
         and not approved_fixes_only,
         use_supplied_fixes=approved_fixes_only or reviewed_pptx is not None,
         allow_legacy_nested_ai=False,
         fix_alt_text=approved_fixes_only
-        or (not authoritative or alt_text_client is not None),
+        or (alt_text_client is not None if authoritative else workspace_alt_text),
         verify_fixes=True,
         create_backup=False,
         output_directory=str(work_dir),

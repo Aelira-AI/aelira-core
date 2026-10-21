@@ -215,3 +215,54 @@ def test_provider_exception_is_not_chained_or_exposed():
     assert exc.value.__cause__ is None
     assert exc.value.__suppress_context__ is True
     assert "secret request payload" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("bound", "expected"),
+    [
+        # A client bound to one provider stays the authority for its identity.
+        (
+            {"provider": "gemini", "model": "bound-model"},
+            ("gemini", "bound-model"),
+        ),
+        # An LMS client names its provider only; the model comes from the answer.
+        ({"provider": "gemini"}, ("gemini", "vision-model")),
+        # A workspace view names neither; the answering provider is recorded.
+        ({}, ("gemini", "vision-model")),
+    ],
+)
+def test_identity_falls_back_to_the_answering_provider(bound, expected):
+    from src.education.remediation.equation_recognizer import EquationRecognizer
+
+    class Unbound:
+        purpose = "alt_text"
+
+        def analyze_image_sync(self, **_kwargs):
+            return success('{"classification":"printed_equation","latex":"x+1"}')
+
+    client = Unbound()
+    for name, value in bound.items():
+        setattr(client, name, value)
+
+    result = EquationRecognizer(client).recognize(PAYLOAD)
+
+    assert (result.provider, result.model) == expected
+
+
+def test_identity_stays_absent_when_nobody_names_it():
+    from src.education.remediation.equation_recognizer import EquationRecognizer
+
+    class Anonymous:
+        purpose = "alt_text"
+
+        def analyze_image_sync(self, **_kwargs):
+            return {
+                "success": True,
+                "content": '{"classification":"printed_equation","latex":"x+1"}',
+                "provider": "",
+                "model": None,
+            }
+
+    result = EquationRecognizer(Anonymous()).recognize(PAYLOAD)
+
+    assert (result.provider, result.model) == (None, None)
