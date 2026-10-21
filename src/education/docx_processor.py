@@ -36,6 +36,7 @@ from src.education.color_blindness_simulator import (
 from src.utils.async_helpers import run_async_from_sync
 
 from .office_findings import office_issue_metadata
+from .office_images import save_extracted_png
 
 logger = logging.getLogger(__name__)
 
@@ -1065,7 +1066,7 @@ class DocxProcessor:
             image = Image.open(BytesIO(image_bytes))
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-                image.save(tmp, format="PNG")
+                save_extracted_png(image, tmp)
                 return tmp.name
         except Exception as e:
             record_incomplete_check("docx._extract_image_from_run")

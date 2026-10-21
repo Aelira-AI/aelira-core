@@ -38,9 +38,9 @@ done
 fetch https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz \
     4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88 \
     tiff-4.7.2.tar.xz
-fetch https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz \
-    3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce \
-    pillow-12.3.0.tar.gz
+fetch https://files.pythonhosted.org/packages/ce/a4/9cc30690a394a8305e8be4c9036aa16d0dfddadd09079860b582f562496d/pillow-13.0.0.tar.gz \
+    cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510 \
+    pillow-13.0.0.tar.gz
 
 # libtiff keeps the codecs the published wheel's copy had: JPEG, Deflate (zlib),
 # LZMA and Zstandard. Tools, tests, contrib code and documentation are not
@@ -71,8 +71,8 @@ prefix="$work/tiff-prefix"
     make install
 )
 
-tar -xzf pillow-12.3.0.tar.gz
-cd pillow-12.3.0
+tar -xzf pillow-13.0.0.tar.gz
+cd pillow-13.0.0
 # Pillow looks in TIFF_ROOT first, finds only the static library there and
 # links it into _imaging. The static archive needs the libraries it was built
 # against, which are listed explicitly and kept even if not referenced first.

@@ -20,7 +20,7 @@ def main() -> None:
         ("python-docx", "1.2.0"),
         ("python-pptx", "1.0.2"),
         ("openpyxl", "3.1.5"),
-        ("pillow", "12.3.0"),
+        ("pillow", "13.0.0"),
         ("XlsxWriter", "3.2.9"),
         ("typing_extensions", "4.15.0"),
         ("et_xmlfile", "2.0.0"),

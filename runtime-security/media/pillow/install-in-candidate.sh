@@ -188,6 +188,6 @@ PY
 test "$(dpkg-query -W -f='${Version}' libtiff6)" = '4.7.2-0aelira1'
 /opt/venv/bin/python -m ensurepip --upgrade
 /opt/venv/bin/python -m pip install --no-index --no-deps --force-reinstall \
-  /wheel/pillow-12.3.0-*.whl
+  /wheel/pillow-13.0.0-*.whl
 /opt/venv/bin/python -m pip uninstall --yes pip
 test ! -d /opt/venv/lib/python3.14/site-packages/pillow.libs

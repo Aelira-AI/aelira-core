@@ -22,7 +22,7 @@ RUN cd /fixture/frozen \
  && python3 -m venv /opt/venv \
  && /opt/venv/bin/python -m pip install --no-index --no-deps \
       --find-links=/fixture/frozen/wheels -r /fixture/pins.txt \
-      pillow==12.3.0 psycopg2-binary==2.9.13 \
+      pillow==13.0.0 psycopg2-binary==2.9.13 \
  && /opt/venv/bin/python -m pip uninstall -y pip
 
 WORKDIR /app
