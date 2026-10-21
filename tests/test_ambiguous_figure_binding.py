@@ -142,6 +142,21 @@ def _reasons(result: Any, remediator: PdfRemediator) -> dict[int, str]:
     }
 
 
+def _recommendation(result: Any, remediator: PdfRemediator, index: int) -> str:
+    """The next step recorded with an image's manual missing-alt finding."""
+    issue = next(
+        item
+        for item in remediator.issues
+        if item.metadata.get("issue_type") == "missing_alt_text"
+        and item.metadata.get("image_index") == index
+    )
+    return next(
+        record.recommendation
+        for record in result.manual_issues
+        if record.issue_id == issue.id
+    )
+
+
 def _fixed_alt_ids(result: Any) -> set[str]:
     return {
         fix.issue_id for fix in result.fixed_issues if fix.category.value == "alt_text"
@@ -191,6 +206,7 @@ def test_overlapping_draws_get_no_description_and_nothing_is_misplaced(
         # Each described image is refused with the reason, never credited.
         for index in described:
             assert reasons[index] == "image_draw_ambiguous"
+            assert "drawn over this one" in _recommendation(result, remediator, index)
         assert not _fixed_alt_ids(result)
         # Nothing is attached to either image, and no Figure holds a description.
         assert _carried(result.output_file) == [(False, None), (False, None)]
@@ -265,6 +281,9 @@ def test_an_image_inside_marked_content_is_refused_and_leaves_no_phantom_figure(
     try:
         assert result.success, result.error_message
         assert _reasons(result, remediator) == {0: "image_in_marked_content"}
+        recommendation = _recommendation(result, remediator, 0)
+        assert "marked-content scope" in recommendation
+        assert "Figure" not in recommendation
         # Only the plain image is described, on a Figure that holds its content.
         assert _figures(result.output_file) == [(_description(1), True)]
         assert _phantom_figures(result.output_file) == []
@@ -381,10 +400,10 @@ def test_an_image_also_drawn_inside_a_form_is_refused_without_a_sidecar(
 
 
 @contextmanager
-def _unidentified(source: Path, tmp_path: Path):
+def _unidentified(source: Path, tmp_path: Path, index: int = 0):
     remediator, pdf, document = _prepared(source, tmp_path)
     try:
-        issue = _alt_issue(remediator, 0)
+        issue = _alt_issue(remediator, index)
         issue.metadata.pop("occurrence_id")
         yield remediator, pdf, document, issue
     finally:
@@ -422,6 +441,91 @@ def test_an_unidentified_finding_is_written_for_the_pages_single_image(
         assert not getattr(remediator, "_source_binding_refusals", {})
 
 
+@pytest.mark.parametrize("index", [0, 1])
+def test_an_unidentified_finding_never_takes_an_artifact_images_place(
+    tmp_path: Path, index: int
+) -> None:
+    """An image inside an artifact is still an image of the page.
+
+    Counting only the images the tagger makes blocks of, the plain image looked
+    like the page's single one, so the description of the artifact image was
+    written as an unpositioned Figure and the tagger then paired it with the
+    plain image. Every image draw counts, whatever its marked-content depth.
+    """
+    source = tmp_path / "source.pdf"
+    _write_draws(source, [(50.0, 600.0, 150.0, 700.0), (250.0, 600.0, 350.0, 700.0)])
+    _wrap_first_draw(source, MARKED_CONTENT["plain_artifact"])
+    with _unidentified(source, tmp_path, index) as (remediator, pdf, document, issue):
+        assert remediator._apply_alt_text_fix(issue, document, "A description") is False
+        assert (
+            remediator._source_binding_refusals[issue.id]
+            == "image_occurrence_unidentified"
+        )
+        assert _structure_figures(pdf) == []
+        assert remediator._html_output is None
+
+
+def test_a_lone_image_inside_marked_content_is_refused_even_without_identity(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.pdf"
+    _write_draws(source, [FIRST])
+    _wrap_first_draw(source, MARKED_CONTENT["plain_artifact"])
+    with _unidentified(source, tmp_path) as (remediator, pdf, document, issue):
+        assert remediator._apply_alt_text_fix(issue, document, "A description") is False
+        assert (
+            remediator._source_binding_refusals[issue.id] == "image_in_marked_content"
+        )
+        assert _structure_figures(pdf) == []
+
+
+def _add_inline_image(path: Path) -> None:
+    """Paint one more image inline, which has no resource name."""
+    with pikepdf.open(path, allow_overwriting_input=True) as pdf:
+        page = pdf.pages[0]
+        streams = page.obj.Contents
+        streams = list(streams) if isinstance(streams, Array) else [streams]
+        drawing = b"".join(stream.read_bytes() for stream in streams)
+        page.obj.Contents = pdf.make_stream(
+            drawing
+            + b" q 20 0 0 20 450 650 cm BI /W 2 /H 2 /BPC 8 /CS /G ID "
+            + b"\x00\xff\xff\x00 EI Q"
+        )
+        pdf.save(path)
+
+
+def test_an_inline_image_is_another_image_of_the_page(tmp_path: Path) -> None:
+    from src.education.remediation.content_tagger_v2 import _image_draws
+
+    source = tmp_path / "source.pdf"
+    _write_draws(source, [FIRST])
+    _add_inline_image(source)
+    with pikepdf.open(source) as pdf:
+        page = pdf.pages[0]
+        draws = _image_draws(page, list(pikepdf.parse_content_stream(page)))
+        assert sorted(depth for _, depth in draws.values()) == [0, 0]
+        # The inline image sits outside every scope too, and still counts.
+        assert len(draws) == 2
+    remediator = PdfRemediator(
+        str(source), [], RemediationConfig(use_ai=False, create_backup=False)
+    )
+    assert remediator._lone_image_refusal(1) == "image_occurrence_unidentified"
+
+
+def test_image_draws_list_every_depth_with_its_marked_content_depth(
+    tmp_path: Path,
+) -> None:
+    from src.education.remediation.content_tagger_v2 import _image_draws
+
+    source = tmp_path / "source.pdf"
+    _write_draws(source, [(50.0, 600.0, 150.0, 700.0), (250.0, 600.0, 350.0, 700.0)])
+    _wrap_first_draw(source, MARKED_CONTENT["artifact_with_a_property_list"])
+    with pikepdf.open(source) as pdf:
+        page = pdf.pages[0]
+        draws = _image_draws(page, list(pikepdf.parse_content_stream(page)))
+    assert sorted(depth for _, depth in draws.values()) == [0, 1]
+
+
 # ---------------------------------------------------------------------------
 # The refusals are explained to the user
 # ---------------------------------------------------------------------------
@@ -443,3 +547,30 @@ def test_each_refusal_reason_has_its_own_public_explanation(code: str) -> None:
     assert explained["reason_code"] == code
     assert explained["reason"] == reason
     assert "\n" not in reason and "/" not in reason
+
+
+def test_each_refusal_reason_has_its_own_accurate_recommendation() -> None:
+    from src.education.remediation.pdf_remediator import _IMAGE_BINDING_RECOMMENDATIONS
+
+    assert set(_IMAGE_BINDING_RECOMMENDATIONS) == set(REASONS)
+    texts = list(_IMAGE_BINDING_RECOMMENDATIONS.values())
+    assert len(set(texts)) == len(texts)
+    # None of them is the advice for an existing Figure's ownership.
+    assert not [text for text in texts if "Figure" in text]
+    assert "overlap" in _IMAGE_BINDING_RECOMMENDATIONS[
+        "image_draw_ambiguous"
+    ].lower() or (
+        "drawn over" in _IMAGE_BINDING_RECOMMENDATIONS["image_draw_ambiguous"]
+    )
+    assert (
+        "rescan"
+        in _IMAGE_BINDING_RECOMMENDATIONS["image_occurrence_unidentified"].lower()
+    )
+
+
+def test_the_marked_content_explanation_describes_a_content_stream_scope() -> None:
+    """This reason only arises for a source with no structure tree."""
+    reason, next_step, _ = EXPLANATIONS["image_in_marked_content"]
+    assert "marked-content scope in the page content" in reason
+    assert "artifact or span" in reason
+    assert "element" not in reason and "element" not in next_step

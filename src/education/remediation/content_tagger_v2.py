@@ -329,8 +329,6 @@ class ContentTaggerV2:
         self.fitz_doc = fitz_doc
         self._order_generated_structure = order_generated_structure
         self._content_positions: Dict[tuple, tuple[int, int]] = {}
-        # Elements of the structure that a content block was bound to.
-        self._bound_elements: set = set()
         self._marked_positions: Dict[tuple, tuple[int, int]] = {}
         self._excluded_image_occurrences: Dict[int, set[tuple[int, int]]] = {}
         for pending in excluded_image_occurrences or []:
@@ -763,7 +761,7 @@ class ContentTaggerV2:
             stats["blocks_created"] += page_stats.get("created", 0)
 
         stats["figures_unbound_removed"] = (
-            self._remove_unbound_generated_figures(struct_root, by_page)
+            self._remove_unbound_generated_figures(struct_root)
             if self._order_generated_structure
             else 0
         )
@@ -794,36 +792,84 @@ class ContentTaggerV2:
 
         return stats
 
-    def _remove_unbound_generated_figures(
-        self, struct_root: Any, by_page: Dict[int, List[Any]]
-    ) -> int:
-        """Drop a generated Figure that no image block was bound to.
+    def _remove_unbound_generated_figures(self, struct_root: Any) -> int:
+        """Drop each generated Figure or Formula that holds an /Alt and no content.
 
         A Figure written for a description that never reached its image would
         stay in the saved file with an /Alt and no content to carry it, which a
-        reader or a validator could take for a described image. Every Figure of
-        a generated structure comes from this run, so one that holds an /Alt and
-        was bound to nothing is removed. The image keeps no description, and the
-        saved-file check then finds it undescribed instead of crediting text
-        that no image carries. Returns the number removed.
+        reader or a validator could take for a described image. The predicate
+        covers every tag in ``FIGURE_TAGS``, so a Formula is treated the same
+        way. An element that was bound to a block has a /K, so one that holds an
+        /Alt, has no /K and could have been bound (it sits on a page, as
+        ``_collect_elements`` requires) was bound to nothing. It is removed, and
+        the image keeps no description: the saved-file check then finds it
+        undescribed instead of crediting text that no image carries.
+
+        This runs only for a structure generated in this run, so a tagged
+        source keeps its own Figures. The generated structure is walked from the
+        root, and each orphan is removed from its own parent's /K wherever it
+        sits. Elements are told apart by what they are, never by object number,
+        because a direct dictionary has none and would stand in for every other.
+        A parent left with no kids loses its /K, which a structure element may
+        lack. Removed elements carry no MCID, and the ParentTree is built after
+        this from the blocks that were bound, so it never names them. Returns
+        the number removed.
         """
-        unbound = {
-            elem.objgen
-            for elems in by_page.values()
-            for elem in elems
-            if Name.S in elem
-            and str(elem[Name.S]).lstrip("/") in FIGURE_TAGS
-            and Name.Alt in elem
-            and Name.K not in elem
-            and elem.objgen not in self._bound_elements
-        }
-        kids = struct_root.get(Name.K)
-        if not unbound or not isinstance(kids, Array):
-            return 0
-        kept = [kid for kid in kids if getattr(kid, "objgen", None) not in unbound]
-        removed = len(kids) - len(kept)
+        removed = 0
+        seen: set = set()
+
+        def unbound(element: Any, page_idx: Optional[int]) -> bool:
+            if page_idx is None or Name.S not in element or Name.Alt not in element:
+                return False
+            if str(element[Name.S]).lstrip("/") not in FIGURE_TAGS:
+                return False
+            kids = element.get(Name.K)
+            return kids is None or (isinstance(kids, Array) and len(kids) == 0)
+
+        def prune(element: Any, inherited_page: Optional[int], depth: int) -> None:
+            nonlocal removed
+            if depth > 100 or not hasattr(element, "keys"):
+                return
+            if getattr(element, "is_indirect", False):
+                if element.objgen in seen:
+                    return
+                seen.add(element.objgen)
+            if Name.S in element and str(element[Name.S]).lstrip("/") in TABLE_TAGS:
+                return
+            page_idx = (
+                self._page_index(element[Name.Pg])
+                if Name.Pg in element
+                else inherited_page
+            )
+            kids = element.get(Name.K)
+            if isinstance(kids, Array):
+                had_kids = len(kids) > 0
+                for index in range(len(kids) - 1, -1, -1):
+                    kid = kids[index]
+                    if not hasattr(kid, "keys"):
+                        continue
+                    kid_page = (
+                        self._page_index(kid[Name.Pg]) if Name.Pg in kid else page_idx
+                    )
+                    if unbound(kid, kid_page):
+                        del kids[index]
+                        removed += 1
+                    else:
+                        prune(kid, page_idx, depth + 1)
+                if had_kids and len(kids) == 0:
+                    del element[Name.K]
+            elif kids is not None and hasattr(kids, "keys"):
+                kid_page = (
+                    self._page_index(kids[Name.Pg]) if Name.Pg in kids else page_idx
+                )
+                if unbound(kids, kid_page):
+                    del element[Name.K]
+                    removed += 1
+                else:
+                    prune(kids, page_idx, depth + 1)
+
+        prune(struct_root, None, 0)
         if removed:
-            struct_root[Name.K] = Array(kept)
             logger.warning(
                 "Removed %d generated Figure(s) with alt text that no image was "
                 "bound to",
@@ -1082,7 +1128,6 @@ class ContentTaggerV2:
 
         page.obj[Name.StructParents] = struct_parent
         self._parent_tree_entries[struct_parent] = page_entries
-        self._bound_elements.update(match.struct_elem.objgen for match in matches)
 
         return page_stats
 
@@ -1833,25 +1878,23 @@ def _image_draw_rects(
     return {index: rect for index, (rect, _) in _draw_states(ops).items()}
 
 
-def _taggable_image_draws(
+def _image_draws(
     page: Any, ops: List[Any]
-) -> Dict[int, Tuple[float, float, float, float]]:
-    """Return the rectangle of every image draw the tagger will make a block of.
+) -> Dict[int, Tuple[Tuple[float, float, float, float], int]]:
+    """Return every image draw of the page with its rectangle and depth.
 
-    These are the direct image draws outside every marked-content scope, which
-    is what ``_find_content_blocks`` turns into image blocks. A draw inside an
-    ``/Artifact``, ``/OC`` or table scope is not among them, and no Figure can
-    be bound to it.
+    The depth is the number of marked-content scopes open at the draw, so a draw
+    inside an ``/Artifact``, ``/OC`` or table scope is listed too, with a depth
+    above zero. The list holds direct image draws and inline images of either
+    spelling, because anything painted as an image can overlap another image or
+    stand beside it. Only a draw at depth zero becomes a block the tagger can
+    bind a Figure to. An unfollowable graphics state yields no draws at all.
     """
     return {
-        index: rect
-        for index, (rect, depth) in _draw_states(ops).items()
-        if depth == 0
-        and (
-            # Named as ``_find_content_blocks`` names it.
-            str(ops[index].operator) == "INLINE_IMAGE"
-            or _draws_image_xobject(page, ops[index])
-        )
+        index: state
+        for index, state in _draw_states(ops).items()
+        if str(ops[index].operator) in ("INLINE IMAGE", "INLINE_IMAGE")
+        or _draws_image_xobject(page, ops[index])
     }
 
 
