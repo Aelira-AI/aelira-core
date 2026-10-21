@@ -37,6 +37,11 @@ UNCHANGED = [
     "Rated $$$ and $$ in two guides",
     "Tickets: $5, $10, $15.",
     "Prices rose from $3.50 to $4.25.",
+    "Converted from US$100 in A$ terms",
+    "Fees: A$5 vs US$ amounts",
+    "S$5 or HK$",
+    "From NZ$20 to CA$30 and back",
+    "A bill of US$1,200 or A$1,800",
     "Two plans, $5 for one and $10 for ten users.",
     "Revenue ($M) and costs ($K) are shown.",
     # Prices.
@@ -433,4 +438,108 @@ def test_latex_after_or_inside_a_drive_prefix_is_still_markup(text):
     ],
 )
 def test_real_paths_with_spaces_stay_whole(text):
+    assert refuse_math_markup(text) is text
+
+
+# ---------------------------------------------------------------------------
+# Second round: currency prefixes, padded spans and paths that hold a command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Converted from US$100 in A$ terms",
+        "Fees: A$5 vs US$ amounts",
+        "S$5 or HK$",
+        "Worth US$5 and A$ ten",
+        "Prices in C$ and NZ$ differ",
+        "Costs of A$1.50 against US$2",
+    ],
+)
+def test_a_dollar_sign_after_a_letter_or_digit_is_a_currency_prefix_not_a_span(text):
+    assert refuse_math_markup(text) is text
+
+
+def test_a_dollar_sign_after_a_letter_never_opens_an_inline_span():
+    from src.education.math_speech import _DOLLAR_SPAN
+
+    assert _DOLLAR_SPAN.search("US$100 in A$ terms") is None
+    assert _DOLLAR_SPAN.search("a $x$ b") is not None
+    assert _DOLLAR_SPAN.search("($x$)") is not None
+
+
+def test_shell_variables_run_together_stay_refused_as_a_documented_limit():
+    """``$HOME$PATH`` reads as a span, so a code screenshot quoting it is refused."""
+    assert refuse_math_markup("echo $HOME$PATH") is None
+    assert refuse_math_markup("Run echo $HOME and echo $PATH, or use $HOME/$USER.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$ y = mx + b $",
+        "The line $ y = mx + b $ is shown",
+        "$ x $",
+        "A set $ S $ is open",
+        "$ 3.14 $",
+        "$2 \u00d7 3$",
+        "$3.14$",
+        "$a \u2264 b$",
+        "$ 5 + 3 $",
+    ],
+)
+def test_padded_spans_and_numbers_between_dollar_signs_are_refused(text):
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Price tiers: $ or $",
+        "Costs in $ and \u20ac are shown",
+        "Values in $ vs. \u00a3 vs. $ are compared",
+        "Tiers $ , $$ , $$$ apply",
+        "It costs $ 5 and $ 10 in all",
+        "Rated $$ or $$$ overall",
+    ],
+)
+def test_words_set_off_between_dollar_signs_are_not_mathematics(text):
+    assert refuse_math_markup(text) is text
+
+
+def test_a_padded_display_span_of_letters_alone_is_a_known_gap():
+    """``$$ ab $$`` cannot be told from the price tier ``$$ or $$$``; both pass."""
+    assert refuse_math_markup("$$ ab $$") == "$$ ab $$"
+    assert refuse_math_markup("Rated $$ or $$$ overall") is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Three categories.\\ne.g. sales and costs",
+        "Values\\ni.e. the mean",
+        "Line one\\ne.g. two",
+        "Items\\ne.g. one",
+        "see\\nu.txt",
+        "notes\\notin.txt",
+    ],
+)
+def test_a_literal_backslash_command_is_never_a_relative_path(text):
+    """After a swallowed ``\\ne`` is repaired it must not pass for a file path."""
+    assert holds_math_markup(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "File src\\education\\math.py changed",
+        "Open docs\\guide\\readme.md",
+        "Saved to D:\\Projects\\report-final.docx.",
+        "Open C:\\Users\\bob\\notes.txt now",
+        "Path \\\\fileserver\\share\\docs\\plan.xlsx ok",
+    ],
+)
+def test_real_relative_and_drive_paths_still_pass(text):
     assert refuse_math_markup(text) is text

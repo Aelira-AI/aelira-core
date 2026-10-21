@@ -735,6 +735,15 @@ SCRIPT_ON_A_CLOSING_BASE = [
     "(x)_{i}",
     r"\mathrm{d}^2",
     r"\mathrm{d}_i",
+    # A closing bar is not spoken by every reader either.
+    "|x|^2",
+    "|x|^{2}",
+    "|x|_i",
+    r"\left| x \right|^2",
+    r"\left| x \right|^{2}",
+    r"\lvert x \rvert^2",
+    r"\lVert x \rVert^2",
+    r"\left\| x \right\|^2",
 ]
 
 # A run of letters that spells a word the labels use reads like the construct
@@ -754,8 +763,46 @@ SPOKEN_WORD_RUNS = [
     "a dot b",
     "x integral y",
     "a log b",
-    "a or b",
     "alpha beta",
+    # Phrases the labels use for a command with a longer spoken form.
+    "a divided by b",
+    "a plus or minus b",
+    "a minus or plus b",
+    "a less than or equal to b",
+    "a greater than or equal to b",
+    "a not equal to b",
+    "a approximately equal to b",
+    "a equivalent to b",
+    "a centered ellipsis b",
+    "a contour integral b",
+    "a natural log b",
+    # A command that only changes how the equation is drawn cannot split a word.
+    r"x \mathrm{s}quared",
+    r"a \mathrm{o}ver b",
+    r"x \mathrm{s}ub i",
+    r"\mathrm{p}i r",
+    r"a o\left.ver b",
+    r"x \mathrm{s}\mathrm{q}uared",
+    r"a divi\mathrm{d}ed by b",
+]
+
+# Words the labels use only inside a longer phrase are ordinary variables alone.
+PHRASE_WORDS_THAT_ARE_VARIABLES = [
+    ("ax + by = c", "ax + by = c"),
+    ("a or b", "a or b"),
+    ("x to y", "x to y"),
+    ("a by b", "a by b"),
+    ("x of y", "x of y"),
+    ("the + than = 1", "the + than = 1"),
+    ("a plus b", "a plus b"),
+    ("a minus b", "a minus b"),
+    ("a equal b", "a equal b"),
+    ("a less b", "a less b"),
+    ("a not b", "a not b"),
+    ("a natural b", "a natural b"),
+    ("a divided b", "a divided b"),
+    ("x square y", "x square y"),
+    ("x cube y", "x cube y"),
 ]
 
 # A closing parenthesis is terminal only when it closes one opened before the
@@ -835,12 +882,43 @@ def test_the_keyword_check_looks_at_whole_runs_of_letters_only():
     assert equation_alt_text_is_ambiguous(r"a \times b") is False
 
 
-def test_every_word_a_spoken_form_can_say_is_a_refused_run_of_letters():
-    assert {"over", "sub", "squared", "cubed", "power", "choose", "root"} <= set(
-        math_speech._SPOKEN_WORDS
-    )
-    for word in sorted(math_speech._SPOKEN_WORDS):
+def test_every_keyword_a_spoken_form_can_say_is_a_refused_run_of_letters():
+    keywords = math_speech._SPOKEN_KEYWORDS
+    assert {"over", "sub", "squared", "cubed", "power", "choose", "root"} <= keywords
+    assert {"times", "dot", "pi", "sum", "integral", "log", "sine"} <= keywords
+    for word in sorted(keywords):
         assert equation_alt_text_is_ambiguous(f"a {word} b") is True, word
+
+
+def test_every_phrase_a_spoken_form_can_say_is_a_refused_sequence_of_runs():
+    phrases = math_speech._SPOKEN_PHRASES
+    assert ("divided", "by") in phrases
+    assert ("less", "than", "or", "equal", "to") in phrases
+    for phrase in sorted(phrases):
+        assert equation_alt_text_is_ambiguous("a " + " ".join(phrase) + " b") is True
+
+
+def test_a_word_that_only_occurs_inside_a_phrase_is_not_a_keyword():
+    keywords = math_speech._SPOKEN_KEYWORDS
+    for word in ("by", "of", "the", "than", "or", "to", "plus", "minus", "equal"):
+        assert word not in keywords, word
+    assert not {w for phrase in math_speech._SPOKEN_PHRASES for w in phrase} & {
+        "over",
+        "sub",
+        "power",
+    }
+
+
+@pytest.mark.parametrize(("latex", "words"), PHRASE_WORDS_THAT_ARE_VARIABLES)
+def test_a_word_from_a_phrase_is_an_ordinary_variable_on_its_own(latex, words):
+    assert equation_alt_text_is_ambiguous(latex) is False
+    assert generate_equation_alt_text(latex) == words
+
+
+def test_the_textbook_form_ax_plus_by_equals_c_is_said_and_a_over_b_is_not():
+    assert equation_alt_text_is_ambiguous("ax + by = c") is False
+    assert generate_equation_alt_text("ax + by = c") == "ax + by = c"
+    assert equation_alt_text_is_ambiguous("a over b") is True
 
 
 def test_the_guard_comment_claims_no_more_than_the_rules_do():
@@ -855,3 +933,47 @@ def test_the_command_list_is_shared_with_the_json_repair():
 
     assert model_json.LATEX_COMMAND_NAMES is latex_commands.LATEX_COMMAND_NAMES
     assert math_speech._KNOWN_COMMANDS is latex_commands.LATEX_COMMAND_NAMES
+
+
+# ---------------------------------------------------------------------------
+# Second round: names, and what the guard does not protect
+# ---------------------------------------------------------------------------
+
+
+def test_the_negations_and_arrows_the_second_audit_named_are_on_the_command_list():
+    from src.education.latex_commands import LATEX_COMMAND_NAMES
+
+    for name in (
+        "ngtrless",
+        "ngtrsim",
+        "nlesssim",
+        "nprecsim",
+        "nsimeq",
+        "nsuccsim",
+        "triangledown",
+        "rlap",
+    ):
+        assert name in LATEX_COMMAND_NAMES, name
+
+
+def test_braced_greek_and_infinity_are_one_token_and_are_said():
+    assert equation_alt_text_is_ambiguous(r"x^{\alpha}") is False
+    assert generate_equation_alt_text(r"x^{\alpha}") == "x to the power alpha"
+    assert equation_alt_text_is_ambiguous(r"x_{\infty}") is False
+    assert generate_equation_alt_text(r"x_{\infty}") == "x sub infinity"
+
+
+def test_plain_grouping_is_not_protected_and_the_guide_says_so():
+    """``(a + b)c`` and ``a + bc`` read alike when the brackets are not announced."""
+    assert equation_alt_text_is_ambiguous("(a + b)c") is False
+    assert equation_alt_text_is_ambiguous("a + bc") is False
+    # The labels differ only by the brackets, which a reader may not announce.
+    assert generate_equation_alt_text("(a + b)c") == "(a + b)c"
+    assert generate_equation_alt_text("a + bc") == "a + bc"
+    guide = (ROOT / "docs" / "document-remediation" / "general-stem.md").read_text(
+        encoding="utf-8"
+    )
+    assert "(a + b)c" in guide and "#698" in guide
+    comment = Path(math_speech.__file__).read_text(encoding="utf-8")
+    assert "does not speak a parenthesis" not in comment
+    assert "at default punctuation" not in comment

@@ -255,8 +255,7 @@ def generate_equation_alt_text(latex: str) -> str:
 #      forms and may be followed by anything the other rules allow. So "x squared
 #      plus 3 x" is accepted, "x to the power n plus 1" is refused because it
 #      could also be x to the power n+1, and so are "(1 + x^{n}) + 2" and
-#      "x^{n}) + 1", because a screen reader at default punctuation does not
-#      speak a parenthesis.
+#      "x^{n}) + 1", because a screen reader may not speak a parenthesis.
 #   4. A brace group that is not an argument is refused. The label drops braces,
 #      so ``{ab}^2`` and ``ab^2`` would read the same.
 #   5. A script directly after an integral, sum, product or contour integral is a
@@ -264,13 +263,21 @@ def generate_equation_alt_text(latex: str) -> str:
 #   6. A command with no spoken form is never erased. Only the typography
 #      commands above, which say nothing, are dropped.
 #   7. A backslash, a caret or an underscore never survives into the label.
-#   8. A script is refused when its base is a closing parenthesis or bracket or a
-#      ``\mathrm`` group, so ``(2x)^2`` and ``2x^2`` do not read alike. A
+#   8. A script is refused when its base is a closing parenthesis, bracket or bar
+#      or a ``\mathrm`` group, so ``(2x)^2``, ``|x|^2`` and ``2x^2`` do not read
+#      alike. Plain grouping is not protected: ``(a + b)c`` and ``a + bc`` read
+#      alike when the reader does not announce the brackets, and only speech
+#      generated from MathML can fix that. A
 #      ``\mathrm`` group holds one letter, which has the same MathML as the
 #      plain letter; a longer one would hide where a base begins.
 #   9. A run of letters that spells a word the labels use ("over", "sub",
-#      "squared", "pi", "sum", "times") is refused, because ``a over b`` would
-#      read like ``\frac{a}{b}``.
+#      "squared", "pi", "sum", "times"), or a phrase they use ("divided by"), is
+#      refused, because ``a over b`` would read like ``\frac{a}{b}``. The words
+#      are looked for after the typography commands are applied, so a command that
+#      only changes how the equation is drawn cannot split one: ``a o\left.ver b``
+#      and ``x \mathrm{s}quared`` are refused too. A word that occurs only inside
+#      a longer phrase, such as "by", is not refused alone: ``ax + by = c`` is
+#      said.
 #
 # Some equations are meant to read alike and the guard does not refuse them:
 # spacing commands, ``\left``, ``\right`` and ``\displaystyle`` are read as
@@ -297,26 +304,67 @@ _SQRT_COMMAND = re.compile(r"\\sqrt(?![A-Za-z])")
 _MATHRM_GROUP = re.compile(r"\\mathrm\{[A-Za-z]\}")
 
 
-def _spoken_vocabulary() -> "frozenset[str]":
-    """Every word a label can contain because of a spoken form."""
-    words = set(_ROOT_WORDS.values()) | {"root", "of"}
+# The words that join the parts of a construct ("over" in a fraction, "choose" in
+# a binomial, "sub" and "to the power" in a script, "root" in a root). They have
+# no spoken form of their own, so the table below cannot list them.
+_CONNECTING_WORDS = frozenset({"over", "choose", "sub", "power", "root"})
+
+
+def _spoken_vocabulary() -> "tuple[frozenset[str], frozenset[tuple[str, ...]]]":
+    """The single words and the phrases a label can contain because of a rule.
+
+    A rule whose spoken form is one word makes that word a keyword. A rule whose
+    spoken form is several words makes the phrase one, and its words are not
+    keywords alone: "by" occurs only in "divided by", so ``by`` is an ordinary
+    variable in ``ax + by = c``. A template that takes an argument ("\\1 over \\2")
+    contributes the connecting words above.
+    """
+    keywords = set(_CONNECTING_WORDS)
+    phrases = set()
     for _pattern, replacement in _SPOKEN_RULES:
-        if isinstance(replacement, str):
-            words.update(re.findall(r"[A-Za-z]+", replacement))
-    return frozenset(word.casefold() for word in words)
+        if not isinstance(replacement, str) or re.search(r"\\\d", replacement):
+            continue
+        words = tuple(word.casefold() for word in re.findall(r"[A-Za-z]+", replacement))
+        if len(words) == 1:
+            keywords.add(words[0])
+        elif words:
+            phrases.add(words)
+    return frozenset(keywords), frozenset(phrases)
 
 
-# A run of letters in the equation that spells one of these reads exactly like the
-# construct that produces the word, so it is refused (rule 9).
-_SPOKEN_WORDS = _spoken_vocabulary()
+# A run of letters in the equation that spells a keyword, or a sequence of runs
+# that spells a phrase, reads exactly like the construct that produces it, so it
+# is refused (rule 9).
+_SPOKEN_KEYWORDS, _SPOKEN_PHRASES = _spoken_vocabulary()
+_WORD_SEQUENCE = re.compile(r"[A-Za-z]+(?: +[A-Za-z]+)*")
+
+
+def _as_the_label_would_join_it(text: str) -> str:
+    """The text with the typography commands applied and the other commands marked.
+
+    ``\\mathrm{s}quared`` becomes ``squared`` and ``o\\left.ver`` becomes ``over``,
+    which is what the label says for them, so a command that only changes how the
+    equation is drawn cannot split a word. A command that is spoken becomes a
+    backslash, which no word runs across.
+    """
+    for pattern, replacement in _TYPOGRAPHY_RULES:
+        text = pattern.sub(replacement, text)
+    return _COMMAND.sub(lambda _match: "\\", text)
 
 
 def _letters_spell_a_spoken_word(text: str) -> bool:
-    without_commands = _COMMAND.sub(" ", text)
-    return any(
-        run.casefold() in _SPOKEN_WORDS
-        for run in re.findall(r"[A-Za-z]+", without_commands)
-    )
+    for sequence in _WORD_SEQUENCE.findall(_as_the_label_would_join_it(text)):
+        words = [word.casefold() for word in sequence.split()]
+        if any(word in _SPOKEN_KEYWORDS for word in words):
+            return True
+        for phrase in _SPOKEN_PHRASES:
+            width = len(phrase)
+            if any(
+                tuple(words[start : start + width]) == phrase
+                for start in range(len(words) - width + 1)
+            ):
+                return True
+    return False
 
 
 def _unspoken_commands(latex: str) -> List[str]:
@@ -372,8 +420,8 @@ def _is_terminal(text: str, end: int, depth: int = 0) -> bool:
 
     ``depth`` is the number of parentheses still open at the group. A closing
     parenthesis ends the form only when one is open, and then what follows it must
-    end the form too: a screen reader does not speak the parenthesis, so
-    ``(1 + x^{n}) + 2`` would read like ``1 + x^{n} + 2``.
+    end the form too: a screen reader may not speak the parenthesis, so
+    ``(1 + x^{n}) + 2`` could read like ``1 + x^{n} + 2``.
     """
     index = end
     while index < len(text):
@@ -399,10 +447,11 @@ def _closed_script(character: str, argument: str) -> bool:
     return character == "^" and argument.strip() in ("2", "3")
 
 
-# What a script may not stand on: a closing parenthesis or bracket, whose
-# parenthesis the label keeps but a screen reader does not speak, and a
-# ``\mathrm`` group.
-_CLOSING_BASE = re.compile(r"(?:[)\]]|\\mathrm\{[A-Za-z]\})\s*$")
+# What a script may not stand on: a closing parenthesis, bracket or bar, which the
+# label keeps but a screen reader may not speak, and a ``\mathrm`` group. A closing
+# bar is ``|``, ``\right|``, ``\rvert`` or ``\rVert``, so ``|x|^2`` and
+# ``\left| x \right|^2`` are refused like ``(2x)^2``.
+_CLOSING_BASE = re.compile(r"(?:[)\]|]|\\mathrm\{[A-Za-z]\}|\\rvert|\\rVert)\s*$")
 
 
 def _structure_is_unambiguous(text: str) -> bool:
@@ -574,23 +623,34 @@ _BARE_SUBSCRIPT = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9]_[A-Za-z0-9]")
 
 # Dollar spans, in the order the alternatives are tried. The inline form follows
 # the usual Markdown rule so that prices stay prices: the opening dollar sign is
-# followed by something other than a space, the closing one is not preceded by a
-# space or an operator and is not followed by a digit, and an escaped dollar sign
-# never opens or closes anything. A span is mathematics only when what is between
-# the signs holds mathematics, so a unit such as ``($)`` or ``($M)`` is not.
+# followed by something other than a space and does not follow a letter or a digit,
+# so ``US$100`` and ``A$`` are currency prefixes and never open a span, the closing
+# one is not preceded by a space or an operator and is not followed by a digit, and
+# an escaped dollar sign never opens or closes anything. A span is mathematics only
+# when what is between the signs holds mathematics, so a unit such as ``($)`` or
+# ``($M)`` is not.
 _DOLLAR_SPAN = re.compile(
     r"(?<!\\)\$\$(?P<display>.+?)(?<!\\)\$\$"
-    r"|(?<![\\$])\$(?![\s$])(?P<inline>[^$\n]+?)(?<![\s\\=+\-*/,:;<>])\$(?![\d$])",
+    r"|(?<![\\$A-Za-z0-9])\$(?![\s$])(?P<inline>[^$\n]+?)(?<![\s\\=+\-*/,:;<>])\$(?![\d$])",
     re.DOTALL,
+)
+# A span with a space inside both signs, ``$ y = mx + b $``. It is checked for what
+# is certainly mathematics only, because words set off the same way are how price
+# tiers are written (``$ or $``): letters alone do not make it mathematics.
+_PADDED_DOLLAR_SPAN = re.compile(
+    r"(?<![\\$A-Za-z0-9])\$(?=\s)(?P<inner>[^$\n]+?)(?<=\s)\$(?![\d$])"
 )
 _INNER_MATH = re.compile(
     r"\\[A-Za-z]"  # a command
     r"|[\^_{}|]"  # a script, a brace or a bar
     r"|^\s*[A-Za-z]+\("  # a function call
-    r"|^\s*[A-Za-z0-9]\s*$"  # a lone symbol
+    r"|^\s*[A-Za-z]\s*$"  # a lone symbol
+    r"|^\s*\d+(?:[.,]\d+)?\s*$"  # a lone number, ``$3.14$``
 )
 # An operator between symbols, with or without spaces: ``y=mx`` and ``y = mx + b``.
-_SPACED_OPERATOR = re.compile(r"[A-Za-z0-9)\]]\s*[=<>+\-*/^_]\s*[A-Za-z0-9(\[]")
+_SPACED_OPERATOR = re.compile(
+    r"[A-Za-z0-9)\]]\s*[=<>+\-*/^_\u00d7\u00f7\u2212\u00b1\u2264\u2265\u2260\u2248]\s*[A-Za-z0-9(\[]"
+)
 _LETTER = re.compile(r"[A-Za-z]")
 # What is between two unit markers, as in ``($M) and ($K)``: the first parenthesis
 # of such a span is a closing one.
@@ -635,6 +695,7 @@ _WINDOWS_PATH = re.compile(
     rf"|^{_PATH_LEAD}[\w.-]+(?:\\[\w.-]+)+\.[A-Za-z0-9]{{1,5}}[\"')\].,;:!?>]*$"
 )
 _DRIVE_COMPONENT = re.compile(rf"^{_PATH_LEAD}[A-Za-z]:\\([A-Za-z]+)")
+_LEADING_LETTERS = re.compile(r"[A-Za-z]+")
 # A token that cannot continue a path that contains spaces.
 _NOT_PATH = re.compile(r"[{}^$]")
 # A token that starts with a backslash and a letter is a command and never the
@@ -646,15 +707,24 @@ def _is_windows_path(token: str) -> bool:
     if _WINDOWS_PATH.search(token) is None:
         return False
     drive = _DRIVE_COMPONENT.match(token)
-    return not (drive and drive.group(1) in _KNOWN_COMMANDS)
+    if drive and drive.group(1) in _KNOWN_COMMANDS:
+        return False
+    # A backslash followed by the name of a command is that command wherever it
+    # stands: ``categories.\ne.g.`` is a sentence and a negation, not a file.
+    return not any(
+        (name := _LEADING_LETTERS.match(segment)) is not None
+        and name.group() in _KNOWN_COMMANDS
+        for segment in token.split("\\")[1:]
+    )
 
 
 # What a description may carry that is not printable. Line breaks, tabs and the
 # Unicode line and paragraph separators are ordinary whitespace in a description
-# and are folded to a space where it is written. Every other control, format,
-# surrogate, private-use or unassigned character is refused: a NUL or an escape
-# is not text, and a direction override such as U+202E reverses what a reader
-# sees.
+# and are not refused here. What a path does with them is that path's own rule:
+# the PDF remediator writes them unchanged, and the generic generator's normaliser
+# refuses them today. Every other control, format, surrogate, private-use or
+# unassigned character is refused: a NUL or an escape is not text, and a direction
+# override such as U+202E reverses what a reader sees.
 _FOLDED_WHITESPACE = frozenset("\n\r\t\u2028\u2029")
 _UNREADABLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
 
@@ -686,6 +756,10 @@ def holds_math_markup(text: str) -> bool:
         if inner is None:
             inner = match.group("inline")
         if _span_holds_math(inner):
+            return True
+    for match in _PADDED_DOLLAR_SPAN.finditer(text):
+        inner = match.group("inner")
+        if _INNER_MATH.search(inner) or _SPACED_OPERATOR.search(inner):
             return True
     in_path = False
     for token in text.split():
