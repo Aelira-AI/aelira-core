@@ -174,7 +174,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     rm -rf /tmp/lxml-wheel /tmp/build-lxml-wheel.sh && \
     pip install --no-cache-dir "pybind11==3.1.0" && \
     sh /tmp/build-pillow-wheel.sh /tmp/pillow-wheel && \
-    pip install --no-cache-dir --no-deps /tmp/pillow-wheel/pillow-12.3.0-*.whl && \
+    pip install --no-cache-dir --no-deps /tmp/pillow-wheel/pillow-13.0.0-*.whl && \
     rm -rf /tmp/pillow-wheel /tmp/build-pillow-wheel.sh && \
     python -m pip uninstall --yes pybind11 && \
     sh /tmp/build-psycopg2-wheel.sh /tmp/psycopg2-wheel && \

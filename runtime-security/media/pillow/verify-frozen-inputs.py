@@ -101,7 +101,7 @@ assert (
 
 python_files = set()
 for name, version, suffix in (
-    ("pillow", "12.3.0", ".tar.gz"),
+    ("pillow", "13.0.0", ".tar.gz"),
     ("pip", "26.2.1", "-py3-none-any.whl"),
     ("setuptools", "84.0.0", "-py3-none-any.whl"),
     ("pybind11", "3.1.0", "-py3-none-any.whl"),
@@ -115,9 +115,9 @@ for name, version, suffix in (
     path = inputs / "python" / entry["filename"]
     assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["digests"]["sha256"]
     if name == "pillow":
-        assert entry["filename"] == "pillow-12.3.0.tar.gz"
+        assert entry["filename"] == "pillow-13.0.0.tar.gz"
         assert entry["digests"]["sha256"] == (
-            "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce"
+            "cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"
         )
     python_files.update((metadata_file.name, path.name))
 assert {p.name for p in (inputs / "python").iterdir()} == python_files

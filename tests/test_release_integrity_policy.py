@@ -116,14 +116,14 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     # lock is installed, so the pinned requirement is already satisfied.
     assert "COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh" in builder
     assert "sh /tmp/build-pillow-wheel.sh /tmp/pillow-wheel" in builder
-    assert "/tmp/pillow-wheel/pillow-12.3.0-*.whl" in builder
+    assert "/tmp/pillow-wheel/pillow-13.0.0-*.whl" in builder
     assert builder.index("build-lxml-wheel.sh /tmp/lxml-wheel") < builder.index(
         "build-pillow-wheel.sh /tmp/pillow-wheel"
     )
     assert builder.index("build-pillow-wheel.sh /tmp/pillow-wheel") < builder.index(
         "pip install --no-cache-dir -r requirements.txt"
     )
-    assert "pillow==12.3.0" in (ROOT / "requirements.txt").read_text().splitlines()
+    assert "pillow==13.0.0" in (ROOT / "requirements.txt").read_text().splitlines()
     # The build proves the libtiff that Pillow reports and that no wheel-private
     # library directory exists.
     assert "features.version('libtiff'); assert v == '4.7.2'" in builder
@@ -138,8 +138,8 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
         "tiff-4.7.2.tar.xz": (
             "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88"
         ),
-        "pillow-12.3.0.tar.gz": (
-            "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce"
+        "pillow-13.0.0.tar.gz": (
+            "cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"
         ),
     }
     for name, digest in sources.items():
