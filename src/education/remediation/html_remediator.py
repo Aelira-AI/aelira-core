@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from bs4 import BeautifulSoup
 
 from ..alt_text_quality import (
+    FOLDED_WHITESPACE,
     is_usable_alt_text as shared_is_usable_alt_text,
     normalize_usable_alt_text,
 )
@@ -624,7 +625,17 @@ Provide ONLY the fix content, no explanation."""
                 # information: a judgement nothing here is in a position to
                 # make, and one that hides a chart from the readers the fix
                 # exists for. An uncertain answer now leaves the issue open.
-                if fix.upper() == "UNKNOWN" or not self.is_usable_alt_text(fix):
+                #
+                # The usability gate folds line breaks and tabs into spaces, but
+                # this reply is applied unfolded, as an aria-label, a form label
+                # or a language code. Those are single-line values and the
+                # prompts ask for the value alone, so a reply that spans several
+                # lines carries an explanation and is left for a human.
+                if (
+                    fix.upper() == "UNKNOWN"
+                    or any(char in fix for char in FOLDED_WHITESPACE)
+                    or not self.is_usable_alt_text(fix)
+                ):
                     return None
                 return fix
 
