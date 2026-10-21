@@ -52,7 +52,7 @@ lessapprox gtrapprox approxeq lessdot gtrdot lll llless ggg gggtr lessgtr
 gtrless lesseqgtr gtreqless lesseqqgtr gtreqqless doteqdot Doteq fallingdotseq
 risingdotseq backsim backsimeq subseteqq supseteqq Subset Supset curlyeqprec
 curlyeqsucc precsim succsim precapprox succapprox vartriangleleft
-vartriangleright trianglelefteq trianglerighteq blacktriangleleft
+vartriangleright trianglelefteq trianglerighteq triangledown blacktriangleleft
 blacktriangleright between pitchfork smallsmile smallfrown shortmid shortparallel
 bumpeq Bumpeq eqcirc circeq triangleq thicksim thickapprox varpropto vDash Vdash
 Vvdash subsetneq supsetneq subsetneqq supsetneqq varsubsetneq varsupsetneq
@@ -66,7 +66,8 @@ nparallel nprec nsucc npreceq nsucceq nsubset nsupset nsubseteq nsupseteq
 nsubseteqq nsupseteqq nexists nvdash nvDash nVdash nVDash nequiv napprox
 nshortmid nshortparallel ntriangleleft ntriangleright ntrianglelefteq
 ntrianglerighteq nless ngtr nleftarrow nrightarrow nleftrightarrow nLeftarrow
-nRightarrow nLeftrightarrow nearrow nwarrow nlessgtr
+nRightarrow nLeftrightarrow nearrow nwarrow nlessgtr ngtrless ngtrsim nlesssim
+nprecsim nsimeq nsuccsim
 """
 
 _ARROWS = """
@@ -116,7 +117,7 @@ mathpunct boldsymbol bm pmb rm bf it sf tt cal scr frak Bbb rmfamily bfseries
 itshape sffamily ttfamily displaystyle scriptstyle scriptscriptstyle limits
 nolimits nonumber notag tag eqref ref label cite footnote footnotesize hspace
 vspace quad qquad thinspace medspace thickspace negthinspace negmedspace
-negthickspace hfill vfill phantom hphantom vphantom smash strut mbox hbox vbox
+negthickspace hfill vfill phantom hphantom vphantom smash strut rlap mbox hbox vbox
 fbox framebox raisebox makebox parbox rule color colorbox fcolorbox tiny
 scriptsize small normalsize large Large LARGE huge Huge
 """

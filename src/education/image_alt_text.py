@@ -21,7 +21,7 @@ from src.education.math_speech import (
     SPOKEN_MATH_INSTRUCTION,
     refuse_math_markup,
 )
-from src.education.model_json import loads_tolerant
+from src.education.model_json import parse_tolerant
 
 logger = logging.getLogger(__name__)
 
@@ -861,15 +861,16 @@ Common issues to check for:
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
 
-            result = loads_tolerant(cleaned)
+            result, swallowed = parse_tolerant(cleaned)
 
             # A suggested replacement is alternative text, so it is withheld when
-            # it carries mathematical markup. Withholding it leaves the verdict
+            # it carries mathematical markup, and always when the answer had a
+            # swallowed command repaired in it. Withholding it leaves the verdict
             # intact and suggests nothing, which every caller already treats as
             # no suggestion.
             suggestion = result.get("suggested_improvement")
             if isinstance(suggestion, str):
-                suggestion = refuse_math_markup(suggestion)
+                suggestion = None if swallowed else refuse_math_markup(suggestion)
 
             return {
                 "success": True,
@@ -994,14 +995,15 @@ Respond in this exact JSON format:
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
 
-            result = loads_tolerant(cleaned)
+            result, swallowed = parse_tolerant(cleaned)
 
-            # A suggested alt text that carries mathematical markup is withheld:
+            # A suggested alt text that carries mathematical markup, or that comes
+            # from an answer with a swallowed command repaired in it, is withheld:
             # None says no suggestion was made, which an empty string, the mark
             # of a decorative image, does not.
             recommended = result.get("recommended_alt", "")
             if isinstance(recommended, str):
-                recommended = refuse_math_markup(recommended)
+                recommended = None if swallowed else refuse_math_markup(recommended)
 
             return {
                 "success": True,
@@ -1149,11 +1151,12 @@ Important guidelines:
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
 
-            result = loads_tolerant(cleaned)
+            result, swallowed = parse_tolerant(cleaned)
 
             # Any field that carries mathematical markup refuses the whole
-            # description. Nothing in it is rewritten.
-            if _json_holds_markup(result):
+            # description, and so does an answer with a swallowed command
+            # repaired in it. Nothing in it is rewritten.
+            if swallowed or _json_holds_markup(result):
                 return {
                     "success": False,
                     "error": MATH_NOT_SPEAKABLE_ERROR,

@@ -26,6 +26,13 @@ letter the escape swallowed put back, spell a known LaTeX command
 word that happens to complete such a name is therefore repaired and then
 refused: that fails closed and is accepted, because the alternative is to
 announce "subset" for "not a subset".
+
+A repaired answer is not trusted as a description. ``parse_tolerant`` returns the
+parsed answer with a flag that says whether a swallowed command was found in it,
+and a caller that takes a description from the answer refuses the description on
+that flag, whatever the text then looks like: the repair turns ``\\ne.g.`` into the
+literal ``\\ne.g.``, which holds a backslash and can look like part of a file
+path. ``loads_tolerant`` is the same parse without the flag.
 """
 
 from __future__ import annotations
@@ -80,6 +87,25 @@ def swallowed_escape(text: str) -> bool:
     )
 
 
+# A lone backslash followed by letters in the raw answer, where the run of backslashes
+# before the letters is odd, so the last one is not escaped.
+_BARE_BACKSLASH_NAME = re.compile(r"(?<!\\)((?:\\\\)*)\\([A-Za-z]+)")
+
+
+def _raw_swallowed_command(content: str) -> bool:
+    """Whether a bare backslash in the raw answer starts a command a JSON escape eats.
+
+    That is a known LaTeX command whose name starts with ``n``, ``t``, ``r``, ``b``
+    or ``f``, the letters of the JSON escapes. It is the same question as
+    ``swallowed_escape`` asks of a decoded string, asked of the answer before the
+    decoder has run, for an answer that did not decode at all.
+    """
+    return any(
+        match.group(2)[0] in "ntrbf" and match.group(2) in LATEX_COMMAND_NAMES
+        for match in _BARE_BACKSLASH_NAME.finditer(content)
+    )
+
+
 def _holds_swallowed_escape(value: Any) -> bool:
     if isinstance(value, str):
         return swallowed_escape(value)
@@ -90,8 +116,14 @@ def _holds_swallowed_escape(value: Any) -> bool:
     return False
 
 
-def loads_tolerant(content: str) -> Any:
+def parse_tolerant(content: str) -> tuple[Any, bool]:
     """Parse JSON text, repairing LaTeX written with single backslashes.
+
+    Returns the parsed answer and whether a swallowed command was found in it,
+    which is whether the parse had to give a control character its backslash back
+    or the raw answer held a bare backslash and the name of a command that a JSON
+    escape eats. An answer repaired only because of an invalid escape such as a
+    Windows path is not flagged.
 
     Raises ``json.JSONDecodeError`` when the answer cannot be parsed either way.
     """
@@ -101,12 +133,26 @@ def loads_tolerant(content: str) -> Any:
         repaired = double_unescaped_backslashes(content)
         if repaired == content:
             raise
-        return json.loads(repaired)
+        return json.loads(repaired), _raw_swallowed_command(content)
     if _holds_swallowed_escape(parsed):
         repaired = double_unescaped_backslashes(content)
         if repaired != content:
-            return json.loads(repaired)
-    return parsed
+            return json.loads(repaired), True
+    return parsed, False
 
 
-__all__ = ["double_unescaped_backslashes", "loads_tolerant", "swallowed_escape"]
+def loads_tolerant(content: str) -> Any:
+    """Parse JSON text, repairing LaTeX written with single backslashes.
+
+    The same parse as ``parse_tolerant`` without its flag, for a caller that does
+    not take a description from the answer.
+    """
+    return parse_tolerant(content)[0]
+
+
+__all__ = [
+    "double_unescaped_backslashes",
+    "loads_tolerant",
+    "parse_tolerant",
+    "swallowed_escape",
+]
