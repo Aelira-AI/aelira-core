@@ -388,6 +388,14 @@ class HandwrittenEquationConsensusEvidenceV1(BaseModel):
     def _printable_identities(cls, value: str) -> str:
         return _validate_printable(value, label="provider identity")
 
+    @field_validator("primary_model", "verifier_model")
+    @classmethod
+    def _model_is_a_model(cls, value: str) -> str:
+        # A replayed provider answer is labelled "cached", which names no model.
+        if value.strip().casefold() == "cached":
+            raise ValueError("a cached answer names no model")
+        return value
+
     @model_validator(mode="after")
     def _validate_consensus(self) -> "HandwrittenEquationConsensusEvidenceV1":
         if (

@@ -13,7 +13,12 @@ from src.education.handwritten_math_suitability import (
 )
 
 from .equation_image_source import ValidatedEquationRaster
-from .equation_reading_parser import EquationReadingRejected, parse_equation_reading
+from .equation_reading_parser import (
+    EquationReadingRejected,
+    parse_equation_reading,
+    reading_max_tokens,
+    response_is_cached,
+)
 
 HandwrittenEquationClassification = Literal[
     "handwritten_equation", "not_handwritten_math", "unsupported_notation"
@@ -51,6 +56,9 @@ def _bounded_identity(value: Any) -> str | None:
         or value != value.strip()
         or not value.isprintable()
         or "\x00" in value
+        # The provider manager names a replayed answer's model "cached", which is
+        # not the name of any model.
+        or value.casefold() == "cached"
     ):
         return None
     return value
@@ -107,7 +115,7 @@ def _call_hmer_client(
         response = client.analyze_image_sync(
             image_data=payload,
             prompt=prompt,
-            max_tokens=500,
+            max_tokens=reading_max_tokens(max_latex_chars),
         )
     except Exception:
         raise HandwrittenEquationRecognitionRejected("provider_failure") from None
@@ -122,8 +130,13 @@ def _call_hmer_client(
     provider = _bounded_identity(response.get("provider")) or _bounded_identity(
         getattr(client, "provider", None)
     )
-    model = _bounded_identity(response.get("model")) or _bounded_identity(
-        getattr(client, "model", None)
+    # A replayed answer names no model, and the client's own model is not evidence
+    # of who wrote it, so no model is recorded for it and the reading is refused.
+    model = (
+        None
+        if response_is_cached(response)
+        else _bounded_identity(response.get("model"))
+        or _bounded_identity(getattr(client, "model", None))
     )
     if provider is None or model is None:
         raise HandwrittenEquationRecognitionRejected("provider_identity_unavailable")

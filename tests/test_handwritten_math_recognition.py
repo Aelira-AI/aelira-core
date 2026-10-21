@@ -411,3 +411,111 @@ def test_verifier_reading_refusal_runs_only_after_the_readings_agree():
     ):
         _verify_pair(r"\frac{1}{2}+y=4", r"\frac12+y=5", reading_refusal=refuse)
     assert seen == []
+
+
+# ---------------------------------------------------------------------------
+# The reading is not cut off, and a replayed answer names no model
+# ---------------------------------------------------------------------------
+
+REPLAYED = [
+    {"model": "cached"},
+    {"model": " CACHED "},
+    {"metadata": {"cached": True}},
+    {"cached": True},
+]
+
+
+def _hmer(latex: str = "x^2 + y = 10") -> str:
+    return '{"classification":"handwritten_equation","latex":"' + latex + '"}'
+
+
+def test_both_handwritten_readers_ask_for_enough_tokens_to_finish_the_longest_reading():
+    from src.education.remediation.equation_reading_parser import reading_max_tokens
+    from src.education.remediation.handwritten_equation_recognizer import (
+        HandwrittenEquationRecognizer,
+    )
+    from src.education.remediation.handwritten_equation_verifier import (
+        HandwrittenEquationVerifier,
+    )
+
+    raster = _raster()
+    suitability = _evidence(raster)
+    wanted = reading_max_tokens(4096)
+    assert wanted > 500, "the old allowance of 500 tokens cut long readings off"
+    primary_client = Client(_success(_hmer()))
+    primary = HandwrittenEquationRecognizer(primary_client).recognize(
+        raster, suitability
+    )
+    verifier_client = Client(_success(_hmer()))
+    HandwrittenEquationVerifier(verifier_client).verify(raster, suitability, primary)
+
+    assert primary_client.calls[0]["max_tokens"] == wanted
+    assert verifier_client.calls[0]["max_tokens"] == wanted
+    short_client = Client(_success(_hmer()))
+    HandwrittenEquationRecognizer(short_client, max_latex_chars=200).recognize(
+        raster, suitability
+    )
+    assert short_client.calls[0]["max_tokens"] == reading_max_tokens(200) == 500
+
+
+@pytest.mark.parametrize("replayed", REPLAYED)
+def test_a_replayed_primary_reading_names_no_model_and_is_refused(replayed):
+    from src.education.remediation.handwritten_equation_recognizer import (
+        HandwrittenEquationRecognizer,
+    )
+
+    raster = _raster()
+    client = Client({**_success(_hmer()), **replayed})
+
+    with pytest.raises(ValueError, match="^provider_identity_unavailable$"):
+        HandwrittenEquationRecognizer(client).recognize(raster, _evidence(raster))
+
+
+@pytest.mark.parametrize("replayed", REPLAYED)
+def test_a_replayed_verifier_reading_names_no_model_and_is_refused(replayed):
+    from src.education.remediation.handwritten_equation_recognizer import (
+        HandwrittenEquationRecognizer,
+    )
+    from src.education.remediation.handwritten_equation_verifier import (
+        HandwrittenEquationVerifier,
+    )
+
+    raster = _raster()
+    suitability = _evidence(raster)
+    primary = HandwrittenEquationRecognizer(Client(_success(_hmer()))).recognize(
+        raster, suitability
+    )
+    verifier = HandwrittenEquationVerifier(Client({**_success(_hmer()), **replayed}))
+
+    with pytest.raises(ValueError, match="^provider_identity_unavailable$"):
+        verifier.verify(raster, suitability, primary)
+
+
+def test_a_client_that_declares_the_model_cached_has_no_model_either():
+    from src.education.remediation.handwritten_equation_recognizer import (
+        HandwrittenEquationRecognizer,
+    )
+
+    class CachedClient(Client):
+        model = "cached"
+
+    raster = _raster()
+    with pytest.raises(ValueError, match="^provider_identity_unavailable$"):
+        HandwrittenEquationRecognizer(CachedClient(_success(_hmer()))).recognize(
+            raster, _evidence(raster)
+        )
+
+
+def test_a_fresh_handwritten_answer_that_names_its_model_is_still_recorded():
+    from src.education.remediation.handwritten_equation_recognizer import (
+        HandwrittenEquationRecognizer,
+    )
+
+    raster = _raster()
+    answer = {**_success(_hmer()), "model": "hmer-1"}
+
+    recognition = HandwrittenEquationRecognizer(Client(answer)).recognize(
+        raster, _evidence(raster)
+    )
+
+    assert recognition.model == "hmer-1"
