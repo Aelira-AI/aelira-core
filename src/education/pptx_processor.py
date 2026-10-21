@@ -25,6 +25,7 @@ from PIL import Image
 from io import BytesIO
 from .alt_text_quality import alt_text_is_placeholder
 from .office_findings import office_issue_metadata
+from .office_images import save_extracted_png
 
 # Each PresentationML shape element keeps its common non-visual properties,
 # including the `descr` alternative text, on a `cNvPr` child of its own
@@ -843,7 +844,7 @@ class PowerPointProcessor:
 
             # Save to temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-                image.save(tmp, format="PNG")
+                save_extracted_png(image, tmp)
                 return tmp.name
         except Exception as e:
             record_incomplete_check("pptx._extract_image_from_shape")

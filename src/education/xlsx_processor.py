@@ -39,6 +39,7 @@ from src.education.color_blindness_simulator import (
 )
 
 from .office_findings import office_issue_metadata
+from .office_images import save_extracted_png
 
 logger = logging.getLogger(__name__)
 
@@ -1124,7 +1125,7 @@ class XlsxProcessor:
             if hasattr(img, "_data") and img._data:
                 image = Image.open(BytesIO(img._data()))
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-                    image.save(tmp, format="PNG")
+                    save_extracted_png(image, tmp)
                     return tmp.name
         except Exception as e:
             record_incomplete_check("xlsx._extract_image")

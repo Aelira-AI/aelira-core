@@ -131,12 +131,12 @@ class ExportControls(unittest.TestCase):
         for name in ci.PYTHON_INPUTS:
             self.put(f"input/python/{name}")
         self.put("input/python/extra-private.json", b"private")
-        wheel = "pillow-12.3.0-cp314-cp314-linux_aarch64.whl"
+        wheel = "pillow-13.0.0-cp314-cp314-linux_aarch64.whl"
         chain = (
             "accepted_tiff_input=pass architecture=arm64 packages=3",
             "frozen_input_chain=pass architecture=arm64 signed_packages=1 signed_releases=1 pypi_inputs=4 tiff_packages=3",
         )
-        wheel_marker = "wheel_record=pass entries=119 arch=arm64 elf_modules=5 libtiff_needed=libtiff.so.6"
+        wheel_marker = "wheel_record=pass entries=118 arch=arm64 elf_modules=5 libtiff_needed=libtiff.so.6"
         for run in "ab":
             self.put(f"build-{run}/wheels/{wheel}", b"identical synthetic wheel")
             self.put(f"build-{run}/input-chain.log", ("\n".join(chain) + "\n").encode())
@@ -147,8 +147,8 @@ class ExportControls(unittest.TestCase):
             self.put(f"build-{run}/build-python-packages.txt")
         semantics = {
             "schema": "pillow-installed-semantics-v1",
-            "record_entries": 122,
-            "wheel_payload_entries": 119,
+            "record_entries": 121,
+            "wheel_payload_entries": 118,
             "wheel_sha256": h(b"identical synthetic wheel"),
             "features_enabled": {name: True for name in proof.FEATURES},
             "features_disabled": {"libimagequant": False, "tkinter": False},
@@ -412,18 +412,18 @@ class ExportControls(unittest.TestCase):
             lock.verify(snapshot)
 
     def test_post_producer_source_wheel_and_candidate_drift(self) -> None:
-        self.put("input/python/pillow-12.3.0.tar.gz", b"changed after producer proof")
+        self.put("input/python/pillow-13.0.0.tar.gz", b"changed after producer proof")
         self.reject("proof value mismatch")
-        self.put("input/python/pillow-12.3.0.tar.gz")
+        self.put("input/python/pillow-13.0.0.tar.gz")
         for run in "ab":
             self.put(
-                f"build-{run}/wheels/pillow-12.3.0-cp314-cp314-linux_aarch64.whl",
+                f"build-{run}/wheels/pillow-13.0.0-cp314-cp314-linux_aarch64.whl",
                 b"equal but different wheel bytes",
             )
         self.reject("proof value mismatch")
         for run in "ab":
             self.put(
-                f"build-{run}/wheels/pillow-12.3.0-cp314-cp314-linux_aarch64.whl",
+                f"build-{run}/wheels/pillow-13.0.0-cp314-cp314-linux_aarch64.whl",
                 b"identical synthetic wheel",
             )
         self.put("installed-image-id.txt", ("sha256:" + "b" * 64 + "\n").encode())
@@ -432,18 +432,18 @@ class ExportControls(unittest.TestCase):
     def test_copied_execution_input_is_the_bound_source(self) -> None:
         prepared = Path(self.temp.name) / "prepared-origin"
         shutil.copytree(self.source / "input", prepared)
-        (prepared / "python/pillow-12.3.0.tar.gz").write_bytes(
+        (prepared / "python/pillow-13.0.0.tar.gz").write_bytes(
             b"changed original after copy"
         )
         result, _ = self.export()
         self.assertEqual(result["status"], "complete")
-        self.put("input/python/pillow-12.3.0.tar.gz", b"changed copied execution input")
+        self.put("input/python/pillow-13.0.0.tar.gz", b"changed copied execution input")
         self.reject("proof value mismatch")
 
     def test_incomplete_record_elf_and_semantics_refuse(self) -> None:
         self.put(
             "build-b/wheel-verification.log",
-            b"wheel_record=pass entries=119 arch=arm64 elf_modules=0 libtiff_needed=missing\n",
+            b"wheel_record=pass entries=118 arch=arm64 elf_modules=0 libtiff_needed=missing\n",
         )
         self.reject("producer wheel RECORD/ELF log mismatch")
         current = self.source / "installed-consumer.log"
@@ -571,7 +571,7 @@ class BytecodeProcessControls(unittest.TestCase):
             wheel_check = recipe / "verify-wheel.py"
             wheel_check.write_text(
                 prelude
-                + "print('wheel_record=pass entries=119 arch=arm64 elf_modules=5 libtiff_needed=libtiff.so.6')\n"
+                + "print('wheel_record=pass entries=118 arch=arm64 elf_modules=5 libtiff_needed=libtiff.so.6')\n"
             )
             debs = root / "input/apt-debs"
             lists = root / "input/apt-lists"
@@ -692,7 +692,7 @@ esac""",
             directory.mkdir(parents=True)
         if diagnostic_writer_fail:
             (output / "pillow-import-diagnostic.json").mkdir()
-        wheel = "pillow-12.3.0-cp314-cp314-linux_aarch64.whl"
+        wheel = "pillow-13.0.0-cp314-cp314-linux_aarch64.whl"
         for run in "ab":
             (output / f"build-{run}/wheels/{wheel}").write_bytes(b"same wheel")
         (output / "build-a/wheel-verification.log").write_text("verified\n")
@@ -1155,13 +1155,13 @@ with v.diagnosed('record'):
                 patch.object(
                     verifier,
                     "check_record",
-                    side_effect=lambda: selected("record", 122),
+                    side_effect=lambda: selected("record", 121),
                 ),
                 patch.object(
                     verifier,
                     "check_wheel_payloads",
                     side_effect=lambda: selected(
-                        "wheel_payloads", (119, "synthetic-hash")
+                        "wheel_payloads", (118, "synthetic-hash")
                     ),
                 ),
                 patch.object(verifier, "check_features", return_value=({}, {})),
@@ -1184,8 +1184,8 @@ with v.diagnosed('record'):
         self.assertEqual(success.count(marker), 1)
         receipt = json.loads(success.split(marker, 1)[1])
         self.assertEqual(receipt["schema"], "pillow-installed-semantics-v1")
-        self.assertEqual(receipt["record_entries"], 122)
-        self.assertEqual(receipt["wheel_payload_entries"], 119)
+        self.assertEqual(receipt["record_entries"], 121)
+        self.assertEqual(receipt["wheel_payload_entries"], 118)
 
     def test_each_feature_exit_uses_the_original_assertion(self) -> None:
         verifier = self.verifier
