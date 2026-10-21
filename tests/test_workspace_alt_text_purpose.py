@@ -344,6 +344,33 @@ def test_printed_equation_records_the_answering_provider_and_model():
     assert ledger["prompts"][1].startswith(SECOND_READING_PROMPT_START)
 
 
+def test_replayed_answer_through_the_view_records_no_model():
+    from src.ai.workspace_provider_runtime import WorkspaceAltTextClient
+    from src.education.remediation.equation_recognizer import EquationRecognizer
+    from src.education.remediation.printed_equation_verifier import (
+        PrintedEquationSecondReader,
+        PrintedEquationVerificationRejected,
+    )
+    from tests.test_handwritten_math_fixer import Source
+
+    runtime, _ = _runtime(
+        printed='{"classification":"printed_equation","latex":"x+1"}',
+        model="cached",
+    )
+    view = WorkspaceAltTextClient(runtime)
+    payload = Source("legible-linear").payload
+
+    recognition = EquationRecognizer(view).recognize(payload)
+    # The answering provider is still named, but a replayed answer's model is
+    # refused rather than recorded, and the view supplies no model of its own.
+    assert recognition.provider == "ollama"
+    assert recognition.model is None
+    with pytest.raises(
+        PrintedEquationVerificationRejected, match="provider_identity_unavailable"
+    ):
+        PrintedEquationSecondReader(view).read(payload)
+
+
 def test_handwritten_equation_takes_both_readings_through_the_view():
     from src.ai.workspace_provider_runtime import WorkspaceAltTextClient
     from src.education.remediation.equation_verifier import canonicalize_mathml
@@ -715,3 +742,187 @@ async def test_in_process_job_builds_the_view_from_its_options(
         assert isinstance(kwargs["alt_text_client"], WorkspaceAltTextClient)
         assert kwargs["alt_text_client"]._runtime is runtime
         assert kwargs["allow_embedded_alt"] is True
+
+
+# ---------------------------------------------------------------------------
+# Both readings of a printed equation, end to end, for a workspace job
+# ---------------------------------------------------------------------------
+
+
+def _workspace_pdf_run(tmp_path, monkeypatch, *, second_latex, child_view=True):
+    """Scan an untagged page with a printed equation and an ordinary image, then
+    remediate it through the queued child's own client selection.
+
+    Only the provider (behind the real runtime) and the browser round trip are
+    stubs; the scanner, the remediator, the second reader and the association
+    writer are real.
+    """
+    import json
+
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.remediation import pdf_remediator
+    from src.education.remediation.math_fixer import MathFixer
+    from src.jobs import remediation_subprocess
+    from tests.test_equation_alt_text_coordination import (
+        LATEX,
+        _Verifier,
+        _write_untagged_source,
+    )
+
+    source = tmp_path / "source.pdf"
+    _write_untagged_source(source)
+    issues = PDFProcessor().process_pdf(str(source)).issues
+
+    def reading(latex):
+        return json.dumps({"classification": "printed_equation", "latex": latex})
+
+    runtime, ledger = _runtime(printed=reading(LATEX), second=reading(second_latex))
+    monkeypatch.setattr(
+        "src.ai.workspace_provider_runtime.workspace_provider_runtime",
+        MagicMock(return_value=runtime),
+    )
+
+    class RoundTripStubbed(MathFixer):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("equation_verifier", _Verifier(True))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(pdf_remediator, "MathFixer", RoundTripStubbed)
+    remediator = remediation_subprocess._build_remediator(
+        {
+            "scan_type": "PDF",
+            "issues": issues,
+            "options": {"use_ai": True},
+            "workspace_id": WORKSPACE,
+            "lms_binding": None,
+        },
+        source,
+        tmp_path,
+    )
+    if not child_view:
+        # The pre-fix selection: the bare runtime as the alt-text client.
+        remediator.alt_text_client = runtime
+    return remediator, remediator.remediate(), ledger
+
+
+def _prompt_kinds(ledger):
+    kinds = []
+    for prompt in ledger["prompts"]:
+        if prompt.startswith(PRINTED_PROMPT_START):
+            kinds.append("first_reading")
+        elif prompt.startswith(SECOND_READING_PROMPT_START):
+            kinds.append("second_reading")
+        else:
+            kinds.append("description")
+    return kinds
+
+
+def test_workspace_equation_needs_both_readings_and_other_image_is_described(
+    tmp_path, monkeypatch
+):
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.image_equation_gate import (
+        contains_image_equation_fixes,
+    )
+    from tests.test_equation_alt_text_coordination import (
+        EQUATION_ALT,
+        EQUATION_INDEX,
+        LATEX,
+        OTHER_INDEX,
+        _fixed,
+        _issue_ids,
+        _structure,
+    )
+
+    remediator, result, ledger = _workspace_pdf_run(
+        tmp_path, monkeypatch, second_latex=LATEX
+    )
+    try:
+        assert result.success, result.error_message
+        # Two distinct prompts read the equation; the other image was described.
+        assert _prompt_kinds(ledger) == [
+            "first_reading",
+            "second_reading",
+            "description",
+        ]
+        assert len(set(ledger["prompts"][:2])) == 2
+
+        ids = _issue_ids(remediator, EQUATION_INDEX)
+        equation = _fixed(result, ids[IMAGE_EQUATION_ISSUE_TYPE])
+        assert equation.source_kind == "image_equation"
+        assert equation.needs_review is True
+        assert equation.fixed_content == EQUATION_ALT
+        assert (equation.provider_used, equation.model_used) == ("ollama", VISION_MODEL)
+        assert contains_image_equation_fixes(result.fixed_issues) is True
+        assert [
+            alt for role, alt in _structure(result.output_file) if role == "/Formula"
+        ] == [EQUATION_ALT]
+
+        other = _fixed(result, _issue_ids(remediator, OTHER_INDEX)["missing_alt_text"])
+        assert other.fixed_content == DESCRIPTION
+    finally:
+        result.close_output_claim()
+
+
+def test_workspace_equation_with_disagreeing_readings_stays_manual(
+    tmp_path, monkeypatch
+):
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from tests.test_equation_alt_text_coordination import (
+        EQUATION_INDEX,
+        OTHER_INDEX,
+        REJECTED_LATEX,
+        _fixed,
+        _issue_ids,
+        _manual,
+        _structure,
+    )
+
+    remediator, result, ledger = _workspace_pdf_run(
+        tmp_path, monkeypatch, second_latex=REJECTED_LATEX
+    )
+    try:
+        assert result.success, result.error_message
+        assert _prompt_kinds(ledger)[:2] == ["first_reading", "second_reading"]
+        ids = _issue_ids(remediator, EQUATION_INDEX)
+        assert _manual(result, ids[IMAGE_EQUATION_ISSUE_TYPE]).reason == (
+            "printed_equation_semantic_disagreement"
+        )
+        assert not [fix for fix in result.fixed_issues if fix.source_kind]
+        assert "/Formula" not in [role for role, _ in _structure(result.output_file)]
+        other = _fixed(result, _issue_ids(remediator, OTHER_INDEX)["missing_alt_text"])
+        assert other.fixed_content == DESCRIPTION
+    finally:
+        result.close_output_claim()
+
+
+def test_bare_runtime_as_alt_text_client_never_reads_the_equation(
+    tmp_path, monkeypatch
+):
+    """Negative control: the selection this fix replaces reads nothing."""
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from tests.test_equation_alt_text_coordination import (
+        EQUATION_INDEX,
+        LATEX,
+        OTHER_INDEX,
+        _fixed,
+        _issue_ids,
+        _manual,
+    )
+
+    remediator, result, ledger = _workspace_pdf_run(
+        tmp_path, monkeypatch, second_latex=LATEX, child_view=False
+    )
+    try:
+        assert "first_reading" not in _prompt_kinds(ledger)
+        assert "second_reading" not in _prompt_kinds(ledger)
+        ids = _issue_ids(remediator, EQUATION_INDEX)
+        assert _manual(result, ids[IMAGE_EQUATION_ISSUE_TYPE]).reason == (
+            "alt_text_client_unavailable"
+        )
+        # The purpose check is scoped to equations: the other image is still
+        # described by the same client.
+        other = _fixed(result, _issue_ids(remediator, OTHER_INDEX)["missing_alt_text"])
+        assert other.fixed_content == DESCRIPTION
+    finally:
+        result.close_output_claim()
