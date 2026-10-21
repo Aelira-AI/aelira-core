@@ -17,7 +17,10 @@ than guess.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import List, Optional
+
+from src.education.latex_commands import LATEX_COMMAND_NAMES
 
 
 def strip_math_delimiters(latex: str) -> str:
@@ -224,36 +227,54 @@ def generate_equation_alt_text(latex: str) -> str:
 # ---------------------------------------------------------------------------
 # The ambiguity guard
 #
-# The label is built by substitution, so it says the words of an equation but
-# not where its parts begin and end. ``x^{n+1}`` and ``x^{n}+1`` both read
-# "x to the power n+1". The guard accepts an equation only when no other
-# equation the guard also accepts reads the same, and it gets there by refusing
-# rather than by adding words:
+# The label is built by substitution, so it says the words of an equation but not
+# where its parts begin and end. ``x^{n+1}`` and ``x^{n}+1`` both read "x to the
+# power n+1". The guard is a set of refusal rules and not a proof. Each rule
+# exists because two equations with different MathML were found that read the
+# same, and the guard refuses rather than adds words. The property tests check
+# the rules against the corpora of single-symbol edits and different pairs and
+# against about 2,600 generated placements, which is evidence and not a
+# guarantee for constructs nobody wrote a case for.
 #
 #   1. Every argument of a fraction, binomial, root or script is one token: a
 #      number, a single letter, or one Greek letter or infinity. Anything joined
 #      to it, whether by an operator, a space, another symbol or a second
 #      construct, makes the argument compound, and a compound argument is what
-#      lets the group's edge move without the words changing.
+#      lets the group's edge move without the words changing. A script written
+#      without braces takes one ASCII letter or digit and nothing else.
 #   2. A group is never followed, with nothing between, by a letter, a digit, an
 #      opening brace or a command, which would run into its last word
 #      ("x squaredy"), nor by a decimal point or comma and a digit, which would
 #      read as a longer number. A fraction, binomial or root is also never
 #      followed by a script. A script may be followed by the other kind of script.
 #   3. A spoken form that is not closed is accepted only where nothing can be read
-#      into it: at the end, before a closing parenthesis, a comma or a relation.
-#      That covers a fraction, a binomial, a root and a script spoken "to the
-#      power n" or "sub n". "squared" and "cubed" are closed forms and may be
-#      followed by anything the other rules allow. So "x squared plus 3 x" is
-#      accepted, and "x to the power n plus 1" is refused because it could also
-#      be x to the power n+1.
+#      into it: at the end, before a comma or a relation, or before a closing
+#      parenthesis that closes a parenthesis opened earlier and is itself followed
+#      only by such an ending. That covers a fraction, a binomial, a root and a
+#      script spoken "to the power n" or "sub n". "squared" and "cubed" are closed
+#      forms and may be followed by anything the other rules allow. So "x squared
+#      plus 3 x" is accepted, "x to the power n plus 1" is refused because it
+#      could also be x to the power n+1, and so are "(1 + x^{n}) + 2" and
+#      "x^{n}) + 1", because a screen reader at default punctuation does not
+#      speak a parenthesis.
 #   4. A brace group that is not an argument is refused. The label drops braces,
 #      so ``{ab}^2`` and ``ab^2`` would read the same.
 #   5. A script directly after an integral, sum, product or contour integral is a
 #      limit, and is refused: the label would read it as a script on the symbol.
 #   6. A command with no spoken form is never erased. Only the typography
 #      commands above, which say nothing, are dropped.
-#   7. A backslash never survives into the label.
+#   7. A backslash, a caret or an underscore never survives into the label.
+#   8. A script is refused when its base is a closing parenthesis or bracket or a
+#      ``\mathrm`` group, so ``(2x)^2`` and ``2x^2`` do not read alike. A
+#      ``\mathrm`` group holds one letter, which has the same MathML as the
+#      plain letter; a longer one would hide where a base begins.
+#   9. A run of letters that spells a word the labels use ("over", "sub",
+#      "squared", "pi", "sum", "times") is refused, because ``a over b`` would
+#      read like ``\frac{a}{b}``.
+#
+# Some equations are meant to read alike and the guard does not refuse them:
+# spacing commands, ``\left``, ``\right`` and ``\displaystyle`` are read as
+# nothing or one space, and a single-letter ``\mathrm`` reads as the letter.
 #
 # The label also puts a space before a spoken form that follows a letter or
 # digit, so ``a\frac{b}{c}`` reads "a b over c" and ``\frac{ab}{c}`` "ab over c".
@@ -273,7 +294,29 @@ _BRACED_TOKEN = re.compile(r"\{\s*" + _TOKEN + r"\s*\}")
 _BRACKETED_TOKEN = re.compile(r"\[\s*" + _TOKEN + r"\s*\]")
 _PREFIX_COMMAND = re.compile(r"\\(?:[dtc]?frac|[dt]?binom)(?![A-Za-z])")
 _SQRT_COMMAND = re.compile(r"\\sqrt(?![A-Za-z])")
-_MATHRM_GROUP = re.compile(r"\\mathrm\{[A-Za-z0-9]+\}")
+_MATHRM_GROUP = re.compile(r"\\mathrm\{[A-Za-z]\}")
+
+
+def _spoken_vocabulary() -> "frozenset[str]":
+    """Every word a label can contain because of a spoken form."""
+    words = set(_ROOT_WORDS.values()) | {"root", "of"}
+    for _pattern, replacement in _SPOKEN_RULES:
+        if isinstance(replacement, str):
+            words.update(re.findall(r"[A-Za-z]+", replacement))
+    return frozenset(word.casefold() for word in words)
+
+
+# A run of letters in the equation that spells one of these reads exactly like the
+# construct that produces the word, so it is refused (rule 9).
+_SPOKEN_WORDS = _spoken_vocabulary()
+
+
+def _letters_spell_a_spoken_word(text: str) -> bool:
+    without_commands = _COMMAND.sub(" ", text)
+    return any(
+        run.casefold() in _SPOKEN_WORDS
+        for run in re.findall(r"[A-Za-z]+", without_commands)
+    )
 
 
 def _unspoken_commands(latex: str) -> List[str]:
@@ -291,12 +334,12 @@ _SEPARATOR_COMMAND = re.compile(
     r"\\(?:[,;:!]|quad(?![A-Za-z])|qquad(?![A-Za-z])|right\s*[)\]|.])"
 )
 # What a spoken form that is not closed may be followed by: the end of the text,
-# a closing parenthesis, a comma, or a relation. "x to the power n" followed by
-# "plus 1" could be read as "x to the power (n plus 1)", so an open-ended group
-# is accepted only where nothing can be read into it.
-_TERMINAL_COMMAND = re.compile(
-    r"\\(?:right\s*\)|(?:le|leq|ge|geq|ne|neq|approx|equiv)(?![A-Za-z]))"
-)
+# a comma, a relation, or a closing parenthesis that closes one opened before the
+# group and is itself followed only by such an ending. "x to the power n"
+# followed by "plus 1" could be read as "x to the power (n plus 1)", so an
+# open-ended group is accepted only where nothing can be read into it.
+_RELATION_COMMAND = re.compile(r"\\(?:le|leq|ge|geq|ne|neq|approx|equiv)(?![A-Za-z])")
+_CLOSING_PAREN = re.compile(r"\)|\\right\s*\)")
 # A spacing command the label turns into a space, skipped when looking ahead.
 _SPACING_COMMAND = re.compile(r"\\(?:[,;:!]|quad(?![A-Za-z])|qquad(?![A-Za-z]))")
 # What a limit sits on: a script directly after one of these is a limit, which
@@ -324,8 +367,14 @@ def _may_follow(text: str, end: int, own: Optional[str]) -> bool:
     return True
 
 
-def _is_terminal(text: str, end: int) -> bool:
-    """Whether an open-ended spoken form ends here, so nothing can be read into it."""
+def _is_terminal(text: str, end: int, depth: int = 0) -> bool:
+    """Whether an open-ended spoken form ends here, so nothing can be read into it.
+
+    ``depth`` is the number of parentheses still open at the group. A closing
+    parenthesis ends the form only when one is open, and then what follows it must
+    end the form too: a screen reader does not speak the parenthesis, so
+    ``(1 + x^{n}) + 2`` would read like ``1 + x^{n} + 2``.
+    """
     index = end
     while index < len(text):
         if text[index].isspace():
@@ -337,9 +386,12 @@ def _is_terminal(text: str, end: int) -> bool:
         index = spacing.end()
     if index >= len(text):
         return True
-    if text[index] in "=<>,)":
+    if text[index] in "=<>,":
         return True
-    return _TERMINAL_COMMAND.match(text, index) is not None
+    closing = _CLOSING_PAREN.match(text, index)
+    if closing is not None:
+        return depth > 0 and _is_terminal(text, closing.end(), depth - 1)
+    return _RELATION_COMMAND.match(text, index) is not None
 
 
 def _closed_script(character: str, argument: str) -> bool:
@@ -347,9 +399,16 @@ def _closed_script(character: str, argument: str) -> bool:
     return character == "^" and argument.strip() in ("2", "3")
 
 
+# What a script may not stand on: a closing parenthesis or bracket, whose
+# parenthesis the label keeps but a screen reader does not speak, and a
+# ``\mathrm`` group.
+_CLOSING_BASE = re.compile(r"(?:[)\]]|\\mathrm\{[A-Za-z]\})\s*$")
+
+
 def _structure_is_unambiguous(text: str) -> bool:
     index = 0
     length = len(text)
+    depth = 0
     while index < length:
         character = text[index]
         if character == "\\":
@@ -360,7 +419,7 @@ def _structure_is_unambiguous(text: str) -> bool:
                 if (
                     second is None
                     or not _may_follow(text, second.end(), None)
-                    or not _is_terminal(text, second.end())
+                    or not _is_terminal(text, second.end(), depth)
                 ):
                     return False
                 index = second.end()
@@ -380,7 +439,7 @@ def _structure_is_unambiguous(text: str) -> bool:
                 if (
                     radicand is None
                     or not _may_follow(text, radicand.end(), None)
-                    or not _is_terminal(text, radicand.end())
+                    or not _is_terminal(text, radicand.end(), depth)
                 ):
                     return False
                 index = radicand.end()
@@ -395,33 +454,39 @@ def _structure_is_unambiguous(text: str) -> bool:
         if character in "^_":
             if _BEFORE_LIMITS.search(text, 0, index):
                 return False
+            if _CLOSING_BASE.search(text, 0, index):
+                return False
             if text[index + 1 : index + 2] == "{":
                 group = _BRACED_TOKEN.match(text, index + 1)
                 if group is None or not _may_follow(text, group.end(), character):
                     return False
                 argument = text[index + 2 : group.end() - 1]
                 if not _closed_script(character, argument) and not _is_terminal(
-                    text, group.end()
+                    text, group.end(), depth
                 ):
                     return False
                 index = group.end()
                 continue
             script = text[index + 1 :]
             first = script[:1]
-            if not first or first.isspace() or first in "\\{}^_":
+            if not first or not (first.isascii() and first.isalnum()):
                 return False
-            if first.isalnum() and script[1:2].isalnum():
+            if script[1:2].isalnum():
                 return False
             if not _may_follow(text, index + 2, character):
                 return False
             if not _closed_script(character, first) and not _is_terminal(
-                text, index + 2
+                text, index + 2, depth
             ):
                 return False
             index += 2
             continue
         if character in "{}":
             return False
+        if character == "(":
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
         index += 1
     return True
 
@@ -430,16 +495,23 @@ def equation_alt_text_is_ambiguous(latex: str) -> bool:
     """Whether the deterministic label cannot be trusted for this LaTeX.
 
     The label is refused, never guessed, when it falls back to the generic text,
-    when it would erase a command it has no words for, when a backslash would
-    survive into it, or when its words could belong to a different equation (see
-    the rules above). ``\\frac12`` would read "12", ``x^{n}y`` and ``x^{ny}``
-    would read the same, and ``\\sin x = 0`` would read "x = 0".
+    when it would erase a command it has no words for, when a backslash, a caret
+    or an underscore would survive into it, when letters in the equation spell a
+    word the labels use, or when its words could belong to a different equation
+    (see the rules above). ``\\frac12`` would read "12", ``x^{n}y`` and ``x^{ny}``
+    would read the same, ``\\sin x = 0`` would read "x = 0", and ``a over b``
+    would read like ``\\frac{a}{b}``. The rules are a best-effort set and not a
+    proof that no two accepted equations read alike.
     """
     label = generate_equation_alt_text(latex)
-    if label == _EQUATION_ALT_TEXT_FALLBACK or "\\" in label:
+    if label == _EQUATION_ALT_TEXT_FALLBACK or any(
+        mark in label for mark in ("\\", "^", "_")
+    ):
         return True
     text = strip_math_delimiters(latex)
     if _unspoken_commands(text):
+        return True
+    if _letters_spell_a_spoken_word(text):
         return True
     return not _structure_is_unambiguous(text)
 
@@ -464,7 +536,8 @@ IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON = "image_description_math_not_speaka
 # What a remediator tells a person when it refused such a description.
 MATH_DESCRIPTION_RECOMMENDATION = (
     "The proposed description contained mathematical notation, such as LaTeX, "
-    "that a screen reader would announce symbol by symbol, so nothing was "
+    "that a screen reader would announce symbol by symbol, or characters that "
+    "cannot be read as text, so nothing was "
     "written. Describe the image yourself, writing any mathematics in plain "
     "words, or tag an equation with a Formula element and its alt text."
 )
@@ -472,7 +545,8 @@ MATH_DESCRIPTION_RECOMMENDATION = (
 # What an API caller is told when a description was refused.
 MATH_REFUSAL_MESSAGE = (
     "The generated description contained mathematical notation that a screen "
-    "reader would announce symbol by symbol, so it was not used. Describe the "
+    "reader would announce symbol by symbol, or characters that cannot be read "
+    "as text, so it was not used. Describe the "
     "image yourself, or mark it as an equation."
 )
 
@@ -512,22 +586,40 @@ _DOLLAR_SPAN = re.compile(
 _INNER_MATH = re.compile(
     r"\\[A-Za-z]"  # a command
     r"|[\^_{}|]"  # a script, a brace or a bar
-    r"|[A-Za-z0-9)\]][=+\-*/<>][A-Za-z0-9(\[]"  # an operator between symbols
     r"|^\s*[A-Za-z]+\("  # a function call
     r"|^\s*[A-Za-z0-9]\s*$"  # a lone symbol
 )
+# An operator between symbols, with or without spaces: ``y=mx`` and ``y = mx + b``.
+_SPACED_OPERATOR = re.compile(r"[A-Za-z0-9)\]]\s*[=<>+\-*/^_]\s*[A-Za-z0-9(\[]")
+_LETTER = re.compile(r"[A-Za-z]")
+# What is between two unit markers, as in ``($M) and ($K)``: the first parenthesis
+# of such a span is a closing one.
+_BETWEEN_UNIT_MARKERS = re.compile(r"^[^()]*\)")
 
-# Names that are LaTeX commands, so ``C:\frac`` is not read as a drive path.
-_KNOWN_COMMANDS = frozenset(
-    {
-        "frac", "dfrac", "tfrac", "cfrac", "binom", "dbinom", "tbinom", "sqrt",
-        "sum", "prod", "int", "oint", "times", "div", "pm", "mp", "le", "leq",
-        "ge", "geq", "ne", "neq", "approx", "equiv", "cdot", "cdots", "ldots",
-        "partial", "nabla", "sin", "cos", "tan", "log", "ln", "left", "right",
-        "over", "text", "mathrm", "mathbb", "bar", "hat", "vec", "to", "in",
-        *_SYMBOL_COMMANDS.split("|"),
-    }
-)  # fmt: skip
+
+def _span_holds_math(inner: str) -> bool:
+    """Whether what a dollar span encloses is mathematics and not a price or unit.
+
+    A span the dollar rule matched has already been told apart from prices: its
+    closing sign follows no space, operator or digit. What is inside is
+    mathematics when it holds a command, a script, a brace or a bar, a function
+    call, a lone symbol, an operator between symbols (spaces allowed), or any
+    letter, which is a variable (``$ab$``). Two kinds of text are not: what is
+    between two unit markers, as in ``($M) and ($K)``, and words set off by spaces
+    between two display signs, as in the price tiers of ``$$ or $$$``. A letter
+    makes a span mathematics only when it touches the signs, which is how an
+    inline span is always written and how display mathematics usually is.
+    """
+    if _INNER_MATH.search(inner) or _SPACED_OPERATOR.search(inner):
+        return True
+    if _LETTER.search(inner) is None or _BETWEEN_UNIT_MARKERS.match(inner):
+        return False
+    return not (inner[:1].isspace() or inner[-1:].isspace())
+
+
+# Names that are LaTeX commands, so ``C:\frac`` and ``P:\Rightarrow`` are not read
+# as a drive path. The list is shared with the check for JSON-swallowed commands.
+_KNOWN_COMMANDS = LATEX_COMMAND_NAMES
 
 # A token that is clearly a Windows path is not mathematics. The rule is
 # deliberately narrow: a drive letter (``C:\Users\...``), a UNC share
@@ -545,6 +637,9 @@ _WINDOWS_PATH = re.compile(
 _DRIVE_COMPONENT = re.compile(rf"^{_PATH_LEAD}[A-Za-z]:\\([A-Za-z]+)")
 # A token that cannot continue a path that contains spaces.
 _NOT_PATH = re.compile(r"[{}^$]")
+# A token that starts with a backslash and a letter is a command and never the
+# next word of a path: ``C:\data \theta\cdot\pi`` is a path and LaTeX.
+_STARTS_WITH_COMMAND = re.compile(rf"^{_PATH_LEAD}\\[A-Za-z]")
 
 
 def _is_windows_path(token: str) -> bool:
@@ -554,6 +649,25 @@ def _is_windows_path(token: str) -> bool:
     return not (drive and drive.group(1) in _KNOWN_COMMANDS)
 
 
+# What a description may carry that is not printable. Line breaks, tabs and the
+# Unicode line and paragraph separators are ordinary whitespace in a description
+# and are folded to a space where it is written. Every other control, format,
+# surrogate, private-use or unassigned character is refused: a NUL or an escape
+# is not text, and a direction override such as U+202E reverses what a reader
+# sees.
+_FOLDED_WHITESPACE = frozenset("\n\r\t\u2028\u2029")
+_UNREADABLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
+
+
+def holds_unreadable_characters(text: str) -> bool:
+    """Whether a description holds a character that cannot be read as text."""
+    return any(
+        character not in _FOLDED_WHITESPACE
+        and unicodedata.category(character) in _UNREADABLE_CATEGORIES
+        for character in text
+    )
+
+
 def holds_math_markup(text: str) -> bool:
     """Whether a description carries LaTeX or other mathematical markup.
 
@@ -561,8 +675,9 @@ def holds_math_markup(text: str) -> bool:
     Windows path; ``\\(...\\)`` or ``\\[...\\]``; ``^{`` or ``_{``; a bare script
     with a symbol on both sides, such as ``r^2`` or ``x_i``; or a dollar span
     with mathematics between the signs, meaning a command, a script, a bar, a
-    brace, an operator between symbols, a function call or a single symbol.
-    Prices such as ``$5-$10``, units such as ``($M)`` and paths are not markup.
+    brace, an operator between symbols (with or without spaces), a function call,
+    a single symbol or any letter. Prices such as ``$5 and $10`` or ``$5-$10``,
+    units such as ``($M)`` and paths are not markup.
     """
     if _ESCAPED_DELIMITERS.search(text):
         return True
@@ -570,14 +685,19 @@ def holds_math_markup(text: str) -> bool:
         inner = match.group("display")
         if inner is None:
             inner = match.group("inline")
-        if _INNER_MATH.search(inner):
+        if _span_holds_math(inner):
             return True
     in_path = False
     for token in text.split():
         if _is_windows_path(token):
             in_path = True
             continue
-        if in_path and "\\" in token and not _NOT_PATH.search(token):
+        if (
+            in_path
+            and "\\" in token
+            and not _NOT_PATH.search(token)
+            and not _STARTS_WITH_COMMAND.match(token)
+        ):
             # The next word of a path that has a space in it, such as the
             # ``Files\App`` of ``C:\Program Files\App``.
             continue
@@ -598,9 +718,15 @@ def refuse_math_markup(text: str) -> Optional[str]:
     This is the one check a generated description passes through before it is
     used as alternative text. It never rewrites anything: the string that comes
     back is the string that went in. ``None`` means the description must not be
-    used and the image is left for a person.
+    used and the image is left for a person. That is the case for mathematical
+    markup and for a character that cannot be read as text, such as a NUL, an
+    escape or a direction override; line breaks and tabs are not refused.
     """
-    if not isinstance(text, str) or holds_math_markup(text):
+    if (
+        not isinstance(text, str)
+        or holds_unreadable_characters(text)
+        or holds_math_markup(text)
+    ):
         return None
     return text
 
@@ -614,6 +740,7 @@ __all__ = [
     "equation_alt_text_is_ambiguous",
     "generate_equation_alt_text",
     "holds_math_markup",
+    "holds_unreadable_characters",
     "refuse_math_markup",
     "strip_math_delimiters",
 ]

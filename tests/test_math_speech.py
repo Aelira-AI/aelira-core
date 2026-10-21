@@ -321,7 +321,17 @@ SPOKEN = [
     (r"\sin^{2} x", "sine squared x"),
     # Commands that only change how the equation is drawn.
     (r"\left( x+1 \right)", "( x+1 )"),
-    (r"\left(\frac{a}{b}\right)^{2}", "(a over b) squared"),
+    (r"\left(\frac{a}{b}\right)", "(a over b)"),
+    # A closing parenthesis ends an open-ended form only when it closes one opened
+    # earlier and the text after it ends the form too.
+    (r"(x^{n})", "(x to the power n)"),
+    (r"(x^{n}) = 1", "(x to the power n) = 1"),
+    (r"f(x^{n}, y)", "f(x to the power n, y)"),
+    (r"((x^{n}))", "((x to the power n))"),
+    (r"\left( x^{n} \right)", "( x to the power n )"),
+    (r"(x^{2}) + 1", "(x squared) + 1"),
+    (r"(x_{i}), (y_{i})", "(x sub i), (y sub i)"),
+    (r"(\sqrt{x})", "(square root of x)"),
     (r"\left. x+1 \right|", "x+1 |"),
     (r"\displaystyle x+1", "x+1"),
     (r"\mathrm{d}x + 1", "dx + 1"),
@@ -463,6 +473,17 @@ COLLISIONS = [
     (r"\sin x^{2}", r"\sin^{2} x", "neither"),
     (r"a \cdot b", r"a \times b", "neither"),
     (r"1 \cdots n", r"1 \ldots n", "neither"),
+    # Pairs that read the same and were both accepted before: a \mathrm group of
+    # several letters, a letter run that spells a spoken word, and a script on a
+    # parenthesis. The first of each pair is accepted and says what it says.
+    (r"ab^2", r"\mathrm{ab}^2", "right"),
+    (r"2x^2", r"\mathrm{2x}^2", "right"),
+    (r"\frac{a}{b}", r"a \mathrm{over} b", "right"),
+    (r"\frac{a}{b}", r"a over b", "right"),
+    (r"x_i", r"x \mathrm{sub} i", "right"),
+    (r"2x^2", r"(2x)^2", "right"),
+    (r"a \times b", r"a times b", "right"),
+    (r"\pi", r"pi", "right"),
 ]
 
 
@@ -578,6 +599,9 @@ AFTER = [
     "_{i}",
     r"\,y",
     ")",
+    ") + c",
+    ") = c",
+    ")x",
     ".5",
     ",5",
     ", c",
@@ -608,7 +632,10 @@ def _open_phrases_are_terminal(words: str) -> bool:
     """
     for match in _OPEN_PHRASE.finditer(words):
         rest = words[match.end() :].lstrip()
-        if rest and rest[0] not in "=<>,)" and not rest.startswith(_RELATION_WORDS):
+        # A closing parenthesis is not spoken, so what follows it counts.
+        while rest.startswith(")"):
+            rest = rest[1:].lstrip()
+        if rest and rest[0] not in "=<>," and not rest.startswith(_RELATION_WORDS):
             return False
     return True
 
@@ -655,9 +682,176 @@ def test_every_accepted_open_ended_group_is_terminal():
 def test_the_terminal_check_itself_catches_an_open_ended_group_followed_by_more():
     assert _open_phrases_are_terminal("x to the power n = 1")
     assert _open_phrases_are_terminal("a over b, c")
-    assert _open_phrases_are_terminal("(a over b) squared")
+    assert _open_phrases_are_terminal("f(x to the power n) = 1")
+    assert not _open_phrases_are_terminal("(1 plus x to the power n) plus 2")
     assert _open_phrases_are_terminal("x sub 1 less than or equal to y")
     assert not _open_phrases_are_terminal("x to the power n+1")
+    assert not _open_phrases_are_terminal("(a over b) squared")
     assert not _open_phrases_are_terminal("a over b c")
     assert not _open_phrases_are_terminal("square root of x plus 1")
     assert not _open_phrases_are_terminal("x sub i squared")
+
+
+# ---------------------------------------------------------------------------
+# Constructions from the whole-branch audit. Each was accepted before.
+# ---------------------------------------------------------------------------
+
+# A bare script takes one ASCII letter or digit and nothing else, and a caret or
+# an underscore never survives into the label.
+NON_ALPHANUMERIC_SCRIPT_ARGUMENTS = [
+    "x^*",
+    r"\mathrm{H}^+",
+    r"\mathrm{Cl}^-",
+    "x_+",
+    "x^'",
+    "x^+",
+    "x_-",
+    "x^#",
+    "x^é",
+]
+
+# A \mathrm group holds one letter, so a longer one cannot hide where a base
+# begins or pass for a spoken word.
+LONG_MATHRM_GROUPS = [
+    r"\mathrm{ab}^2",
+    r"\mathrm{2x}^2",
+    r"a \mathrm{over} b",
+    r"x \mathrm{sub} i",
+    r"\mathrm{Cl}",
+    r"\mathrm{12}",
+]
+
+# A script stands on a letter, a digit or a group of its own, not on a closing
+# parenthesis or bracket, whose parenthesis a screen reader does not speak, and
+# not on a \mathrm group.
+SCRIPT_ON_A_CLOSING_BASE = [
+    "(2x)^2",
+    "(a+b)^{2}",
+    "(a+b)^{3}",
+    "[x]^2",
+    r"\left(\frac{a}{b}\right)^{2}",
+    r"\left( x \right)^{2}",
+    "(x)_i",
+    "(x)_{i}",
+    r"\mathrm{d}^2",
+    r"\mathrm{d}_i",
+]
+
+# A run of letters that spells a word the labels use reads like the construct
+# that produces the word.
+SPOKEN_WORD_RUNS = [
+    "a over b",
+    "a Over b",
+    "x sub i",
+    "x squared",
+    "2 cubed",
+    "pi r",
+    "a times b",
+    "a choose b",
+    "x power y",
+    "x root y",
+    "a sum b",
+    "a dot b",
+    "x integral y",
+    "a log b",
+    "a or b",
+    "alpha beta",
+]
+
+# A closing parenthesis is terminal only when it closes one opened before the
+# group, and what follows it must end the form as well.
+PARENTHESES_THAT_DO_NOT_END_A_FORM = [
+    "x^{n}) + 1",
+    r"\left. x^{n} \right) + 1",
+    "(1 + x^{n}) + 2",
+    r"(\frac{1}{2})x",
+    "(2x)^2",
+    "(x^{n}) y",
+    "(x^{n}) + 1",
+    "((x^{n})) + 1",
+    "(x^{n}))",
+    r"(\frac{a}{b}) c",
+    r"(\sqrt{x}) + 1",
+    "(x_{i}) + 1",
+    r"\left( x^{n} \right) + 1",
+]
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        *NON_ALPHANUMERIC_SCRIPT_ARGUMENTS,
+        *LONG_MATHRM_GROUPS,
+        *SCRIPT_ON_A_CLOSING_BASE,
+        *SPOKEN_WORD_RUNS,
+        *PARENTHESES_THAT_DO_NOT_END_A_FORM,
+    ],
+)
+def test_the_guard_refuses_the_audit_constructions(latex):
+    assert equation_alt_text_is_ambiguous(latex) is True
+
+
+@pytest.mark.parametrize(
+    "latex", [item for item in NON_ALPHANUMERIC_SCRIPT_ARGUMENTS if item.isascii()]
+)
+def test_a_script_mark_never_survives_into_an_accepted_label(latex):
+    label = generate_equation_alt_text(latex)
+    assert "^" in label or "_" in label, "not a case the label check is for"
+    assert equation_alt_text_is_ambiguous(latex) is True
+
+
+def test_no_accepted_label_holds_a_caret_or_an_underscore_or_a_backslash():
+    checked = 0
+    for latex in _accepted_placements():
+        label = generate_equation_alt_text(latex)
+        assert not {"^", "_", "\\"} & set(label), (latex, label)
+        checked += 1
+    assert checked > 400
+
+
+def test_a_single_letter_mathrm_group_is_still_said_as_the_letter():
+    for latex, words in (
+        (r"\mathrm{d}x", "dx"),
+        (r"\mathrm{e}", None),
+        (r"a\mathrm{b}", "ab"),
+    ):
+        if words is None:
+            assert equation_alt_text_is_ambiguous(latex) is True  # a lone symbol
+            continue
+        assert equation_alt_text_is_ambiguous(latex) is False
+        assert generate_equation_alt_text(latex) == words
+        # The same MathML as the plain letters, so no two equations are confused.
+        plain = latex.replace(r"\mathrm{", "").replace("}", "")
+        assert _canonical(latex) == _canonical(plain)
+
+
+def test_the_keyword_check_looks_at_whole_runs_of_letters_only():
+    for latex in ("a overx", "ab^2", "mc^2 + 1", "dx + 1", "x_i + y_j", "E = mc^{2}"):
+        assert "over" not in latex.split() or equation_alt_text_is_ambiguous(latex)
+    for accepted in ("ab^2", "dx + 1", "mc^2 + 1", "E = mc^{2}"):
+        assert equation_alt_text_is_ambiguous(accepted) is False
+    # The same letters in a command are not a run of letters.
+    assert equation_alt_text_is_ambiguous(r"\pi r^2") is False
+    assert equation_alt_text_is_ambiguous(r"a \times b") is False
+
+
+def test_every_word_a_spoken_form_can_say_is_a_refused_run_of_letters():
+    assert {"over", "sub", "squared", "cubed", "power", "choose", "root"} <= set(
+        math_speech._SPOKEN_WORDS
+    )
+    for word in sorted(math_speech._SPOKEN_WORDS):
+        assert equation_alt_text_is_ambiguous(f"a {word} b") is True, word
+
+
+def test_the_guard_comment_claims_no_more_than_the_rules_do():
+    text = Path(math_speech.__file__).read_text(encoding="utf-8")
+    assert "not a proof" in text
+    assert "accepts an equation only when no other equation" not in text
+    assert r"``\mathrm`` group holds one letter" in text
+
+
+def test_the_command_list_is_shared_with_the_json_repair():
+    from src.education import latex_commands, model_json
+
+    assert model_json.LATEX_COMMAND_NAMES is latex_commands.LATEX_COMMAND_NAMES
+    assert math_speech._KNOWN_COMMANDS is latex_commands.LATEX_COMMAND_NAMES

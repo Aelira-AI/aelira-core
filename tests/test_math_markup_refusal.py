@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.education.math_speech import holds_math_markup, refuse_math_markup
+from src.education.math_speech import (
+    holds_math_markup,
+    holds_unreadable_characters,
+    refuse_math_markup,
+)
+from src.education.model_json import loads_tolerant
 
 # ---------------------------------------------------------------------------
 # Text without mathematical markup comes back as the same string
@@ -28,6 +33,12 @@ UNCHANGED = [
     "Salaries ($) and bonuses ($)",
     "Plans: $0, 1 user ... $29 per month",
     "Restaurant rated $$ or $$$ overall",
+    "Price tiers run from $$ to $$$ and up to $$$$",
+    "Rated $$$ and $$ in two guides",
+    "Tickets: $5, $10, $15.",
+    "Prices rose from $3.50 to $4.25.",
+    "Two plans, $5 for one and $10 for ten users.",
+    "Revenue ($M) and costs ($K) are shown.",
     # Prices.
     "It costs $5 and $10.",
     "Between $5-$10 per item",
@@ -112,6 +123,18 @@ REFUSED = [
     r"$a \ne b$",
     r"Shown as $\sqrt{x}$ here",
     r"$$x^2$$",
+    # Spaced operators and bare letters between dollar signs. These came back
+    # unchanged before, so a screen reader announced the dollar signs.
+    "The slope-intercept form $y = mx + b$ is shown.",
+    "Display math $$y = mx + b$$",
+    "$x + y = z$",
+    "$a = 5$",
+    "$ab$",
+    "Here $a < b$ holds",
+    "So $5 + 3$ is eight",
+    "Solve $2x - 1 = 0$ for x",
+    "Then $$x = 1$$ follows",
+    "The set $S$ is open",
 ]
 
 
@@ -283,3 +306,131 @@ MODEL_ANSWERS_PLAIN = [
 @pytest.mark.parametrize("answer", MODEL_ANSWERS_PLAIN)
 def test_model_answers_in_plain_words_pass_unchanged(answer):
     assert refuse_math_markup(answer) is answer
+
+
+# ---------------------------------------------------------------------------
+# Dollar signs: mathematics is told apart from prices, tiers and units
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The slope-intercept form $y = mx + b$ is shown.",
+        "Display math $$y = mx + b$$",
+        "$x + y = z$",
+        "$a = 5$",
+        "$ab$",
+    ],
+)
+def test_dollar_delimited_mathematics_is_refused_whatever_the_spacing(text):
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$5 and $10",
+        "It costs $5 and $10.",
+        "costs $3.50",
+        "Between $5-$10 per unit.",
+        "Price tiers run from $$ to $$$.",
+        "Revenue ($M) and costs ($K) are shown.",
+    ],
+)
+def test_prices_tiers_and_units_beside_dollar_signs_still_pass(text):
+    assert refuse_math_markup(text) is text
+
+
+# ---------------------------------------------------------------------------
+# Characters that cannot be read as text
+# ---------------------------------------------------------------------------
+
+UNREADABLE = [
+    ("nul", "a\x00b"),
+    ("escape", "a\x1bb"),
+    ("bell", "a\x07b"),
+    ("delete", "a\x7fb"),
+    ("c1 control", "a\x85b"),
+    ("right-to-left override", "a\u202eb"),
+    ("left-to-right embedding", "a\u202ab"),
+    ("isolate", "a\u2066b"),
+    ("direction mark", "a\u200fb"),
+    ("zero-width space", "a\u200bb"),
+    ("byte order mark", "\ufeffa"),
+    ("private use", "a\ue000b"),
+]
+FOLDED = [
+    ("line feed", "First line.\nSecond line."),
+    ("carriage return and line feed", "First line.\r\nSecond line."),
+    ("lone carriage return", "First line.\rSecond line."),
+    ("tab", "Column one\tcolumn two"),
+    ("line separator", "First line.\u2028Second line."),
+    ("paragraph separator", "First paragraph.\u2029Second paragraph."),
+    ("no-break space", "Distance of 5\u00a0km"),
+]
+
+
+@pytest.mark.parametrize(("name", "text"), UNREADABLE, ids=[n for n, _ in UNREADABLE])
+def test_a_description_with_an_unreadable_character_is_refused(name, text):
+    assert holds_unreadable_characters(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(("name", "text"), FOLDED, ids=[n for n, _ in FOLDED])
+def test_line_breaks_tabs_and_separators_are_ordinary_whitespace(name, text):
+    assert holds_unreadable_characters(text) is False
+    assert refuse_math_markup(text) is text
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [r"\u0000", r"\u001b", r"\u202e", r"\u200b"],
+)
+def test_an_unreadable_character_written_as_a_json_escape_is_refused(escape):
+    """The answer is decoded by the tolerant parser, which keeps a valid escape."""
+    text = loads_tolerant('{"alt_text": "A chart' + escape + ' of sales"}')["alt_text"]
+    assert holds_unreadable_characters(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize("escape", [r"\u2028", r"\u2029", r"\n", r"\t"])
+def test_a_folded_whitespace_character_written_as_a_json_escape_is_kept(escape):
+    text = loads_tolerant('{"alt_text": "A chart' + escape + 'of sales"}')["alt_text"]
+    assert refuse_math_markup(text) == text
+
+
+# ---------------------------------------------------------------------------
+# A Windows path never carries LaTeX with it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "P:\\Rightarrow Q",
+        "Saved to C:\\data \\theta\\cdot\\pi",
+        "Saved to C:\\data \\alpha",
+        "Open C:\\Program Files\\App \\frac{a}{b}",
+        "Part B:\\frac{1}{2}",
+        "Item C:\\Leftrightarrow done",
+        "D:\\nsubset E",
+    ],
+)
+def test_latex_after_or_inside_a_drive_prefix_is_still_markup(text):
+    assert holds_math_markup(text) is True
+    assert refuse_math_markup(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "C:\\Program Files\\App",
+        "C:\\Users\\me\\x.txt",
+        "Open D:\\My Documents\\Reports\\q3.xlsx now",
+        "Saved to C:\\data and then D:\\backup\\old.zip",
+        "Run C:\\Program Files\\Common Files\\app.dll twice",
+    ],
+)
+def test_real_paths_with_spaces_stay_whole(text):
+    assert refuse_math_markup(text) is text
