@@ -5,15 +5,27 @@ which JSON does not allow. The answer is then damaged in one of two ways. An
 invalid escape such as ``\\approx`` or ``\\alpha`` makes the strict parse fail.
 A valid escape silently becomes a control character: ``\\frac`` a form feed,
 ``\\beta`` a backspace, ``\\times``, ``\\theta`` and ``\\to`` a tab, ``\\rho``
-a carriage return, and ``\\ne``, ``\\nabla`` and ``\\neq`` a line feed followed
-by the rest of the name. The command is gone before any check on the text can
-see it.
+a carriage return, and ``\\ne``, ``\\nabla``, ``\\notin`` and ``\\nsubset`` a line
+feed. The escape takes its letter with it, so the control character is followed
+by the rest of the name only (``\\theta`` arrives as a tab and ``heta``). The
+command is gone before any check on the text can see it, and a negation such as
+``\\nsubset`` reads as its opposite.
 
 ``loads_tolerant`` parses strictly first. When that fails, or when a decoded
 string carries the trace of a swallowed command, every bare backslash is doubled
 and the answer is parsed once more, so the command survives as a backslash
 command that the markup check refuses. A correctly escaped answer is never
 repaired.
+
+What counts as the trace of a swallowed command is deliberately narrow, because
+a description may legitimately contain line breaks and tabs. A form feed or a
+backspace never belongs in a description and always counts. A line feed, a tab
+or a carriage return counts only when the letters that follow it, with the
+letter the escape swallowed put back, spell a known LaTeX command
+(``latex_commands``), compared case sensitively. A genuine line break before a
+word that happens to complete such a name is therefore repaired and then
+refused: that fails closed and is accepted, because the alternative is to
+announce "subset" for "not a subset".
 """
 
 from __future__ import annotations
@@ -21,6 +33,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+
+from src.education.latex_commands import LATEX_COMMAND_NAMES
 
 # A backslash that does not start a JSON escape the model could have meant:
 # one not followed by a quote, a backslash or a slash, and not the start of a
@@ -33,19 +47,12 @@ _UNESCAPED_BACKSLASH = re.compile(
     r'(?<!\\)((?:\\\\)*)\\(?=[^"\\/u]|u(?![0-9A-Fa-f]{4}))'
 )
 
-# The line feed that ``\n`` leaves in front of the rest of a command's name. The
-# name is only recognised when it is exactly one of these, so a line that was
-# hard-wrapped before a word such as "nothing" or "other" is not mistaken for
-# ``\not`` or ``\nother``.
-_N_COMMANDS = frozenset(
-    {
-        "ne", "neq", "nu", "nabla", "neg", "ni", "not", "notin", "newline",
-        "nolimits", "nleq", "ngeq", "nless", "ngtr", "nsim", "ncong", "nmid",
-        "nparallel", "nrightarrow", "nleftarrow", "nsubseteq", "nexists",
-        "nvdash", "nequiv", "napprox", "nprec", "nsucc", "nsupseteq",
-    }
-)  # fmt: skip
-_LINE_FEED_THEN_NAME = re.compile(r"\n([a-z]+)")
+# The letter that each JSON escape swallows along with its backslash: ``\n`` takes
+# an ``n``, ``\t`` a ``t`` and ``\r`` an ``r``. A control character followed by
+# letters is the start of a LaTeX command when the swallowed letter put back in
+# front of those letters spells one.
+_SWALLOWED_LETTER = {"\n": "n", "\t": "t", "\r": "r"}
+_CONTROL_THEN_LETTERS = re.compile(r"([\n\t\r])([A-Za-z]+)")
 
 
 def double_unescaped_backslashes(content: str) -> str:
@@ -56,18 +63,20 @@ def double_unescaped_backslashes(content: str) -> str:
 def swallowed_escape(text: str) -> bool:
     """Whether a decoded string holds what JSON decoding made of a LaTeX command.
 
-    A form feed, a backspace, a tab or a carriage return that is not part of a
-    carriage return and line feed pair never belongs in a description. A line
-    feed is suspect only when the letters after it complete a LaTeX command that
-    starts with ``n``.
+    A form feed or a backspace never belongs in a description and always counts.
+    A line feed, a tab or a carriage return counts only when the letters after it
+    complete a known LaTeX command name together with the letter the escape
+    swallowed, so ``\\ne`` (a line feed and ``e``), ``\\nsubset``, ``\\theta`` (a
+    tab and ``heta``) and ``\\rho`` (a carriage return and ``ho``) count, while
+    ordinary line breaks and tabs, including a carriage return before its line
+    feed, do not. The letters are matched case sensitively, so ``\\nRightarrow``
+    (a line feed and ``Rightarrow``) counts.
     """
-    if "\x0c" in text or "\x08" in text or "\t" in text:
-        return True
-    if re.search(r"\r(?!\n)", text):
+    if "\x0c" in text or "\x08" in text:
         return True
     return any(
-        "n" + match.group(1) in _N_COMMANDS
-        for match in _LINE_FEED_THEN_NAME.finditer(text)
+        _SWALLOWED_LETTER[match.group(1)] + match.group(2) in LATEX_COMMAND_NAMES
+        for match in _CONTROL_THEN_LETTERS.finditer(text)
     )
 
 
