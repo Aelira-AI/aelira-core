@@ -64,7 +64,7 @@ COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
 COPY docker/build-opencv-wheel.sh /tmp/build-opencv-wheel.sh
 COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
-    pip install --no-cache-dir "pip==26.2.1" && \
+    pip install --no-cache-dir "pip==26.2.2" && \
     python -m pip uninstall --yes setuptools && \
     pip install --no-cache-dir "setuptools==84.0.0" && \
     sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
@@ -258,6 +258,19 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     && /usr/local/bin/python -m pip uninstall --yes msgpack \
     && /usr/local/bin/python -m pip install --no-cache-dir "msgpack==$(/usr/local/bin/python /app/scripts/verify_final_python_packages.py msgpack-pin)" \
     && /usr/local/bin/python -m pip uninstall --yes pip
+
+# Debian ca-certificates 20250419 trusts emSign ECC Root CA - G3, whose
+# intermediate CAs have compromised keys (GHSA-6q48-6c7w-9gw2). The security
+# update 20250419+deb13u1 removes it, but a layer built from an older apt index
+# still installs 20250419. Deselect that one root after the stage's last apt
+# operation, whichever version ended up installed. Nothing happens once the
+# package no longer lists the root, and the other emSign roots stay trusted.
+# scripts/verify_final_os_packages.py fails the build if the root is still
+# trusted.
+RUN if grep -q '^mozilla/emSign_ECC_Root_CA_-_G3\.crt$' /etc/ca-certificates.conf; then \
+        sed -i 's|^mozilla/emSign_ECC_Root_CA_-_G3\.crt$|!&|' /etc/ca-certificates.conf \
+        && update-ca-certificates --fresh; \
+    fi
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv

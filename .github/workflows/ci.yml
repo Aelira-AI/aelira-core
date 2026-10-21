@@ -1563,6 +1563,8 @@ jobs:
             /usr/local/bin/python /app/scripts/verify_final_python_packages.py expat
           docker compose -f docker-compose.quickstart.yml exec -T api \
             /usr/local/bin/python /app/scripts/verify_final_python_packages.py quickstart
+          docker compose -f docker-compose.quickstart.yml exec -T api \
+            /usr/local/bin/python /app/scripts/verify_final_os_packages.py trust-store
           bun run scripts/verify_python_expat_layers.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
           bun run scripts/verify_opencv_layers.ts \

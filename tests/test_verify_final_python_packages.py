@@ -46,11 +46,11 @@ def _versions(installed: dict[str, str]):
 
 
 def _installed_pip_vendor(root: Path) -> Path:
-    (root / "pip-26.2.1.dist-info").mkdir()
+    (root / "pip-26.2.2.dist-info").mkdir()
     vendor = root / "pip" / "_vendor"
     urllib3 = vendor / "urllib3"
     urllib3.mkdir(parents=True)
-    # Frozen independently from the published pip 26.2.1 wheel's vendor.txt.
+    # Frozen independently from the published pip 26.2.2 wheel's vendor.txt.
     (vendor / "vendor.txt").write_text(
         "CacheControl==0.14.4\n"
         "distlib==0.4.2\n"
@@ -60,7 +60,7 @@ def _installed_pip_vendor(root: Path) -> Path:
         "platformdirs==4.10.0\n"
         "pyproject-hooks==1.2.0\n"
         "requests==2.34.2\n"
-        "    certifi==2026.6.17\n"
+        "    certifi==2026.10.19\n"
         "    idna==3.18\n"
         "    urllib3==2.7.0\n"
         "rich==14.2.0\n"
@@ -115,7 +115,7 @@ def test_final_package_verifier_accepts_quickstart_with_pip(tmp_path: Path) -> N
                 {
                     "msgpack": MSGPACK_VERSION,
                     "setuptools": "84.0.0",
-                    "pip": "26.2.1",
+                    "pip": "26.2.2",
                     "piper-tts": PIPER_VERSION,
                     "urllib3": URLLIB3_VERSION,
                 }
@@ -135,7 +135,7 @@ def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> 
             {
                 "msgpack": MSGPACK_VERSION,
                 "setuptools": "84.0.0",
-                "pip": "26.2.0",
+                "pip": "26.2.1",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
             }
@@ -143,15 +143,16 @@ def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> 
         package_not_found=MissingPackage,
         purelib=tmp_path,
     )
-    assert "quickstart: pip is 26.2.0; expected 26.2.1" in errors
+    assert "quickstart: pip is 26.2.1; expected 26.2.2" in errors
 
 
 @pytest.mark.parametrize(
     ("change", "expected"),
     [
         ("missing_manifest", "unable to read pip vendor manifest"),
-        ("old_manifest", "pip vendor manifest differs from pip 26.2.1"),
-        ("extra_vendor", "pip vendor manifest differs from pip 26.2.1"),
+        ("old_manifest", "pip vendor manifest differs from pip 26.2.2"),
+        ("old_certifi", "pip vendor manifest differs from pip 26.2.2"),
+        ("extra_vendor", "pip vendor manifest differs from pip 26.2.2"),
         ("old_code", "pip-vendored urllib3 is not 2.7.0"),
         ("missing_code", "unable to read pip-vendored urllib3"),
     ],
@@ -168,6 +169,12 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
         manifest.write_text(
             manifest.read_text().replace("urllib3==2.7.0", "urllib3==2.6.3")
         )
+    elif change == "old_certifi":
+        # pip 26.2.1 vendored certifi 2026.6.17, which trusts the emSign ECC
+        # Root CA - G3 root (GHSA-6q48-6c7w-9gw2).
+        manifest.write_text(
+            manifest.read_text().replace("certifi==2026.10.19", "certifi==2026.6.17")
+        )
     elif change == "extra_vendor":
         manifest.write_text(manifest.read_text() + "unreviewed==1.0.0\n")
     elif change == "old_code":
@@ -181,7 +188,7 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
             {
                 "msgpack": MSGPACK_VERSION,
                 "setuptools": "84.0.0",
-                "pip": "26.2.1",
+                "pip": "26.2.2",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
             }
@@ -198,8 +205,8 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
         ("global", {"msgpack": "1.1.2"}, "global: msgpack is 1.1.2"),
         (
             "global",
-            {"msgpack": MSGPACK_VERSION, "pip": "26.2.1"},
-            "global: pip is 26.2.1; expected absent",
+            {"msgpack": MSGPACK_VERSION, "pip": "26.2.2"},
+            "global: pip is 26.2.2; expected absent",
         ),
         (
             "global",
@@ -237,9 +244,9 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
                 "setuptools": "84.0.0",
                 "urllib3": URLLIB3_VERSION,
                 "piper-tts": PIPER_VERSION,
-                "pip": "26.2.1",
+                "pip": "26.2.2",
             },
-            "venv: pip is 26.2.1; expected absent",
+            "venv: pip is 26.2.2; expected absent",
         ),
     ],
 )
@@ -321,7 +328,7 @@ def test_quickstart_keeps_top_level_urllib3_guards(tmp_path: Path) -> None:
             {
                 "msgpack": MSGPACK_VERSION,
                 "setuptools": "84.0.0",
-                "pip": "26.2.1",
+                "pip": "26.2.2",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": "2.7.0",
             }
