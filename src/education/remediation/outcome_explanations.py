@@ -69,6 +69,46 @@ EXPLANATIONS = {
         "Resolve the accessibility findings and complete independent PDF/UA validation before declaring conformance.",
         "not_applied",
     ),
+    "image_draw_unresolved": (
+        "The image could not be matched to exactly one drawing operation in the page content that structure can mark, so its description was not written.",
+        "Describe the image manually, or re-export the source document and rescan.",
+        "not_applied",
+    ),
+    "image_draw_ambiguous": (
+        "Another image is drawn over this one at nearly the same place, so a description could not be bound to this image alone and was not written.",
+        "Describe the image manually, or separate the overlapping images in the source document and rescan.",
+        "not_applied",
+    ),
+    "image_in_marked_content": (
+        "The image is drawn inside a marked-content scope in the page content, such as an artifact or span, where a description cannot be attached to it, so none was written.",
+        "Describe the image in the source document, or correct how it is marked there, then rescan.",
+        "not_applied",
+    ),
+    "image_occurrence_unidentified": (
+        "The finding does not identify which image on its page it describes, and the page holds other images, so no description was written.",
+        "Rescan the document so each image is reported with its own identity, then describe the image manually if it is still undescribed.",
+        "not_applied",
+    ),
+    "image_equation_existing_owner_unsupported": (
+        "The image is already inside other marked content, such as a tagged element or an artifact, so the equation was not read or changed.",
+        "Describe the equation in the alternative text of the tagged element that contains the image, or correct how the image is marked in the source document, then rescan.",
+        "not_attempted",
+    ),
+    "image_equation_draw_unresolved": (
+        "The image could not be matched to exactly one drawing operation in the page content, so the equation was not read or changed.",
+        "Describe the equation manually, or re-export the source document and rescan.",
+        "not_attempted",
+    ),
+    "image_equation_alt_text_deferred": (
+        "The alternative text for this image was left to the equation fix, and that fix did not complete.",
+        "Review the equation finding for this image and describe the image manually, then rescan.",
+        "not_applied",
+    ),
+    "image_equation_alt_text_withheld": (
+        "The image was recognised as an equation that could not be verified, so no description was written and it needs review.",
+        "Review the equation finding for this image, then describe the image manually or correct the source document and rescan.",
+        "not_applied",
+    ),
     "table_structure_not_verified": (
         "The table's actual cell content and structure could not be verified.",
         "Review the table cells and headers in the source document or PDF editor, then rescan.",
@@ -195,6 +235,14 @@ _MANUAL_REASON_CODES = {
     "PDF/UA conformance declaration requires independent validation": "pdfua_declaration_requires_validation",
     "table_structure_not_verified": "table_structure_not_verified",
     "table_structure_too_complex": "table_structure_too_complex",
+    "image_draw_unresolved": "image_draw_unresolved",
+    "image_draw_ambiguous": "image_draw_ambiguous",
+    "image_in_marked_content": "image_in_marked_content",
+    "image_occurrence_unidentified": "image_occurrence_unidentified",
+    "image_equation_existing_owner_unsupported": "image_equation_existing_owner_unsupported",
+    "image_equation_draw_unresolved": "image_equation_draw_unresolved",
+    "image_equation_alt_text_deferred": "image_equation_alt_text_deferred",
+    "image_equation_alt_text_withheld": "image_equation_alt_text_withheld",
     "equation_too_large_for_verification": "equation_too_large_for_verification",
 }
 _MANUAL_REASON_CODES.update(

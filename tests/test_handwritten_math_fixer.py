@@ -8,6 +8,7 @@ import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
@@ -173,6 +174,94 @@ def test_printed_success_never_invokes_hmer():
 
     assert result.error == "image_equation_association_pending"
     assert not hasattr(result.verification_evidence, "agreement_count")
+
+
+class RawClient(Client):
+    """Answers each call with the next JSON object exactly as written."""
+
+    def analyze_image_sync(self, **kwargs: object):
+        self.calls.append(kwargs)
+        return {"success": True, "content": self.responses.pop(0)}
+
+
+UNSUPPORTED = '{"classification":"unsupported_notation","latex":null}'
+NOT_HANDWRITTEN = '{"classification":"not_handwritten_math","latex":null}'
+
+
+@pytest.mark.parametrize(
+    ("responses", "error", "recognised"),
+    [
+        ((UNSUPPORTED,), "handwritten_notation_unsupported", True),
+        ((NOT_HANDWRITTEN,), "not_handwritten_equation", False),
+    ],
+)
+def test_declined_handwriting_records_whether_an_equation_was_recognised(
+    responses, error, recognised
+):
+    """Unsupported notation is an equation the reader could not take; a decline
+    that the image is not handwritten math is not."""
+    result = _fixer("legible-linear", RawClient(*responses))._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == error
+    assert result.pending_association is None
+    assert result.equation_recognized is recognised
+
+
+def test_recognised_handwriting_without_latex_counts_as_a_recognised_equation():
+    """The classification itself is what the specialist recognised."""
+    fixer = _fixer("legible-linear", Client("unused"))
+    fixer.handwritten_recognizer = SimpleNamespace(
+        recognize=lambda *_args: SimpleNamespace(
+            classification="handwritten_equation", latex=""
+        )
+    )
+
+    result = fixer._fix_math_issue(SimpleNamespace(metadata=METADATA))
+
+    assert result.error == "not_handwritten_equation"
+    assert result.equation_recognized is True
+
+
+def test_handwriting_that_fails_verification_still_counts_as_recognised():
+    client = Client("x^2+y=10", "x^2+y=11")
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "handwritten_equation_verification_failed"
+    assert result.pending_association is None
+    assert result.equation_recognized is True
+
+
+def test_verified_handwriting_counts_as_recognised_and_stays_pending():
+    client = Client("x^2+y=10", "x^2 + y = 10")
+    result = _fixer("legible-linear", client)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_association_pending"
+    assert result.pending_association is not None
+    assert result.equation_recognized is True
+
+
+def test_handwriting_refused_before_recognition_is_not_a_recognised_equation():
+    ineligible = _fixer("low-contrast", Client("x", "x"))._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+    assert ineligible.error == "handwritten_math_not_eligible"
+    assert ineligible.equation_recognized is False
+
+    class Failing:
+        def recognize(self, *_args):
+            raise RuntimeError("provider down")
+
+    broken = _fixer("legible-linear", Client("unused"))
+    broken.handwritten_recognizer = Failing()
+    rejected = broken._fix_math_issue(SimpleNamespace(metadata=METADATA))
+    assert rejected.error == "handwritten_equation_recognition_rejected"
+    assert rejected.equation_recognized is False
 
 
 def test_braced_and_unbraced_readings_agree_and_stage_the_canonical_mathml():

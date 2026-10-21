@@ -20,7 +20,7 @@ import logging
 import re
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, List, Optional
 
 from src.education.equation_region_contract import PageRasterRegionLocator
@@ -66,6 +66,16 @@ except ImportError:
     HAS_PIKEPDF = False
 
 logger = logging.getLogger(__name__)
+
+# The target draw already sits inside marked content: a tagged element such as
+# the Figure of a tagged source, or an Artifact scope. A Formula cannot be
+# written over it.
+IMAGE_EQUATION_EXISTING_OWNER_ERROR = "image_equation_existing_owner_unsupported"
+# The target draw cannot be matched to exactly one drawing operation in the page
+# content (an image inside a Form XObject, a draw count that disagrees with the
+# displayed images, or marked content that does not balance). No Formula can be
+# written for it and verified afterwards.
+IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR = "image_equation_draw_unresolved"
 
 
 @dataclass(frozen=True)
@@ -301,6 +311,10 @@ class MathFixResult:
     pending_association: Optional[
         PendingEquationAssociation | PendingScannedRegionAssociation
     ] = None
+    # True once the specialist itself classified the image as an equation,
+    # whether or not the reading was later verified. A generic image
+    # description must not stand in for an equation that could not be proven.
+    equation_recognized: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +542,16 @@ class MathFixer:
         unavailable = self._visual_equation_dependency_error(page_number)
         if unavailable is not None:
             return unavailable
+        # Decide ownership and draw resolution before any provider call can
+        # spend on an image that the Formula writer is going to refuse. Neither
+        # refusal classifies the image, so neither claims it is an equation.
+        refusal = self._image_draw_refusal(metadata)
+        if refusal is not None:
+            return MathFixResult(
+                success=False,
+                error=refusal,
+                page_number=page_number,
+            )
         try:
             validated = self.image_source.extract(self.fitz_doc, metadata)
         except Exception:
@@ -539,6 +563,37 @@ class MathFixer:
         return self._prepare_validated_equation(
             validated, page_number=page_number, scanned_region=False
         )
+
+    def _image_draw_refusal(self, metadata: dict[str, Any]) -> Optional[str]:
+        """The manual reason for a draw the Formula writer cannot take, if any.
+
+        The target draw is refused when any marked content already encloses it,
+        and when it cannot be resolved to exactly one drawing
+        operation in balanced marked content: the saved-file verification would
+        refuse either one after the provider had been paid. A finding with no
+        usable occurrence identity is not probed here; source extraction rejects
+        it, and the writer and verification stay authoritative.
+        """
+        from .content_tagger_v2 import image_draw_has_semantic_owner
+        from .pdf_image_finding_identity import occurrence_identity
+
+        identity = occurrence_identity(metadata)
+        if identity is None:
+            return None
+        page_number, image_xref, image_index, ordinal, bbox, occurrence_id = identity
+        owned = image_draw_has_semantic_owner(
+            self.pdf,
+            self.fitz_doc,
+            page_number=page_number,
+            image_xref=image_xref,
+            image_index=image_index,
+            occurrence_ordinal=ordinal,
+            bbox=bbox,
+            occurrence_id=occurrence_id,
+        )
+        if owned is None:
+            return IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR
+        return IMAGE_EQUATION_EXISTING_OWNER_ERROR if owned else None
 
     def _prepare_scanned_equation_region(
         self, metadata: dict[str, Any]
@@ -601,17 +656,21 @@ class MathFixer:
                 page_number=page_number,
             )
         if recognition.classification == "printed_equation" and recognition.latex:
-            return self._prepare_printed_equation(
-                validated,
-                recognition,
-                page_number=page_number,
-                scanned_region=scanned_region,
+            return replace(
+                self._prepare_printed_equation(
+                    validated,
+                    recognition,
+                    page_number=page_number,
+                    scanned_region=scanned_region,
+                ),
+                equation_recognized=True,
             )
         if recognition.classification != "not_equation":
             return MathFixResult(
                 success=False,
                 error="not_printed_equation",
                 page_number=page_number,
+                equation_recognized=recognition.classification == "printed_equation",
             )
         return self._prepare_handwritten_equation(
             validated,
@@ -783,6 +842,7 @@ class MathFixer:
                 success=False,
                 error="handwritten_notation_unsupported",
                 page_number=page_number,
+                equation_recognized=True,
             )
         if (
             recognition.classification != "handwritten_equation"
@@ -792,7 +852,30 @@ class MathFixer:
                 success=False,
                 error="not_handwritten_equation",
                 page_number=page_number,
+                equation_recognized=recognition.classification
+                == "handwritten_equation",
             )
+        return replace(
+            self._verify_handwritten_equation(
+                validated,
+                suitability,
+                recognition,
+                page_number=page_number,
+                scanned_region=scanned_region,
+            ),
+            equation_recognized=True,
+        )
+
+    def _verify_handwritten_equation(
+        self,
+        validated: Any,
+        suitability: Any,
+        recognition: Any,
+        *,
+        page_number: int,
+        scanned_region: bool,
+    ) -> MathFixResult:
+        """Verify one recognized handwritten equation by exact agreement."""
         try:
             verification = self.handwritten_verifier.verify(
                 validated, suitability, recognition
