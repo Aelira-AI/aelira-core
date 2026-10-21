@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
-"""Verify that unused Debian packages are absent from the final API image.
+"""Verify the Debian package state and system trust store of the final image.
 
 xdg-utils is removed, yet texlive-base still depends on it. An empty local
 placeholder package provides the name so the dpkg database stays consistent
 and apt keeps working in images built from this one.
+
+The system trust store must not trust emSign ECC Root CA - G3 and must keep the
+three emSign roots that are not affected (GHSA-6q48-6c7w-9gw2).
+
+Usage: verify_final_os_packages.py [packages | trust-store]
+Without an argument both checks run. The developer image has no placeholder
+package, so it runs only the trust-store check.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
 
 # Packages the image does not need and must not carry. xdg-utils ships
 # xdg-email (CVE-2022-4055); no supported feature opens a desktop handler or
@@ -39,6 +50,54 @@ PLACEHOLDER_PROVIDES = ("xdg-utils",)
 ROOT_DIRECTORY_ENTRY = "/."
 
 FIELD_SPLIT = re.compile(r"\s*,\s*")
+
+# emSign ECC Root CA - G3: eight intermediate CAs that chain to it have
+# compromised private keys (GHSA-6q48-6c7w-9gw2). Debian trixie ca-certificates
+# 20250419 ships it as mozilla/emSign_ECC_Root_CA_-_G3.crt; the security update
+# 20250419+deb13u1 removes it. The Dockerfiles deselect it with a "!" line in
+# /etc/ca-certificates.conf for images that still install 20250419. The check
+# is by SHA-256 of the DER certificate, not by file name, so it does not depend
+# on how Debian or the Dockerfile removed the root.
+#
+# The fingerprint was computed from that file in the 20250419 package (openssl
+# x509 -fingerprint -sha256, read from the published 0.9.13 test image) and
+# cross-checked against Mozilla's CCADB "Included CA Certificate Report (PEM)"
+# retrieved 2026-10-21, whose PEM column for this root hashes to the same
+# value. pip 26.2.2's vendored certifi 2026.10.19 bundle does not contain it
+# and pip 26.2.1's 2026.6.17 bundle does.
+DISTRUSTED_ROOT_NAME = "emSign ECC Root CA - G3"
+DISTRUSTED_ROOT_SHA256 = (
+    "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b"
+)
+# OpenSSL subject hash of that root: the hashed lookup link in /etc/ssl/certs
+# is named <hash>.<n>, and it makes OpenSSL trust the root without the bundle.
+DISTRUSTED_ROOT_HASH = "14bc7599"
+# The other emSign roots stay trusted: they are not affected, and requiring
+# them proves the bundle was not emptied to satisfy the check. Fingerprints
+# come from the same Debian package files and match the same CCADB report. If
+# Debian or Mozilla later drops one of them, update this list deliberately.
+RETAINED_ROOTS = (
+    (
+        "emSign Root CA - G1",
+        "40f6af0346a99aa1cd1d555a4e9cce62c7f9634603ee406615833dc8c8d00367",
+    ),
+    (
+        "emSign Root CA - C1",
+        "125609aa301da0a249b97a8239cb6a34216f44dcac9f3954b14292f2e8c8608f",
+    ),
+    (
+        "emSign ECC Root CA - C3",
+        "bc4d809b15189d78db3e1d8cf4f9726a795da1643ca5f1358e1ddb0edc0d7eb3",
+    ),
+)
+CA_DIRECTORY = Path("/etc/ssl/certs")
+CA_BUNDLE = CA_DIRECTORY / "ca-certificates.crt"
+
+PEM_BEGIN = "-----BEGIN CERTIFICATE-----"
+PEM_END = "-----END CERTIFICATE-----"
+PEM_BLOCK = re.compile(re.escape(PEM_BEGIN) + r"(.*?)" + re.escape(PEM_END), re.DOTALL)
+# A DER certificate is an ASN.1 SEQUENCE.
+DER_SEQUENCE_TAG = 0x30
 
 
 def package_installed(name: str) -> bool:
@@ -157,14 +216,146 @@ def validate(
     return errors
 
 
-def main() -> int:
-    errors = validate()
-    if errors:
-        for error in errors:
-            print(error, file=sys.stderr)
-        return 1
-    print("Final image OS package state is valid")
-    return 0
+def pem_fingerprints(text: str) -> set[str]:
+    """Return the SHA-256 of every certificate in PEM text, as lowercase hex.
+
+    Anything that is not a balanced run of well-formed certificates raises
+    ValueError, so a truncated or corrupted bundle cannot pass for one that
+    merely lacks the distrusted root.
+    """
+    begins = text.count(PEM_BEGIN)
+    blocks = PEM_BLOCK.findall(text)
+    if begins != text.count(PEM_END) or begins != len(blocks):
+        raise ValueError("unbalanced certificate markers")
+    fingerprints = set()
+    for body in blocks:
+        try:
+            der = base64.b64decode("".join(body.split()), validate=True)
+        except binascii.Error as exc:
+            raise ValueError(f"certificate is not valid base64: {exc}") from exc
+        if not der or der[0] != DER_SEQUENCE_TAG:
+            raise ValueError("certificate body is not DER")
+        fingerprints.add(hashlib.sha256(der).hexdigest())
+    return fingerprints
+
+
+def _read_pem_text(path: Path) -> str:
+    # Undecodable bytes become U+FFFD, which never forms valid base64, so a
+    # corrupted certificate is reported as malformed instead of ignored.
+    return path.read_bytes().decode("ascii", errors="replace")
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+
+def trust_store_errors(
+    bundle: Path | None = None, directory: Path | None = None
+) -> list[str]:
+    """Return every way the system trust store trusts the distrusted root.
+
+    The bundle and every certificate reachable through the hashed lookup links
+    in the directory are both consulted by clients (curl and Python read the
+    bundle, OpenSSL's capath lookup reads the links), so both must be clean and
+    both must still hold the retained emSign roots. A bundle or certificate
+    that cannot be read or parsed is an error: this check fails closed.
+    """
+    bundle = CA_BUNDLE if bundle is None else bundle
+    directory = CA_DIRECTORY if directory is None else directory
+    errors: list[str] = []
+
+    bundled: set[str] | None = None
+    try:
+        bundled = pem_fingerprints(_read_pem_text(bundle))
+    except OSError as exc:
+        errors.append(f"trust store: unable to read {bundle}: {exc}")
+    except ValueError as exc:
+        errors.append(f"trust store: {bundle} is malformed: {exc}")
+    if bundled is not None and DISTRUSTED_ROOT_SHA256 in bundled:
+        errors.append(
+            f"trust store: {bundle} contains {DISTRUSTED_ROOT_NAME} "
+            f"(sha256 {DISTRUSTED_ROOT_SHA256})"
+        )
+
+    linked: set[str] = set()
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError as exc:
+        errors.append(f"trust store: unable to inspect {directory}: {exc}")
+        entries = []
+    for entry in entries:
+        if entry.name.startswith(f"{DISTRUSTED_ROOT_HASH}."):
+            errors.append(
+                f"trust store: hashed link for {DISTRUSTED_ROOT_NAME} remains: "
+                f"{entry}"
+            )
+            continue
+        if _same_file(entry, bundle) or entry.is_dir():
+            continue
+        try:
+            text = _read_pem_text(entry)
+        except FileNotFoundError:
+            continue  # a dangling link trusts nothing
+        except OSError as exc:
+            errors.append(f"trust store: unable to read {entry}: {exc}")
+            continue
+        if PEM_BEGIN not in text:
+            continue
+        try:
+            fingerprints = pem_fingerprints(text)
+        except ValueError as exc:
+            errors.append(f"trust store: {entry} is malformed: {exc}")
+            continue
+        linked |= fingerprints
+        if DISTRUSTED_ROOT_SHA256 in fingerprints:
+            errors.append(
+                f"trust store: {entry} is a certificate for {DISTRUSTED_ROOT_NAME} "
+                f"(sha256 {DISTRUSTED_ROOT_SHA256})"
+            )
+
+    for name, fingerprint in RETAINED_ROOTS:
+        if bundled is not None and fingerprint not in bundled:
+            errors.append(f"trust store: {bundle} lacks {name} (sha256 {fingerprint})")
+        if fingerprint not in linked:
+            errors.append(f"trust store: {directory} has no certificate for {name}")
+    return errors
+
+
+CHECKS: dict[str, Callable[[], list[str]]] = {
+    "packages": validate,
+    "trust-store": trust_store_errors,
+}
+SUCCESS_MESSAGES = {
+    "packages": "Final image OS package state is valid",
+    "trust-store": "Final image system trust store is valid",
+}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if not arguments:
+        selected = list(CHECKS)
+    elif len(arguments) == 1 and arguments[0] in CHECKS:
+        selected = arguments
+    else:
+        print(
+            f"usage: verify_final_os_packages.py [{' | '.join(CHECKS)}]",
+            file=sys.stderr,
+        )
+        return 2
+    failed = False
+    for name in selected:
+        errors = CHECKS[name]()
+        if errors:
+            failed = True
+            for error in errors:
+                print(error, file=sys.stderr)
+        else:
+            print(SUCCESS_MESSAGES[name])
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

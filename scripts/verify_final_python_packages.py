@@ -31,7 +31,7 @@ EXPECTED = {
     # The developer image keeps pip for its supported interactive workflow.
     "quickstart": {
         "setuptools": "84.0.0",
-        "pip": "26.2.1",
+        "pip": "26.2.2",
         "pi-heif": None,
         "pybind11": None,
         "Cython": None,
@@ -61,9 +61,12 @@ FORBIDDEN_METADATA = {
     "setuptools": "70.3.0",
     "urllib3": "2.7.0",
 }
-# pip 26.2.1 is retained only in quickstart. This is the exact vendor.txt
-# inventory of its published wheel, including pip's private urllib3 2.7.0.
-# It does not satisfy the application's separate urllib3 2.8.0 pin.
+# pip 26.2.2 is retained only in quickstart. This is the exact vendor.txt
+# inventory of its published wheel (SHA-256
+# fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70), including
+# pip's private urllib3 2.7.0. It does not satisfy the application's separate
+# urllib3 2.8.0 pin. Against pip 26.2.1 only certifi changed, from 2026.6.17 to
+# 2026.10.19, which drops emSign ECC Root CA - G3 (GHSA-6q48-6c7w-9gw2).
 QUICKSTART_PIP_VENDOR = (
     "CacheControl==0.14.4",
     "distlib==0.4.2",
@@ -73,7 +76,7 @@ QUICKSTART_PIP_VENDOR = (
     "platformdirs==4.10.0",
     "pyproject-hooks==1.2.0",
     "requests==2.34.2",
-    "certifi==2026.6.17",
+    "certifi==2026.10.19",
     "idna==3.18",
     "urllib3==2.7.0",
     "rich==14.2.0",
@@ -199,7 +202,7 @@ def validate(
             errors.append(f"quickstart: unable to read pip vendor manifest: {exc}")
         else:
             if inventory != QUICKSTART_PIP_VENDOR:
-                errors.append("quickstart: pip vendor manifest differs from pip 26.2.1")
+                errors.append("quickstart: pip vendor manifest differs from pip 26.2.2")
 
         vendor_version = vendored_urllib3 / "_version.py"
         try:

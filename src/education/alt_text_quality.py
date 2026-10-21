@@ -29,6 +29,10 @@ _PLACEHOLDERS = frozenset(
     }
 )
 _FAILURE_PREFIXES = ("error", "unknown", "unable", "cannot")
+# Line breaks and tabs are layout, not hidden content. Vision models use them to
+# lay out tables, lists and multi-part figures, so they become single spaces.
+FOLDED_WHITESPACE = "\n\r\t\u2028\u2029"
+_FOLD_WHITESPACE = str.maketrans({char: " " for char in FOLDED_WHITESPACE})
 
 
 def normalize_usable_alt_text(
@@ -37,12 +41,17 @@ def normalize_usable_alt_text(
     """Return a safe, complete description, or ``None`` when unusable.
 
     Normalization is deliberately lossless for already-valid descriptions.
-    It removes provider labels and redundant printable whitespace. Invalid,
-    control-bearing, or apparently truncated output is rejected rather than
-    repaired or truncated.
+    It removes provider labels and redundant printable whitespace. Line breaks
+    (including U+2028 and U+2029) and tabs are folded into single spaces first,
+    so a multi-line description of a table or list is kept as one line. Every
+    other control, format or surrogate character, such as NUL, form feed,
+    zero-width characters and bidirectional controls, still rejects the text,
+    as does output that is invalid or apparently truncated. The length limit
+    applies to the folded text.
     """
     if not isinstance(value, str):
         return None
+    value = value.translate(_FOLD_WHITESPACE)
     if any(
         unicodedata.category(char) in {"Cc", "Cf", "Cs"} or not char.isprintable()
         for char in value
