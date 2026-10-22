@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { captureRefused, parseCaptureProcess } from './capture-retry.ts';
+import { attemptRefusalClass, captureRefused, parseCaptureProcess, refusalClasses } from './capture-retry.ts';
 
 const bytes = await readFile(new URL('./fixtures/capture-refusal.json', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== '67096ed230fca4689edad03c649045c5a94e83a821095c26afe5f98e8f9a4f64') throw new Error('Frozen public receipt changed');
@@ -144,7 +144,35 @@ if (captureRefused(productionOuter, 2, productionId, processRow)) throw new Erro
 v3Controls.push('production-refuses-legacy-process');
 productionOuter.stages['input-capture'].exit = 123;
 if (!captureRefused(productionOuter, 2, productionId, parallel)) throw new Error('Production parallel positive refused');
+// Refusal classes (#737): each class first round-trips from a well-formed private
+// record on an actual refused receipt; malformed records and non-capture failures
+// never yield an upstream class.
+const classControls: string[] = [];
+const record = (name: string) => ({ schema: 'aelira-latexml-capture-refusal-class-v1', class: name });
+for (const name of refusalClasses) {
+  if (attemptRefusalClass(2, original, record(name)) !== name) throw new Error('Refusal class not recorded: ' + name);
+  classControls.push('records-' + name);
+}
+if (attemptRefusalClass(2, apt, record('upstream_http_auth')) !== 'upstream_http_auth') throw new Error('APT refusal class not recorded');
+function classRefuse(name: string, exit: number, row: any, rec: any, expected: string | null) {
+  if (attemptRefusalClass(exit, row, rec) !== expected) throw new Error('Refusal class boundary failed: ' + name);
+  classControls.push(name);
+}
+classRefuse('success-has-no-class', 0, original, record('upstream_http_auth'), null);
+const later = structuredClone(original);
+later.stages['input-capture'] = { state: 'executed', exit: 0 }; later.stages['input-pin'] = { state: 'executed', exit: 2 };
+classRefuse('post-capture-failure-has-no-class', 2, later, record('upstream_http_auth'), null);
+classRefuse('missing-record-unknown', 2, original, null, 'unknown');
+classRefuse('missing-outer-unknown', 2, null, null, 'unknown');
+classRefuse('undeclared-class-unknown', 2, original, record('upstream_http_418'), 'unknown');
+classRefuse('wrong-record-schema-unknown', 2, original, { ...record('upstream_http_auth'), schema: 'other' }, 'unknown');
+classRefuse('extra-record-field-unknown', 2, original, { ...record('upstream_http_auth'), url: 'x' }, 'unknown');
+classRefuse('array-record-unknown', 2, original, ['upstream_http_auth'], 'unknown');
+classRefuse('string-record-unknown', 2, original, 'upstream_http_auth', 'unknown');
+const unavailable = structuredClone(original); unavailable.stages['input-capture'] = { state: 'unavailable', exit: null };
+classRefuse('unavailable-capture-keeps-timeout', 2, unavailable, record('timeout'), 'timeout');
 console.log(JSON.stringify({ schema: 'aelira-latexml-capture-retry-controls-v3',
   positive: 'actual-public-capture-refusal', controls, apt_positive: 'actual-native-apt-update-refusal',
   legacy_v2_download_positive: true, apt_controls: aptControls, parallel_positive: 'synthetic-original-worker-statuses',
-  v3_update_and_plan_positives: true, parallel_controls: v3Controls, missing_receipts_refused: true, status: 'pass' }));
+  v3_update_and_plan_positives: true, parallel_controls: v3Controls, missing_receipts_refused: true,
+  refusal_class_controls: classControls, status: 'pass' }));

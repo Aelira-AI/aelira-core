@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI: each native LaTeXML capture attempt now records a bounded refusal class in its public attempt receipt (`aelira-latexml-capture-attempts-v4`): `upstream_http_auth` for a 401/403 from the snapshot host, `upstream_http_5xx`, `upstream_http_4xx`, `upstream_http_other`, `transport`, `timeout`, `tls`, `integrity` or `unknown`. The job summary prints each attempt's exit, retry eligibility and class, so a red run shows whether the refusal came from upstream. No URL, header or body is recorded. Refusals that APT reports are `unknown`, because APT's exit does not identify an HTTP cause. Retry eligibility and gating are unchanged. Refs [#737](https://github.com/Aelira-AI/aelira-core/issues/737).
+
 - The dashboard labels a recorded change whose finding the saved-file rescan no longer detects "Change applied · finding no longer detected" instead of "Change applied · automated check passed", and adds " · human review required" when the record says the change needs review. The rescan shows that a finding is no longer detected, not that the change is correct, and the earlier label read as an approval. Records with no saved-file verification still read "Change applied · verification not reported" ([#693](https://github.com/Aelira-AI/aelira-core/issues/693)).
 ### Security
 

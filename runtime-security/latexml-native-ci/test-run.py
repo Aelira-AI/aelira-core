@@ -378,11 +378,197 @@ def main():
         sequence("not-found-refused", [Response(404, b"")], 2, [])
         sequence("empty-refused", [Response(200, b"")], 2, [])
         sequence("oversized-refused", [Response(200, b"x" * 101)], 2, [])
+
+        # Refusal classes (#737). Each mapping first drives the same probe to its
+        # success path, so a refusal is read only from a probe proven to pass.
+        def refusal_class(answers):
+            SequenceConnection.answers = answers
+            SequenceConnection.calls = SequenceConnection.closes = 0
+            try:
+                data = common.snapshot_file("dists/resolute/InRelease", 100)
+            except ValueError as error:
+                return common.refusal_class_of(error)
+            common.require(data == b"known bounded metadata", "probe success differs")
+            return None
+
+        def class_case(name, answers, expected):
+            control(
+                "refusal-class-" + name + "-positive-first",
+                lambda: common.require(refusal_class([good]) is None),
+                0,
+            )
+            control(
+                "refusal-class-" + name,
+                lambda: common.require(refusal_class(answers) == expected),
+                0,
+            )
+
+        for name, answers, expected in (
+            ("http-401-auth", [Response(401, b"")], "upstream_http_auth"),
+            ("http-403-auth", [Response(403, b"")], "upstream_http_auth"),
+            ("http-5xx-exhausted", [Response(503, b"")] * 5, "upstream_http_5xx"),
+            (
+                "http-500-mixed-exhausted",
+                [Response(s, b"") for s in (500, 502, 503, 504, 500)],
+                "upstream_http_5xx",
+            ),
+            ("http-501-not-retried", [Response(501, b"")], "upstream_http_5xx"),
+            ("http-404-other-4xx", [Response(404, b"")], "upstream_http_4xx"),
+            ("http-400-other-4xx", [Response(400, b"")], "upstream_http_4xx"),
+            ("http-302-other", [Response(302, b"")], "upstream_http_other"),
+            ("transport-exhausted", [ConnectionResetError()] * 5, "transport"),
+            (
+                "http-exception-exhausted",
+                [common.http.client.HTTPException()] * 5,
+                "transport",
+            ),
+            ("timeout-exhausted", [TimeoutError()] * 5, "timeout"),
+            (
+                "transient-then-timeout",
+                [Response(503, b"")] * 4 + [TimeoutError()],
+                "timeout",
+            ),
+            ("tls", [common.ssl.SSLError()], "tls"),
+            ("certificate", [common.ssl.SSLCertVerificationError()], "tls"),
+            ("empty-body-integrity", [Response(200, b"")], "integrity"),
+            ("oversized-body-integrity", [Response(200, b"x" * 101)], "integrity"),
+        ):
+            class_case(name, answers, expected)
     finally:
         common.http.client.HTTPSConnection = original_connection
         common.time.sleep = original_sleep
     control(
         "snapshot-empty-CA-archive-refused", lambda: common.snapshot_ca_bundle(b""), 2
+    )
+
+    # Labelling keeps the original exception type and exit, so stage receipts
+    # and retry eligibility are unchanged; an existing label is never replaced.
+    def labelled(name, raise_error, expected_class, expected_type, expected_code):
+        def check():
+            try:
+                with common.refusal(name):
+                    raise_error()
+            except (ValueError, OSError) as error:
+                common.require(
+                    type(error) is expected_type
+                    and common.refusal_class_of(error) == expected_class
+                    and getattr(error, "code", None) == expected_code
+                )
+                return
+            raise AssertionError("label probe raised nothing")
+
+        control(
+            "refusal-label-" + expected_class + "-" + expected_type.__name__, check, 0
+        )
+
+    def unlabelled_success():
+        with common.refusal("integrity"):
+            value = "passed"
+        common.require(value == "passed")
+
+    control("refusal-label-success-passes-through", unlabelled_success, 0)
+
+    def gpgv_failure():
+        raise common.ProcessFailure(1)
+
+    def bound_failure():
+        common.require(False, "snapshot resource bound")
+
+    def already_auth():
+        raise common.classified(
+            ValueError("snapshot request refused"), "upstream_http_auth"
+        )
+
+    labelled("integrity", gpgv_failure, "integrity", common.ProcessFailure, 1)
+    labelled("integrity", bound_failure, "integrity", ValueError, None)
+    labelled("integrity", already_auth, "upstream_http_auth", ValueError, None)
+    control(
+        "refusal-class-unlabelled-is-unknown",
+        lambda: common.require(
+            common.refusal_class_of(ValueError("x")) == "unknown"
+            and common.refusal_class_of(common.ProcessFailure(100)) == "unknown"
+            and common.refusal_class_of(subprocess.TimeoutExpired("capture", 1200))
+            == "timeout"
+        ),
+        0,
+    )
+    control(
+        "refusal-class-undeclared-label-refused",
+        lambda: common.classified(ValueError("x"), "upstream_http_418"),
+        2,
+    )
+    worker = {
+        "file": "perl_1_all.deb",
+        "size": 512,
+        "sha256": "a" * 64,
+        "apt": {"state": "executed", "exit": 0},
+        "result": {"state": "executed", "exit": 0},
+    }
+    control(
+        "refusal-class-process-success-is-unknown-positive-first",
+        lambda: common.require(
+            common.capture_process_refusal_class({"downloads": [worker]}) == "unknown"
+        ),
+        0,
+    )
+    control(
+        "refusal-class-worker-check-after-APT-success-is-integrity",
+        lambda: common.require(
+            common.capture_process_refusal_class(
+                {"downloads": [worker | {"result": {"state": "executed", "exit": 1}}]}
+            )
+            == "integrity"
+        ),
+        0,
+    )
+    control(
+        "refusal-class-APT-download-refusal-stays-unknown",
+        lambda: common.require(
+            common.capture_process_refusal_class(
+                {
+                    "downloads": [
+                        worker
+                        | {
+                            "apt": {"state": "executed", "exit": 100},
+                            "result": {"state": "executed", "exit": 100},
+                        }
+                    ]
+                }
+            )
+            == "unknown"
+            and common.capture_process_refusal_class({"downloads": []}) == "unknown"
+        ),
+        0,
+    )
+    control(
+        "refusal-class-vocabulary-matches-coordinator-and-summary",
+        lambda: common.require(
+            tuple(
+                re.findall(
+                    r"'([a-z0-9_]+)'",
+                    re.search(
+                        r"refusalClasses = \[(.*?)\] as const",
+                        Path(common.__file__).with_name("capture-retry.ts").read_text(),
+                        re.S,
+                    ).group(1),
+                )
+            )
+            == common.REFUSAL_CLASSES
+            == tuple(
+                re.findall(
+                    r'"([a-z0-9_]+)"',
+                    re.search(
+                        r"\[(\"upstream_http_auth\".*?)\] as \$classes",
+                        (
+                            Path(common.__file__).parents[2]
+                            / ".github/workflows/ci.yml"
+                        ).read_text(),
+                        re.S,
+                    ).group(1),
+                )
+            )
+        ),
+        0,
     )
     control("source-selector-without-capture-state", lambda: common.selector(a), 0)
     # Exercise cleanup's success path before any protocol/refusal fixture.

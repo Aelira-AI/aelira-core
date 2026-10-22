@@ -4,6 +4,7 @@
 from __future__ import annotations
 import argparse
 import ast
+import contextlib
 import hashlib
 import http.client
 import importlib.util
@@ -34,6 +35,21 @@ SNAPSHOT_SUITES = (
     "resolute-security",
     "resolute-backports",
 )
+# Bounded, non-sensitive capture refusal classes recorded per attempt (#737).
+# Only the bounded snapshot fetcher's own HTTP status yields an upstream_http_*
+# class. APT exits do not identify an HTTP cause, so they stay unknown.
+REFUSAL_CLASSES = (
+    "upstream_http_auth",
+    "upstream_http_5xx",
+    "upstream_http_4xx",
+    "upstream_http_other",
+    "transport",
+    "timeout",
+    "tls",
+    "integrity",
+    "unknown",
+)
+REFUSAL_SCHEMA = "aelira-latexml-capture-refusal-class-v1"
 CA_PACKAGE_PATH = "pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb"
 CA_PACKAGE_SHA256 = "6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90"
 CA_PACKAGE_SIZE = 138514
@@ -118,6 +134,55 @@ END {
 def require(test, message="bounded check refused"):
     if not test:
         raise ValueError(message)
+
+
+def classified(error, name):
+    """Label an exception with a refusal class without changing its type or exit."""
+    require(name in REFUSAL_CLASSES, "undeclared refusal class")
+    if getattr(error, "refusal_class", None) is None:
+        error.refusal_class = name
+    return error
+
+
+@contextlib.contextmanager
+def refusal(name):
+    """Label refusals raised inside the block; an existing label is kept."""
+    try:
+        yield
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        raise classified(error, name)
+
+
+def http_refusal_class(status):
+    if type(status) is int and status in (401, 403):
+        return "upstream_http_auth"
+    if type(status) is int and 500 <= status <= 599:
+        return "upstream_http_5xx"
+    if type(status) is int and 400 <= status <= 499:
+        return "upstream_http_4xx"
+    return "upstream_http_other"
+
+
+def refusal_class_of(error):
+    """The recorded class of a capture refusal; anything unlabelled is unknown."""
+    name = getattr(error, "refusal_class", None)
+    if name in REFUSAL_CLASSES:
+        return name
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "timeout"
+    return "unknown"
+
+
+def capture_process_refusal_class(process):
+    """A worker whose APT download succeeded but whose own size/hash check failed."""
+    for row in process.get("downloads") or ():
+        if (
+            row.get("apt") == {"state": "executed", "exit": 0}
+            and row.get("result", {}).get("state") == "executed"
+            and row["result"].get("exit") != 0
+        ):
+            return "integrity"
+    return "unknown"
 
 
 def sha(data):
@@ -630,6 +695,8 @@ def snapshot_file(relative, limit):
         or relative in {"dists/" + suite + "/InRelease" for suite in SNAPSHOT_SUITES},
         "undeclared snapshot resource",
     )
+    # Only the final request's status, or its transport/TLS class, is recorded;
+    # no URL, header or body leaves this function.
     for attempt in range(len(SNAPSHOT_RETRY_DELAYS) + 1):
         connection = None
         try:
@@ -640,16 +707,24 @@ def snapshot_file(relative, limit):
             response = connection.getresponse()
             if response.status == 200:
                 data = response.read(limit + 1)
-                require(0 < len(data) <= limit, "snapshot resource bound")
+                with refusal("integrity"):
+                    require(0 < len(data) <= limit, "snapshot resource bound")
                 return data
-            require(response.status in SNAPSHOT_RETRY_HTTP, "snapshot request refused")
-            if attempt == len(SNAPSHOT_RETRY_DELAYS):
-                raise ValueError("snapshot request refused")
+            if response.status not in SNAPSHOT_RETRY_HTTP or attempt == len(
+                SNAPSHOT_RETRY_DELAYS
+            ):
+                raise classified(
+                    ValueError("snapshot request refused"),
+                    http_refusal_class(response.status),
+                )
         except ssl.SSLError as error:
-            raise ValueError("snapshot TLS refused") from error
+            raise classified(ValueError("snapshot TLS refused"), "tls") from error
         except (OSError, http.client.HTTPException) as error:
             if attempt == len(SNAPSHOT_RETRY_DELAYS):
-                raise ValueError("snapshot transport unavailable") from error
+                raise classified(
+                    ValueError("snapshot transport unavailable"),
+                    "timeout" if isinstance(error, TimeoutError) else "transport",
+                ) from error
         finally:
             if connection is not None:
                 connection.close()
@@ -849,7 +924,8 @@ def capture(a, root, caller):
             "/usr/share/keyrings/ubuntu-archive-keyring.gpg",
         ]
     )
-    require(sha(key) == KEYRING, "pinned native keyring differs")
+    with refusal("integrity"):
+        require(sha(key) == KEYRING, "pinned native keyring differs")
     (root / "ubuntu-archive-keyring.gpg").write_bytes(key)
     cache = root.parent / "capture-cache"
     path_check(cache, new=True)
@@ -859,17 +935,18 @@ def capture(a, root, caller):
     # This package is pinned to the previously authenticated Ubuntu signed-index
     # closure. Only its public root certificates are read; no package is installed.
     ca_package = snapshot_file(CA_PACKAGE_PATH, CA_PACKAGE_SIZE)
-    require(
-        len(ca_package) == CA_PACKAGE_SIZE and sha(ca_package) == CA_PACKAGE_SHA256,
-        "pinned CA package differs",
-    )
+    with refusal("integrity"):
+        require(
+            len(ca_package) == CA_PACKAGE_SIZE and sha(ca_package) == CA_PACKAGE_SHA256,
+            "pinned CA package differs",
+        )
     ca_path = cache / "ca-certificates.deb"
     ca_path.write_bytes(ca_package)
     ca_path.chmod(0o644)
-    bundle = snapshot_ca_bundle(
-        command(["/usr/bin/dpkg-deb", "--fsys-tarfile", str(ca_path)], timeout=30)
-    )
-    require(regular(ca_path)["sha256"] == CA_PACKAGE_SHA256, "CA package changed")
+    members = command(["/usr/bin/dpkg-deb", "--fsys-tarfile", str(ca_path)], timeout=30)
+    with refusal("integrity"):
+        bundle = snapshot_ca_bundle(members)
+        require(regular(ca_path)["sha256"] == CA_PACKAGE_SHA256, "CA package changed")
     (cache / "snapshot-roots.pem").write_bytes(bundle)
     (cache / "snapshot-roots.pem").chmod(0o644)
     endpoint_metadata = {}
@@ -878,26 +955,29 @@ def capture(a, root, caller):
         endpoint = cache / (suite + ".InRelease")
         endpoint.write_bytes(data)
         endpoint.chmod(0o644)
-        command(
-            [
-                "/usr/bin/gpgv",
-                "--keyring",
-                str(root / "ubuntu-archive-keyring.gpg"),
-                str(endpoint),
-            ],
-            timeout=30,
-        )
-        text = data.decode("utf-8")
-        for field, value in (
-            ("Origin", "Ubuntu"),
-            ("Label", "Ubuntu"),
-            ("Codename", "resolute"),
-            ("Suite", suite),
-        ):
-            require(
-                re.findall(r"^" + field + r": (.*)$", text, re.M) == [value],
-                "signed snapshot identity differs",
+        # A signature or signed-identity refusal is an integrity class; the
+        # original gpgv exit is kept for the stage receipt.
+        with refusal("integrity"):
+            command(
+                [
+                    "/usr/bin/gpgv",
+                    "--keyring",
+                    str(root / "ubuntu-archive-keyring.gpg"),
+                    str(endpoint),
+                ],
+                timeout=30,
             )
+            text = data.decode("utf-8")
+            for field, value in (
+                ("Origin", "Ubuntu"),
+                ("Label", "Ubuntu"),
+                ("Codename", "resolute"),
+                ("Suite", suite),
+            ):
+                require(
+                    re.findall(r"^" + field + r": (.*)$", text, re.M) == [value],
+                    "signed snapshot identity differs",
+                )
         endpoint_metadata[suite] = data
     sources = (
         "Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/" + SNAPSHOT_ID + "/\n"
@@ -1036,7 +1116,9 @@ def capture(a, root, caller):
         finally:
             (root.parent / "capture-process.json").write_bytes(canonical(process))
     if original != 0:
-        raise ProcessFailure(original)
+        raise classified(
+            ProcessFailure(original), capture_process_refusal_class(process)
+        )
     require(
         all(
             row == {"state": "executed", "exit": 0}
@@ -1072,25 +1154,29 @@ def capture(a, root, caller):
                 and regular(target)["size"] == before["size"],
                 "capture copied bytes differ",
             )
-    releases = sorted((root / "lists").glob("*_InRelease"))
-    prefix = "snapshot.ubuntu.com_ubuntu_" + SNAPSHOT_ID + "_dists_"
-    require(len(releases) == len(SNAPSHOT_SUITES), "snapshot release count differs")
-    for suite in SNAPSHOT_SUITES:
-        matches = [p for p in releases if p.name == prefix + suite + "_InRelease"]
+    # Endpoint-to-APT equality and the caller's signed-input authentication
+    # are integrity refusals.
+    with refusal("integrity"):
+        releases = sorted((root / "lists").glob("*_InRelease"))
+        prefix = "snapshot.ubuntu.com_ubuntu_" + SNAPSHOT_ID + "_dists_"
+        require(len(releases) == len(SNAPSHOT_SUITES), "snapshot release count differs")
+        for suite in SNAPSHOT_SUITES:
+            matches = [p for p in releases if p.name == prefix + suite + "_InRelease"]
+            require(
+                len(matches) == 1
+                and matches[0].read_bytes() == endpoint_metadata[suite],
+                "snapshot endpoint-to-input mismatch",
+            )
         require(
-            len(matches) == 1 and matches[0].read_bytes() == endpoint_metadata[suite],
-            "snapshot endpoint-to-input mismatch",
+            regular(cache / "snapshot-roots.pem")["sha256"] == CA_BUNDLE_SHA256,
+            "capture CA roots changed",
         )
-    require(
-        regular(cache / "snapshot-roots.pem")["sha256"] == CA_BUNDLE_SHA256,
-        "capture CA roots changed",
-    )
-    require(
-        (cache / "snapshot.sources").read_text() == sources
-        and not list((cache / "sourceparts-empty").iterdir()),
-        "capture source configuration changed",
-    )
-    lock = caller.verify_apt(root, a.architecture)
+        require(
+            (cache / "snapshot.sources").read_text() == sources
+            and not list((cache / "sourceparts-empty").iterdir()),
+            "capture source configuration changed",
+        )
+        lock = caller.verify_apt(root, a.architecture)
     files = {"ubuntu-archive-keyring.gpg", "input-lock.json"} | {
         x["name"] for x in lock["files"]
     }
@@ -1416,6 +1502,17 @@ def main():
                     "exit": exc.code if isinstance(exc, ProcessFailure) else 2,
                 }
             )
+        if current == "input-capture":
+            # Private scratch record read by the retry coordinator for the
+            # public attempt receipt. Missing or unwritable means unknown.
+            try:
+                (a.scratch / "capture-refusal-class.json").write_bytes(
+                    canonical(
+                        {"schema": REFUSAL_SCHEMA, "class": refusal_class_of(exc)}
+                    )
+                )
+            except OSError:
+                pass
         if (a.scratch / "producer/status.json").is_file():
             receipt["producer_status_sha256"] = regular(
                 a.scratch / "producer/status.json"
