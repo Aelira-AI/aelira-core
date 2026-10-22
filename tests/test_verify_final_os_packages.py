@@ -12,6 +12,7 @@ from scripts.verify_final_os_packages import (
     ABSENT_EXECUTABLES,
     ABSENT_PACKAGES,
     CHECKS,
+    DEBIAN_FFMPEG_PACKAGES,
     DISTRUSTED_ROOT_HASH,
     DISTRUSTED_ROOT_NAME,
     DISTRUSTED_ROOT_SHA256,
@@ -60,7 +61,21 @@ def test_absent_package_state_is_accepted() -> None:
 
 
 def test_removed_packages_and_executables_are_pinned() -> None:
-    assert ABSENT_PACKAGES == ("xdg-utils", "libxml2-utils")
+    assert ABSENT_PACKAGES == ("xdg-utils", "libxml2-utils", *DEBIAN_FFMPEG_PACKAGES)
+    assert set(DEBIAN_FFMPEG_PACKAGES) == {
+        "ffmpeg",
+        "libavcodec61",
+        "libavdevice61",
+        "libavfilter10",
+        "libavformat61",
+        "libavutil59",
+        "libpostproc58",
+        "libswresample5",
+        "libswscale8",
+        "librist4",
+        "libcjson1",
+        "libsndfile1",
+    }
     assert {"xdg-email", "xdg-open", "xmllint", "xmlcatalog"} <= set(ABSENT_EXECUTABLES)
 
 
@@ -78,6 +93,12 @@ def test_each_reintroduced_package_is_reported() -> None:
         "package must be absent: xdg-utils",
         "package must be absent: libxml2-utils",
     ]
+
+
+@pytest.mark.parametrize("package", DEBIAN_FFMPEG_PACKAGES)
+def test_each_reintroduced_debian_ffmpeg_package_is_reported(package: str) -> None:
+    # The 0.9.14 image carried every one of these through Debian's ffmpeg.
+    assert _validate(installed={package}) == [f"package must be absent: {package}"]
 
 
 def test_real_xdg_utils_fails_even_when_the_placeholder_is_installed() -> None:

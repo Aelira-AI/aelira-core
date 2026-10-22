@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Verify the Debian package state and system trust store of the final image.
 
+Debian's ffmpeg package and the libraries only it needed are absent.
+
 xdg-utils is removed, yet texlive-base still depends on it. An empty local
 placeholder package provides the name so the dpkg database stays consistent
 and apt keeps working in images built from this one.
@@ -28,7 +30,25 @@ from pathlib import Path
 # Packages the image does not need and must not carry. xdg-utils ships
 # xdg-email (CVE-2022-4055); no supported feature opens a desktop handler or
 # mail client. libxml2-utils ships xmllint and xmlcatalog, which nothing runs.
-ABSENT_PACKAGES = ("xdg-utils", "libxml2-utils")
+# The ffmpeg and ffprobe programs come from the image's own FFmpeg 9.0.2 build
+# under /opt/ffmpeg9, so Debian's ffmpeg and its libraries must not return.
+# librist4 and its libcjson1 dependency, and libsndfile1 through PulseAudio,
+# were installed only for Debian's FFmpeg libraries.
+DEBIAN_FFMPEG_PACKAGES = (
+    "ffmpeg",
+    "libavcodec61",
+    "libavdevice61",
+    "libavfilter10",
+    "libavformat61",
+    "libavutil59",
+    "libpostproc58",
+    "libswresample5",
+    "libswscale8",
+    "librist4",
+    "libcjson1",
+    "libsndfile1",
+)
+ABSENT_PACKAGES = ("xdg-utils", "libxml2-utils", *DEBIAN_FFMPEG_PACKAGES)
 ABSENT_EXECUTABLES = (
     "xdg-desktop-icon",
     "xdg-desktop-menu",

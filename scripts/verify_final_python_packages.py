@@ -10,6 +10,7 @@ import hashlib
 import importlib.metadata
 import os
 import re
+import shutil
 import subprocess
 import sys
 import sysconfig
@@ -643,6 +644,182 @@ def validate_opencv_native(
     return sorted(set(errors))
 
 
+FFMPEG_CLI_PREFIX = "/opt/ffmpeg9/bin/"
+FFMPEG_CLI_TOOLS = ("ffmpeg", "ffprobe")
+FFMPEG_CLI_VERSION = "9.0.2"
+# The exact configure line of docker/build-pyav-wheel.sh as both programs
+# report it. Any change to the build's flags must update this pin.
+FFMPEG_CLI_CONFIGURATION = (
+    "--prefix=/opt/ffmpeg9 --enable-shared --disable-static --disable-programs "
+    "--enable-ffmpeg --enable-ffprobe --disable-doc --disable-autodetect "
+    "--disable-debug --disable-network --disable-protocols "
+    "--enable-protocol=file --enable-protocol=pipe --enable-libdav1d "
+    "--disable-decoder=av1 --enable-libmp3lame --enable-libvorbis "
+    "--extra-cflags='-O2 -g0 -ffile-prefix-map=/tmp/pyav-build=.' "
+    "--extra-ldflags='-Wl,--disable-new-dtags,-rpath,/opt/ffmpeg9/lib'"
+)
+# Only local input and output. No network protocol may be compiled in.
+FFMPEG_CLI_PROTOCOLS = ("file", "pipe")
+# Speech output needs MP3 and Ogg Vorbis encoders from Debian's libraries.
+FFMPEG_CLI_ENCODERS = ("libmp3lame", "libvorbis")
+FFMPEG_CLI_SYSTEM_LIBRARIES = ("libmp3lame.so.0", "libvorbisenc.so.2", "libdav1d.so.7")
+# Libraries that only Debian's FFmpeg build brought in. None may be loaded.
+FFMPEG_CLI_FORBIDDEN_LIBRARIES = (
+    *PYAV_TLS_LIBRARIES,
+    "librist",
+    "libcjson",
+    "libSDL",
+    "libpulse",
+    "libsndfile",
+    "libssh",
+    "libsrt",
+    "libzmq",
+    "libbluray",
+    "libpostproc",
+)
+
+
+def run_tool(command: list[str]) -> str:
+    """Return stdout of a command run without loader overrides."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD"}
+    }
+    return subprocess.run(
+        command, check=True, capture_output=True, text=True, env=env
+    ).stdout
+
+
+def _listed_protocols(output: str) -> dict[str, set[str]]:
+    """Parse ``ffmpeg -protocols`` into its Input and Output name sets."""
+    sections: dict[str, set[str]] = {}
+    current: set[str] | None = None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped in {"Input:", "Output:"}:
+            current = sections.setdefault(stripped[:-1].lower(), set())
+        elif stripped and current is not None and line[:1].isspace():
+            current.add(stripped)
+    return sections
+
+
+def _listed_encoders(output: str) -> set[str]:
+    """Return encoder names from ``ffmpeg -encoders`` rows after the legend."""
+    names: set[str] = set()
+    started = False
+    for line in output.splitlines():
+        if line.strip() == "------":
+            started = True
+            continue
+        fields = line.split()
+        if started and len(fields) >= 2:
+            names.add(fields[1])
+    return names
+
+
+def validate_ffmpeg_cli(
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    realpath: Callable[[str], str] = os.path.realpath,
+    run: Callable[[list[str]], str] = run_tool,
+    ldd: Callable[[Path], str] = run_ldd,
+) -> list[str]:
+    """Pin the ffmpeg and ffprobe programs to the image's own FFmpeg build.
+
+    Both names on PATH must resolve into /opt/ffmpeg9/bin, report FFmpeg
+    9.0.2 with the reviewed configure line, load every FFmpeg library from
+    /opt/ffmpeg9/lib and nothing Debian's FFmpeg brought in, and offer only
+    the local protocols. This fails if Debian's ffmpeg returns to PATH.
+    """
+    errors: list[str] = []
+    for tool in FFMPEG_CLI_TOOLS:
+        found = which(tool)
+        if found is None:
+            errors.append(f"cli: {tool} is not on PATH")
+            continue
+        target = realpath(found)
+        if target != f"{FFMPEG_CLI_PREFIX}{tool}":
+            errors.append(
+                f"cli: {tool} on PATH is {found} -> {target}; "
+                f"expected {FFMPEG_CLI_PREFIX}{tool}"
+            )
+            continue
+        try:
+            version = run([target, "-hide_banner", "-version"])
+        except (OSError, subprocess.CalledProcessError) as exc:
+            errors.append(f"cli: unable to run {tool} -version: {exc}")
+            continue
+        lines = version.splitlines()
+        first = lines[0] if lines else ""
+        if not first.startswith(f"{tool} version {FFMPEG_CLI_VERSION} "):
+            errors.append(
+                f"cli: {tool} reports {first!r}; expected version {FFMPEG_CLI_VERSION}"
+            )
+        configurations = [
+            line.split(":", 1)[1].strip()
+            for line in lines
+            if line.startswith("configuration:")
+        ]
+        if configurations != [FFMPEG_CLI_CONFIGURATION]:
+            errors.append(
+                f"cli: {tool} configuration differs from the reviewed build: "
+                f"{configurations}"
+            )
+        try:
+            libraries = _resolved_libraries(ldd(Path(target)))
+        except (OSError, subprocess.CalledProcessError) as exc:
+            errors.append(f"cli: unable to inspect {tool} with ldd: {exc}")
+            continue
+        found_stems: set[str] = set()
+        for name, path in libraries.items():
+            stem = name.split(".so", 1)[0]
+            if path == "not found" or not path.startswith("/"):
+                errors.append(f"cli: {tool} cannot resolve {name}: {path}")
+                continue
+            if stem in PYAV_LIBRARIES:
+                expected_name = f"{stem}.so.{PYAV_LIBRARIES[stem][0]}"
+                if name != expected_name:
+                    errors.append(f"cli: {tool} links {name}; expected {expected_name}")
+                elif not realpath(path).startswith(PYAV_PREFIX):
+                    errors.append(
+                        f"cli: {tool} resolves {name} to {path}; expected {PYAV_PREFIX}"
+                    )
+                else:
+                    found_stems.add(stem)
+            elif stem.startswith(("libav", "libsw")):
+                errors.append(f"cli: {tool} loads unexpected FFmpeg library {name}")
+            if stem.startswith(FFMPEG_CLI_FORBIDDEN_LIBRARIES):
+                errors.append(f"cli: {tool} loads forbidden library {name} at {path}")
+        for stem in sorted(PYAV_LIBRARIES.keys() - found_stems):
+            errors.append(f"cli: {tool} does not resolve {stem} from {PYAV_PREFIX}")
+        for name in FFMPEG_CLI_SYSTEM_LIBRARIES:
+            path = libraries.get(name)
+            if path is None or not realpath(path).startswith("/usr/lib/"):
+                errors.append(f"cli: {tool} lacks Debian {name}: {path}")
+
+    ffmpeg = which("ffmpeg")
+    if ffmpeg is not None and realpath(ffmpeg) == f"{FFMPEG_CLI_PREFIX}ffmpeg":
+        try:
+            protocols = _listed_protocols(run([ffmpeg, "-hide_banner", "-protocols"]))
+            encoders = _listed_encoders(run([ffmpeg, "-hide_banner", "-encoders"]))
+        except (OSError, subprocess.CalledProcessError) as exc:
+            errors.append(f"cli: unable to list ffmpeg protocols or encoders: {exc}")
+        else:
+            for direction in ("input", "output"):
+                listed = protocols.get(direction)
+                if listed != set(FFMPEG_CLI_PROTOCOLS):
+                    errors.append(
+                        f"cli: ffmpeg {direction} protocols are "
+                        f"{sorted(listed) if listed is not None else 'unlisted'}; "
+                        f"expected {list(FFMPEG_CLI_PROTOCOLS)}"
+                    )
+            for name in FFMPEG_CLI_ENCODERS:
+                if name not in encoders:
+                    errors.append(f"cli: ffmpeg lacks the {name} encoder")
+    return sorted(set(errors))
+
+
 def validate_psycopg2_native(
     *,
     version: Callable[[str], str] = importlib.metadata.version,
@@ -823,6 +1000,9 @@ def main() -> int:
         errors.extend(validate_psycopg2_native())
         errors.extend(validate_pyav_native())
         errors.extend(validate_opencv_native())
+    # The developer image keeps Debian's ffmpeg on PATH as a fixture tool.
+    if args.scope == "venv":
+        errors.extend(validate_ffmpeg_cli())
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
