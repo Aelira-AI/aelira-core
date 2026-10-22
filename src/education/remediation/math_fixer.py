@@ -292,6 +292,12 @@ class MathFixer:
         self.pdf = pdf
         self.fitz_doc = fitz_doc
         self.ai_client = ai_client
+        # Equation recognition is never an ambient AI operation. A client not
+        # explicitly bound to the alt_text purpose is treated as absent, so no
+        # recognizer is built from it and the finding reports
+        # alt_text_client_unavailable.
+        if getattr(alt_text_client, "purpose", None) != "alt_text":
+            alt_text_client = None
         self.alt_text_client = alt_text_client
         if image_source is None:
             from .equation_image_source import EquationImageSource

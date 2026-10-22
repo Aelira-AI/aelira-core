@@ -321,6 +321,91 @@ class WorkspaceProviderRuntime:
         }
 
 
+class WorkspaceAltTextClient:
+    """The ``alt_text`` purpose view of one workspace provider runtime.
+
+    Image descriptions and equation recognition accept only a client bound to
+    the ``alt_text`` purpose. A job that is not an LMS job is served by its
+    workspace's own configured providers, so this view labels that runtime
+    with the purpose and adds nothing else. Every call goes to the wrapped
+    runtime, which still resolves only its own workspace's selection, and only
+    the text and image operations that descriptions use are exposed. Responses
+    pass through unchanged, including the provider and model that answered,
+    and successful local calls are counted on the wrapped runtime.
+    """
+
+    __slots__ = ("_runtime",)
+
+    def __init__(self, runtime: WorkspaceProviderRuntime) -> None:
+        # Only a tenant-bound runtime may be relabelled. Wrapping another
+        # client (an LMS client bound to a different purpose, or the global
+        # manager) would let it pass purpose checks it does not satisfy.
+        if not isinstance(runtime, WorkspaceProviderRuntime):
+            raise TypeError("alt-text view requires a workspace provider runtime")
+        object.__setattr__(self, "_runtime", runtime)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("alt-text view is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("alt-text view is immutable")
+
+    @property
+    def purpose(self) -> str:
+        return "alt_text"
+
+    @property
+    def workspace_id(self) -> str | None:
+        return self._runtime.workspace_id
+
+    @property
+    def ollama_usage(self) -> OllamaUsage:
+        return self._runtime.ollama_usage
+
+    async def generate_text(
+        self,
+        prompt: str,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+        system_prompt: str | None = None,
+        provider: ProviderType | None = None,
+        use_cache: bool = True,
+    ) -> LLMResponse:
+        return await self._runtime.generate_text(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            provider=provider,
+            use_cache=use_cache,
+        )
+
+    async def analyze_image(
+        self,
+        image_data: bytes,
+        prompt: str,
+        max_tokens: int = 500,
+        provider: ProviderType | None = None,
+        use_cache: bool = True,
+    ) -> LLMResponse:
+        return await self._runtime.analyze_image(
+            image_data,
+            prompt,
+            max_tokens=max_tokens,
+            provider=provider,
+            use_cache=use_cache,
+        )
+
+    def generate_text_sync(self, **kwargs: Any) -> dict[str, Any]:
+        return self._runtime.generate_text_sync(**kwargs)
+
+    def analyze_image_sync(self, **kwargs: Any) -> dict[str, Any]:
+        return self._runtime.analyze_image_sync(**kwargs)
+
+    def health_check(self) -> dict[str, Any]:
+        return self._runtime.health_check()
+
+
 def workspace_provider_runtime(workspace_id: str | None) -> WorkspaceProviderRuntime:
     """Create a tenant runtime without consulting process-global state."""
 

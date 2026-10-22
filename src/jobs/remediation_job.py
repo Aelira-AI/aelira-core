@@ -42,7 +42,10 @@ from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..ai.lms_remediation_client import LMSRemediationClient
-from ..ai.workspace_provider_runtime import workspace_provider_runtime
+from ..ai.workspace_provider_runtime import (
+    WorkspaceAltTextClient,
+    workspace_provider_runtime,
+)
 from ..education.remediation.base import (
     IssueCategory,
     classify_issue_category,
@@ -78,6 +81,7 @@ from .remediation_subprocess import (
     RemediationSubprocessError,
     RemediationSubprocessTimeout,
     run_remediation_subprocess,
+    workspace_alt_text_requested,
 )
 
 logger = logging.getLogger(__name__)
@@ -1225,8 +1229,8 @@ async def process_remediation_job(
         ):
             if ai_client is None:
                 ai_client = workspace_provider_runtime(str(department_id))
-            if alt_text_client is None:
-                alt_text_client = ai_client
+            if alt_text_client is None and workspace_alt_text_requested(options):
+                alt_text_client = WorkspaceAltTextClient(ai_client)
         if not killable_execution:
             remediator_path = file_path
             if reviewed_source is not None:
@@ -1247,7 +1251,9 @@ async def process_remediation_job(
                 alt_text_client=alt_text_client,
                 allow_legacy_nested_ai=False,
                 allow_embedded_alt=(
-                    alt_text_client is not None or not lms_policy_authoritative
+                    alt_text_client is not None
+                    if lms_policy_authoritative
+                    else workspace_alt_text_requested(options)
                 ),
             )
             if remediator is None:
@@ -2792,6 +2798,9 @@ async def handle_remediation_job(
     if not context.get("alt_text_requested"):
         requested.discard("alt_text")
 
+    job_options = (
+        payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    )
     remediation_client = None
     alt_text_client = None
     if provider in _LMS_PROVIDERS:
@@ -2818,8 +2827,12 @@ async def handle_remediation_job(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
     elif reviewed_pdf_recovery is None:
+        # A job that is not an LMS job uses its workspace's own providers. The
+        # alt-text purpose, which also covers equation recognition, gets a
+        # distinct purpose-bound view only when the request leaves it on.
         remediation_client = workspace_provider_runtime(str(job.department_id))
-        alt_text_client = remediation_client
+        if workspace_alt_text_requested(job_options):
+            alt_text_client = WorkspaceAltTextClient(remediation_client)
 
     job_data = {
         "job_id": str(job.id),
@@ -2831,9 +2844,7 @@ async def handle_remediation_job(
         "file_path": scan.storage_path if local_job else None,
         "actor_id": payload.get("requested_by_id"),
         "approved_fix_snapshot": payload.get("approved_fix_snapshot"),
-        "options": (
-            payload.get("options") if isinstance(payload.get("options"), dict) else {}
-        ),
+        "options": job_options,
     }
     pre_process_scan_state = {
         field: getattr(scan, field, None)

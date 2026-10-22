@@ -48,6 +48,7 @@ A finding can remain manual because its category is unsupported, its target is a
 The actual API defaults and explicit controls are route-specific:
 
 - Direct remediation's `RemediationOptions.use_ai` defaults to `true`. Send `{"use_ai": false}` to `POST /education/remediate/{scan_id}` (that is, set `use_ai=false` in remediation options) when only rule-based fixes are acceptable. LMS-backed remediation has a separate explicit-intent policy and does not inherit that direct-upload default.
+- For local uploads and Google Drive or Microsoft files, `generate_alt_text` defaults to `true`. While AI is on, image descriptions and equation recognition then use the workspace's configured provider, which receives those images. Send `{"generate_alt_text": false}` to keep both off; image findings then stay manual as a disabled category.
 - `POST /education/pdf/scan` has `enhance_descriptions` defaults to `true` and `generate_alt_text` defaults to `false`; set `enhance_descriptions=false` with `?enhance_descriptions=false` to disable description enhancement, and leave `generate_alt_text=false` to keep alt-text generation off.
 - The DOCX and PPTX scan routes default both `generate_alt_text` and `validate_alt_text` to `false`. The XLSX route defaults `generate_chart_descriptions` and `generate_alt_text` to `false`.
 - `POST /education/latex/scan` has `use_ollama` defaults to `true`; set `use_ollama=false` with `?use_ollama=false` to disable it.

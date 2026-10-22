@@ -216,7 +216,6 @@ def test_second_reading_reasons_say_what_was_and_was_not_established():
     "reason",
     [
         "image_equation_something_else",
-        "equation_verification_failed",
         "Image_equation_draw_unresolved",
         " image_equation_draw_unresolved",
         "image_equation_draw_unresolved: provider failed token=SECRET",
@@ -250,5 +249,84 @@ def test_oversized_equation_reason_has_its_own_honest_public_explanation():
     assert "larger than" in oversized["reason"]
     assert "could not be compared" in oversized["reason"]
     assert "alt text manually" in oversized["next_step"]
-    # Other equation verification failures still do not invent a public reason.
-    assert failed["reason_code"] == "manual_reason_unrecorded"
+    # Other verification failures keep their own reason; the size explanation
+    # is never borrowed for them.
+    assert failed["reason_code"] == "equation_verification_failed"
+    assert "larger than" not in failed["reason"]
+    assert "did not pass or could not run" in failed["reason"]
+
+
+def test_withheld_alt_text_client_has_an_accurate_public_explanation():
+    issues = [{"id": "equation"}, {"id": "embedded-image"}]
+    result = SimpleNamespace(
+        manual_issues=[
+            {"issue_id": "equation", "reason": "alt_text_client_unavailable"},
+            {"issue_id": "embedded-image", "reason": "alt_text_client_unavailable"},
+        ],
+        fixed_issues=[],
+    )
+    counts = outcome_accounting(issues, result, published=False)
+    public = public_job_result(_safe_failure_result("manual_required", counts, None))
+
+    for outcome in public["issue_outcomes"]:
+        assert outcome["reason_code"] == "alt_text_client_unavailable"
+        assert outcome["attempt"] == "not_attempted"
+        assert "authorized for image descriptions" in outcome["reason"]
+        assert "equation recognition" in outcome["reason"]
+        assert "AI policy" in outcome["next_step"]
+        # The generic missing-provider guidance must not stand in for it.
+        assert "image AI configuration" not in outcome["next_step"]
+
+
+MATH_FIXER_REASONS = {
+    "equation_image_source_rejected": "not_attempted",
+    "equation_region_source_rejected": "not_attempted",
+    "equation_verifier_unavailable": "not_attempted",
+    "equation_recognition_rejected": "not_applied",
+    "handwritten_equation_recognition_rejected": "not_applied",
+    "not_printed_equation": "not_applied",
+    "not_handwritten_equation": "not_applied",
+    "handwritten_math_not_eligible": "not_applied",
+    "handwritten_math_suitability_rejected": "not_applied",
+    "handwritten_notation_unsupported": "not_applied",
+    "hmer_unavailable": "not_applied",
+    "equation_verification_failed": "not_applied",
+    "equation_verification_mismatch": "not_applied",
+    "handwritten_equation_verification_failed": "not_applied",
+    "handwritten_equation_verification_mismatch": "not_applied",
+    "image_equation_conversion_failed": "not_applied",
+    "math_fix_failed": "not_applied",
+}
+
+
+def test_every_math_fixer_refusal_has_its_own_public_explanation():
+    import re
+    from pathlib import Path
+
+    from src.education.remediation.outcome_explanations import manual_explanation
+
+    source = Path(__file__).resolve().parents[1] / (
+        "src/education/remediation/math_fixer.py"
+    )
+    emitted = set(re.findall(r'error="([a-z0-9_]+)"', source.read_text()))
+    # Every code MathFixer reports as a literal is covered here.
+    assert emitted - {"alt_text_client_unavailable"} == set(MATH_FIXER_REASONS)
+    reasons = set()
+    for code, attempt in MATH_FIXER_REASONS.items():
+        explanation = manual_explanation({"reason": code})
+        assert explanation["reason_code"] == code
+        assert explanation["attempt"] == attempt
+        assert "accessible math" in explanation["next_step"]
+        reasons.add(explanation["reason"])
+    assert len(reasons) == len(MATH_FIXER_REASONS)
+
+
+def test_unverified_equation_association_has_a_public_explanation():
+    from src.education.remediation.outcome_explanations import manual_explanation
+
+    explanation = manual_explanation(
+        {"reason": "Verified image equation awaits exact content association"}
+    )
+    assert explanation["reason_code"] == "equation_association_unverified"
+    assert explanation["attempt"] == "not_applied"
+    assert "saved PDF" in explanation["reason"]

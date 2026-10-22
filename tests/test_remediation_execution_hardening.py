@@ -704,7 +704,12 @@ async def test_local_job_uses_scan_authority_without_cloud_credentials(monkeypat
             "skipped_count": 0,
         }
     )
-    runtime = object()
+    from src.ai.workspace_provider_runtime import (
+        WorkspaceAltTextClient,
+        WorkspaceProviderRuntime,
+    )
+
+    runtime = WorkspaceProviderRuntime("department-1", snapshot_loader=lambda _: None)
     runtime_factory = MagicMock(return_value=runtime)
     monkeypatch.setattr(remediation_job, "workspace_provider_runtime", runtime_factory)
     monkeypatch.setattr(remediation_job, "process_remediation_job", process)
@@ -717,7 +722,9 @@ async def test_local_job_uses_scan_authority_without_cloud_credentials(monkeypat
     runtime_factory.assert_called_once_with("department-1")
     assert call.kwargs["lms_policy_authoritative"] is False
     assert call.kwargs["ai_client"] is runtime
-    assert call.kwargs["alt_text_client"] is runtime
+    # The alt-text purpose is a distinct purpose-bound view of the runtime.
+    assert isinstance(call.kwargs["alt_text_client"], WorkspaceAltTextClient)
+    assert call.kwargs["alt_text_client"]._runtime is runtime
 
 
 @pytest.mark.asyncio
@@ -1105,7 +1112,12 @@ async def test_local_queue_defers_ai_to_workspace_runtime(monkeypatch):
             "skipped_count": 0,
         }
     )
-    runtime = object()
+    from src.ai.workspace_provider_runtime import (
+        WorkspaceAltTextClient,
+        WorkspaceProviderRuntime,
+    )
+
+    runtime = WorkspaceProviderRuntime("department-1", snapshot_loader=lambda _: None)
     runtime_factory = MagicMock(return_value=runtime)
     monkeypatch.setattr(remediation_job.LMSRemediationClient, "bind_if_allowed", bind)
     monkeypatch.setattr(remediation_job, "workspace_provider_runtime", runtime_factory)
@@ -1117,7 +1129,8 @@ async def test_local_queue_defers_ai_to_workspace_runtime(monkeypatch):
     runtime_factory.assert_called_once_with("department-1")
     call = process.await_args
     assert call.kwargs["lms_policy_authoritative"] is False
-    assert call.kwargs["alt_text_client"] is runtime
+    assert isinstance(call.kwargs["alt_text_client"], WorkspaceAltTextClient)
+    assert call.kwargs["alt_text_client"]._runtime is runtime
     assert call.kwargs["ai_client"] is runtime
 
 
