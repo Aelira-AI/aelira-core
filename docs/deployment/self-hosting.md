@@ -49,15 +49,20 @@ Two Dockerfiles matter here:
 - **`Dockerfile`** (repo root) — the production image. Multi-stage build:
   a builder stage installs Python dependencies from `requirements.txt` into a
   venv, then the runtime stage installs OS packages (Tesseract, Poppler,
-  the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
-  dependencies, and Node.js for Pa11y), copies the venv and the `ffmpeg` and
-  `ffprobe` programs from its own FFmpeg 9.0.2 build, runs as a non-root
+  the LaTeXML/TeX Live stack, Pandoc, Chromium's system libraries, and
+  Node.js for Pa11y), copies the venv and the `ffmpeg` and `ffprobe` programs
+  from its own FFmpeg 9.0.2 build, runs as a non-root
   `aelira` user, and starts via `entrypoint.sh`. Both the production and
   development images pin Pa11y 9.0.1 and use the same digest-pinned Node 24
-  runtime. Their smoke gate requires Node 24, and Puppeteer is prevented from
-  downloading a second browser. Pa11y uses the
-  Playwright-managed Chromium through `/home/aelira/.local/bin/aelira-chromium`
-  and the checked-in `config/pa11y.json` launch settings. Each image build
+  runtime. Their smoke gate requires Node 24.22.1 or later, and Puppeteer is
+  prevented from downloading a second browser. Both images run one browser, the
+  Chrome for Testing build pinned by version and SHA-256 in
+  `scripts/chrome-for-testing.json` and installed at
+  `/opt/chrome-for-testing/chrome` (named in `AELIRA_CHROMIUM_EXECUTABLE`), not
+  Playwright's bundled Chromium, which can trail Chrome stable. Every Playwright
+  launch and Pa11y use it, Pa11y through
+  `/home/aelira/.local/bin/aelira-chromium` and the checked-in
+  `config/pa11y.json` launch settings. Each image build
   runs `scripts/smoke_pa11y_runtime.py` as `aelira` against a local HTML
   fixture; the build fails unless Pa11y launches Chromium and returns JSON.
   `entrypoint.sh` runs

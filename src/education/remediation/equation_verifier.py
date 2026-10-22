@@ -15,6 +15,7 @@ from xml.etree import ElementTree
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 from latex2mathml.converter import convert as latex_to_mathml
+from src.security.browser_runtime import chromium_launch_options
 
 from src.education.canonical_mathml_version import (
     CANONICAL_MATHML_VERSION as CANONICAL_MATHML_VERSION,
@@ -301,7 +302,9 @@ html,body{{margin:0;background:#fff;color:#000}}
 #formula{{display:inline-block;padding:24px;font:48px STIXPinned;line-height:1}}
 </style><div id=formula>{mathml}</div>"""
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(
+                headless=True, **chromium_launch_options()
+            )
             try:
                 page = browser.new_page(
                     viewport={"width": 1024, "height": 512},

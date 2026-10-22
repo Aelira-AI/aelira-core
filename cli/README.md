@@ -1173,6 +1173,10 @@ npm install
 # Install Playwright (for website scanning)
 npx playwright install chromium
 
+# Optional: scan with a browser you keep patched yourself, such as Chrome for
+# Testing, instead of Playwright's bundled Chromium
+export AELIRA_CHROMIUM_EXECUTABLE=/path/to/chrome
+
 # Build TypeScript
 npm run build
 

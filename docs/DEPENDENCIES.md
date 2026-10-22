@@ -181,6 +181,42 @@ Installed by the Docker images / quickstart, or by you when running bare:
 | Pandoc | Document format conversion |
 | FFmpeg 9.0.2 (`ffmpeg`, `ffprobe`) | Audio/video probing, decoding and muxing for captioning; the API image builds it from source (below) |
 
+### Browser and Node runtime in API images
+
+The web scanner points a browser at pages that visitors choose, so the
+browser is held to Chrome stable's security fixes rather than Playwright's
+release schedule.
+
+- **Chromium.** Playwright 1.64.1 bundles Chrome for Testing 156.0.8078.4, and
+  the 1.65 prerelease 156.0.8078.12. Chrome stable 156.0.8078.47 (2026-10-20)
+  fixed many CVEs after both. The images therefore run the Chrome for Testing
+  156.0.8078.47 build named in `scripts/chrome-for-testing.json`, which holds the
+  version and, for linux/amd64 and linux/arm64, the archive size and SHA-256.
+  `scripts/install_chrome_for_testing.py` downloads it over HTTPS, refuses
+  anything that differs from the pin, and unpacks it to
+  `/opt/chrome-for-testing/chrome`. Playwright's own Chromium is not installed.
+  `AELIRA_CHROMIUM_EXECUTABLE` names the executable; every Playwright launch in
+  `src/` spreads `chromium_launch_options()` from
+  `src/security/browser_runtime.py`, and a configured path that is not a file is
+  an error rather than a fallback. Pa11y reaches the same file through
+  `PA11Y_CHROMIUM_PATH`. `scripts/smoke_pa11y_runtime.py` fails the image build
+  unless both Pa11y and a Playwright launch run exactly the pinned version. The
+  CI release smoke and journey jobs install the same pinned build. To move the
+  pin, take the new version, size and SHA-256 from Google's
+  `known-good-versions-with-downloads.json` and compute the hashes yourself.
+  The Playwright Python package (1.64.1) and the dashboard and CLI Playwright
+  packages (1.64.1) still pin their own driver and test browser. Playwright
+  1.64.1's bundled driver is Node 24.22.1.
+- **Node.** The `pa11y-node` stage uses the `node:24-bookworm-slim` multi-arch
+  index digest `sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205`,
+  which carries Node 24.22.1 and OpenSSL 3.5.9 on both architectures. Node
+  24.22.1 (2026-10-21) is the security release for CVE-2026-105481,
+  CVE-2026-105482, CVE-2026-105483, CVE-2026-106069, CVE-2026-106073,
+  CVE-2026-106074 and CVE-2026-111497. The smoke gate rejects an older Node or
+  OpenSSL. The dashboard image uses `node:22-alpine` only to build static files
+  that nginx serves, so no Node runtime from it ships; the CLI declares
+  `engines.node >=22`, a floor that users meet with their own Node.
+
 ### CPython Expat in API images
 
 Production and quickstart images keep the pinned official CPython 3.14.8
@@ -363,7 +399,12 @@ bundle or any certificate in `/etc/ssl/certs`, including its hashed lookup
 link, has that fingerprint, or if one of the three retained emSign roots is
 missing from either. CI and publication run it against the API image, and the
 developer build runs `verify_final_os_packages.py trust-store`. Node.js carries
-its own root store, so pa11y's Node still trusts the root
+its own root store, compiled into the binary. Node 24.21.0 still trusted the
+root (121 roots, including all four emSign roots), and Node 24.22.1 does not
+(118 roots, with only `emSign Root CA - G1` left of the four).
+`verify_final_os_packages.py node-trust-store` reads `tls.rootCertificates` from
+the image's Node and fails if it holds the distrusted fingerprint or has lost
+`emSign Root CA - G1`
 ([#726](https://github.com/Aelira-AI/aelira-core/issues/726)).
 
 ### Transitive dependencies, grouped by what pulls them in

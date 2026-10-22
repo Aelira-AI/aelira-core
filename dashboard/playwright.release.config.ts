@@ -1,6 +1,12 @@
 /* global process */
 import { defineConfig, devices } from '@playwright/test';
 
+// CI runs the hash-pinned Chrome for Testing build named in
+// scripts/chrome-for-testing.json; elsewhere Playwright's own Chromium is used.
+const chromiumLaunchOptions = {
+  executablePath: process.env.AELIRA_CHROMIUM_EXECUTABLE || undefined,
+};
+
 const dashboardUrl = 'http://127.0.0.1:5173';
 const canvasTestbedUrl = 'http://127.0.0.1:4174';
 
@@ -21,7 +27,7 @@ export default defineConfig({
   projects: [
     {
       name: 'release-chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], launchOptions: chromiumLaunchOptions },
     },
   ],
   webServer: [

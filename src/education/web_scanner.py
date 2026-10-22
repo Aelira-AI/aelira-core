@@ -30,6 +30,7 @@ from PIL import Image, UnidentifiedImageError
 
 from src.ai.providers import get_provider_manager
 from src.education.image_alt_text import ImageAltTextGenerator
+from src.security.browser_runtime import chromium_launch_options
 from src.security.browser_ssrf import (
     BROWSER_EGRESS_ARGS,
     BrowserNetworkIsolation,
@@ -1009,6 +1010,7 @@ class WebScanner:
             logger.info("[WebScanner] About to launch Chromium browser")
             browser = playwright_instance.chromium.launch(
                 headless=True,
+                **chromium_launch_options(),
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
