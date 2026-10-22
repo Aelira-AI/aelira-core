@@ -1852,6 +1852,245 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-106573",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Missing macro expansion limit in the ImageMagick MVG decoder. ImageMagick 7.1.1-43 selects MVG only from an explicit mvg: prefix or a .mvg file name, because coders/mvg.h declares no magic signature. LaTeXML passes only resolved local graphic paths, submitted LaTeX project members are limited to .tex, .bib, .sty, .cls, .bst, .png, .jpg, .jpeg, .pdf, .eps, .svg and .txt names without colons, and LaTeXML keeps \\openout and filecontents output in memory, so submitted content cannot be decoded as MVG.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-106576",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "affected",
+      "reason": "ImageMagick may process graphics referenced by submitted LaTeX documents, and writing a transformed PNG or JPEG image that carries an XMP profile runs the vulnerable conversion. Denial of service only; no distribution fix exists.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-106578",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Invalid free in the ImageMagick MVG decoder. ImageMagick 7.1.1-43 selects MVG only from an explicit mvg: prefix or a .mvg file name, because coders/mvg.h declares no magic signature. LaTeXML passes only resolved local graphic paths, submitted LaTeX project members are limited to .tex, .bib, .sty, .cls, .bst, .png, .jpg, .jpeg, .pdf, .eps, .svg and .txt names without colons, and LaTeXML keeps \\openout and filecontents output in memory, so submitted content cannot be decoded as MVG.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-106579",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Coder-domain policy bypass. The only coder-domain rules in the image are Debian's denials of URL, HTTP and HTTPS. Those coders declare no magic signature (coders/url.h), so they are selected only by a URL prefix in a file name, which LaTeXML never passes: it reads only resolved local graphic paths, and submitted project member names cannot contain colons.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-106580",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "ImageMagick CUT reader palette load. ImageMagick 7.1.1-43 selects CUT only from an explicit cut: prefix or a .cut file name, because coders/cut.h declares no magic signature. Submitted LaTeX project members cannot have a .cut name or a colon, and LaTeXML passes only resolved local graphic paths.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-107209",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "ImageMagick RSVG decoder. The SVG coder module ships only in libmagickcore-7.q16-10-extra, which is not installed; libmagickcore-7.q16-10 contains no svg coder module, so no SVG, MSVG or RSVG format is registered.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
       "id": "CVE-2026-9538",
       "osFamily": "debian",
       "packages": [

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Check the exact native-image conditions behind the three media dispositions. */
+/** Check the exact native-image conditions behind the media component dispositions. */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, mkdtempSync, openSync, closeSync, readSync, rmSync } from 'node:fs';
@@ -19,6 +19,7 @@ export function forbiddenLayerMember(raw: string): boolean {
   const base = path.split('/').at(-1) ?? '';
   return /(?:flif|uhdr|ultrahdr)/.test(base) ||
     /(?:^|\/)(?:flif|uhdr|ultrahdr)(?:\/|$)/.test(path) ||
+    /(?:^|\/)imagemagick-[^/]+\/modules-[^/]+\/coders\/(?:\.wh\.)?svg\.(?:so|la)$/.test(path) ||
     /(?:^|\/)cups\/(?:backend|apple)(?:\/|$)/.test(path) ||
     /^(?:ipp|ipps|cupsd|\.wh\.(?:ipp|ipps|cupsd))$/.test(base) &&
       /(?:^|\/)(?:cups|sbin|bin|backend)\//.test(path);
@@ -56,9 +57,12 @@ export function checkCapabilities(formats: string, modules: string): void {
   for (const name of ['PNG', 'JPEG']) {
     if (!moduleNames.has(name)) throw new Error(`${name} coder module is unavailable`);
   }
-  for (const name of ['FLIF', 'UHDR']) {
+  for (const name of ['FLIF', 'UHDR', 'SVG']) {
     if (rows.has(name)) throw new Error(`${name} format is registered`);
     if (moduleNames.has(name)) throw new Error(`${name} coder module is registered`);
+  }
+  for (const name of ['MSVG', 'RSVG']) {
+    if (rows.has(name)) throw new Error(`${name} format is registered`);
   }
 }
 
@@ -98,6 +102,10 @@ function nativeCheck(image: string): void {
       lower=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
       if magick -size 1x1 xc:red "/tmp/forbidden.$lower" >/dev/null 2>&1; then exit 23; fi
     done
+    printf 'push graphic-context\\nviewbox 0 0 1 1\\npop graphic-context\\n' > /tmp/mvg-probe.png
+    magick identify mvg:/tmp/mvg-probe.png >/dev/null
+    if magick identify /tmp/mvg-probe.png >/dev/null 2>&1; then exit 24; fi
+    perl -MImage::Magick -e 'my $i=Image::Magick->new; $i->Read("/tmp/mvg-probe.png"); die "MVG content was decoded without an explicit format\\n" if @$i;'
     magick -size 1x1 xc:red png:/tmp/control.png
     magick /tmp/control.png jpeg:/tmp/control.jpg
     magick identify /tmp/control.png /tmp/control.jpg >/dev/null

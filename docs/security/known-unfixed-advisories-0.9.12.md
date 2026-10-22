@@ -238,6 +238,49 @@ the Node.js `zlib` API offers no combine function to JavaScript. Python's
 functions. A changed zlib or SASL package, or new code calling these
 functions, requires a fresh assessment.
 
+### ImageMagick advisories published after the 0.9.13 candidate review
+
+Six further ImageMagick advisories affect the reviewed
+`8:7.1.1.43+dfsg1-1+deb13u12` packages on both architectures. Upstream fixed
+them in 7.1.2-30 and 7.1.2-31; Debian has no fixed package for this release.
+The dispositions were reviewed on 2026-10-22 and expire on 2027-01-20. The
+scanner findings remain visible.
+
+| Advisory | Scanner packages | Status | Assessment |
+| --- | --- | --- | --- |
+| [CVE-2026-106576](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-v45j-x8p4-3mh4) | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | Affected | A crafted XMP profile makes the rational conversion in `MagickCore/profile.c` run for a long time when an image carrying it is written. LaTeXML reads and rewrites submitted PNG and JPEG graphics when a document transforms them, for example by rotation. Denial of service only, bounded by the 60-second post-processing timeout. |
+| [CVE-2026-106573](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-qr53-hc3p-fc62) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing macro expansion limit in the MVG decoder. See the MVG basis below. |
+| [CVE-2026-106578](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-6xf5-c3jx-rp39) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Invalid free in the MVG decoder. See the MVG basis below. |
+| [CVE-2026-106579](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-vcjj-32hg-qpx5) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Policies written in the `coder` domain can be bypassed. The only such rules in the image are Debian's denials of `URL`, `HTTP` and `HTTPS`. Those coders declare no magic signature, so only a URL prefix in a file name selects them, and LaTeXML never passes one (see below). |
+| [CVE-2026-106580](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-r868-pmwh-fv2c) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing policy check when the CUT reader loads its palette file. CUT declares no magic signature, so only a `cut:` prefix or a `.cut` name selects it, and submitted content can supply neither. |
+| [CVE-2026-107209](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-f2r2-qw7g-3c8x) | The same seven ImageMagick packages | Not affected, `vulnerable_code_not_present` | Use-after-free in the RSVG path of `coders/svg.c`. Debian ships the SVG coder module only in `libmagickcore-7.q16-10-extra`, which is not installed; `libmagickcore-7.q16-10` contains no `svg` module, so no SVG, MSVG or RSVG format is registered. |
+
+**MVG, CUT and URL basis.** In ImageMagick 7.1.1-43, file sniffing uses the
+static signatures declared in each coder's header. `coders/mvg.h`,
+`coders/cut.h` and `coders/url.h` declare none, and the per-coder `IsMVG`
+handler is used only by `GetImageMagick`, which nothing in ImageMagick calls.
+These coders are therefore chosen only by an explicit format prefix or file
+extension. No application code calls ImageMagick; it runs only inside
+LaTeXML 0.8.8. `LaTeXML::Post::Graphics` resolves each graphic to an existing
+local path before reading it, and LaTeXML keeps `\openout` and `filecontents`
+output in memory rather than writing files, so a document cannot create a file
+for post-processing to read. Uploaded LaTeX projects may contain only `.tex`,
+`.bib`, `.sty`, `.cls`, `.bst`, `.png`, `.jpg`, `.jpeg`, `.pdf`, `.eps`, `.svg`
+and `.txt` members, and member names cannot contain a colon
+(`src/education/latex_project.py`). A single uploaded `.tex` file is converted
+alone. A document can still name an absolute path that Landlock lets the tool
+read, but such a file is part of the image, not content an attacker supplies.
+
+The native-image CI check now also asserts that no SVG, MSVG or RSVG format or
+`svg` coder module is registered, that no ImageMagick `svg` coder module occurs
+in any shipped layer, and that a file named `.png` containing MVG drawing
+commands is rejected by both `magick` and Perl `Image::Magick`, while the same
+file is accepted with an explicit `mvg:` prefix. The MVG, CUT and URL basis
+rests on reading the ImageMagick 7.1.1-43 and LaTeXML 0.8.8 sources, not on a
+crafted-input test of LaTeXML itself. A changed ImageMagick or LaTeXML package,
+a new ImageMagick caller, or a wider project file allowlist requires a fresh
+assessment.
+
 ### CVE-2026-6653 remains open
 
 The historical table's `not_affected` claim for distribution `libxml2` is
