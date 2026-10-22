@@ -35,7 +35,7 @@ while read -r digest filename; do
     setuptools-84.0.0-py3-none-any.whl) url='https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl';;
     *) echo "unexpected Python input: $filename" >&2; exit 1;;
   esac
-  curl --fail --location --silent --show-error --retry 3 --output "$scratch/frozen/python/$filename" "$url"
+  curl --fail --location --silent --show-error --retry 3 --retry-all-errors --output "$scratch/frozen/python/$filename" "$url"
   printf '%s  %s\n' "$digest" "$scratch/frozen/python/$filename" | sha256sum -c -
 done < "$recipe/inputs.sha256"
 (
