@@ -58,7 +58,7 @@ stage=source_identity
 consumer_hashes="$output/consumer-source-sha256.tsv"
 : > "$consumer_hashes"
 for pair in \
-  'src/education/remediation/pdf_remediator.py:afdc34838658a7d854c84791317a71767637947127465aaaf2750c4dde61277c' \
+  'src/education/remediation/pdf_remediator.py:52127fc2e8ce568bd87e146a56e4fc88506e72341f8121e32e9b54f96c10735d' \
   'src/education/handwritten_math_suitability.py:310e239e7837e12e22a3ee14a831f38cf163360959675f7ae0ad149c4a5ddf50'; do
   path=${pair%%:*}
   expected=${pair##*:}
