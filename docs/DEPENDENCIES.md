@@ -83,7 +83,8 @@ image on both architectures.
 | `PyMuPDF` | Rendering, text extraction, page analysis |
 | `pdfplumber` | Table and layout extraction |
 | `pypdf` | General PDF manipulation |
-| `ocrmypdf` | OCR layer for scanned documents (drives Tesseract) |
+| `ocrmypdf` | OCR layer for scanned documents (drives Tesseract); its default `auto` rasterizer uses `pypdfium2` when installed |
+| `pypdfium2` | PDFium bindings. Reached through OCRmyPDF's rasterizer; `pdfplumber` imports it only to draw page images, which Aelira does not call. See "pypdfium2 and PDFium" below |
 | `img2pdf` / `reportlab` | Image-to-PDF conversion and PDF report generation |
 | `Pillow` | Structural verification, bounded decoding, and full pixel loading for PNG/JPEG data URLs embedded in PDF-derived accessible HTML |
 
@@ -406,6 +407,20 @@ root (121 roots, including all four emSign roots), and Node 24.22.1 does not
 the image's Node and fails if it holds the distrusted fingerprint or has lost
 `emSign Root CA - G1`
 ([#726](https://github.com/Aelira-AI/aelira-core/issues/726)).
+
+### pypdfium2 and PDFium
+
+`pypdfium2` 5.14.0 (2026-10-04), the newest release, bundles PDFium
+156.0.8076.0, which predates the 156.0.8078.47 fix for CVE-2026-113022 (PDFium
+memory corruption). No newer pypdfium2 exists, so the pin stays and the gap is
+open until upstream publishes one. Aelira reaches PDFium through OCRmyPDF,
+whose default `auto` rasterizer picks `pypdfium2` when it is installed;
+`pdfplumber` imports it only in `display.py`, for page images that `src/` never
+requests. Forcing OCRmyPDF's Ghostscript rasterizer would take PDFium off the
+upload path, but it changes how pages are rasterized for OCR and Ghostscript
+carries its own advisories, so that is a separate decision. Watch
+[pypdfium2 releases](https://github.com/pypdfium2-team/pypdfium2/releases) for
+5.15.
 
 ### Transitive dependencies, grouped by what pulls them in
 
