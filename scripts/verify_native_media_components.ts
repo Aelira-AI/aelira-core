@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
-/** Check the exact native-image conditions behind the media component dispositions. */
+/**
+ * Check the exact native-image conditions behind the media component dispositions, and
+ * that Debian's FFmpeg stack (with librist, cJSON and libsndfile) stays out of
+ * every shipped layer now that ffmpeg and ffprobe come from /opt/ffmpeg9.
+ */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, mkdtempSync, openSync, closeSync, readSync, rmSync } from 'node:fs';
@@ -13,11 +17,22 @@ export const imageMagickPackages = [
 ];
 export const imageMagickVersion = '8:7.1.1.43+dfsg1-1+deb13u12';
 export const cupsVersion = '2.4.10-3+deb13u2';
+export const debianFfmpegPackages = [
+  'ffmpeg', 'libavcodec61', 'libavdevice61', 'libavfilter10', 'libavformat61',
+  'libavutil59', 'libpostproc58', 'libswresample5', 'libswscale8',
+  'librist4', 'libcjson1', 'libsndfile1',
+];
 
 export function forbiddenLayerMember(raw: string): boolean {
   const path = raw.replace(/^\.\//, '').replace(/^\//, '').toLowerCase();
   const base = path.split('/').at(-1) ?? '';
-  return /(?:flif|uhdr|ultrahdr)/.test(base) ||
+  const whiteout = base.startsWith('.wh.');
+  // Debian's FFmpeg libraries live under usr/lib; the image's own build is
+  // only under opt/ffmpeg9. A whiteout of a removed file is not an addition.
+  return !whiteout && /^usr\/lib\/.*\/?lib(?:avcodec|avdevice|avfilter|avformat|avutil|postproc|swresample|swscale)\.so/.test(path) ||
+    !whiteout && /^lib(?:rist|cjson|sndfile)\.so/.test(base) ||
+    /^usr\/bin\/(?:ffmpeg|ffprobe|ffplay)$/.test(path) ||
+    /(?:flif|uhdr|ultrahdr)/.test(base) ||
     /(?:^|\/)(?:flif|uhdr|ultrahdr)(?:\/|$)/.test(path) ||
     /(?:^|\/)imagemagick-[^/]+\/modules-[^/]+\/coders\/(?:\.wh\.)?svg\.(?:so|la)$/.test(path) ||
     /(?:^|\/)cups\/(?:backend|apple)(?:\/|$)/.test(path) ||
@@ -110,6 +125,12 @@ function nativeCheck(image: string): void {
     magick /tmp/control.png jpeg:/tmp/control.jpg
     magick identify /tmp/control.png /tmp/control.jpg >/dev/null
     perl -MImage::Magick -e 'for my $f (qw(PNG JPEG)) { my @q=Image::Magick->QueryFormat($f); die "missing $f format\\n" unless @q && grep { defined($_) && length($_) } @q; } for my $f (qw(FLIF UHDR)) { my @q=Image::Magick->QueryFormat($f); die "unexpected $f format\\n" if grep { defined($_) && length($_) } @q; }'
+    for p in ${debianFfmpegPackages.join(' ')}; do
+      if [ "$(dpkg-query -W -f='\${db:Status-Status}' "$p" 2>/dev/null || true)" = installed ]; then echo "$p is installed" >&2; exit 24; fi
+    done
+    for t in ffmpeg ffprobe; do
+      test "$(readlink -f "$(command -v "$t")")" = "/opt/ffmpeg9/bin/$t" || { echo "$t is not the /opt/ffmpeg9 build" >&2; exit 25; }
+    done
     perl -MImage::Magick -e 'for my $ext (qw(png jpg)) { my $i=Image::Magick->new(size=>"2x2"); my $e=$i->Read("xc:red"); die $e if $e; $e=$i->Write(filename=>"/tmp/perl-control.$ext"); die $e if $e; my $r=Image::Magick->new; $e=$r->Read("/tmp/perl-control.$ext"); die $e if $e; die "bad readback\\n" unless $r->Get("width")==2 && $r->Get("height")==2; }'
     echo native-media-components-ok
   `;
