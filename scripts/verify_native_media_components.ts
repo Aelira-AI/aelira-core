@@ -6,9 +6,10 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, mkdtempSync, openSync, closeSync, readSync, rmSync } from 'node:fs';
+import { createReadStream, mkdtempSync, openSync, closeSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const imageMagickPackages = [
   'imagemagick', 'imagemagick-7-common', 'imagemagick-7.q16',
@@ -81,6 +82,119 @@ export function checkCapabilities(formats: string, modules: string): void {
   }
 }
 
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+export const imageMagickConfigFiles = ['policy.xml', 'delegates.xml'];
+export const probeScript = join(repoRoot, 'scripts', 'imagemagick_policy_probe.sh');
+
+/** Effective limits with MAGICK_TIME_LIMIT=500, so the policy must cap time. */
+export const expectedResourceLimits: Record<string, string> = {
+  Width: '16000P', Height: '16000P', Area: '64MP', 'List length': '32B',
+  Memory: '256MiB', Map: '512MiB', Disk: '1GiB', Thread: '2', Time: '50 seconds',
+};
+
+export function checkResourceLimits(listing: string): void {
+  const limits = new Map<string, string>();
+  for (const line of listing.split('\n')) {
+    const match = /^\s+([A-Za-z][A-Za-z ]*):\s+(\S.*?)\s*$/.exec(line);
+    if (match) limits.set(match[1], match[2]);
+  }
+  for (const [name, value] of Object.entries(expectedResourceLimits)) {
+    if (limits.get(name) !== value) {
+      throw new Error(`ImageMagick ${name} limit is ${limits.get(name) ?? 'missing'}, expected ${value}`);
+    }
+  }
+}
+
+const policy = (name: string) => `policy:${name}`;
+/** Every probe line imagemagick_policy_probe.sh prints, with its required outcome. */
+export const expectedProbes: Record<string, string | RegExp> = {
+  msl: policy('MSL'), mvg: policy('MVG'), 'mvg-mixed-case': policy('MVG'),
+  cut: policy('CUT'), text: policy('TEXT'), txt: policy('TXT'),
+  ps: policy('PS'), 'ps-extension': policy('PS'), 'ps-named-png': policy('PS'),
+  xc: policy('XC'), https: policy('HTTPS'), 'file-list': /^policy:/,
+  svg: 'unregistered', msvg: 'unregistered',
+  'perl-mvg': policy('MVG'), 'perl-ps-named-png': policy('PS'),
+  'control-msl': 'accepted', 'control-mvg': 'accepted', 'control-cut': 'accepted',
+  'control-text': 'accepted', 'control-txt': 'accepted', 'control-ps': 'accepted',
+  'control-ps-named-png': 'accepted', 'control-mvg-named-png': 'accepted',
+  'mvg-named-png': 'other', 'perl-mvg-named-png-undecoded': 'accepted',
+  'edge-width': 'accepted', 'over-width': 'limit', 'over-height': 'limit', 'over-width-eps': 'limit',
+  'png-to-png': 'accepted', 'png-to-jpeg': 'accepted', 'jpeg-to-png': 'accepted',
+  'cmyk-eps-to-png': 'accepted', 'cmyk-pdf-to-png': 'accepted',
+  'write-gif': policy('GIF'), 'write-pdf': policy('PDF'), 'perl-png-jpeg': 'accepted',
+  'gs-default-file-read': 'invalidfileaccess', 'gs-nosafer-file-read': 'accepted',
+};
+
+/** The graphics LaTeXML writes for the probe document, in document order. */
+export const expectedGraphics: Array<[string, string]> = [
+  ['x1.png', 'PNG'], ['x2.png', 'PNG'], ['fig-png.png', 'PNG'], ['fig-jpg.jpg', 'JPEG'],
+  ['x3.png', 'PNG'], ['x4.jpg', 'JPEG'], ['x5.png', 'PNG'], ['x6.png', 'PNG'], ['x7.png', 'PNG'],
+];
+
+export function checkPolicyProbe(output: string): void {
+  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.at(-1) !== 'imagemagick-policy-probe-complete') throw new Error('policy probe did not complete');
+  const probes = new Map<string, string>();
+  const graphics: string[][] = [];
+  const ghostscript: string[][] = [];
+  const latexml = new Map<string, string>();
+  let policyPaths: string | undefined;
+  for (const line of lines.slice(0, -1)) {
+    const [kind, ...rest] = line.split(/\s+/);
+    if (kind === 'probe' && rest.length === 2) {
+      if (probes.has(rest[0])) throw new Error(`duplicate probe ${rest[0]}`);
+      probes.set(rest[0], rest[1]);
+    } else if (kind === 'graphic') graphics.push(rest);
+    else if (kind === 'gs') ghostscript.push(rest);
+    else if (kind === 'latexml' && rest.length > 0) latexml.set(rest[0], rest.slice(1).join(' '));
+    else if (kind === 'policy-paths') policyPaths = rest.join(' ');
+    else throw new Error(`unexpected policy probe line: ${line}`);
+  }
+  for (const [name, expected] of Object.entries(expectedProbes)) {
+    const actual = probes.get(name);
+    if (actual === undefined) throw new Error(`policy probe ${name} did not run`);
+    const ok = typeof expected === 'string' ? actual === expected : expected.test(actual);
+    if (!ok) throw new Error(`policy probe ${name} gave ${actual}, expected ${expected}`);
+  }
+  for (const name of probes.keys()) {
+    if (!(name in expectedProbes)) throw new Error(`unexpected policy probe ${name}`);
+  }
+  if (latexml.get('allowed') !== 'exit 0 errors 0') throw new Error('LaTeXML graphics conversion reported errors');
+  if (graphics.length !== expectedGraphics.length) throw new Error(`LaTeXML wrote ${graphics.length} graphics`);
+  expectedGraphics.forEach(([source, format], index) => {
+    const [actualSource, actualFormat, size] = graphics[index];
+    if (actualSource !== source || actualFormat !== format || !/^[1-9]\d*x[1-9]\d*$/.test(size ?? '')) {
+      throw new Error(`LaTeXML graphic ${index + 1} is ${graphics[index].join(' ')}, expected ${source} ${format}`);
+    }
+  });
+  const devices = new Set<string>();
+  for (const flags of ghostscript) {
+    for (const flag of ['-dSAFER', '-dBATCH', '-dNOPAUSE']) {
+      if (!flags.includes(flag)) throw new Error(`Ghostscript ran without ${flag}`);
+    }
+    if (flags.includes('-dNOSAFER')) throw new Error('Ghostscript ran with -dNOSAFER');
+    const device = flags.filter((flag) => flag.startsWith('-sDEVICE='));
+    if (device.length !== 1 || !['-sDEVICE=pngalpha', '-sDEVICE=pamcmyk32'].includes(device[0])) {
+      throw new Error(`Ghostscript ran with device ${device.join(',') || 'none'}`);
+    }
+    devices.add(device[0]);
+  }
+  if (devices.size !== 2) throw new Error('LaTeXML did not render through both Ghostscript devices');
+  if (latexml.get('ps-named-png-refused') !== 'policy-refusals 1 gs-calls 0 images 0') {
+    throw new Error('LaTeXML did not refuse PostScript in a .png file before Ghostscript');
+  }
+  if (!/^policy-refusals 0 gs-calls [1-9]\d* images 1$/.test(latexml.get('ps-named-png-control') ?? '')) {
+    throw new Error('LaTeXML PostScript control did not render with the override policy');
+  }
+  if (policyPaths !== '/etc/ImageMagick-7/policy.xml [built-in]') {
+    throw new Error(`ImageMagick loaded policies from ${policyPaths ?? 'nowhere'}`);
+  }
+}
+
+export function checkConfigFile(name: string, shipped: Buffer, reviewed: Buffer): void {
+  if (!shipped.equals(reviewed)) throw new Error(`/etc/ImageMagick-7/${name} differs from docker/imagemagick/${name}`);
+}
+
 function run(command: string, args: string[], outputFd?: number): string {
   const result = spawnSync(command, args, {
     encoding: outputFd === undefined ? 'utf8' : undefined,
@@ -113,17 +227,6 @@ function nativeCheck(image: string): void {
     test -f /usr/lib/*/libcups.so.2
     for p in /usr/lib/cups/backend /usr/libexec/cups/backend /usr/lib/cups/apple /usr/libexec/cups/apple; do test ! -e "$p"; done
     for p in /usr/sbin/cupsd /usr/lib/cups/backend/ipp /usr/lib/cups/backend/ipps; do test ! -e "$p"; done
-    for f in FLIF UHDR; do
-      lower=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
-      if magick -size 1x1 xc:red "/tmp/forbidden.$lower" >/dev/null 2>&1; then exit 23; fi
-    done
-    printf 'push graphic-context\\nviewbox 0 0 1 1\\npop graphic-context\\n' > /tmp/mvg-probe.png
-    magick identify mvg:/tmp/mvg-probe.png >/dev/null
-    if magick identify /tmp/mvg-probe.png >/dev/null 2>&1; then exit 24; fi
-    perl -MImage::Magick -e 'my $i=Image::Magick->new; $i->Read("/tmp/mvg-probe.png"); die "MVG content was decoded without an explicit format\\n" if @$i;'
-    magick -size 1x1 xc:red png:/tmp/control.png
-    magick /tmp/control.png jpeg:/tmp/control.jpg
-    magick identify /tmp/control.png /tmp/control.jpg >/dev/null
     perl -MImage::Magick -e 'for my $f (qw(PNG JPEG)) { my @q=Image::Magick->QueryFormat($f); die "missing $f format\\n" unless @q && grep { defined($_) && length($_) } @q; } for my $f (qw(FLIF UHDR)) { my @q=Image::Magick->QueryFormat($f); die "unexpected $f format\\n" if grep { defined($_) && length($_) } @q; }'
     for p in ${debianFfmpegPackages.join(' ')}; do
       if [ "$(dpkg-query -W -f='\${db:Status-Status}' "$p" 2>/dev/null || true)" = installed ]; then echo "$p is installed" >&2; exit 24; fi
@@ -131,7 +234,6 @@ function nativeCheck(image: string): void {
     for t in ffmpeg ffprobe; do
       test "$(readlink -f "$(command -v "$t")")" = "/opt/ffmpeg9/bin/$t" || { echo "$t is not the /opt/ffmpeg9 build" >&2; exit 25; }
     done
-    perl -MImage::Magick -e 'for my $ext (qw(png jpg)) { my $i=Image::Magick->new(size=>"2x2"); my $e=$i->Read("xc:red"); die $e if $e; $e=$i->Write(filename=>"/tmp/perl-control.$ext"); die $e if $e; my $r=Image::Magick->new; $e=$r->Read("/tmp/perl-control.$ext"); die $e if $e; die "bad readback\\n" unless $r->Get("width")==2 && $r->Get("height")==2; }'
     echo native-media-components-ok
   `;
   const output = run('docker', [
@@ -139,6 +241,24 @@ function nativeCheck(image: string): void {
     '--user', 'aelira', '--entrypoint', '/bin/sh', image, '-c', script,
   ]);
   if (!output.includes('native-media-components-ok')) throw new Error('native image check gave no success marker');
+  for (const name of imageMagickConfigFiles) {
+    const shipped = spawnSync('docker', [
+      'run', '--rm', '--network', 'none', '--read-only', '--user', 'aelira',
+      '--entrypoint', 'cat', image, `/etc/ImageMagick-7/${name}`,
+    ], { maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (shipped.error || shipped.status !== 0) throw new Error(`cannot read /etc/ImageMagick-7/${name}`);
+    checkConfigFile(name, shipped.stdout, readFileSync(join(repoRoot, 'docker', 'imagemagick', name)));
+  }
+  checkResourceLimits(run('docker', [
+    'run', '--rm', '--network', 'none', '--read-only', '--user', 'aelira', '--env', 'MAGICK_TIME_LIMIT=500',
+    '--entrypoint', 'magick', image, '-list', 'resource',
+  ]));
+  checkPolicyProbe(run('docker', [
+    'run', '--rm', '--network', 'none', '--read-only',
+    '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m,mode=1777',
+    '--volume', `${probeScript}:/opt/aelira-probe/imagemagick_policy_probe.sh:ro`,
+    '--user', 'aelira', '--entrypoint', '/bin/sh', image, '/opt/aelira-probe/imagemagick_policy_probe.sh',
+  ]));
 }
 
 async function layerCheck(image: string): Promise<void> {
@@ -182,7 +302,7 @@ if (import.meta.main) {
     if (process.argv.length !== 3) throw new Error('usage: bun scripts/verify_native_media_components.ts IMAGE');
     nativeCheck(process.argv[2]);
     await layerCheck(process.argv[2]);
-    console.log('Native media components and all shipped layer paths verified');
+    console.log('Native media components, the ImageMagick policy and all shipped layer paths verified');
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

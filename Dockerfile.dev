@@ -149,6 +149,9 @@ RUN if grep -q '^mozilla/emSign_ECC_Root_CA_-_G3\.crt$' /etc/ca-certificates.con
     fi \
     && /usr/local/bin/python /app/scripts/verify_final_os_packages.py trust-store
 
+# The same ImageMagick policy and delegate list as the production image.
+COPY docker/imagemagick/policy.xml docker/imagemagick/delegates.xml /etc/ImageMagick-7/
+
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py expat
 
 # Copy the same locked Node 24 and Pa11y runtime as the production image.

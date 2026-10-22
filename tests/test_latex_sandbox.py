@@ -92,8 +92,10 @@ def test_tool_environment_carries_no_application_configuration(tmp_path, monkeyp
         "XDG_CACHE_HOME",
         "TMPDIR",
         "MAGICK_TEMPORARY_PATH",
+        "MAGICK_TIME_LIMIT",
     }
     assert environment["openout_any"] == "p"
+    assert environment["MAGICK_TIME_LIMIT"] == "50"
     assert Path(environment["HOME"]) == tmp_path.resolve()
     for name in ("TEXMFVAR", "TMPDIR", "XDG_CACHE_HOME"):
         assert Path(environment[name]).is_relative_to(tmp_path.resolve())

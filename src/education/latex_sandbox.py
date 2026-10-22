@@ -73,6 +73,11 @@ def tool_environment(directory: Path) -> dict[str, str]:
         # Reads are not restricted this way: engines and formats legitimately
         # open absolute system paths, so the Landlock ruleset bounds reads.
         "openout_any": "p",
+        # ImageMagick 7.1.1-43 sets no time limit by default and applies the
+        # policy's time value only as a cap on a limit set another way, so
+        # the 50-second limit takes effect only through this variable. It
+        # stays below the 60-second post-processing timeout.
+        "MAGICK_TIME_LIMIT": "50",
     }
     for name, suffix in (
         ("TEXMFVAR", "var"),

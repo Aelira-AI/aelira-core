@@ -1,5 +1,10 @@
 import { expect, test } from 'bun:test';
-import { checkCapabilities, checkLayerPaths, checkPackages, cupsVersion, debianFfmpegPackages, forbiddenLayerMember, imageMagickPackages, imageMagickVersion } from './verify_native_media_components';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  checkCapabilities, checkConfigFile, checkLayerPaths, checkPackages, checkPolicyProbe, checkResourceLimits,
+  cupsVersion, debianFfmpegPackages, expectedGraphics, expectedProbes, forbiddenLayerMember, imageMagickPackages, imageMagickVersion,
+} from './verify_native_media_components';
 
 test('exact reviewed package versions are required', () => {
   const lines = [...imageMagickPackages.map((name) => `${name}\t${imageMagickVersion}`), `libcups2t64\t${cupsVersion}`];
@@ -60,4 +65,96 @@ test('Debian FFmpeg, librist, cJSON and libsndfile files are rejected in any lay
   }
   expect(debianFfmpegPackages).toContain('librist4');
   expect(debianFfmpegPackages).toContain('libcjson1');
+});
+
+function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: string; lines?: string[]; gs?: string[]; latexml?: Record<string, string>; paths?: string } = {}): string {
+  const lines: string[] = [];
+  for (const [name, expected] of Object.entries(expectedProbes)) {
+    if (name === extra.drop) continue;
+    lines.push(`probe ${name} ${overrides[name] ?? (typeof expected === 'string' ? expected : 'policy:TXT')}`);
+  }
+  const latexml = { allowed: 'exit 0 errors 0', 'ps-named-png-refused': 'policy-refusals 1 gs-calls 0 images 0',
+    'ps-named-png-control': 'policy-refusals 0 gs-calls 2 images 1', ...extra.latexml };
+  lines.push(`latexml allowed ${latexml.allowed}`);
+  for (const [source, format] of expectedGraphics) lines.push(`graphic ${source} ${format} 100x67`);
+  for (const flags of extra.gs ?? ['-dSAFER -dBATCH -dNOPAUSE -sDEVICE=pngalpha', '-dSAFER -dBATCH -dNOPAUSE -sDEVICE=pamcmyk32']) {
+    lines.push(`gs ${flags} `);
+  }
+  lines.push(`latexml ps-named-png-refused ${latexml['ps-named-png-refused']}`);
+  lines.push(`latexml ps-named-png-control ${latexml['ps-named-png-control']}`);
+  lines.push(`policy-paths ${extra.paths ?? '/etc/ImageMagick-7/policy.xml [built-in]'} `);
+  lines.push(...(extra.lines ?? []));
+  lines.push('imagemagick-policy-probe-complete');
+  return lines.join('\n');
+}
+
+test('the policy probe accepts only the reviewed refusals, controls and LaTeXML graphics', () => {
+  expect(() => checkPolicyProbe(probeOutput())).not.toThrow();
+  // Outcomes recorded from the same probe against Debian's policy.xml and delegates.xml.
+  const debian = {
+    msl: 'accepted', mvg: 'accepted', 'mvg-mixed-case': 'accepted', cut: 'accepted', text: 'accepted',
+    txt: 'accepted', ps: 'accepted', 'ps-extension': 'accepted', 'ps-named-png': 'accepted', xc: 'other',
+    svg: 'other', msvg: 'other', 'perl-mvg': 'accepted', 'perl-ps-named-png': 'accepted',
+    'over-width': 'accepted', 'over-height': 'accepted', 'over-width-eps': 'accepted',
+    'write-gif': 'accepted', 'write-pdf': 'accepted',
+  };
+  for (const [name, outcome] of Object.entries(debian)) {
+    expect(() => checkPolicyProbe(probeOutput({ [name]: outcome }))).toThrow(`policy probe ${name}`);
+  }
+  expect(() => checkPolicyProbe(probeOutput({ 'control-mvg': 'policy:MVG' }))).toThrow('control-mvg');
+  expect(() => checkPolicyProbe(probeOutput({ mvg: 'policy:MSL' }))).toThrow('probe mvg');
+  expect(() => checkPolicyProbe(probeOutput({ 'gs-default-file-read': 'accepted' }))).toThrow('gs-default-file-read');
+  expect(() => checkPolicyProbe(probeOutput({}, { drop: 'cut' }))).toThrow('cut did not run');
+  expect(() => checkPolicyProbe(probeOutput({}, { lines: ['probe new-probe accepted'] }))).toThrow('unexpected policy probe');
+  expect(() => checkPolicyProbe(probeOutput({}, { lines: ['probe cut accepted'] }))).toThrow('duplicate probe');
+  expect(() => checkPolicyProbe(probeOutput().replace('\nimagemagick-policy-probe-complete', ''))).toThrow('did not complete');
+  expect(() => checkPolicyProbe(probeOutput().replace('graphic x2.png PNG', 'graphic x2.png PDF'))).toThrow('graphic 2');
+  expect(() => checkPolicyProbe(probeOutput().replace('graphic x7.png PNG 100x67\n', ''))).toThrow('wrote 8 graphics');
+  expect(() => checkPolicyProbe(probeOutput({}, { latexml: { allowed: 'exit 0 errors 1' } }))).toThrow('reported errors');
+});
+
+test('Ghostscript must run with SAFER, BATCH, NOPAUSE and one of two raster devices', () => {
+  const ok = '-dSAFER -dBATCH -dNOPAUSE';
+  expect(() => checkPolicyProbe(probeOutput({}, { gs: [`${ok} -sDEVICE=pngalpha`] }))).toThrow('both Ghostscript devices');
+  expect(() => checkPolicyProbe(probeOutput({}, { gs: ['-dBATCH -dNOPAUSE -sDEVICE=pngalpha', `${ok} -sDEVICE=pamcmyk32`] }))).toThrow('without -dSAFER');
+  expect(() => checkPolicyProbe(probeOutput({}, { gs: [`${ok} -dNOSAFER -sDEVICE=pngalpha`, `${ok} -sDEVICE=pamcmyk32`] }))).toThrow('-dNOSAFER');
+  expect(() => checkPolicyProbe(probeOutput({}, { gs: [`${ok} -sDEVICE=pdfwrite`, `${ok} -sDEVICE=pamcmyk32`] }))).toThrow('device');
+  expect(() => checkPolicyProbe(probeOutput({}, { gs: [`${ok} -sDEVICE=pngalpha -sDEVICE=pdfwrite`, `${ok} -sDEVICE=pamcmyk32`] }))).toThrow('device');
+});
+
+test('LaTeXML must refuse PostScript in a .png file before Ghostscript, and only through the policy', () => {
+  expect(() => checkPolicyProbe(probeOutput({}, { latexml: { 'ps-named-png-refused': 'policy-refusals 0 gs-calls 2 images 1' } }))).toThrow('refuse PostScript');
+  expect(() => checkPolicyProbe(probeOutput({}, { latexml: { 'ps-named-png-refused': 'policy-refusals 1 gs-calls 1 images 0' } }))).toThrow('refuse PostScript');
+  expect(() => checkPolicyProbe(probeOutput({}, { latexml: { 'ps-named-png-control': 'policy-refusals 1 gs-calls 0 images 0' } }))).toThrow('control');
+  expect(() => checkPolicyProbe(probeOutput({}, { paths: '/etc/ImageMagick-7/policy.xml /tmp/h/.config/ImageMagick/policy.xml [built-in]' }))).toThrow('loaded policies');
+});
+
+test('effective resource limits must match the policy, including the time cap', () => {
+  const shipped = 'Resource limits:\n  Width: 16000P\n  Height: 16000P\n  Area: 64MP\n  List length: 32B\n  Memory: 256MiB\n  Map: 512MiB\n  Disk: 1GiB\n  File: 768\n  Thread: 2\n  Throttle: 0\n  Time: 50 seconds\n';
+  expect(() => checkResourceLimits(shipped)).not.toThrow();
+  const debian = 'Resource limits:\n  Width: 32000P\n  Height: 32000P\n  Area: 256MP\n  List length: unlimited\n  Memory: 1GiB\n  Map: 2GiB\n  Disk: 2GiB\n  File: 768\n  Thread: 19\n  Throttle: 0\n  Time: unlimited\n';
+  expect(() => checkResourceLimits(debian)).toThrow('Width limit');
+  expect(() => checkResourceLimits(shipped.replace('Time: 50 seconds', 'Time: 500 seconds'))).toThrow('Time limit');
+  expect(() => checkResourceLimits(shipped.replace('  Disk: 1GiB\n', ''))).toThrow('Disk limit is missing');
+});
+
+test('shipped ImageMagick files must equal the reviewed ones', () => {
+  for (const name of ['policy.xml', 'delegates.xml']) {
+    const reviewed = readFileSync(join(import.meta.dir, '..', 'docker', 'imagemagick', name));
+    expect(() => checkConfigFile(name, Buffer.from(reviewed), reviewed)).not.toThrow();
+    expect(() => checkConfigFile(name, Buffer.concat([reviewed, Buffer.from('\n')]), reviewed)).toThrow('differs');
+  }
+  const policy = readFileSync(join(import.meta.dir, '..', 'docker', 'imagemagick', 'policy.xml'), 'utf8');
+  const coderRules = [...policy.matchAll(/<policy domain="coder" rights="([^"]+)" pattern="([^"]+)"\/>/g)].map((m) => [m[1], m[2]]);
+  expect(coderRules[0]).toEqual(['none', '*']);
+  const allowed = coderRules.filter(([rights]) => rights !== 'none').flatMap(([, pattern]) => pattern.replace(/[{}]/g, '').split(','));
+  expect(allowed.sort()).toEqual(['EPS', 'JPEG', 'JPG', 'PAM', 'PDF', 'PNG']);
+  expect(new Set(allowed).size).toBe(allowed.length);
+  const delegates = readFileSync(join(import.meta.dir, '..', 'docker', 'imagemagick', 'delegates.xml'), 'utf8');
+  const commands = [...delegates.matchAll(/<delegate decode="([^"]+)"[^>]* command="([^"]+)"\/>/g)];
+  expect(commands.map((m) => m[1])).toEqual(['ps:alpha', 'ps:cmyk']);
+  for (const [, , command] of commands) {
+    expect(command.startsWith('&apos;gs&apos; ')).toBe(true);
+    for (const flag of ['-dSAFER', '-dBATCH', '-dNOPAUSE']) expect(command).toContain(flag);
+  }
 });
