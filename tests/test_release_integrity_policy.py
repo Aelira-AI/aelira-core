@@ -42,7 +42,7 @@ def test_dependency_gates_audit_only_the_four_shipped_surfaces_and_block() -> No
     dependency_job = workflow.split("  dependency-security:\n", 1)[1].split(
         "\n  lint:\n", 1
     )[0]
-    audit_prerequisites = "sudo apt-get install -y libcairo2-dev pkg-config"
+    audit_prerequisites = "scripts/ci_apt_install.sh libcairo2-dev pkg-config"
     strict_runtime_audit = "pip-audit --requirement requirements.txt --strict"
     strict_development_audit = "pip-audit --requirement requirements-dev.txt --strict"
 

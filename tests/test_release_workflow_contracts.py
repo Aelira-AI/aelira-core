@@ -405,10 +405,38 @@ def test_ci_system_package_install_has_bounded_network_retries() -> None:
         if step.get("name") == "Install system dependencies"
     )["run"]
 
-    assert "Acquire::Retries=2" in system_dependencies
-    assert "Acquire::http::Timeout=20" in system_dependencies
-    assert "Acquire::https::Timeout=20" in system_dependencies
-    assert system_dependencies.count("timeout 5m") == 2
+    script = (ROOT / "scripts" / "ci_apt_install.sh").read_text()
+
+    assert system_dependencies.lstrip().startswith("scripts/ci_apt_install.sh ")
+    assert "Acquire::Retries=2" in script
+    assert "Acquire::http::Timeout=20" in script
+    assert "Acquire::https::Timeout=20" in script
+    assert 'timeout "${minutes}m" sudo apt-get' in script
+
+
+def test_runner_package_installs_all_use_the_bounded_installer() -> None:
+    # A direct apt-get on the runner reintroduces an unbounded wait on one
+    # mirror. Commands run inside images are not runner installs.
+    sources = [
+        *WORKFLOWS.glob("*.yml"),
+        ROOT / ".github" / "actions" / "journey-stack" / "action.yml",
+    ]
+    for source in sources:
+        for line in source.read_text().splitlines():
+            if (
+                "apt-get" in line
+                and "docker run" not in line
+                and "--entrypoint apt-get" not in line
+            ):
+                raise AssertionError(f"{source.name}: {line.strip()}")
+    ci = (WORKFLOWS / "ci.yml").read_text()
+    invocations = [
+        line
+        for line in ci.splitlines()
+        if line.strip().startswith("scripts/ci_apt_install.sh ")
+    ]
+    assert len(invocations) == 7
+    assert ci.count("APT_ARCHIVE_DIR: ${{ runner.temp }}/apt-archives") == 3
 
 
 def test_ci_installs_primary_and_fallback_pdf_ocr_dependencies() -> None:
@@ -418,7 +446,7 @@ def test_ci_installs_primary_and_fallback_pdf_ocr_dependencies() -> None:
         for step in workflow["jobs"]["test"]["steps"]
         if step.get("name") == "Install system dependencies"
     )["run"]
-    packages = system_dependencies.split("install -y", 1)[1].split()
+    packages = system_dependencies.split("ci_apt_install.sh", 1)[1].split()
     assert {
         "unpaper",
         "ghostscript",

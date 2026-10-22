@@ -22,7 +22,7 @@ cd "$work"
 fetch() {
     url="$1" sha="$2" dest="$3"
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --retry 3 --output "$dest" "$url"
+        --retry 3 --retry-all-errors --output "$dest" "$url"
     echo "$sha  $dest" | sha256sum --check --strict --quiet
 }
 

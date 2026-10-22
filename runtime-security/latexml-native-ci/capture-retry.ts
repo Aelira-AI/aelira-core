@@ -6,7 +6,10 @@ import { spawn } from 'node:child_process';
 
 const stages = ['source-check', 'native-check', 'input-capture', 'input-pin', 'prepare',
   'bootstrap', 'native-run', 'caller-export', 'evidence-export', 'evidence-check'];
-const runnerHash = '45f3c9df6dc25a79862e4aa8d4cd42ed697191aa63c2336cace20f0e24962e72';
+const runnerHash = '7c930a6d81d83c873358ba52757ab6d9dcf1647184ee528c17df9448566b1afe';
+// Bounded, non-sensitive refusal classes; the same tuple as run.py REFUSAL_CLASSES (#737).
+export const refusalClasses = ['upstream_http_auth', 'upstream_http_5xx', 'upstream_http_4xx',
+  'upstream_http_other', 'transport', 'timeout', 'tls', 'integrity', 'unknown'] as const;
 type Identity = { revision: string; tree: string; architecture: string; remote: string; runner_sha256: string };
 
 // A retry never includes a pin, preparation, build or evidence failure.
@@ -79,6 +82,21 @@ export function aptDownloadRefused(row: any, id: Identity): boolean {
   return failed && total <= 1_000_000_000;
 }
 
+// The public class of one attempt. A success, or a failure after a completed capture,
+// has no capture refusal to classify. Any other failure takes the runner's private
+// class record only when it is exactly well formed; otherwise it is unknown.
+export function attemptRefusalClass(exit: number, row: any, record: any): string | null {
+  if (exit === 0) return null;
+  const capture = row?.stages?.['input-capture'];
+  if (capture && Object.keys(capture).sort().join(',') === 'exit,state' &&
+    capture.state === 'executed' && capture.exit === 0) return null;
+  if (record && typeof record === 'object' && !Array.isArray(record) &&
+    Object.keys(record).sort().join(',') === 'class,schema' &&
+    record.schema === 'aelira-latexml-capture-refusal-class-v1' &&
+    (refusalClasses as readonly string[]).includes(record.class)) return record.class;
+  return 'unknown';
+}
+
 export function parseCaptureProcess(bytes: Uint8Array): any {
   const row = JSON.parse(Buffer.from(bytes).toString('utf8'));
   if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new Error('Capture process record required');
@@ -125,7 +143,7 @@ async function main() {
   const runner = join(repo, 'runtime-security/latexml-native-ci/run.py');
   if (createHash('sha256').update(await regular(runner)).digest('hex') !== runnerHash) throw new Error('Reviewed runner required');
   const receiptPath = join(temp, 'latexml-capture-attempts.json'); await absent(receiptPath);
-  const receipt: any = { schema: 'aelira-latexml-capture-attempts-v3', ...id,
+  const receipt: any = { schema: 'aelira-latexml-capture-attempts-v4', ...id,
     coordinator_sha256: createHash('sha256').update(await readFile(import.meta.path)).digest('hex'),
     runner_sha256: runnerHash, status: 'fail', attempts: [] };
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -142,8 +160,11 @@ async function main() {
     try { const bytes = await regular(join(scratch, 'outer.json')); outerHash = createHash('sha256').update(bytes).digest('hex'); row = JSON.parse(bytes.toString('utf8')); } catch {}
     try { const bytes = await regular(join(scratch, 'capture-process.json')); captureHash = createHash('sha256').update(bytes).digest('hex'); captureProcess = parseCaptureProcess(bytes); }
     catch (e: any) { if (e.code !== 'ENOENT') captureProcess = {}; }
+    let record: any = null;
+    try { record = JSON.parse((await regular(join(scratch, 'capture-refusal-class.json'))).toString('utf8')); } catch {}
     const eligible = captureRefused(row, exit, id, captureProcess);
-    receipt.attempts.push({ attempt, exit, outer_sha256: outerHash, capture_process_sha256: captureHash, capture_refusal: eligible });
+    receipt.attempts.push({ attempt, exit, outer_sha256: outerHash, capture_process_sha256: captureHash,
+      capture_refusal: eligible, refusal_class: attemptRefusalClass(exit, row, record) });
     receipt.status = exit === 0 ? 'complete' : 'fail';
     await writeFile(receiptPath, JSON.stringify(receipt) + '\n', { flag: attempt === 1 ? 'wx' : 'w', mode: 0o644 });
     if (exit === 0 || !eligible || attempt === 3) { process.exitCode = exit; break; }
