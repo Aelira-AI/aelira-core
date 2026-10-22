@@ -1,14 +1,30 @@
 # Production Dockerfile for Aelira Backend
 # Multi-stage build for smaller image size
 
-# Build the Debian system library from its pinned source package and the
-# reviewed CVE-2026-6653 backport. This stage is never a shipped layer.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS libxml2-deb-builder
+# Rebuild Debian's libxml2, libX11 and libXrender from their pinned trixie
+# source packages with reviewed security patches. See
+# docs/security/debian-backports-0.9.14.md. These stages never ship.
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential debhelper liblzma-dev pkg-config quilt rename zlib1g-dev \
+    build-essential dpkg-dev perl quilt \
     && rm -rf /var/lib/apt/lists/*
-COPY docker/libxml2-6653/ /tmp/libxml2-input/
-RUN sh /tmp/libxml2-input/build-debs.sh
+COPY docker/debian-backports/build-backport.sh docker/debian-backports/control-run.sh \
+    docker/debian-backports/control-source.pl /tmp/debian-backports/
+
+FROM debian-backport-builder AS libxml2-backport
+COPY docker/debian-backports/libxml2/ /tmp/debian-backports/libxml2/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/libxml2 /out/libxml2
+
+FROM debian-backport-builder AS libx11-backport
+COPY docker/debian-backports/libx11/ /tmp/debian-backports/libx11/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/libx11 /out/libx11
+
+FROM debian-backport-builder AS libxrender-backport
+COPY docker/debian-backports/libxrender/ /tmp/debian-backports/libxrender/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/libxrender /out/libxrender
 
 # Stage 1: Builder
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
@@ -154,7 +170,10 @@ RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 FROM python-expat-base AS runtime
 
 # The global repair and the final-image checks read the reviewed runtime pin.
-COPY --from=libxml2-deb-builder /tmp/libxml2-debs/ /tmp/libxml2-debs/
+COPY --from=libxml2-backport /out/ /tmp/debian-backports/
+COPY --from=libx11-backport /out/ /tmp/debian-backports/
+COPY --from=libxrender-backport /out/ /tmp/debian-backports/
+COPY docker/debian-backports/install-backports.sh /tmp/debian-backports/
 COPY requirements.txt /app/requirements.txt
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
@@ -227,14 +246,10 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     texlive-lang-german \
     pandoc \
     && update-language \
-    # Replace the just-installed stock library before this RUN commits a
-    # layer. No image layer therefore contains the vulnerable system libxml2.
-    && apt-get install -y --no-install-recommends /tmp/libxml2-debs/libxml2_*.deb \
-    && test "$(dpkg-query -W -f='${Version}' libxml2)" = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1' \
-    && sha256sum --check --strict /tmp/libxml2-debs/libxml2.sha256 \
-    && mkdir -p /usr/share/doc/aelira-libxml2-6653 \
-    && cp /tmp/libxml2-debs/receipt.txt /tmp/libxml2-debs/libxml2.sha256 /usr/share/doc/aelira-libxml2-6653/ \
-    && rm -rf /tmp/libxml2-debs \
+    # Replace the just-installed stock libxml2, libX11 and libXrender with the
+    # rebuilt backports before this RUN commits a layer. No image layer
+    # therefore contains the unpatched libraries.
+    && sh /tmp/debian-backports/install-backports.sh runtime \
     # xdg-utils is a hard Depends of texlive-base, so apt cannot remove it
     # without removing TeX. Its only callers are interactive (texdoc, LuaTeX
     # os.openurl, ImageMagick's browse delegate) and none runs in a server, so

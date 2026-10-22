@@ -1,7 +1,7 @@
 /** Fail closed on an incomplete, mismatched or non-clean image inventory. */
 import { readFile, stat } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
-import { checkInstalled as checkLibxml2Installed } from './verify_libxml2_6653';
+import { checkInstalled as checkBackportsInstalled, loadBackports, verified, type VerifiedBackport } from './verify_debian_backports';
 
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue =>
@@ -79,27 +79,40 @@ export function verifyDispositions(value: unknown, today: string): { disposition
   return { dispositions, errors };
 }
 
-export type InventoryReport = { errors: string[]; accepted: Disposition[] };
+/** A distribution finding fixed by a verified rebuilt package (docker/debian-backports). */
+export type PatchedFinding = { id: string; pkg: string; version: string; source: string; disclosure: string };
+export type InventoryReport = { errors: string[]; accepted: Disposition[]; patched: PatchedFinding[] };
+
+/** Version suffix of packages this project rebuilds; such rows always need a verified receipt. */
+const rebuiltVersion = /\+aelira\d+$/;
 
 export function verifyInventory(
   value: unknown,
   image: string,
   architecture: 'amd64' | 'arm64',
   dispositions: Disposition[] = [],
-  libxml2Cve6653Verified = false,
+  backports: VerifiedBackport[] = [],
 ): string[] {
-  return inspectInventory(value, image, architecture, dispositions, libxml2Cve6653Verified).errors;
+  return inspectInventory(value, image, architecture, dispositions, backports).errors;
 }
 
+/**
+ * `backports` lists the rebuilt packages whose image receipts were verified
+ * against their recipes. An unfixed row is patched only when one of them
+ * builds that exact package version with a patch for that CVE. A disposition
+ * that names a rebuilt (+aeliraN) version likewise needs that verified build.
+ */
 export function inspectInventory(
   value: unknown,
   image: string,
   architecture: 'amd64' | 'arm64',
   dispositions: Disposition[] = [],
-  libxml2Cve6653Verified = false,
+  backports: VerifiedBackport[] = [],
 ): InventoryReport {
-  const report = (errors: string[], accepted: Disposition[] = []) =>
-    ({ errors: [...new Set(errors)], accepted: [...new Set(accepted)] });
+  const report = (errors: string[], accepted: Disposition[] = [], patched: PatchedFinding[] = []) =>
+    ({ errors: [...new Set(errors)], accepted: [...new Set(accepted)], patched });
+  const builtBy = (pkg: string, version: string) =>
+    backports.find((backport) => backport.version === version && backport.binaries.has(pkg));
   if (!isRecord(value)) return report(['Inventory must be a JSON object']);
   const errors: string[] = [];
   if (value.SchemaVersion !== 2) errors.push('Unsupported inventory schema');
@@ -122,6 +135,7 @@ export function inspectInventory(
     return report([...errors, 'Inventory lacks scanner results']);
   }
   const accepted: Disposition[] = [];
+  const patched: PatchedFinding[] = [];
   let osScanned = false;
   let high = 0;
   let critical = 0;
@@ -160,13 +174,18 @@ export function inspectInventory(
       // require a not_affected disposition.
       const unfixed = finding.FixedVersion === undefined || finding.FixedVersion === null ||
         finding.FixedVersion === '';
-      const match = result.Class === 'os-pkgs' && result.Type === os.Family && unfixed
+      const distribution = result.Class === 'os-pkgs' && result.Type === os.Family && unfixed;
+      const rebuilt = distribution && os.Family === 'debian'
+        ? builtBy(finding.PkgName, finding.InstalledVersion) : undefined;
+      if (rebuilt?.fixed.has(finding.VulnerabilityID)) {
+        patched.push({ id: finding.VulnerabilityID, pkg: finding.PkgName, version: finding.InstalledVersion,
+          source: rebuilt.source, disclosure: rebuilt.disclosure });
+        continue;
+      }
+      const match = distribution &&
+        (!rebuiltVersion.test(finding.InstalledVersion) || rebuilt !== undefined)
         ? dispositions.find((entry) => entry.id === finding.VulnerabilityID &&
           entry.osFamily === os.Family &&
-          (entry.id !== 'CVE-2026-6653' ||
-            (libxml2Cve6653Verified && entry.osFamily === 'debian' &&
-              finding.PkgName === 'libxml2' &&
-              finding.InstalledVersion === '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1')) &&
           (finding.Severity === 'HIGH' || entry.status === 'not_affected') &&
           entry.packages.some((item) =>
             item.name === finding.PkgName && item.installedVersion === finding.InstalledVersion))
@@ -178,7 +197,7 @@ export function inspectInventory(
   }
   if (!osScanned) errors.push('Inventory lacks the identified OS package scan');
   if (high || critical) errors.push(`Unresolved image findings: ${high} HIGH, ${critical} CRITICAL`);
-  return report(errors, accepted);
+  return report(errors, accepted, patched);
 }
 
 /**
@@ -248,28 +267,47 @@ if (import.meta.main) {
         errors.push(...absentDispositionPackages(dispositions, installed));
       }
     }
-    const needsLibxml2Proof = dispositions.some((entry) => entry.id === 'CVE-2026-6653') &&
-      isRecord(inventory) && Array.isArray(inventory.Results) &&
+    // Rows for rebuilt packages count only after the image's receipts are
+    // bound to the reviewed recipes and installed libraries.
+    const needsBackportProof = isRecord(inventory) && Array.isArray(inventory.Results) &&
       inventory.Results.some((result) =>
         isRecord(result) && Array.isArray(result.Vulnerabilities) &&
         result.Vulnerabilities.some((finding: unknown) => isRecord(finding) &&
-          finding.VulnerabilityID === 'CVE-2026-6653' && finding.PkgName === 'libxml2' &&
-          finding.InstalledVersion === '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1'));
-    let libxml2Verified = false;
-    if (needsLibxml2Proof) {
-      checkLibxml2Installed(values.image, false);
-      libxml2Verified = true;
+          typeof finding.InstalledVersion === 'string' && rebuiltVersion.test(finding.InstalledVersion)));
+    let backports: VerifiedBackport[] = [];
+    if (needsBackportProof) {
+      const recipes = loadBackports();
+      checkBackportsInstalled(values.image, recipes, 'runtime');
+      backports = recipes.map(verified);
     }
-    const result = inspectInventory(inventory, values.image, values.architecture, dispositions, libxml2Verified);
+    const result = inspectInventory(inventory, values.image, values.architecture, dispositions, backports);
     errors.push(...result.errors);
-    for (const entry of result.accepted) {
-      let disclosure = '';
-      try {
-        disclosure = await readFile(entry.disclosure, 'utf8');
-      } catch {
-        // Reported below as an undisclosed finding.
+    const disclosures = new Map<string, string>();
+    const disclosureText = async (path: string) => {
+      if (!disclosures.has(path)) {
+        let text = '';
+        try {
+          text = await readFile(path, 'utf8');
+        } catch {
+          // Reported below as an undisclosed finding.
+        }
+        disclosures.set(path, text);
       }
-      if (!disclosure.includes(entry.id)) errors.push(`Disclosure ${entry.disclosure} does not name ${entry.id}`);
+      return disclosures.get(path)!;
+    };
+    for (const entry of result.patched) {
+      if (!(await disclosureText(entry.disclosure)).includes(entry.id)) {
+        errors.push(`Disclosure ${entry.disclosure} does not name ${entry.id}`);
+      }
+    }
+    for (const entry of result.patched) {
+      console.log(`Patched ${entry.id} in ${entry.pkg} ${entry.version} (rebuilt ${entry.source}, ` +
+        `disclosed in ${entry.disclosure})`);
+    }
+    for (const entry of result.accepted) {
+      if (!(await disclosureText(entry.disclosure)).includes(entry.id)) {
+        errors.push(`Disclosure ${entry.disclosure} does not name ${entry.id}`);
+      }
     }
     for (const entry of result.accepted) {
       console.log(`Reported unfixed ${entry.id} (${entry.status}${entry.justification ? `: ${entry.justification}` : ''}) ` +
@@ -279,8 +317,8 @@ if (import.meta.main) {
     if (errors.length) {
       for (const error of [...new Set(errors)]) console.error(error);
       process.exitCode = 1;
-    } else if (result.accepted.length) {
-      console.log('Image report contains no unresolved HIGH or CRITICAL findings; the unfixed findings above are disclosed');
+    } else if (result.accepted.length || result.patched.length) {
+      console.log('Image report contains no unresolved HIGH or CRITICAL findings; the patched and unfixed findings above are disclosed');
     } else {
       console.log('Image report contains no HIGH or CRITICAL vulnerability findings');
     }

@@ -52,9 +52,9 @@
       "reason": "Debian source-package changelog maintainer metadata uses the project's public security reporting address from SECURITY.md. This identifies the source backport author; it is not an operator or user notification recipient. The exception applies only to this recipe and contact check."
     },
     {
-      "path": "docker/libxml2-6653/build-debs.sh",
+      "path": "docker/debian-backports/build-backport.sh",
       "check": "vendor-contact",
-      "reason": "Debian source-package changelog maintainer metadata uses the project's public security reporting address from SECURITY.md. This identifies the libxml2 backport author; it is not an operator or user notification recipient. The exception applies only to this recipe and contact check."
+      "reason": "Debian source-package changelog maintainer metadata uses the project's public security reporting address from SECURITY.md. This identifies the author of the rebuilt Debian libxml2, libX11 and libXrender packages; it is not an operator or user notification recipient. The exception applies only to this recipe and contact check."
     },
     {
       "path": "BRANDING.md",
