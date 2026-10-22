@@ -15,6 +15,9 @@ test('registered encoders fail even with starred format names or lowercase modul
   expect(() => checkCapabilities(formats, modules)).not.toThrow();
   expect(() => checkCapabilities(`${formats}    FLIF* FLIF      -w+ FLIF encoder\n`, modules)).toThrow('FLIF format');
   expect(() => checkCapabilities(formats, `${modules}uhdr\n`)).toThrow('UHDR coder');
+  expect(() => checkCapabilities(`${formats}     SVG  SVG       rw+ Scalable Vector Graphics (RSVG 2.60.0)\n`, modules)).toThrow('SVG format');
+  expect(() => checkCapabilities(`${formats}    MSVG  SVG       rw+ ImageMagick's own SVG internal renderer\n`, modules)).toThrow('MSVG format');
+  expect(() => checkCapabilities(formats, `${modules}svg\n`)).toThrow('SVG coder');
   expect(() => checkCapabilities(formats.replace('rw- Portable', 'r-- Portable'), modules)).toThrow('PNG write');
   expect(() => checkCapabilities(formats, 'Image Coder\npng\n')).toThrow('JPEG coder');
 });
@@ -26,11 +29,17 @@ test('layer paths expose encoder, backend, alias and whiteout introductions', ()
     'usr/lib/x86_64-linux-gnu/libflif.so.0', 'usr/lib/libuhdr.so', 'usr/lib/libultrahdr.so',
     'usr/lib/cups/backend/ipp', 'usr/lib/cups/apple/ipp',
     'usr/sbin/cupsd', 'usr/lib/cups/backend/.wh.ipp',
+    'usr/lib/x86_64-linux-gnu/ImageMagick-7.1.1/modules-Q16/coders/svg.so',
+    './usr/lib/aarch64-linux-gnu/ImageMagick-7.1.1/modules-Q16/coders/svg.la',
+    'usr/lib/x86_64-linux-gnu/ImageMagick-7.1.1/modules-Q16/coders/.wh.svg.so',
   ]) {
     expect(forbiddenLayerMember(path)).toBe(true);
     expect(() => checkLayerPaths([path])).toThrow('vulnerable component path');
   }
-  for (const path of ['usr/lib/aarch64-linux-gnu/libcups.so.2', 'usr/bin/magick', 'usr/share/doc/cups/README', 'usr/lib/apt/methods/http', 'usr/lib/apt/methods/https']) {
+  for (const path of ['usr/lib/aarch64-linux-gnu/libcups.so.2', 'usr/bin/magick', 'usr/share/doc/cups/README', 'usr/lib/apt/methods/http', 'usr/lib/apt/methods/https',
+    'usr/lib/x86_64-linux-gnu/ImageMagick-7.1.1/modules-Q16/coders/png.so',
+    'usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so',
+    'usr/share/icons/hicolor/scalable/apps/svg.svg']) {
     expect(forbiddenLayerMember(path)).toBe(false);
     expect(() => checkLayerPaths([path])).not.toThrow();
   }
