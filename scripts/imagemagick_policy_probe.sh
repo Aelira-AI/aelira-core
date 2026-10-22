@@ -229,5 +229,43 @@ for mode in refused control; do
   printf 'latexml ps-named-png-%s policy-refusals %s gs-calls %s images %s\n' "$mode" "$denied" "$calls" "$images"
 done
 
+# The application's LaTeX launcher gives every run a new home outside the
+# conversion directory. A policy file planted in the conversion directory's
+# .config/ImageMagick therefore stays unread: the PostScript .png is still
+# refused. The control runs the same launcher with HOME and XDG_CONFIG_HOME
+# pointed at the conversion directory, as before, and the planted file then
+# lets ImageMagick render it.
+for mode in launcher control; do
+  W="$F/w/planted-$mode"
+  mkdir -p "$W/.config/ImageMagick"
+  cp "$F/override/.config/ImageMagick/policy.xml" "$W/.config/ImageMagick/policy.xml"
+  cp "$F/postscript.png" "$W/figure.png"
+  printf '%s\n' '\documentclass{article}\usepackage{graphicx}\begin{document}\includegraphics[angle=90]{figure.png}\end{document}' > "$W/doc.tex"
+  python3 -I - "$W" "$mode" <<'PY'
+import importlib.util, pathlib, subprocess, sys
+
+work, mode = pathlib.Path(sys.argv[1]), sys.argv[2]
+spec = importlib.util.spec_from_file_location("latex_sandbox", "/app/src/education/latex_sandbox.py")
+sandbox = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sandbox)
+codes, log = [], ""
+with sandbox.tool_home(work) as home:
+    environment = sandbox.tool_environment(work, home)
+    if mode == "control":
+        environment["HOME"] = str(work)
+        environment["XDG_CONFIG_HOME"] = str(work / ".config")
+    for args in (["latexml", "--quiet", "--dest=doc.xml", "doc.tex"],
+                 ["latexmlpost", "--dest=doc.html", "--format=html5", "doc.xml"]):
+        result = subprocess.run(sandbox.confined(args, work), cwd=work, env=environment,
+                                capture_output=True, text=True, timeout=120)
+        codes.append(str(result.returncode))
+        log += result.stderr
+home_removed = "yes" if not home.exists() else "no"
+refusals = log.count("not allowed by the security policy `PS'")
+images = len(list(work.glob("x*.png")))
+print(f"launcher planted-{mode} exits {','.join(codes)} policy-refusals {refusals} images {images} home-removed {home_removed}")
+PY
+done
+
 printf 'policy-paths %s\n' "$(magick -list policy | sed -n 's/^Path: //p' | tr '\n' ' ')"
 echo imagemagick-policy-probe-complete

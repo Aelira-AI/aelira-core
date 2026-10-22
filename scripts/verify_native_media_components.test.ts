@@ -67,7 +67,7 @@ test('Debian FFmpeg, librist, cJSON and libsndfile files are rejected in any lay
   expect(debianFfmpegPackages).toContain('libcjson1');
 });
 
-function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: string; lines?: string[]; gs?: string[]; latexml?: Record<string, string>; paths?: string } = {}): string {
+function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: string; lines?: string[]; gs?: string[]; latexml?: Record<string, string>; launcher?: Record<string, string>; paths?: string } = {}): string {
   const lines: string[] = [];
   for (const [name, expected] of Object.entries(expectedProbes)) {
     if (name === extra.drop) continue;
@@ -82,6 +82,9 @@ function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: str
   }
   lines.push(`latexml ps-named-png-refused ${latexml['ps-named-png-refused']}`);
   lines.push(`latexml ps-named-png-control ${latexml['ps-named-png-control']}`);
+  const launcher = { 'planted-launcher': 'exits 0,0 policy-refusals 1 images 0 home-removed yes',
+    'planted-control': 'exits 0,0 policy-refusals 0 images 1 home-removed yes', ...extra.launcher };
+  for (const [name, value] of Object.entries(launcher)) lines.push(`launcher ${name} ${value}`);
   lines.push(`policy-paths ${extra.paths ?? '/etc/ImageMagick-7/policy.xml [built-in]'} `);
   lines.push(...(extra.lines ?? []));
   lines.push('imagemagick-policy-probe-complete');
@@ -127,6 +130,15 @@ test('LaTeXML must refuse PostScript in a .png file before Ghostscript, and only
   expect(() => checkPolicyProbe(probeOutput({}, { latexml: { 'ps-named-png-refused': 'policy-refusals 1 gs-calls 1 images 0' } }))).toThrow('refuse PostScript');
   expect(() => checkPolicyProbe(probeOutput({}, { latexml: { 'ps-named-png-control': 'policy-refusals 1 gs-calls 0 images 0' } }))).toThrow('control');
   expect(() => checkPolicyProbe(probeOutput({}, { paths: '/etc/ImageMagick-7/policy.xml /tmp/h/.config/ImageMagick/policy.xml [built-in]' }))).toThrow('loaded policies');
+});
+
+test('a policy planted in the conversion directory must not loosen the LaTeX launcher', () => {
+  // Recorded with HOME set to the conversion directory, as the launcher did before.
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'planted-launcher': 'exits 0,0 policy-refusals 0 images 1 home-removed yes' } }))).toThrow('planted in the conversion directory');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'planted-launcher': 'exits 0,0 policy-refusals 1 images 0 home-removed no' } }))).toThrow('planted in the conversion directory');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'planted-launcher': 'exits 126,126 policy-refusals 0 images 0 home-removed yes' } }))).toThrow('planted in the conversion directory');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'planted-control': 'exits 0,0 policy-refusals 1 images 0 home-removed yes' } }))).toThrow('control did not render');
+  expect(() => checkPolicyProbe(probeOutput().replace(/launcher planted-control[^\n]*\n/, ''))).toThrow('control did not render');
 });
 
 test('effective resource limits must match the policy, including the time cap', () => {

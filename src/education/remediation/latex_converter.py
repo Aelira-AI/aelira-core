@@ -4,6 +4,7 @@ A generated file is not an accessibility or PDF/UA conformance certificate.
 """
 
 import asyncio
+import contextlib
 import logging
 import inspect
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
 from ..latex_runtime import tex_environment, version_command
-from ..latex_sandbox import UNAVAILABLE, confined
+from ..latex_sandbox import UNAVAILABLE, confined, tool_home
 from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
 from ..latex_semantics import extract_semantics, save_html_semantics
 from ..latex_compatibility import decide_html, tool_versions
@@ -186,20 +187,25 @@ class LaTeXConverter:
             pass
         try:
             confine = tool in CONFINED_TOOLS
-            if confine:
-                # Writes stay in the candidate's directory and the source
-                # directory is read-only; nothing else the application can
-                # read is visible, and no application environment is passed.
-                kwargs["env"] = tex_environment(candidate.parent)
-                if tool in {"lualatex", "pdflatex"}:
-                    # Compile in owned scratch. -output-directory leaks into the
-                    # format-building child and can leave its .fmt in the wrong
-                    # directory on a cold installation. Keep source lookup explicit.
-                    kwargs["env"]["TEXINPUTS"] = (
-                        str(source.parent.resolve()) + os.pathsep
-                    )
-                args = confined(args, candidate.parent, (source.parent,))
-            result = subprocess.run(args, **kwargs)
+            with contextlib.ExitStack() as run_scope:
+                if confine:
+                    # Writes stay in the candidate's directory and the source
+                    # directory is read-only; nothing else the application can
+                    # read is visible, and no application environment is passed.
+                    # The home directory is new, outside the candidate's
+                    # directory and removed after the run.
+                    home = run_scope.enter_context(tool_home(candidate.parent))
+                    kwargs["env"] = tex_environment(candidate.parent, home)
+                    if tool in {"lualatex", "pdflatex"}:
+                        # Compile in owned scratch. -output-directory leaks into
+                        # the format-building child and can leave its .fmt in
+                        # the wrong directory on a cold installation. Keep
+                        # source lookup explicit.
+                        kwargs["env"]["TEXINPUTS"] = (
+                            str(source.parent.resolve()) + os.pathsep
+                        )
+                    args = confined(args, candidate.parent, (source.parent,))
+                result = subprocess.run(args, **kwargs)
             stderr = result.stderr if isinstance(result.stderr, str) else ""
             if (
                 confine

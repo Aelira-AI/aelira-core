@@ -319,11 +319,20 @@ inside the loop: a crafted PNG converted through LaTeXML with a 10-second
 ImageMagick time limit ran until it was killed. The upstream fix is ImageMagick
 commit `f491576297141ff685dc4460d811986f5b6b6cec` in 7.1.2-31, which replaces
 the search in `GetXmpNumeratorAndDenominator` with a bounded continued
-fraction; it applies without changes to the Debian 7.1.1-43 source. ImageMagick reads
-policy files from `$HOME/.config/ImageMagick` after the system file, and a rule
-there can loosen it. LaTeX tools run with their conversion directory as
-`$HOME`; TeX may not write hidden names there and LaTeXML keeps written files
-in memory, so a document cannot create that file.
+fraction; it applies without changes to the Debian 7.1.1-43 source.
+
+ImageMagick also reads policy files from `$HOME/.config/ImageMagick` and
+`$XDG_CONFIG_HOME/ImageMagick` after the system file, and a later rule wins, so
+a file there could loosen the policy. LaTeX tools used to run with their
+conversion directory as `$HOME`. Each tool run now gets a new, empty home
+directory outside the conversion directory, which the Landlock ruleset lets the
+tool neither read nor write, and which is removed after the run
+(`src/education/latex_sandbox.py`). `MAGICK_CONFIGURE_PATH` stays unset: it is
+read in addition to the system configuration, and a policy file there raised
+the width limit to 64000 pixels in a test. The native-image check plants a
+policy allowing PostScript in a conversion directory and runs LaTeXML through
+the application's launcher: the PostScript `.png` file stays refused, and the
+same run with `$HOME` set to the conversion directory renders it.
 
 ### CVE-2026-6653 remains open
 

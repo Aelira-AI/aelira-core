@@ -138,6 +138,7 @@ export function checkPolicyProbe(output: string): void {
   const graphics: string[][] = [];
   const ghostscript: string[][] = [];
   const latexml = new Map<string, string>();
+  const launcher = new Map<string, string>();
   let policyPaths: string | undefined;
   for (const line of lines.slice(0, -1)) {
     const [kind, ...rest] = line.split(/\s+/);
@@ -148,6 +149,7 @@ export function checkPolicyProbe(output: string): void {
     else if (kind === 'gs') ghostscript.push(rest);
     else if (kind === 'latexml' && rest.length > 0) latexml.set(rest[0], rest.slice(1).join(' '));
     else if (kind === 'policy-paths') policyPaths = rest.join(' ');
+    else if (kind === 'launcher' && rest.length > 0) launcher.set(rest[0], rest.slice(1).join(' '));
     else throw new Error(`unexpected policy probe line: ${line}`);
   }
   for (const [name, expected] of Object.entries(expectedProbes)) {
@@ -185,6 +187,12 @@ export function checkPolicyProbe(output: string): void {
   }
   if (!/^policy-refusals 0 gs-calls [1-9]\d* images 1$/.test(latexml.get('ps-named-png-control') ?? '')) {
     throw new Error('LaTeXML PostScript control did not render with the override policy');
+  }
+  if (launcher.get('planted-launcher') !== 'exits 0,0 policy-refusals 1 images 0 home-removed yes') {
+    throw new Error('a policy planted in the conversion directory changed what the LaTeX launcher refuses');
+  }
+  if (launcher.get('planted-control') !== 'exits 0,0 policy-refusals 0 images 1 home-removed yes') {
+    throw new Error('the planted policy control did not render through the LaTeX launcher');
   }
   if (policyPaths !== '/etc/ImageMagick-7/policy.xml [built-in]') {
     throw new Error(`ImageMagick loaded policies from ${policyPaths ?? 'nowhere'}`);

@@ -14,11 +14,15 @@ nothing from the application so it can run with ``python -I``.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
 import platform
+import shutil
 import struct
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 LANDLOCK_CREATE_RULESET = 444
@@ -61,12 +65,57 @@ def confined(
     return [*command, "--", *args]
 
 
-def tool_environment(directory: Path) -> dict[str, str]:
-    """A minimal environment: no application configuration or credentials."""
+@contextlib.contextmanager
+def tool_home(directory: Path) -> Iterator[Path]:
+    """A new, empty home directory for one tool run, removed afterwards.
+
+    Tools read configuration from their home directory. ImageMagick, for one,
+    adds $HOME/.config/ImageMagick/policy.xml after the system policy, so a
+    rule there would override the image's policy. The home is therefore never
+    the conversion directory: it is created outside it, and the Landlock
+    ruleset grants a confined tool neither read nor write access to it, so a
+    document cannot place configuration there.
+    """
     root = Path(directory).resolve()
+    for parent in _home_parents():
+        parent = Path(parent).resolve()
+        if parent.is_relative_to(root) or not os.access(parent, os.W_OK | os.X_OK):
+            continue
+        home = Path(tempfile.mkdtemp(prefix="aelira-tool-home-", dir=parent))
+        break
+    else:
+        raise OSError("no directory outside the conversion directory for a tool home")
+    try:
+        yield home
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def _home_parents() -> tuple[str, ...]:
+    """Where a tool home may be created, in order of preference.
+
+    The system temporary directory comes first. A conversion directory can
+    itself be that directory, so shared-memory and persistent temporary
+    directories follow. None of them is readable by a confined tool.
+    """
+    return (tempfile.gettempdir(), "/dev/shm", "/var/tmp")
+
+
+def tool_environment(directory: Path, home: Path) -> dict[str, str]:
+    """A minimal environment: no application configuration or credentials.
+
+    ``home`` comes from ``tool_home`` and is never the conversion directory.
+    MAGICK_CONFIGURE_PATH stays unset: ImageMagick reads it as well as, not
+    instead of, the system configuration, so it could only add rules.
+    """
+    root = Path(directory).resolve()
+    home = Path(home).resolve()
+    if home.is_relative_to(root):
+        raise OSError("tool home would be inside the conversion directory")
     environment = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(root),
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         # TeX may write only relative, non-hidden names below its directory.

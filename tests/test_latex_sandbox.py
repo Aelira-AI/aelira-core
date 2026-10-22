@@ -78,11 +78,16 @@ def _document(body):
 
 def test_tool_environment_carries_no_application_configuration(tmp_path, monkeypatch):
     monkeypatch.setenv("AELIRA_SECRET_FOR_TEST", MARKER)
-    environment = sandbox.tool_environment(tmp_path)
+    monkeypatch.setenv("MAGICK_CONFIGURE_PATH", str(tmp_path))
+    work = tmp_path / "work"
+    work.mkdir()
+    with sandbox.tool_home(work) as home:
+        environment = sandbox.tool_environment(work, home)
     assert MARKER not in "".join(environment.values())
     assert set(environment) == {
         "PATH",
         "HOME",
+        "XDG_CONFIG_HOME",
         "LANG",
         "LC_ALL",
         "openout_any",
@@ -96,10 +101,42 @@ def test_tool_environment_carries_no_application_configuration(tmp_path, monkeyp
     }
     assert environment["openout_any"] == "p"
     assert environment["MAGICK_TIME_LIMIT"] == "50"
-    assert Path(environment["HOME"]) == tmp_path.resolve()
+    assert Path(environment["HOME"]) == home
+    assert Path(environment["XDG_CONFIG_HOME"]) == home / ".config"
+    assert not home.is_relative_to(work.resolve())
     for name in ("TEXMFVAR", "TMPDIR", "XDG_CACHE_HOME"):
-        assert Path(environment[name]).is_relative_to(tmp_path.resolve())
+        assert Path(environment[name]).is_relative_to(work.resolve())
         assert Path(environment[name]).stat().st_mode & 0o777 == 0o700
+    with pytest.raises(OSError):
+        sandbox.tool_environment(work, work / "home")
+
+
+def test_tool_home_is_new_empty_outside_and_removed(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    with sandbox.tool_home(work) as home, sandbox.tool_home(work) as other:
+        assert home != other
+        assert home.is_dir() and not any(home.iterdir())
+        assert home.stat().st_mode & 0o777 == 0o700
+        assert not home.is_relative_to(work.resolve())
+        (home / ".config").mkdir()
+    assert not home.exists() and not other.exists()
+    with pytest.raises(RuntimeError):
+        with sandbox.tool_home(work) as home:
+            raise RuntimeError("tool failed")
+    assert not home.exists()
+    # A conversion directory that contains the temporary directory gets a
+    # home somewhere else, or none at all.
+    temporary = Path(sandbox.tempfile.gettempdir()).resolve()
+    if any(Path(p).is_dir() for p in sandbox._home_parents()[1:]):
+        with sandbox.tool_home(temporary) as home:
+            assert not home.is_relative_to(temporary)
+        assert not home.exists()
+    monkeypatch.setattr(sandbox, "_home_parents", lambda: (str(work / "inside"),))
+    (work / "inside").mkdir()
+    with pytest.raises(OSError):
+        with sandbox.tool_home(work):
+            pytest.fail("a home inside the conversion directory was used")
 
 
 def test_confined_command_names_only_declared_directories(tmp_path):
@@ -149,14 +186,15 @@ def test_confined_process_reads_and_writes_only_declared_directories(dirs):
     (outside / "secret.txt").write_text(MARKER)
 
     def run(*args, read=(source,)):
-        return subprocess.run(
-            sandbox.confined(list(args), work, read),
-            cwd=work,
-            env=sandbox.tool_environment(work),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        with sandbox.tool_home(work) as home:
+            return subprocess.run(
+                sandbox.confined(list(args), work, read),
+                cwd=work,
+                env=sandbox.tool_environment(work, home),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
 
     allowed = run("cat", str(source / "inside.txt"))
     assert (allowed.returncode, allowed.stdout) == (0, SIBLING)
@@ -170,6 +208,10 @@ def test_confined_process_reads_and_writes_only_declared_directories(dirs):
     assert run("sh", "-c", f"echo x > {outside / 'made.txt'}").returncode != 0
     assert not (source / "made.txt").exists()
     assert not (outside / "made.txt").exists()
+    # The tool can neither list nor write its own home directory.
+    assert run("sh", "-c", 'ls -A "$HOME"').returncode != 0
+    assert run("sh", "-c", 'mkdir "$HOME/.config"').returncode != 0
+    assert run("sh", "-c", 'test "$HOME" != "$PWD"').returncode == 0
 
 
 @requires_landlock
@@ -178,6 +220,53 @@ def test_run_tool_passes_no_application_environment(tmp_path, monkeypatch):
     code, log, error = runtime.run_tool(["env"], tmp_path, 30)
     assert (code, error) == (0, None)
     assert "openout_any=p" in log and MARKER not in log
+    home = Path(next(line[5:] for line in log.splitlines() if line.startswith("HOME=")))
+    assert not home.is_relative_to(tmp_path.resolve())
+    assert not home.exists()
+
+
+LOOSENING_POLICY = (
+    '<policymap><policy domain="coder" rights="read" pattern="PS"/></policymap>\n'
+)
+
+
+@requires_landlock
+def test_configuration_planted_in_the_conversion_directory_is_not_read(dirs):
+    """ImageMagick adds $HOME/.config/ImageMagick and $XDG_CONFIG_HOME/ImageMagick
+    policy files after the system policy. A file planted in the conversion
+    directory must not be reachable through either variable. The image check
+    (scripts/imagemagick_policy_probe.sh) shows the same with ImageMagick itself.
+    """
+    work, _, _ = dirs
+    planted = work / ".config" / "ImageMagick"
+    planted.mkdir(parents=True)
+    (planted / "policy.xml").write_text(LOOSENING_POLICY)
+    read_both = (
+        'cat "$HOME/.config/ImageMagick/policy.xml"'
+        ' "$XDG_CONFIG_HOME/ImageMagick/policy.xml"'
+    )
+
+    def run(home_is_conversion_directory):
+        with sandbox.tool_home(work) as home:
+            environment = sandbox.tool_environment(work, home)
+            if home_is_conversion_directory:
+                # The control: the home the tools had before this change.
+                environment["HOME"] = str(work)
+                environment["XDG_CONFIG_HOME"] = str(work / ".config")
+            return subprocess.run(
+                sandbox.confined(["sh", "-c", read_both], work),
+                cwd=work,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+    refused = run(home_is_conversion_directory=False)
+    assert refused.returncode != 0 and 'pattern="PS"' not in refused.stdout
+    control = run(home_is_conversion_directory=True)
+    assert control.returncode == 0
+    assert control.stdout == LOOSENING_POLICY * 2
 
 
 @requires_tool("pdflatex")
