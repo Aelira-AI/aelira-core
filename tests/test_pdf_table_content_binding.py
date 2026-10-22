@@ -853,3 +853,42 @@ def test_failed_output_cleanup_nonblocking_quarantines_fifo_replacement(
     assert len(retained) == 1
     assert retained[0].is_fifo()
     assert any("unverified output" in warning for warning in remediator.result.warnings)
+
+
+def test_cleanup_tolerates_an_already_closed_pymupdf_document(tmp_path):
+    """PyMuPDF 2.0 raises when a closed document is closed again."""
+    source = Path(_make_table_pdf(tmp_path / "closed.pdf"))
+    remediator = PdfRemediator(
+        str(source),
+        [_issue()],
+        RemediationConfig(
+            use_ai=False,
+            create_backup=False,
+            verify_fixes=False,
+            output_directory=str(tmp_path),
+        ),
+    )
+    remediator._pdf = fitz.open(source)
+    remediator._pdf.close()
+
+    remediator._cleanup_working_copy()
+
+    assert remediator._pdf is None
+    assert remediator.result.success is not False
+    assert not remediator.result.warnings
+
+
+def test_detection_ignores_a_layout_model_that_sees_no_table(tmp_path, monkeypatch):
+    """PyMuPDF 2.0 gates find_tables() on its layout model unless told not to."""
+    source = _make_table_pdf(tmp_path / "layout.pdf")
+    monkeypatch.setattr(
+        fitz, "_get_layout", lambda page, **kwargs: [(0, 0, 10, 10, "picture")]
+    )
+
+    with fitz.open(source) as document:
+        assert document[0].find_tables().tables == []
+
+    detection = TableTagger().detect_tables(source)
+
+    assert detection.success is True
+    assert detection.tables_found == 1

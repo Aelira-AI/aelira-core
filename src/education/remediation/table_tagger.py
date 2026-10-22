@@ -414,7 +414,8 @@ class TableTagger:
                     )
 
                 page = doc[page_num]
-                tables = page.find_tables()
+                # Same line-based finder as detection (no layout model gate).
+                tables = page.find_tables(use_layout=False)
 
                 # Find the table matching the bbox
                 target_table = None
@@ -1121,7 +1122,10 @@ class TableTagger:
         for page_num in range(len(doc)):
             page = doc[page_num]
             try:
-                found = page.find_tables()
+                # PyMuPDF 2.0 embeds a layout model that gates find_tables()
+                # by default and can drop a ruled table it labels a picture.
+                # Detection stays on the deterministic line-based finder.
+                found = page.find_tables(use_layout=False)
                 for table_index, table in enumerate(found.tables):
                     table_info = self._parse_table(table, page_num, table_index)
                     if table_info.rows >= 2 and table_info.cols >= 2:

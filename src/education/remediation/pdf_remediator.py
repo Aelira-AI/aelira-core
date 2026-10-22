@@ -2433,7 +2433,10 @@ class PdfRemediator(BaseRemediator):
             handle = getattr(self, attr, None)
             if handle is not None:
                 try:
-                    handle.close()
+                    # PyMuPDF 2.0 raises on closing a closed document; a
+                    # no-save exit path may already have closed this handle.
+                    if not getattr(handle, "is_closed", False):
+                        handle.close()
                 except Exception as e:
                     cleanup_errors.append(f"could not close {attr}: {e}")
                 setattr(self, attr, None)
@@ -5217,7 +5220,8 @@ class PdfRemediator(BaseRemediator):
         )
 
     def _close_documents_without_save(self, document: Any) -> None:
-        document.close()
+        if not getattr(document, "is_closed", False):
+            document.close()
         if self._pikepdf_doc:
             try:
                 self._pikepdf_doc.close()
