@@ -1764,7 +1764,8 @@ jobs:
             --file test-results/api-image-inventory/trivy.json \
             --image aelira-worker-isolation:test \
             --architecture ${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }} \
-            --dispositions .trivy-unfixed-dispositions.json
+            --dispositions .trivy-unfixed-dispositions.json \
+            --installed test-results/api-image-inventory/dpkg-packages.tsv
       - name: Verify production package state and baked Piper synthesis
         run: |
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global

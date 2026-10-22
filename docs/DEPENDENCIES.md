@@ -179,7 +179,7 @@ Installed by the Docker images / quickstart, or by you when running bare:
 | Ghostscript / qpdf | PDF preprocessing and repair |
 | TeX Live (pdflatex/LuaTeX) + LaTeXML | LaTeX compilation and MathML conversion |
 | Pandoc | Document format conversion |
-| FFmpeg | Audio/video decoding for captioning |
+| FFmpeg 9.0.2 (`ffmpeg`, `ffprobe`) | Audio/video probing, decoding and muxing for captioning; the API image builds it from source (below) |
 
 ### CPython Expat in API images
 
@@ -250,7 +250,8 @@ its official release signature was verified against FFmpeg release signer
 `FCF986EA15E6E293A5644F10B4322F04D67658D8`. The PyAV build pins Cython
 3.2.9 and the existing setuptools 84.0.0, disables build isolation, and checks
 both archive hashes before unpacking. The final image carries the FFmpeg and
-PyAV license texts with the seven required shared libraries. PyAV's extension
+PyAV license texts with the seven required shared libraries and the `ffmpeg`
+and `ffprobe` programs. PyAV's extension
 modules and the FFmpeg siblings use an embedded RPATH to that prefix.
 The [OpenCV 5.0.0.93 source archive](https://pypi.org/project/opencv-python/5.0.0.93/#files)
 has SHA-256 `66aac3e5b5faa48d4025816592f3af19e4bfc2c68dec067bae2dbb4ca10aa9e2`.
@@ -269,8 +270,24 @@ This FFmpeg build disables autodetected optional components, including TLS/HTTPS
 It explicitly enables Debian's `libdav1d` software AV1 decoder and disables
 FFmpeg's hardware-only native AV1 decoder so OpenCV selects the CPU decoder by
 codec ID. PyAV still decodes the local PCM WAV that `multimedia_processor.py`
-generates for `faster-whisper==1.2.1`. The system `ffmpeg` CLI remains a
-separate Debian media path.
+generates for `faster-whisper==1.2.1`.
+
+The same build provides the `ffmpeg` and `ffprobe` programs the application
+runs, installed under `/opt/ffmpeg9/bin` and linked from `/usr/local/bin`.
+Debian's `ffmpeg` package is not installed in the API image, which also drops
+its libraries and their dependencies, among them `librist4`, `libcjson1`,
+`libsndfile1`, SDL and PulseAudio. The build compiles in only the `file` and
+`pipe` protocols (`--disable-network --disable-protocols`), so no demuxer can
+open a network reference even without the application's input whitelist. It
+links Debian's `libmp3lame0` 3.100-6+b3 and `libvorbis0a`/`libvorbisenc2`
+1.3.7-3 (with `libogg0` 1.3.5-3+b2), pinned in both stages, so spoken audio is
+still written as MP3 and Ogg Vorbis; without `libvorbis`, FFmpeg's Ogg muxer
+falls back to FLAC. The final-image verifier pins both programs' version,
+configure line, library paths, protocol list and encoders, and
+`scripts/smoke_media_cli.py` runs every application call site against the
+shipped programs in CI. The development image keeps Debian's `ffmpeg` on PATH
+as its fixture tool; its `/opt/ffmpeg9` build carries the same programs but
+they are not on PATH.
 
 The OpenCV wheel retains the exact `opencv-python` distribution identity that
 PySceneDetect 0.7.2 requires. Its compiled scope is scene video capture and
