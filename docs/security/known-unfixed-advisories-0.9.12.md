@@ -248,11 +248,11 @@ scanner findings remain visible.
 
 | Advisory | Scanner packages | Status | Assessment |
 | --- | --- | --- | --- |
-| [CVE-2026-106576](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-v45j-x8p4-3mh4) | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | Affected | A crafted XMP profile makes the rational conversion in `MagickCore/profile.c` run for a long time when an image carrying it is written. LaTeXML reads and rewrites submitted PNG and JPEG graphics when a document transforms them, for example by rotation. Denial of service only, bounded by the 60-second post-processing timeout. |
-| [CVE-2026-106573](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-qr53-hc3p-fc62) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing macro expansion limit in the MVG decoder. See the MVG basis below. |
-| [CVE-2026-106578](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-6xf5-c3jx-rp39) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Invalid free in the MVG decoder. See the MVG basis below. |
-| [CVE-2026-106579](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-vcjj-32hg-qpx5) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Policies written in the `coder` domain can be bypassed. The only such rules in the image are Debian's denials of `URL`, `HTTP` and `HTTPS`. Those coders declare no magic signature, so only a URL prefix in a file name selects them, and LaTeXML never passes one (see below). |
-| [CVE-2026-106580](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-r868-pmwh-fv2c) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing policy check when the CUT reader loads its palette file. CUT declares no magic signature, so only a `cut:` prefix or a `.cut` name selects it, and submitted content can supply neither. |
+| [CVE-2026-106576](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-v45j-x8p4-3mh4) | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | Affected | A crafted XMP profile makes the rational conversion in `MagickCore/profile.c` run for a long time when an image carrying it is written. LaTeXML reads and rewrites submitted PNG and JPEG graphics when a document transforms them, for example by rotation. Denial of service only, bounded by the 60-second post-processing timeout, which kills the process. The image's ImageMagick policy does not mitigate it (see below). |
+| [CVE-2026-106573](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-qr53-hc3p-fc62) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing macro expansion limit in the MVG decoder. See the MVG basis below; the image policy also refuses the MVG coder. |
+| [CVE-2026-106578](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-6xf5-c3jx-rp39) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Invalid free in the MVG decoder. See the MVG basis below; the image policy also refuses the MVG coder. |
+| [CVE-2026-106579](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-vcjj-32hg-qpx5) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Policies written in the `coder` domain can be bypassed, because ImageMagick checks the requested format name case-sensitively instead of the name of the coder it resolves. The image policy denies every coder with a `*` rule and then allows only upper-case names, so a name that differs only in case matches just the deny-all rule and is refused; it cannot reach a coder the policy does not allow (see below). |
+| [CVE-2026-106580](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-r868-pmwh-fv2c) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing policy check when the CUT reader loads its palette file. CUT declares no magic signature, so only a `cut:` prefix or a `.cut` name selects it, and submitted content can supply neither. The image policy also refuses the CUT coder. |
 | [CVE-2026-107209](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-f2r2-qw7g-3c8x) | The same seven ImageMagick packages | Not affected, `vulnerable_code_not_present` | Use-after-free in the RSVG path of `coders/svg.c`. Debian ships the SVG coder module only in `libmagickcore-7.q16-10-extra`, which is not installed; `libmagickcore-7.q16-10` contains no `svg` module, so no SVG, MSVG or RSVG format is registered. |
 
 **MVG, CUT and URL basis.** In ImageMagick 7.1.1-43, file sniffing uses the
@@ -274,12 +274,56 @@ read, but such a file is part of the image, not content an attacker supplies.
 The native-image CI check now also asserts that no SVG, MSVG or RSVG format or
 `svg` coder module is registered, that no ImageMagick `svg` coder module occurs
 in any shipped layer, and that a file named `.png` containing MVG drawing
-commands is rejected by both `magick` and Perl `Image::Magick`, while the same
-file is accepted with an explicit `mvg:` prefix. The MVG, CUT and URL basis
-rests on reading the ImageMagick 7.1.1-43 and LaTeXML 0.8.8 sources, not on a
-crafted-input test of LaTeXML itself. A changed ImageMagick or LaTeXML package,
-a new ImageMagick caller, or a wider project file allowlist requires a fresh
-assessment.
+commands is not decoded by `magick` or Perl `Image::Magick`, while the same
+file is decoded with an explicit `mvg:` prefix once a test-only policy allows
+MVG. The MVG, CUT and URL basis rests on reading the ImageMagick 7.1.1-43 and
+LaTeXML 0.8.8 sources, not on a crafted-input test of LaTeXML itself. A changed
+ImageMagick or LaTeXML package, a new ImageMagick caller, or a wider project
+file allowlist requires a fresh assessment.
+
+**ImageMagick policy.** From [#749](https://github.com/Aelira-AI/aelira-core/issues/749)
+the API image replaces Debian's open `policy.xml` and `delegates.xml` with
+[`docker/imagemagick/policy.xml`](../../docker/imagemagick/policy.xml) and
+[`docker/imagemagick/delegates.xml`](../../docker/imagemagick/delegates.xml).
+LaTeXML 0.8.8 reads graphics through `LaTeXML::Util::Image`: it reads PNG,
+JPEG, EPS and PDF files, renders EPS and PDF through Ghostscript and reads the
+result back as PNG, or as PAM for a CMYK document, and writes PNG and JPEG
+files. The policy denies every coder and then allows reading and writing PNG,
+JPEG and JPG and reading EPS, PDF and PAM. It allows only the `gs` delegate
+program, denies all filters, `@` file lists and URL reads, and lowers the
+width and height limits to 16000 pixels, memory to 256 MiB, map to 512 MiB,
+area to 64 megapixels, disk to 1 GiB, image lists to 32 and threads to 2.
+ImageMagick 7.1.1-43 applies the policy's 50-second time value only as a cap,
+so the LaTeX tool environment also sets `MAGICK_TIME_LIMIT=50`. The delegate
+list keeps only the two Ghostscript rendering delegates, both run with
+`-dSAFER -dBATCH -dNOPAUSE` and a fixed `pngalpha` or `pamcmyk32` device.
+Ghostscript 10.05.1 (`10.05.1~dfsg-1+deb13u3`) also applies `-dSAFER` by
+default; Debian's open Ghostscript advisories for this release are fixed in
+that version or are marked unimportant for components the image does not use.
+
+Before this change, a file named `.png` that held a PostScript program was
+identified by its content and rendered through Ghostscript, including inside
+LaTeXML, and the MSL, MVG, CUT, TEXT, TXT and PS coders read files when named
+with a prefix or extension. The native-image CI check now runs real LaTeXML
+conversions of EPS, PDF, PNG and JPEG graphics, including rotated and CMYK
+ones, and records every Ghostscript command line. It asserts that those reads
+are refused by the policy, that LaTeXML refuses the PostScript `.png` file
+before Ghostscript runs, that images wider or taller than the limit are
+refused, and that the shipped files equal the reviewed ones. Each refusal has
+a control that passes when a test-only policy file allows the coder.
+
+The policy does not mitigate CVE-2026-106576. ImageMagick has no policy rule
+for embedded profiles, so denying the `XMP` coder does not stop the
+conversion, and its time limit is checked only when pixels are accessed, not
+inside the loop: a crafted PNG converted through LaTeXML with a 10-second
+ImageMagick time limit ran until it was killed. The upstream fix is ImageMagick
+commit `f491576297141ff685dc4460d811986f5b6b6cec` in 7.1.2-31, which replaces
+the search in `GetXmpNumeratorAndDenominator` with a bounded continued
+fraction; it applies without changes to the Debian 7.1.1-43 source. ImageMagick reads
+policy files from `$HOME/.config/ImageMagick` after the system file, and a rule
+there can loosen it. LaTeX tools run with their conversion directory as
+`$HOME`; TeX may not write hidden names there and LaTeXML keeps written files
+in memory, so a document cannot create that file.
 
 ### CVE-2026-6653 remains open
 

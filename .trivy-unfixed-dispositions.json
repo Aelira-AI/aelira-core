@@ -1022,7 +1022,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "Missing macro expansion limit in the ImageMagick MVG decoder. ImageMagick 7.1.1-43 selects MVG only from an explicit mvg: prefix or a .mvg file name, because coders/mvg.h declares no magic signature. LaTeXML passes only resolved local graphic paths, submitted LaTeX project members are limited to .tex, .bib, .sty, .cls, .bst, .png, .jpg, .jpeg, .pdf, .eps, .svg and .txt names without colons, and LaTeXML keeps \\openout and filecontents output in memory, so submitted content cannot be decoded as MVG.",
+      "reason": "Missing macro expansion limit in the ImageMagick MVG decoder. ImageMagick 7.1.1-43 selects MVG only from an explicit mvg: prefix or a .mvg file name, because coders/mvg.h declares no magic signature. LaTeXML passes only resolved local graphic paths, submitted LaTeX project members are limited to .tex, .bib, .sty, .cls, .bst, .png, .jpg, .jpeg, .pdf, .eps, .svg and .txt names without colons, and LaTeXML keeps \\openout and filecontents output in memory, so submitted content cannot be decoded as MVG. The image's ImageMagick policy also denies the MVG coder, so even an explicit mvg: prefix is refused.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-20",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1061,7 +1061,7 @@
         }
       ],
       "status": "affected",
-      "reason": "ImageMagick may process graphics referenced by submitted LaTeX documents, and writing a transformed PNG or JPEG image that carries an XMP profile runs the vulnerable conversion. Denial of service only; no distribution fix exists.",
+      "reason": "ImageMagick may process graphics referenced by submitted LaTeX documents, and writing a transformed PNG or JPEG image that carries an XMP profile runs the vulnerable conversion. The image's ImageMagick policy does not mitigate it: no policy rule applies to embedded profiles, and the ImageMagick time limit is not checked inside the loop. Denial of service only, bounded by the 60-second post-processing timeout; no distribution fix exists.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-20",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1101,7 +1101,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "Invalid free in the ImageMagick MVG decoder. ImageMagick 7.1.1-43 selects MVG only from an explicit mvg: prefix or a .mvg file name, because coders/mvg.h declares no magic signature. LaTeXML passes only resolved local graphic paths, submitted LaTeX project members are limited to .tex, .bib, .sty, .cls, .bst, .png, .jpg, .jpeg, .pdf, .eps, .svg and .txt names without colons, and LaTeXML keeps \\openout and filecontents output in memory, so submitted content cannot be decoded as MVG.",
+      "reason": "Invalid free in the ImageMagick MVG decoder. ImageMagick 7.1.1-43 selects MVG only from an explicit mvg: prefix or a .mvg file name, because coders/mvg.h declares no magic signature. LaTeXML passes only resolved local graphic paths, submitted LaTeX project members are limited to .tex, .bib, .sty, .cls, .bst, .png, .jpg, .jpeg, .pdf, .eps, .svg and .txt names without colons, and LaTeXML keeps \\openout and filecontents output in memory, so submitted content cannot be decoded as MVG. The image's ImageMagick policy also denies the MVG coder, so even an explicit mvg: prefix is refused.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-20",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1141,7 +1141,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "Coder-domain policy bypass. The only coder-domain rules in the image are Debian's denials of URL, HTTP and HTTPS. Those coders declare no magic signature (coders/url.h), so they are selected only by a URL prefix in a file name, which LaTeXML never passes: it reads only resolved local graphic paths, and submitted project member names cannot contain colons.",
+      "reason": "Coder-domain policy bypass: ImageMagick 7.1.1-43 checks the requested format name, matched case-sensitively, instead of the name of the coder it resolves case-insensitively. The image's policy denies every coder with a * rule and then allows only the upper-case names PNG, JPEG, JPG, EPS, PDF and PAM, so a request whose name differs from the coder's only in case matches just the deny-all rule and is refused; it cannot reach a coder the policy does not allow. The native image check confirms that an Mvg: prefix is refused as MVG.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-20",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
@@ -1181,7 +1181,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "reason": "ImageMagick CUT reader palette load. ImageMagick 7.1.1-43 selects CUT only from an explicit cut: prefix or a .cut file name, because coders/cut.h declares no magic signature. Submitted LaTeX project members cannot have a .cut name or a colon, and LaTeXML passes only resolved local graphic paths.",
+      "reason": "ImageMagick CUT reader palette load. ImageMagick 7.1.1-43 selects CUT only from an explicit cut: prefix or a .cut file name, because coders/cut.h declares no magic signature. Submitted LaTeX project members cannot have a .cut name or a colon, and LaTeXML passes only resolved local graphic paths. The image's ImageMagick policy also denies the CUT coder, so even an explicit cut: prefix is refused.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-20",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
