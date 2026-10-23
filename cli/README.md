@@ -32,6 +32,47 @@
 
 Authentication supports magic-link, browser, or API-key login with multi-profile config, and the CLI retries transient API errors automatically with backoff.
 
+## What it looks like
+
+This is real output from `aelira scan pdf` in the default console format, run against a local Aelira Core API:
+
+```text
+┌  Aelira CLI - PDF Accessibility Scanner
+│
+◇  Scan complete
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PDF Accessibility Report
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File: sample-handout.pdf
+  Pages: 1
+  Size: 4.4 KB
+  OCR: No
+
+  Scanner score: 49/100
+
+  Issues Found:
+  - Critical: 1
+  - High: 2
+  - Medium: 3
+  - Low: 0
+  Total: 6
+
+  Processing Time: 6.2s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Scan ID: e227efe8-42ee-4301-9dd0-064f957cebb9
+
+Tip: Use --format json for detailed issue breakdown
+Tip: Use directory path to batch scan multiple PDFs
+│
+└  PDF scan complete.
+```
+
+`sample-handout.pdf` is a one-page synthetic PDF made for this example. It is untagged, has no title or language set, and contains one chart image with no alternative text. The report shows the file details, a scanner score of 49 out of 100, and six findings grouped by severity; `--format json` or `--format csv` lists each finding with its rule.
+
+The command was `NO_COLOR=1 aelira scan pdf sample-handout.pdf`, with `AELIRA_API_URL` set to the local API. It was captured with a 0.9.14 development build (`main` at `ceb3c78` plus the CLI output fixes that accompany this sample), against an API started from `docker-compose.quickstart.yml` with AI providers left disabled. The progress spinner is shown in its final state, and the scan ID and processing time will differ on every run.
+
 ## Installation
 
 ```bash
