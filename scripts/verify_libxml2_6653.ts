@@ -149,37 +149,47 @@ TEX
       tail -c 4096 /tmp/latexmlpost.log >&2
       exit 1
     fi
+    # The image's ImageMagick policy refuses MSL, ImageMagick's only libxml2
+    # reader that submitted content could select (the SVG coder is not installed,
+    # and XMP profiles are parsed with libxml2 only when the xmp:validate option
+    # is set, which LaTeXML never sets). So this control proves that the policy
+    # refuses MSL and XC, decodes an allowed PNG from memory, and that the
+    # libMagickCore loaded by Perl maps exactly the rebuilt system libxml2.
     cat > /tmp/control.msl <<'MSL'
 <?xml version="1.0" encoding="UTF-8"?>
 <image><read filename="/tmp/input.png"/><write filename="/tmp/output.png"/></image>
 MSL
-    perl -MImage::Magick -MCwd=realpath -e '
+    perl -MImage::Magick -MMIME::Base64 -MCwd=realpath -e '
       use strict; use warnings;
-      my $source = Image::Magick->new(size => "2x2");
-      my $error = $source->Read("xc:red");
-      die "ImageMagick control image creation failed: $error\n" if $error;
-      $error = $source->Write(filename => "/tmp/input.png");
-      die "ImageMagick control PNG write failed: $error\n" if $error;
-      my $image = Image::Magick->new;
-      $error = $image->Read(filename => "MSL:/tmp/control.msl");
-      die "ImageMagick MSL XML read failed: $error\n" if $error;
-      my $output = Image::Magick->new;
-      $error = $output->Read(filename => "/tmp/output.png");
-      die "ImageMagick MSL output read failed: $error\n" if $error;
-      die "ImageMagick MSL output dimensions changed\n" unless $output->Get("width") == 2 && $output->Get("height") == 2;
+      for my $refused (["XC", "xc:red"], ["MSL", "MSL:/tmp/control.msl"]) {
+        my ($coder, $spec) = @$refused;
+        my $probe = Image::Magick->new(size => "2x2");
+        my $error = $probe->Read($spec);
+        die "ImageMagick policy did not refuse $coder\n"
+          unless $error && $error =~ /not allowed by the security policy .$coder./;
+      }
+      die "MSL control wrote an output file\n" if -e "/tmp/output.png";
+      my $png = decode_base64("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4z8AARAwQCgAf7gP9Y167WwAAAABJRU5ErkJggg==");
+      my $image = Image::Magick->new(magick => "PNG");
+      my $error = $image->BlobToImage($png);
+      die "ImageMagick PNG blob decode failed: $error\n" if $error;
+      die "ImageMagick PNG blob decode gave no single image\n" unless @$image == 1;
+      die "ImageMagick PNG control dimensions changed\n" unless $image->Get("width") == 2 && $image->Get("height") == 2;
       for my $x (0..1) {
         for my $y (0..1) {
-          my @pixel = $output->GetPixel(x => $x, y => $y, normalize => 1);
-          die "ImageMagick MSL output pixel changed at $x,$y\n"
+          my @pixel = $image->GetPixel(x => $x, y => $y, normalize => 1);
+          die "ImageMagick PNG control pixel changed at $x,$y\n"
             unless @pixel >= 3 && $pixel[0] > 0.99 && $pixel[1] < 0.01 && $pixel[2] < 0.01;
         }
       }
       open my $maps, "<", "/proc/self/maps" or die $!;
-      my %loaded;
+      my (%loaded, $core);
       while (<$maps>) {
+        $core = 1 if m{/libMagickCore-7[.]Q16[.]so};
         $loaded{realpath($1)} = 1 if m{(/usr/lib/[^ ]+/libxml2[.]so[.]2[.]9[.]14)};
       }
-      die "ImageMagick MSL loaded unexpected libxml2\n" unless keys(%loaded) == 1 && $loaded{$ENV{LIBXML_EXPECTED_PATH}};
+      die "libMagickCore is not loaded in the Perl process\n" unless $core;
+      die "ImageMagick loaded unexpected libxml2\n" unless keys(%loaded) == 1 && $loaded{$ENV{LIBXML_EXPECTED_PATH}};
     '
     echo full-native-xml-consumers-ok
   `;
