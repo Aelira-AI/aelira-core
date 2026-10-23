@@ -178,30 +178,30 @@ aelira scan ppt ./presentations/
 
 LaTeX to MathML converter. Convert LaTeX equations to MathML. Model-drafted equation descriptions are kept as review drafts and never written as ARIA labels.
 
-Advanced LaTeX support:
+The command uploads each `.tex` or `.latex` file to the API's LaTeX convert endpoint, then waits for the scan to finish. Given a directory, it uploads every `.tex` and `.latex` file it finds, including in subdirectories.
 
-- ChemFig chemical structure support
+The server's LaTeX processor recognizes:
+
+- ChemFig chemical structures
 - mhchem chemistry notation
-- Physics package (bra-ket, vectors, tensors)
-- TikZ diagram descriptions
-- Custom macro expansion
+- Physics package notation (bra-ket, vectors, tensors)
+- TikZ diagrams
 
 ```bash
 aelira scan latex <file or directory>
   --api-url <url>
-  --format console|json|csv
+  --format console|csv|json
   --output <file>           # Output file (for JSON or CSV)
-  --type math|chemistry|physics|diagram   # Content type hint
-  --expand-macros                          # Expand custom macros (default: true)
   --timer
 ```
+
+The `--type` and `--expand-macros` flags are still accepted so existing scripts keep running, but they have no effect: the convert endpoint takes no content type hint or macro option, so the CLI does not send them and prints a deprecation warning when they are used.
 
 Examples:
 
 ```bash
 aelira scan latex equations.tex
-aelira scan latex chemistry.tex --type chemistry
-aelira scan latex quantum.tex --type physics
+aelira scan latex equations.tex --format json --output equations.json
 aelira scan latex ./math-dept/
 ```
 

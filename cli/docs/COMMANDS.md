@@ -44,7 +44,7 @@ Definitions: [config](../src/commands/config.ts), [auth](../src/commands/auth.ts
 | `aelira scan docx` | Word file or directory. | [docx](../src/commands/scan/docx.ts) |
 | `aelira scan xlsx` | Excel file or directory. | [xlsx](../src/commands/scan/xlsx.ts) |
 | `aelira scan ppt` | PowerPoint file or directory. | [ppt](../src/commands/scan/ppt.ts) |
-| `aelira scan latex` | LaTeX file or directory; `--type` provides a content hint. | [latex](../src/commands/scan/latex.ts) |
+| `aelira scan latex` | LaTeX file or directory, uploaded to the API. `--type` and `--expand-macros` are accepted but not sent. | [latex](../src/commands/scan/latex.ts) |
 | `aelira scan code` | Source file or directory sent to the backend. | [code](../src/commands/scan/code.ts) |
 | `aelira scan image` | Image file or directory; backend alt-text generation. | [image](../src/commands/scan/image.ts) |
 | `aelira scan video` | Video/audio file or directory; backend transcription results. | [video](../src/commands/scan/video.ts) |

@@ -1,5 +1,6 @@
 import { intro, outro, spinner } from '@clack/prompts'
 import { Args, Command, Flags } from '@oclif/core'
+import FormData from 'form-data'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
@@ -19,8 +20,6 @@ static examples = [
     '<%= config.bin %> <%= command.id %> equations.tex',
     '<%= config.bin %> <%= command.id %> ./latex-files/',
     '<%= config.bin %> <%= command.id %> document.tex --format json',
-    '<%= config.bin %> <%= command.id %> chemistry.tex --type chemistry',
-    '<%= config.bin %> <%= command.id %> quantum.tex --type physics',
     '<%= config.bin %> <%= command.id %> ./math/ --api-url http://localhost:8000',
   ]
 static flags = {
@@ -29,12 +28,15 @@ static flags = {
     }),
     'expand-macros': Flags.boolean({
       default: true,
-      description: 'Expand custom macros before conversion',
+      deprecated: {
+        message: 'The LaTeX convert endpoint takes no macro option, so --expand-macros is not sent and has no effect.',
+      },
+      description: 'Not sent to the API; the LaTeX convert endpoint takes no macro option',
     }),
     format: Flags.string({
       char: 'f',
       default: 'console',
-      description: 'Output format (console or json)',
+      description: 'Output format (console, csv or json)',
       options: ['console', 'csv', 'json'],
     }),
     output: Flags.string({
@@ -47,7 +49,10 @@ static flags = {
     }),
     type: Flags.string({
       char: 't',
-      description: 'LaTeX content type hint (math, chemistry, physics, diagram)',
+      deprecated: {
+        message: 'The LaTeX convert endpoint takes no content type hint, so --type is not sent and has no effect.',
+      },
+      description: 'Not sent to the API; the LaTeX convert endpoint takes no content type hint',
       options: ['math', 'chemistry', 'physics', 'diagram'],
     }),
   }
@@ -78,19 +83,15 @@ static flags = {
   private async convertLatex(
     filePath: string,
     apiUrl: string | undefined,
-    flags: any,
     s: ReturnType<typeof spinner>,
   ): Promise<any> {
     const api = new ApiClient({ apiUrl })
-    const latexContent = await fs.readFile(filePath, 'utf8')
+    // The endpoint takes the source as an uploaded `file` field, not JSON.
+    const formData = new FormData()
+    formData.append('file', await fs.readFile(filePath), path.basename(filePath))
 
-    // Upload with shorter timeout (just request transfer)
-    const response = await api.post('/education/latex/convert', {
-      content_type_hint: flags.type || null,
-      expand_macros: flags['expand-macros'] !== false,
-      filename: path.basename(filePath),
-      latex_content: latexContent,
-    }, {
+    // Upload with shorter timeout (just file transfer)
+    const response = await api.postForm('/education/latex/convert', formData as any, {
       timeout: 30_000,
     })
     const uploadResult = await response.json()
@@ -198,8 +199,6 @@ static flags = {
       this.log(`  Scan ID: ${result.scan_id}`)
     }
 
-    this.log('💡 Tip: Use --type chemistry for ChemFig/mhchem content')
-    this.log('💡 Tip: Use --type physics for bra-ket and vector notation')
     this.log('💡 Tip: Use --format json for complete MathML output')
   }
 
@@ -272,7 +271,7 @@ static flags = {
       s.start(`Processing ${path.basename(file)} (${i + 1}/${files.length})...`)
 
       try {
-        const result = await this.convertLatex(file, flags['api-url'], flags, s)
+        const result = await this.convertLatex(file, flags['api-url'], s)
         results.push({ file: path.basename(file), ...result })
         s.stop(`✓ ${path.basename(file)}`)
       } catch (error: any) {
@@ -325,7 +324,7 @@ static flags = {
     s.start('Converting LaTeX to MathML...')
 
     try {
-      const result = await this.convertLatex(filePath, flags['api-url'], flags, s)
+      const result = await this.convertLatex(filePath, flags['api-url'], s)
       const processDuration = Date.now() - startTime
 
       s.stop('Conversion complete')
