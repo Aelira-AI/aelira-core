@@ -9,12 +9,12 @@
 <p align="center"><strong>Accessibility scanning and supported remediation for course content, with saved-file evidence and human review.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/Aelira-AI/aelira-core/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Aelira-AI/aelira-core?display_name=tag&sort=semver"></a>
-  <a href="LICENSE"><img alt="Licence: AGPL-3.0" src="https://img.shields.io/github/license/Aelira-AI/aelira-core?color=2e2963"></a>
-  <a href="https://github.com/Aelira-AI/aelira-core/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI status on main" src="https://img.shields.io/github/actions/workflow/status/Aelira-AI/aelira-core/ci.yml?branch=main&label=CI"></a>
-  <a href="https://github.com/orgs/Aelira-AI/packages?repo_name=aelira-core"><img alt="Container images on GitHub Container Registry" src="https://img.shields.io/badge/containers-ghcr.io-2e2963?logo=docker&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@aelira/cli"><img alt="npm package @aelira/cli" src="https://img.shields.io/npm/v/%40aelira%2Fcli?label=npm%20%40aelira%2Fcli"></a>
-  <a href="CONTRIBUTING.md"><img alt="Pull requests welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
+  <a href="https://github.com/Aelira-AI/aelira-core/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Aelira-AI/aelira-core?display_name=tag&sort=semver&color=%232e2963"></a>
+  <a href="LICENSE"><img alt="Licence: AGPL-3.0" src="https://img.shields.io/github/license/Aelira-AI/aelira-core?color=%237a3d8f"></a>
+  <a href="https://github.com/Aelira-AI/aelira-core/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI status on main" src="https://img.shields.io/github/actions/workflow/status/Aelira-AI/aelira-core/ci.yml?branch=main&label=CI&color=%2324292f"></a>
+  <a href="https://github.com/orgs/Aelira-AI/packages?repo_name=aelira-core"><img alt="Container images on GitHub Container Registry" src="https://img.shields.io/badge/containers-ghcr.io-%230b5cad?logo=docker&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@aelira/cli"><img alt="npm package @aelira/cli" src="https://img.shields.io/npm/v/%40aelira%2Fcli?label=npm%20%40aelira%2Fcli&color=%23cb3837"></a>
+  <a href="CONTRIBUTING.md"><img alt="Pull requests welcome" src="https://img.shields.io/badge/PRs-welcome-%230f766e"></a>
 </p>
 
 <p align="center">
