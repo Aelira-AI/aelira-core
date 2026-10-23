@@ -1,6 +1,8 @@
 import { runCommand } from '@oclif/test'
 import { expect } from 'chai'
-import { createServer } from 'node:http'
+import * as fs from 'node:fs/promises'
+import { createServer, type IncomingMessage } from 'node:http'
+import * as path from 'node:path'
 
 import { cleanTestDir, createTestDir, withTestConfig } from '../../helpers/setup.js'
 
@@ -57,11 +59,27 @@ const acknowledgements: Record<string, Record<string, unknown>> = {
   '/education/web/scan-sitemap': { scan_id: 'scan-sitemap', status: 'processing' },
 }
 
+async function readJson(request: IncomingMessage): Promise<any> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) chunks.push(Buffer.from(chunk))
+  return chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}
+}
+
 describe('scan web results', () => {
-  const server = createServer((request, response) => {
+  const sent: Array<{ body: any; url: string }> = []
+  const server = createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json')
     const url = request.url ?? ''
-    request.resume()
+    const body = request.method === 'POST' ? await readJson(request) : undefined
+    if (request.method !== 'POST') request.resume()
+    if (request.method === 'POST') sent.push({ body, url })
+    // BatchWebScanRequest requires a urls list; FastAPI answers 422 without one.
+    if (request.method === 'POST' && url === '/education/web/batch-scan' && !Array.isArray(body?.urls)) {
+      response.statusCode = 422
+      response.end(JSON.stringify({ detail: [{ loc: ['body', 'urls'], msg: 'Field required', type: 'missing' }] }))
+      return
+    }
+
     if (request.method === 'POST' && acknowledgements[url]) {
       response.end(JSON.stringify(acknowledgements[url]))
       return
@@ -99,6 +117,7 @@ describe('scan web results', () => {
   })
 
   beforeEach(async () => {
+    sent.length = 0
     testDir = await createTestDir()
     restoreConfig = withTestConfig(testDir)
   })
@@ -141,9 +160,10 @@ describe('scan web results', () => {
   })
 
   it('polls a sitemap scan and prints the URLs discovered and scanned', async () => {
-    const { error, stdout } = await runCommand(['scan:web', 'https://example.edu/sitemap.xml', '--sitemap', '--api-url', apiUrl])
+    const { error, stdout } = await runCommand(['scan:web', 'https://example.edu/sitemap.xml', '--sitemap', '--max-pages', '2', '--api-url', apiUrl])
 
     expect(error).to.equal(undefined)
+    expect(sent).to.deep.equal([{ body: { max_pages: 2, sitemap_url: 'https://example.edu/sitemap.xml' }, url: '/education/web/scan-sitemap' }])
     expect(stdout).to.contain('Sitemap: https://example.edu/sitemap.xml')
     expect(stdout).to.contain('URLs Discovered: 3')
     expect(stdout).to.contain('URLs Scanned: 2')
@@ -153,13 +173,30 @@ describe('scan web results', () => {
     expect(stdout).to.contain('Scan ID: scan-sitemap')
   })
 
-  it('polls a batch scan by its batch_scan_id and prints the aggregate', async () => {
-    const { error, stdout } = await runCommand(['scan:web', 'https://example.edu/', '--batch', '--api-url', apiUrl])
+  it('sends a batch as the urls list and depth the API accepts, then prints the aggregate', async () => {
+    const { error, stdout } = await runCommand(['scan:web', 'https://example.edu/', 'https://example.edu/about', '--batch', '--api-url', apiUrl])
 
     expect(error).to.equal(undefined)
+    expect(sent).to.deep.equal([{ body: { max_depth: 1, urls: ['https://example.edu/', 'https://example.edu/about'] }, url: '/education/web/batch-scan' }])
     expect(stdout).to.contain('URLs Scanned: 1')
     expect(stdout).to.contain('Pages Scanned: 1')
     expect(stdout).to.contain('Scanner score: 49/100')
     expect(stdout).to.contain('Scan ID: scan-batch')
+  })
+
+  it('reads batch URLs from --urls-file and passes --depth 0', async () => {
+    const file = path.join(testDir, 'urls.txt')
+    await fs.writeFile(file, '# course pages\nhttps://example.edu/\n\nhttps://example.edu/about\n')
+    const { error } = await runCommand(['scan:web', '--batch', '--urls-file', file, '--depth', '0', '--api-url', apiUrl])
+
+    expect(error).to.equal(undefined)
+    expect(sent[0].body).to.deep.equal({ max_depth: 0, urls: ['https://example.edu/', 'https://example.edu/about'] })
+  })
+
+  it('refuses several URLs without --batch', async () => {
+    const { error } = await runCommand(['scan:web', 'https://example.edu/', 'https://example.edu/about', '--api-url', apiUrl])
+
+    expect(error?.message).to.contain('Several URLs need --batch')
+    expect(sent).to.have.length(0)
   })
 })

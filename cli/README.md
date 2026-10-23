@@ -342,11 +342,13 @@ aelira scan <URL or HTML file>
 Advanced web scanner with batch and sitemap support.
 
 ```bash
-aelira scan web <URL>
+aelira scan web <URL> [URL...]
   --api-url <url>
-  --batch                   # Crawl linked pages
-  --sitemap                 # Treat URL as sitemap.xml
-  --max-pages <n>           # Max pages to scan (default: 20)
+  --batch                   # Scan one or more URLs as one batch (up to 50)
+  --urls-file <file>        # With --batch: one URL per line (blank lines and # comments ignored)
+  --depth <n>               # With --batch: levels of links to follow from each URL (default: 1; 0 scans only the given URLs)
+  --sitemap                 # Treat the URL as a sitemap.xml
+  --max-pages <n>           # With --sitemap: max sitemap URLs to scan (default: 20)
   --format console|json|csv
   --output <file>           # Output file (for JSON or CSV)
   --timer
@@ -354,7 +356,7 @@ aelira scan web <URL>
 
 The API queues each web scan and the command waits for it to finish before printing the result. The API only scans public HTTP or HTTPS addresses.
 
-> **Known limitation:** the API's batch endpoint expects a list of `urls`, and `--batch` currently sends a single start URL, so the API rejects `aelira scan web --batch` with a validation error. Single-page and sitemap scans are not affected.
+A batch with the default `--depth 1` also scans pages each URL links to, up to the API's per-URL page limit; use `--depth 0` to scan only the URLs you give.
 
 Examples:
 
@@ -362,11 +364,14 @@ Examples:
 # Single page scan
 aelira scan web https://example.com
 
-# Batch scan (crawl linked pages)
-aelira scan web https://example.com --batch --max-pages 50
+# Batch scan of two pages
+aelira scan web https://example.com https://example.com/about --batch
+
+# Batch scan of only the pages listed in a file
+aelira scan web --batch --urls-file urls.txt --depth 0
 
 # Sitemap scan
-aelira scan web https://example.com/sitemap.xml --sitemap
+aelira scan web https://example.com/sitemap.xml --sitemap --max-pages 10
 ```
 
 ### `aelira analyze`
