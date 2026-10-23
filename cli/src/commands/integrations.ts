@@ -11,12 +11,12 @@ interface ProviderRow {
 }
 
 const PROVIDER_ROWS: ProviderRow[] = [
-  { heading: '  📁 Google Workspace', key: 'google', nameField: 'name' },
-  { heading: '  📁 Microsoft 365', key: 'microsoft', nameField: 'name' },
-  { heading: '  📚 Canvas LMS', key: 'canvas' },
-  { heading: '  📚 Blackboard Learn', key: 'blackboard' },
-  { heading: '  🌏 Moodle LMS', key: 'moodle', nameField: 'fullname' },
-  { heading: '  🎓 D2L Brightspace', key: 'brightspace', nameField: 'fullname' },
+  { heading: '  Google Workspace', key: 'google', nameField: 'name' },
+  { heading: '  Microsoft 365', key: 'microsoft', nameField: 'name' },
+  { heading: '  Canvas LMS', key: 'canvas' },
+  { heading: '  Blackboard Learn', key: 'blackboard' },
+  { heading: '  Moodle LMS', key: 'moodle', nameField: 'fullname' },
+  { heading: '  D2L Brightspace', key: 'brightspace', nameField: 'fullname' },
 ]
 
 export default class Integrations extends Command {
@@ -62,10 +62,10 @@ static flags = {
         this.displayStatus(data)
       }
 
-      outro('✨ Integration status retrieved!')
+      outro('Integration status retrieved.')
     } catch (error: any) {
       s.stop('Failed to retrieve status')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -82,19 +82,19 @@ static flags = {
 
     this.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log('💡 Tip: Use `aelira integrations connect` to connect cloud providers')
-    this.log('💡 Tip: Use `aelira integrations folders` to select folders to sync')
+    this.log('Tip: Use `aelira integrations connect` to connect cloud providers')
+    this.log('Tip: Use `aelira integrations folders` to select folders to sync')
   }
 
   private renderProviderStatus(row: ProviderRow, provider: any): void {
     this.log(row.heading)
 
     if (!provider?.connected) {
-      this.log(`    Status: ✗ Not Connected`)
+      this.log(`    Status: Not Connected`)
       return
     }
 
-    this.log(`    Status: ✓ Connected`)
+    this.log(`    Status: Connected`)
     this.log(`    Email: ${provider.email || 'N/A'}`)
 
     if (row.nameField) {

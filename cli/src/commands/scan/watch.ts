@@ -277,7 +277,7 @@ export default class ScanWatch extends Command {
   // ---------------------------------------------------------------------------
 
   private formatResult(issues: Array<{ impact?: string; severity?: string }>): string {
-    if (issues.length === 0) return pc.green('\u2713 0 issues \u2014 Score: 100')
+    if (issues.length === 0) return pc.green('0 issues \u2014 Score: 100')
 
     const counts: Record<string, number> = {}
     for (const issue of issues) {
@@ -287,7 +287,7 @@ export default class ScanWatch extends Command {
 
     const parts = Object.entries(counts).map(([sev, count]) => `${count} ${sev}`)
     const score = Math.max(0, 100 - issues.length * 5)
-    return `\u2713 ${issues.length} issue${issues.length === 1 ? '' : 's'} (${parts.join(', ')}) \u2014 Score: ${score}`
+    return `${issues.length} issue${issues.length === 1 ? '' : 's'} (${parts.join(', ')}) \u2014 Score: ${score}`
   }
 
   private formatTimestamp(): string {

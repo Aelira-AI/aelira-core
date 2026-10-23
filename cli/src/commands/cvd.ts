@@ -205,20 +205,20 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ CVD analysis report saved to ${flags.output}`)
+          outro(`CVD analysis report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displayResults(result, cvdTypesToTest, minContrast, analysisDuration)
-        outro(wcagCompliant ? '✅ Color accessibility: Good for color-blind users' : '⚠️  Color accessibility: Issues found for color-blind users')
+        outro(wcagCompliant ? 'Color accessibility: Good for color-blind users' : 'Color accessibility: Issues found for color-blind users')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+        this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     } finally {
       if (page) await page.close()
@@ -327,7 +327,7 @@ static flags = {
 
     // Population Impact
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-    this.log('  👥 Population Impact')
+    this.log('  Population Impact')
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
     if (result.issues.length > 0) {
@@ -340,7 +340,7 @@ static flags = {
     // Issues
     if (result.issues.length > 0) {
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-      this.log(`  ⚠️  Issues Found (${result.issues.length})`)
+      this.log(`  Issues Found (${result.issues.length})`)
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
       // Group issues by element
@@ -362,9 +362,7 @@ static flags = {
         }
 
         const firstIssue = elementIssues[0]
-        const severityIcon = this.getSeverityIcon(firstIssue.severity)
-
-        this.log(`  ${severityIcon} <${firstIssue.element}> ${pc.dim(selector.slice(0, 40))}`)
+        this.log(`  [${(firstIssue.severity || 'unknown').toUpperCase()}] <${firstIssue.element}> ${pc.dim(selector.slice(0, 40))}`)
         this.log(`     Original contrast: ${firstIssue.originalContrast}:1`)
 
         for (const issue of elementIssues.slice(0, 3)) {
@@ -376,18 +374,18 @@ static flags = {
           this.log(`     ... and ${elementIssues.length - 3} more CVD types`)
         }
 
-        this.log(`     💡 ${firstIssue.suggestedFix}`)
+        this.log(`     ${firstIssue.suggestedFix}`)
         this.log('')
 
         displayCount++
       }
     } else {
-      this.log('  ✅ No color accessibility issues detected!\n')
+      this.log('  No color accessibility issues detected!\n')
     }
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
-    this.log('💡 Tip: Use --all-types to test all 7 CVD types')
-    this.log('💡 Tip: Use --min-contrast 7.0 for WCAG AAA compliance\n')
+    this.log('Tip: Use --all-types to test all 7 CVD types')
+    this.log('Tip: Use --min-contrast 7.0 for WCAG AAA compliance\n')
   }
 
   private async extractColorPairs(page: Page): Promise<ColorPair[]> {
@@ -503,26 +501,6 @@ static flags = {
     }
 
     return pc.red(`${score}%`)
-  }
-
-  private getSeverityIcon(severity: string): string {
-    switch (severity) {
-      case 'critical': {
-        return '🔴'
-      }
-
-      case 'moderate': {
-        return '🟡'
-      }
-
-      case 'serious': {
-        return '🟠'
-      }
-
-      default: {
-        return '⚪'
-      }
-    }
   }
 
   private hexToRgb(hex: string): [number, number, number] {

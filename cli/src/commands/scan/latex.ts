@@ -76,7 +76,7 @@ static flags = {
         await this.processFile(targetPath, flags, startTime)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -143,13 +143,13 @@ static flags = {
       this.log('Failed Conversions:\n')
       for (const result of results
         .filter((r) => r.error)) {
-          this.log(`  ✗ ${result.file}: ${result.error}`)
+          this.log(`  - ${result.file}: ${result.error}`)
         }
 
       this.log('')
     }
 
-    this.log('💡 Tip: Use --format json --output report.json for full results')
+    this.log('Tip: Use --format json --output report.json for full results')
   }
 
   private displaySingleResult(result: any, processTime: number): void {
@@ -173,7 +173,7 @@ static flags = {
       this.log(`  Scan ID: ${summary.scanId}`)
     }
 
-    this.log('💡 Tip: Use --format json for complete MathML output')
+    this.log('Tip: Use --format json for complete MathML output')
   }
 
   private async findLatexFiles(dirPath: string): Promise<string[]> {
@@ -223,7 +223,7 @@ static flags = {
 
     if (files.length === 0) {
       s.stop('No LaTeX files found')
-      outro('⚠️  No LaTeX files to process')
+      outro('No LaTeX files to process')
       return
     }
 
@@ -238,9 +238,9 @@ static flags = {
       try {
         const result = await this.convertLatex(file, flags['api-url'], s)
         results.push({ file: path.basename(file), ...result })
-        s.stop(`✓ ${path.basename(file)}`)
+        s.stop(`Done: ${path.basename(file)}`)
       } catch (error: any) {
-        s.stop(`✗ ${path.basename(file)}: ${error.message}`)
+        s.stop(`Failed: ${path.basename(file)}: ${error.message}`)
         results.push({ error: error.message, file: path.basename(file) })
       }
     }
@@ -251,7 +251,7 @@ static flags = {
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        outro(`✅ Batch conversion complete. CSV saved to ${flags.output}`)
+        outro(`Batch conversion complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
@@ -266,17 +266,17 @@ static flags = {
 
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch conversion complete. Report saved to ${flags.output}`)
+        outro(`Batch conversion complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResults(results, Date.now() - startTime)
-      outro(`✨ Batch conversion complete! Processed ${files.length} files`)
+      outro(`Batch conversion complete! Processed ${files.length} files`)
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+      this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
     }
   }
 
@@ -312,17 +312,17 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ LaTeX conversion complete. Report saved to ${flags.output}`)
+          outro(`LaTeX conversion complete. Report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displaySingleResult(result, processDuration)
-        outro('✨ LaTeX conversion complete!')
+        outro('LaTeX conversion complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${processDuration}ms`)
+        this.log(`\nTotal execution time: ${processDuration}ms`)
       }
     } catch (error: any) {
       s.stop('Conversion failed')

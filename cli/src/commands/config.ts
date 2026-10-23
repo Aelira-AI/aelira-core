@@ -102,10 +102,10 @@ static flags = {
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+        this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -128,7 +128,7 @@ static flags = {
           name: profileName,
         })
         s.stop(`Profile "${profileName}" created`)
-        outro(`✨ Profile created! Use "aelira config profile use ${profileName}" to switch to it`)
+        outro(`Profile created! Use "aelira config profile use ${profileName}" to switch to it`)
         break
       }
 
@@ -141,7 +141,7 @@ static flags = {
         s.start(`Deleting profile "${profileName}"...`)
         await deleteProfile(profileName)
         s.stop(`Profile "${profileName}" deleted`)
-        outro('✨ Profile deleted!')
+        outro('Profile deleted.')
         break
       }
 
@@ -152,16 +152,16 @@ static flags = {
         this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
         for (const profile of profiles) {
-          const marker = profile.active ? pc.green('→ ') : '  '
-          const label = profile.active ? pc.green(profile.name) : profile.name
+          const marker = profile.active ? pc.green('* ') : '  '
+          const label = profile.active ? pc.green(`${profile.name} (active)`) : profile.name
           this.log(`${marker}${label}`)
           this.log(`    API URL: ${profile.config.apiUrl}`)
-          this.log(`    API Key: ${profile.config.apiKey ? '••••••••' + profile.config.apiKey.slice(-4) : pc.dim('(not set)')}`)
+          this.log(`    API Key: ${profile.config.apiKey ? '********' + profile.config.apiKey.slice(-4) : pc.dim('(not set)')}`)
           this.log(`    Department: ${profile.config.department || pc.dim('(not set)')}\n`)
         }
 
         this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
-        outro('💡 Tip: Use "aelira config profile use <name>" to switch profiles')
+        outro('Tip: Use "aelira config profile use <name>" to switch profiles')
         break
       }
 
@@ -174,7 +174,7 @@ static flags = {
         s.start(`Switching to profile "${profileName}"...`)
         await setActiveProfile(profileName)
         s.stop(`Switched to profile "${profileName}"`)
-        outro('✨ Profile switched!')
+        outro('Profile switched.')
         break
       }
 
@@ -278,16 +278,16 @@ static flags = {
       s.start('Testing connection...')
       const result = await validateConnection(apiUrl)
       if (result.success) {
-        s.stop(pc.green('✓ ') + result.message)
+        s.stop(result.message)
       } else {
-        s.stop(pc.yellow('⚠ ') + result.message)
-        this.log('\n💡 Tip: Make sure the Aelira backend is running')
+        s.stop(pc.yellow('Connection failed: ') + result.message)
+        this.log('\nTip: Make sure the Aelira backend is running')
         this.log('   From the repository root: docker compose -f docker-compose.quickstart.yml up -d')
       }
     }
 
-    this.log(`\n📁 Config saved to: ${getConfigPath()}`)
-    outro('✨ Configuration complete!')
+    this.log(`\nConfig saved to: ${getConfigPath()}`)
+    outro('Configuration complete.')
   }
 
   private async setConfig(key?: string, value?: string): Promise<void> {
@@ -351,8 +351,8 @@ static flags = {
     await setConfigValue(configKey, value)
     s.stop(`${key} updated`)
 
-    this.log(`\n✅ ${key} = ${key === 'api-key' ? '••••••••' + value.slice(-4) : value}`)
-    outro('✨ Configuration updated!')
+    this.log(`\n${key} = ${key === 'api-key' ? '********' + value.slice(-4) : value}`)
+    outro('Configuration updated.')
   }
 
   private async showConfig(): Promise<void> {
@@ -366,8 +366,8 @@ static flags = {
     this.log('  Aelira CLI Configuration')
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  📁 Config file: ${getConfigPath()}`)
-    this.log(`  📋 Active profile: ${pc.green(config.activeProfile)}\n`)
+    this.log(`  Config file: ${getConfigPath()}`)
+    this.log(`  Active profile: ${pc.green(config.activeProfile)}\n`)
 
     this.log('  Current Settings:')
     this.log('  ─────────────────')
@@ -382,7 +382,7 @@ static flags = {
     // API Key
     const effectiveApiKey = envApiKey || profile.apiKey
     if (effectiveApiKey) {
-      this.log(`  API Key: ••••••••${effectiveApiKey.slice(-4)}`)
+      this.log(`  API Key: ********${effectiveApiKey.slice(-4)}`)
       if (envApiKey) {
         this.log(`           ${pc.dim('(from AELIRA_API_KEY environment variable)')}`)
       }
@@ -399,13 +399,13 @@ static flags = {
 
     this.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log('💡 Commands:')
+    this.log('Commands:')
     this.log('   aelira config init              # Run setup wizard')
     this.log('   aelira config set <key> <val>   # Set a config value')
     this.log('   aelira config validate          # Test API connection')
     this.log('   aelira config profile list      # List all profiles\n')
 
-    this.log('📌 Environment variables override config file:')
+    this.log('Environment variables override config file:')
     this.log('   AELIRA_API_URL, AELIRA_API_KEY, AELIRA_DEPARTMENT\n')
   }
 
@@ -418,7 +418,7 @@ static flags = {
     const result = await validateConnection()
 
     if (result.success) {
-      s.stop(pc.green('✓ ') + result.message)
+      s.stop(result.message)
 
       if (result.details) {
         this.log('\n  API Health Check:')
@@ -437,18 +437,18 @@ static flags = {
         }
       }
 
-      outro('✨ Connection successful!')
+      outro('Connection successful.')
     } else {
-      s.stop(pc.red('✗ ') + result.message)
+      s.stop(pc.red('Connection failed: ') + result.message)
 
-      this.log('\n💡 Troubleshooting tips:')
+      this.log('\nTroubleshooting tips:')
       this.log('   1. Make sure the Aelira backend is running:')
       this.log('      From the repository root: docker compose -f docker-compose.quickstart.yml up -d')
       this.log('   2. Check the API URL is correct:')
       this.log('      aelira config show')
       this.log('   3. Verify network connectivity')
 
-      outro('❌ Connection failed')
+      outro('Connection failed')
     }
   }
 }

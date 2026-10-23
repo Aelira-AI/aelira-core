@@ -102,7 +102,7 @@ export default class Export extends Command {
       }
     } catch (error: any) {
       s.stop('Export failed')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }

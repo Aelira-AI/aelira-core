@@ -60,7 +60,7 @@ export default class CanvasRemediate extends Command {
       // Without a TTY the prompt renders but can never resolve, so the process
       // hangs and then dies on an unsettled top-level await. Fail fast instead.
       if (!process.stdin.isTTY) {
-        outro('❌ Error: stdin is not a TTY, so --upload-back cannot be confirmed')
+        outro('Error: stdin is not a TTY, so --upload-back cannot be confirmed')
         this.error('stdin is not a TTY; pass --yes to confirm --upload-back.', { exit: 1 })
       }
 
@@ -130,11 +130,11 @@ export default class CanvasRemediate extends Command {
         outro('Done')
       } else {
         failureMessage = data.message ?? 'The API did not queue the remediation job.'
-        outro('❌ Error: remediation was not queued')
+        outro('Error: remediation was not queued')
       }
     } catch (error: any) {
       s.stop('Failed to submit remediation')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
 

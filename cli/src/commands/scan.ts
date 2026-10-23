@@ -177,7 +177,7 @@ static flags = {
         }
       }
 
-      outro('✓ Scan complete!')
+      outro('Scan complete.')
     } catch (error) {
       if (error instanceof Error) {
         this.error(error.message, { exit: 1 })
@@ -283,10 +283,10 @@ static flags = {
 
       if (flags.timer) {
         const totalTime = Date.now() - startTime
-        this.log(`⏱️  Total execution time: ${totalTime}ms`)
+        this.log(`Total execution time: ${totalTime}ms`)
       }
 
-      this.log('💡 Tip: Use --format json for CI/CD integration')
+      this.log('Tip: Use --format json for CI/CD integration')
     }
 
     // Generate PDF report if requested

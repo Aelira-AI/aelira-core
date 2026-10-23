@@ -33,7 +33,7 @@ describe('report analytics nullable historical trend', () => {
     ])
     expect(output).to.include('First Assessed Score: 82.0/100')
     expect(output).to.include('Latest Assessed Score: 88.0/100')
-    expect(output).to.include('Change: ↑ 6.0 points')
+    expect(output).to.include('Change: up 6.0 points')
   })
 
   it('does not invent a change from one assessed point', () => {

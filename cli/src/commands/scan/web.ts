@@ -69,7 +69,7 @@ static flags = {
         await this.singleScan(args.url, flags, startTime)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -95,7 +95,7 @@ static flags = {
       const csv = formatIssuesToCsv(allIssues, url)
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        outro(`✅ Batch scan complete. CSV saved to ${flags.output}`)
+        outro(`Batch scan complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
@@ -103,17 +103,17 @@ static flags = {
       const output = { ...result, performance: { scan_time: scanDuration } }
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch scan complete. Report saved to ${flags.output}`)
+        outro(`Batch scan complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResult(result, scanDuration)
-      outro('✨ Batch web scan complete!')
+      outro('Batch web scan complete.')
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+      this.log(`\nTotal execution time: ${scanDuration}ms`)
     }
   }
 
@@ -153,7 +153,7 @@ static flags = {
       this.log('')
     }
 
-    this.log('💡 Tip: Use --format json for detailed per-page breakdown')
+    this.log('Tip: Use --format json for detailed per-page breakdown')
   }
 
   private displaySingleResult(result: any, scanTime: number): void {
@@ -202,7 +202,7 @@ static flags = {
       const csv = formatIssuesToCsv(allIssues, url)
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        outro(`✅ Sitemap scan complete. CSV saved to ${flags.output}`)
+        outro(`Sitemap scan complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
@@ -210,17 +210,17 @@ static flags = {
       const output = { ...result, performance: { scan_time: scanDuration } }
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Sitemap scan complete. Report saved to ${flags.output}`)
+        outro(`Sitemap scan complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResult(result, scanDuration)
-      outro('✨ Sitemap scan complete!')
+      outro('Sitemap scan complete.')
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+      this.log(`\nTotal execution time: ${scanDuration}ms`)
     }
   }
 
@@ -249,17 +249,17 @@ static flags = {
       const output = { ...result, performance: { scan_time: scanDuration } }
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Web scan complete. Report saved to ${flags.output}`)
+        outro(`Web scan complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displaySingleResult(result, scanDuration)
-      outro('✨ Web scan complete!')
+      outro('Web scan complete.')
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+      this.log(`\nTotal execution time: ${scanDuration}ms`)
     }
   }
 }

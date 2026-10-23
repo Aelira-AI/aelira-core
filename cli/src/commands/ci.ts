@@ -137,13 +137,13 @@ static flags = {
       await this.writeBadge(result.score, flags.badge, quiet)
 
       if (!quiet) {
-        outro(exitCode === 0 ? '✅ CI check passed!' : '❌ CI check failed')
+        outro(exitCode === 0 ? 'CI check passed!' : 'CI check failed')
       }
     } catch (error: any) {
       if (isCI) {
         this.log(`::error::${error.message}`)
       } else {
-        outro(`❌ Error: ${error.message}`)
+        outro(`Error: ${error.message}`)
       }
 
       exitCode = 2
@@ -203,7 +203,7 @@ static flags = {
 
     await this.generateBadge(score, badgePath)
     if (!isCI) {
-      this.log(`\n✅ Badge saved to ${badgePath}`)
+      this.log(`\nBadge saved to ${badgePath}`)
     }
   }
 
@@ -320,8 +320,7 @@ static flags = {
       if (result.violations.length > 0) {
         this.log('  Top Issues:')
         for (const v of result.violations.slice(0, 5)) {
-          const icon = v.impact === 'critical' ? '🔴' : v.impact === 'serious' ? '🟠' : '🟡'
-          this.log(`  ${icon} [${v.impact}] ${v.id}`)
+          this.log(`  [${v.impact}] ${v.id}`)
           this.log(`     ${v.description}\n`)
         }
       }

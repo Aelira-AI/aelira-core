@@ -65,7 +65,7 @@ static flags = {
         await this.scanFile(targetPath, flags, startTime)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -91,13 +91,13 @@ static flags = {
       this.log('Failed Scans:\n')
       for (const result of results
         .filter((r) => r.error)) {
-          this.log(`  ✗ ${result.file}: ${result.error}`)
+          this.log(`  - ${result.file}: ${result.error}`)
         }
 
       this.log('')
     }
 
-    this.log('💡 Tip: Use --format json --output report.json for full results')
+    this.log('Tip: Use --format json --output report.json for full results')
   }
 
   private displaySingleResult(result: any, scanTime: number): void {
@@ -121,8 +121,8 @@ static flags = {
       this.log(`  Scan ID: ${summary.scanId}\n`)
     }
 
-    this.log('💡 Tip: Use --format json for detailed issue breakdown')
-    this.log('💡 Tip: Use directory path to batch scan multiple PDFs')
+    this.log('Tip: Use --format json for detailed issue breakdown')
+    this.log('Tip: Use directory path to batch scan multiple PDFs')
   }
 
   private async findPdfFiles(dirPath: string): Promise<string[]> {
@@ -156,7 +156,7 @@ static flags = {
 
     if (files.length === 0) {
       s.stop('No PDF files found')
-      outro('⚠️  No PDF files to scan')
+      outro('No PDF files to scan')
       return
     }
 
@@ -171,9 +171,9 @@ static flags = {
       try {
         const result = await this.uploadAndScan(file, flags['api-url'], flags['skip-ocr'], s)
         results.push({ file: path.basename(file), ...result })
-        s.stop(`✓ ${path.basename(file)}`)
+        s.stop(`Done: ${path.basename(file)}`)
       } catch (error: any) {
-        s.stop(`✗ ${path.basename(file)}: ${error.message}`)
+        s.stop(`Failed: ${path.basename(file)}: ${error.message}`)
         results.push({ error: error.message, file: path.basename(file) })
       }
     }
@@ -184,7 +184,7 @@ static flags = {
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        outro(`✅ Batch scan complete. CSV saved to ${flags.output}`)
+        outro(`Batch scan complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
@@ -199,17 +199,17 @@ static flags = {
 
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch scan complete. Report saved to ${flags.output}`)
+        outro(`Batch scan complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResults(results, Date.now() - startTime)
-      outro(`✨ Batch scan complete! Scanned ${files.length} PDFs`)
+      outro(`Batch scan complete! Scanned ${files.length} PDFs`)
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+      this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
     }
   }
 
@@ -245,17 +245,17 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ PDF scan complete. Report saved to ${flags.output}`)
+          outro(`PDF scan complete. Report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displaySingleResult(result, scanDuration)
-        outro('✨ PDF scan complete!')
+        outro('PDF scan complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+        this.log(`\nTotal execution time: ${scanDuration}ms`)
       }
     } catch (error: any) {
       s.stop('Upload failed')
