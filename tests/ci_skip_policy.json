@@ -1906,7 +1906,23 @@
         "tests/test_webhooks.py::test_supported_callback_persists_one_pending_reconciliation_job[google-200]",
         "tests/test_webhooks.py::test_supported_callback_persists_one_pending_reconciliation_job[microsoft-202]",
         "tests/test_webhooks.py::test_webhook_health_query_failure_after_success",
-        "tests/test_webhooks.py::test_webhook_health_reports_global_active_counts"
+        "tests/test_webhooks.py::test_webhook_health_reports_global_active_counts",
+        "tests/test_latex_sandbox.py::test_configuration_planted_in_the_conversion_directory_is_not_read",
+        "tests/test_latex_sandbox.py::test_tool_home_is_new_empty_outside_and_removed",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\x1f\\x8b\\x08\\x00-gzip]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[BZh91AY&SY-bzip2]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\xfd7zXZ\\x00\\x00-xz]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[(\\xb5/\\xfd\\x00-zstd]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\x89PNG\\r\\n\\x1a\\n-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\xff\\xd8\\xff\\xe0-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[%PDF-1.7-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[%!PS-Adobe-3.0 EPSF-3.0-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\documentclass{article}-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[@article{key,-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[BZ-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\x1f-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[-None]",
+        "tests/test_latex_sandbox.py::test_find_compressed_file_checks_every_file_whatever_its_name"
       ],
       "allowed_skips": [
         {
@@ -2483,7 +2499,10 @@
             "tests/test_latex_sandbox.py::test_latexml_keeps_math_and_refuses_outside_files",
             "tests/test_latex_sandbox.py::test_latexml_postprocessor_cannot_read_outside_bibliography",
             "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_lualatex]",
-            "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_pdflatex]"
+            "tests/test_latex_sandbox.py::test_pdf_engines_keep_relative_inputs_and_refuse_outside_files[_convert_with_pdflatex]",
+            "tests/test_latex_sandbox.py::test_latexml_refuses_a_compression_wrapped_graphic_before_it_runs[bzip2]",
+            "tests/test_latex_sandbox.py::test_latexml_refuses_a_compression_wrapped_graphic_before_it_runs[gzip]",
+            "tests/test_latex_sandbox.py::test_latexml_refuses_a_source_that_itself_starts_with_bzip2_magic"
           ]
         }
       ]
@@ -2562,10 +2581,28 @@
     },
     "latex-confinement": {
       "required_tests": [
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[%!PS-Adobe-3.0 EPSF-3.0-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[%PDF-1.7-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[(\\xb5/\\xfd\\x00-zstd]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[@article{key,-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[BZ-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[BZh91AY&SY-bzip2]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\documentclass{article}-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\x1f-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\x1f\\x8b\\x08\\x00-gzip]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\x89PNG\\r\\n\\x1a\\n-None]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\xfd7zXZ\\x00\\x00-xz]",
+        "tests/test_latex_sandbox.py::test_compression_wrapper_recognises_exactly_the_refused_magics[\\xff\\xd8\\xff\\xe0-None]",
+        "tests/test_latex_sandbox.py::test_configuration_planted_in_the_conversion_directory_is_not_read",
         "tests/test_latex_sandbox.py::test_confined_command_names_only_declared_directories",
         "tests/test_latex_sandbox.py::test_confined_process_reads_and_writes_only_declared_directories",
+        "tests/test_latex_sandbox.py::test_find_compressed_file_checks_every_file_whatever_its_name",
         "tests/test_latex_sandbox.py::test_latexml_keeps_math_and_refuses_outside_files",
         "tests/test_latex_sandbox.py::test_latexml_postprocessor_cannot_read_outside_bibliography",
+        "tests/test_latex_sandbox.py::test_latexml_refuses_a_compression_wrapped_graphic_before_it_runs[bzip2]",
+        "tests/test_latex_sandbox.py::test_latexml_refuses_a_compression_wrapped_graphic_before_it_runs[gzip]",
+        "tests/test_latex_sandbox.py::test_latexml_refuses_a_source_that_itself_starts_with_bzip2_magic",
         "tests/test_latex_sandbox.py::test_launcher_fails_closed_without_running_the_tool",
         "tests/test_latex_sandbox.py::test_pandoc_keeps_math_and_refuses_outside_files",
         "tests/test_latex_sandbox.py::test_path_rule_matches_the_kernel_layout",
@@ -2575,6 +2612,7 @@
         "tests/test_latex_sandbox.py::test_project_runner_converts_under_confinement",
         "tests/test_latex_sandbox.py::test_run_tool_passes_no_application_environment",
         "tests/test_latex_sandbox.py::test_tool_environment_carries_no_application_configuration",
+        "tests/test_latex_sandbox.py::test_tool_home_is_new_empty_outside_and_removed",
         "tests/test_latex_sandbox.py::test_unconfined_run_is_only_available_by_request"
       ],
       "allowed_skips": []

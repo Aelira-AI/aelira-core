@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policymap [
+<!ELEMENT policymap (policy)*>
+<!ATTLIST policymap xmlns CDATA #FIXED "">
+<!ELEMENT policy EMPTY>
+<!ATTLIST policy xmlns CDATA #FIXED "">
+<!ATTLIST policy domain NMTOKEN #REQUIRED>
+<!ATTLIST policy name NMTOKEN #IMPLIED>
+<!ATTLIST policy pattern CDATA #IMPLIED>
+<!ATTLIST policy rights NMTOKEN #IMPLIED>
+<!ATTLIST policy stealth NMTOKEN #IMPLIED>
+<!ATTLIST policy value CDATA #IMPLIED>
+]>
+<!--
+  Aelira API image ImageMagick policy. It replaces Debian's open policy.
+
+  ImageMagick runs only inside LaTeXML's latexmlpost (LaTeXML::Util::Image
+  through Perl Image::Magick). It reads PNG, JPEG, EPS and PDF graphics and
+  writes PNG and JPEG files. EPS and PDF are rendered by the Ghostscript
+  delegate, whose output ImageMagick reads back as PNG, or as PAM for CMYK
+  documents. Nothing else is allowed.
+
+  Rules in a domain are evaluated in order and the last matching rule sets the
+  rights, so every allow rule follows the deny-all rule and no format appears
+  in more than one allow rule. Coder patterns are matched case-sensitively
+  against the upper-case format name, so a format name in any other case
+  matches only the deny-all rule.
+
+  The coder domain is used instead of the module domain so that
+  "magick -list format" keeps working for the image checks. The rules are
+  verified by scripts/verify_native_media_components.ts.
+-->
+<policymap>
+  <!-- Pixel cache and rendering limits. ImageMagick 7.1.1-43 applies the
+       time value only as a cap on a limit set another way, so the LaTeX tool
+       environment also sets MAGICK_TIME_LIMIT=50 (src/education/latex_sandbox.py).
+       Both stay below the 60-second latexmlpost timeout. -->
+  <policy domain="resource" name="memory" value="256MiB"/>
+  <policy domain="resource" name="map" value="512MiB"/>
+  <policy domain="resource" name="area" value="64MP"/>
+  <policy domain="resource" name="disk" value="1GiB"/>
+  <policy domain="resource" name="width" value="16KP"/>
+  <policy domain="resource" name="height" value="16KP"/>
+  <policy domain="resource" name="list-length" value="32"/>
+  <policy domain="resource" name="time" value="50"/>
+  <policy domain="resource" name="thread" value="2"/>
+
+  <!-- Formats: deny all, then allow only what LaTeXML needs. -->
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read|write" pattern="{PNG,JPEG,JPG}"/>
+  <policy domain="coder" rights="read" pattern="{EPS,PDF,PAM}"/>
+
+  <!-- External programs: only Ghostscript, for EPS and PDF rendering. -->
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="delegate" rights="execute" pattern="gs"/>
+
+  <!-- No image filters, no indirect file lists, no remote reads. -->
+  <policy domain="filter" rights="none" pattern="*"/>
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="coder" rights="none" pattern="{URL,HTTP,HTTPS,FTP}"/>
+</policymap>

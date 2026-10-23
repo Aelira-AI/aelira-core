@@ -282,6 +282,13 @@ RUN if grep -q '^mozilla/emSign_ECC_Root_CA_-_G3\.crt$' /etc/ca-certificates.con
         && update-ca-certificates --fresh; \
     fi
 
+# ImageMagick runs only inside LaTeXML's latexmlpost. Replace Debian's open
+# policy and delegate list with ones that allow only the PNG, JPEG, EPS and PDF
+# reads and the PNG and JPEG writes it needs, and only the Ghostscript program
+# for EPS and PDF. scripts/verify_native_media_components.ts checks both files
+# and what they refuse.
+COPY docker/imagemagick/policy.xml docker/imagemagick/delegates.xml /etc/ImageMagick-7/
+
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib

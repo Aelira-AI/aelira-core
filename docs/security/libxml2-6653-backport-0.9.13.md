@@ -34,12 +34,20 @@ The image gate compares the installed package version with the receipt,
 checks the installed library hash and real path loaded by Perl XML::LibXML,
 and checks every shipped image layer for a single matching system library
 payload. Native checks also require ordinary XML parsing, XSLT, LaTeXML
-MathML conversion and ImageMagick's supported MSL XML reader to work. Releases
+MathML conversion, and ImageMagick's use of the rebuilt library, to work. Releases
 up to 0.9.14 also checked FFmpeg DASH XML parsing. From 0.9.15 the API image
 runs ffmpeg and ffprobe from its own FFmpeg 9.0.2 build, which does not link
-libxml2 and has no DASH demuxer, so FFmpeg is no longer a libxml2 consumer. The MSL check reads a PNG, writes a PNG, verifies its
-dimensions and pixels, and confirms that ImageMagick loaded the same system
-libxml2 recorded in the receipt. It does not add SVG support to the image.
+libxml2 and has no DASH demuxer, so FFmpeg is no longer a libxml2 consumer.
+Up to the image's own ImageMagick policy ([#749](https://github.com/Aelira-AI/aelira-core/issues/749)),
+the ImageMagick check ran an MSL script, ImageMagick's XML scripting format.
+That policy now refuses the MSL coder, which was the only ImageMagick libxml2
+reader that submitted content could select: the SVG coder is not installed,
+and ImageMagick parses an XMP profile with libxml2 only when the
+`xmp:validate` option is set, which LaTeXML never sets. The check therefore
+asserts that the policy refuses MSL and the `xc:` pseudo-image, decodes a
+2x2 PNG from memory and verifies its dimensions and pixels, and confirms that
+the libMagickCore loaded by Perl maps exactly the system libxml2 recorded in
+the receipt. It does not add SVG support to the image.
 An 11 MiB plain-text document must parse with
 `XML_PARSE_HUGE`; a high-amplification document must be rejected with that
 option enabled. The machine-readable CVE-2026-6653 disposition applies only

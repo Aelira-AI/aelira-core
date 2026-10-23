@@ -34,8 +34,8 @@ def test_known_prerequisites_and_legitimate_cold_cache_creation(log, reason):
 
 def test_cache_environment_is_owned_per_attempt_without_mutating_process(tmp_path):
     before = dict(os.environ)
-    one = runtime.tex_environment(tmp_path / "one")
-    two = runtime.tex_environment(tmp_path / "two")
+    one = runtime.tex_environment(tmp_path / "one", tmp_path / "home-one")
+    two = runtime.tex_environment(tmp_path / "two", tmp_path / "home-two")
     for name in ("TEXMFVAR", "TEXMFCONFIG", "TEXMFCACHE", "XDG_CACHE_HOME"):
         assert Path(one[name]).is_dir()
         assert Path(one[name]).is_relative_to(tmp_path / "one")

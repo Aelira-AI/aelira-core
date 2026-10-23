@@ -17,6 +17,8 @@ import unicodedata
 import zipfile
 import zlib
 
+from .latex_sandbox import compression_wrapper
+
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -231,6 +233,10 @@ def inspect_archive(data: bytes, entry: str) -> LatexProject:
                     content = stream.read(MAX_FILE_BYTES + 1)
                 if len(content) != member.file_size or len(content) > MAX_FILE_BYTES:
                     raise ProjectError("expanded_size_limit", name)
+                if compression_wrapper(content[:8]):
+                    # ImageMagick would unwrap it by its leading bytes ahead of
+                    # its policy; no accepted LaTeX input type starts this way.
+                    raise ProjectError("compressed_member", name)
                 files[name] = content
     except ProjectError:
         raise

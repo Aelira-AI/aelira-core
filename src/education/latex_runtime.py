@@ -15,7 +15,7 @@ import signal
 import subprocess
 import tempfile
 
-from .latex_sandbox import UNAVAILABLE, confined, tool_environment
+from .latex_sandbox import UNAVAILABLE, confined, tool_environment, tool_home
 
 
 def version_command(tool: str) -> list[str]:
@@ -25,13 +25,13 @@ def version_command(tool: str) -> list[str]:
     return args
 
 
-def tex_environment(directory: Path) -> dict[str, str]:
+def tex_environment(directory: Path, home: Path) -> dict[str, str]:
     """Keep format/font creation inside this already-owned conversion attempt.
 
     The environment is minimal: tools never inherit application configuration
-    or credentials.
+    or credentials. ``home`` is a per-run directory from ``tool_home``.
     """
-    return tool_environment(directory)
+    return tool_environment(directory, home)
 
 
 def run_tool(
@@ -44,14 +44,17 @@ def run_tool(
     """
     with tempfile.TemporaryFile() as output:
         try:
-            with subprocess.Popen(
-                confined(args, directory) if confine else args,
-                cwd=directory,
-                env=tex_environment(directory),
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            ) as process:
+            with (
+                tool_home(directory) as home,
+                subprocess.Popen(
+                    confined(args, directory) if confine else args,
+                    cwd=directory,
+                    env=tex_environment(directory, home),
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                ) as process,
+            ):
                 try:
                     code = process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
