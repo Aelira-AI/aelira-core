@@ -437,7 +437,7 @@ function checkLayers(image: string, receipts: Map<string, Receipt>): void {
     for (const library of receipt.libraries) expected.set(library.path.split('/').pop()!, library.sha256);
   }
   const member = new RegExp(`^usr/lib/(?:aarch64|x86_64)-linux-gnu/(${[...expected.keys()]
-    .map((file) => file.replace(/[.+]/g, '\\$&')).join('|')})$`);
+    .map((file) => file.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')).join('|')})$`);
   const work = mkdtempSync(join(tmpdir(), 'aelira-backport-layers-'));
   try {
     const archive = join(work, 'image.tar');
