@@ -324,7 +324,7 @@ static flags = {
 
     this.log(`  URL: ${result.url}`)
     this.log(`  Focusable Elements: ${result.totalFocusableElements}`)
-    this.log(`  Compliance Score: ${this.getScoreDisplay(result.complianceScore)}`)
+    this.log(`  Scanner score: ${this.getScoreDisplay(result.complianceScore)}`)
     this.log(`  WCAG 2.4.3 Status: ${result.wcagCompliant ? pc.green('Compliant') : pc.yellow('Needs Work')}`)
     this.log(`  Analysis Time: ${analysisTime}ms\n`)
 

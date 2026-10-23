@@ -322,7 +322,7 @@ static flags = {
     this.log(`  Color Pairs Analyzed: ${result.colorPairsAnalyzed}`)
     this.log(`  CVD Types Tested: ${cvdTypes.map((t) => CVD_TYPES[t].name).join(', ')}`)
     this.log(`  Minimum Contrast Threshold: ${minContrast}:1 (WCAG ${minContrast >= 7 ? 'AAA' : 'AA'})`)
-    this.log(`  Compliance Score: ${this.getScoreDisplay(result.complianceScore)}`)
+    this.log(`  Scanner score: ${this.getScoreDisplay(result.complianceScore)}`)
     this.log(`  Analysis Time: ${analysisTime}ms\n`)
 
     // Population Impact

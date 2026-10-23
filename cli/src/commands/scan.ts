@@ -250,7 +250,7 @@ static flags = {
 
       this.log('')
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-      this.log(`  Accessibility Score: ${score}/100`)
+      this.log(`  Scanner score: ${score}/100`)
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
       this.log('')
 
