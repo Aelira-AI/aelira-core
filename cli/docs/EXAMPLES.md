@@ -52,7 +52,7 @@ aelira scan docx syllabus.docx --format json --output word-scan.json
 aelira scan xlsx grades.xlsx --format csv --output spreadsheet-issues.csv
 aelira scan ppt lecture.pptx --format json --output slides-scan.json
 aelira scan ppt ./slides/
-aelira scan latex chemistry.tex --type chemistry --format json --output latex-results.json
+aelira scan latex chemistry.tex --format json --output latex-results.json
 ```
 
 Review the scan result before remediation. Replace the sample ID below with a backend scan ID from your result. Remediation output availability depends on the backend and file type; inspect and rescan downloaded files.

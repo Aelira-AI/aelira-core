@@ -14,7 +14,7 @@
 
 > **Beta, not a compliance certificate.** A completed scan or remediated file is evidence from Aelira's checks, not proof that a document satisfies every applicable WCAG or format-specific requirement. Review and test the output with assistive technology and any validator required by your organization.
 >
-> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, exact-byte managed-publication controls, and General STEM specialist pipeline described here are included in v0.9.7. They were not part of v0.9.5.
+> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, exact-byte managed-publication controls, and General STEM specialist pipeline described here are included in v0.9.7 and are still included in v0.9.13. They were not part of v0.9.5.
 
 Aelira Core scans and can remediate PDF, DOCX, PPTX, XLSX, and LaTeX content. Choose a guide:
 
@@ -175,7 +175,7 @@ aelira scan latex document.tex --format json
 aelira remediate <scan_id> --download
 ```
 
-The first four scan commands and remediation command use the current API routes. The current `aelira scan latex` source sends JSON while the server's current route accepts an uploaded file; use the multipart HTTP example in [the LaTeX guide](latex.md) until that client/server mismatch is resolved.
+These commands use the current API routes. `aelira scan latex` uploads the file to `POST /education/latex/convert` without setting `use_ollama`, so the route's default applies; to turn it off, use the multipart HTTP example in [the LaTeX guide](latex.md).
 
 ### Direct library
 

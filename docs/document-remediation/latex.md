@@ -50,7 +50,7 @@ The CLI command is named:
 aelira scan latex document.tex --format json
 ```
 
-However, the current [`scan latex` command source](../../cli/src/commands/scan/latex.ts) sends a JSON body while the current FastAPI route expects multipart `UploadFile`. Use the curl form above rather than relying on this command until the mismatch is fixed.
+The [`scan latex` command source](../../cli/src/commands/scan/latex.ts) uploads the file as the multipart `file` field that `POST /education/latex/convert` reads, then polls the same progress and result routes. It does not set `use_ollama`, so the route's default of `true` applies; use the curl form above to turn it off.
 
 To request source remediation plus optional conversions through the API:
 
