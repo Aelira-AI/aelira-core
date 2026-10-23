@@ -27,7 +27,7 @@
 |---|---|
 | <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/document-magnifying-glass.svg" width="24" height="24" alt=""> **Scanning** | PDF (with OCR), Word, PowerPoint, Excel, LaTeX to MathML, images (AI alt text), video and audio (transcription), source code, and websites (single, batch, or from a sitemap). Watch a directory to auto-scan on change. |
 | <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/wrench-screwdriver.svg" width="24" height="24" alt=""> **Remediation** | `aelira remediate` fixes issues and downloads the corrected file; `aelira diff` tracks regressions between scans. |
-| <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/academic-cap.svg" width="24" height="24" alt=""> **LMS and cloud** | Canvas course scanning and per-file remediation; cloud integration status, OAuth connect, folder selection, and background sync for Google, Microsoft, Blackboard. |
+| <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/academic-cap.svg" width="24" height="24" alt=""> **LMS and cloud** | Canvas course scanning and per-file remediation; integration status and OAuth connect for Google, Microsoft, Canvas, Blackboard, Moodle, and Brightspace; folder selection and background sync for Google and Microsoft only. |
 | <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/clipboard-document-check.svg" width="24" height="24" alt=""> **Reporting, team and CI** | Accessibility evidence reports for scanned content and historical trend analytics with deadline projection; an issue tracker with assignments and filters; `aelira ci` emits exit codes, JUnit XML, and badges for pipelines; CSV/JSON export of scan history. Evidence reports describe Aelira's checks and limitations; they are not accessibility or legal determinations. |
 
 Authentication supports magic-link, browser, or API-key login with multi-profile config, and the CLI retries transient API errors automatically with backoff.
@@ -661,15 +661,16 @@ aelira integrations --api-url http://localhost:8000 --api-key your-api-key
 The output includes:
 
 - Connection status for each provider
-- Connected account email/name
-- Last sync timestamp
-- Selected folder count
+- Connected account email, plus the account name where the provider reports one
+- Last sync timestamp, when there is one
 
 ### `aelira integrations connect`
 
-Connect Google Workspace, Microsoft 365, Canvas LMS, or Blackboard Learn accounts via OAuth 2.0.
+Connect Google Workspace, Microsoft 365, Canvas LMS, Blackboard Learn, Moodle LMS, or D2L Brightspace via OAuth 2.0. The command asks the API for an authorization URL and offers to open it in your browser.
 
-**Privacy first:** after connecting, you must explicitly select which folders to sync. By default, NO files are synced until you choose folders with `aelira integrations folders`.
+**Privacy first:** after connecting Google Workspace or Microsoft 365, you must explicitly select which folders to sync. By default, NO files are synced until you choose folders with `aelira integrations folders`.
+
+> **Known limitation:** the API's Blackboard and Moodle connect endpoints require a `department_id` in the request body, and this command does not send one, so `aelira integrations connect blackboard` and `aelira integrations connect moodle` are rejected with a validation error. Google, Microsoft, Canvas, and Brightspace do not need it.
 
 ```bash
 aelira integrations connect [provider]
@@ -723,7 +724,7 @@ aelira integrations connect brightspace --instance-url https://university.bright
 2. Opens browser automatically (with confirmation)
 3. User logs in and grants permissions
 4. Backend receives OAuth callback and stores encrypted tokens
-5. User returns to CLI to select folders (next step)
+5. For Google Workspace or Microsoft 365, user returns to CLI to select folders (next step)
 
 </details>
 
@@ -776,7 +777,9 @@ Folder access:
 
 ### `aelira integrations sync`
 
-Trigger file sync. Manually trigger background sync jobs for connected cloud providers. Sync jobs discover new files, detect changes, and queue accessibility scans.
+Trigger file sync. Background sync covers Google Workspace and Microsoft 365 only; the API rejects any other provider. Sync jobs discover new files, detect changes, and queue accessibility scans.
+
+> **Known limitation:** the API's `POST /integrations/sync` endpoint requires a `provider` (`google` or `microsoft`) and a list of selected `folder_ids`, and this command currently sends an empty body, so the API rejects it with a validation error. Until the command is updated, call the endpoint directly with both fields.
 
 ```bash
 aelira integrations sync
@@ -787,7 +790,7 @@ aelira integrations sync
 Examples:
 
 ```bash
-# Trigger sync for all connected providers
+# Trigger sync (currently rejected by the API; see the limitation above)
 aelira integrations sync
 
 # Sync with a specific API endpoint
@@ -799,7 +802,7 @@ aelira integrations sync --api-url http://localhost:8000 --api-key your-api-key
 
 <br>
 
-1. Fetches file metadata from selected folders only
+1. Fetches file metadata from the selected Google Drive or OneDrive folders only
 2. Detects new files and modified files (version changes)
 3. Creates background scan jobs for changed files
 4. Scans run automatically in the backend job queue
