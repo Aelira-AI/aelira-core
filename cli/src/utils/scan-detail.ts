@@ -25,9 +25,10 @@ export interface ScanSummary {
   ocrUsed: boolean
   pages: null | number
   scanId: null | string
+  structure: Record<string, any>
 }
 
-function numberOrNull(value: unknown): null | number {
+export function numberOrNull(value: unknown): null | number {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
@@ -59,6 +60,7 @@ export function summarizeScanDetail(detail: any): ScanSummary {
     ocrUsed: result.ocr_used === true,
     pages: numberOrNull(scan.pages),
     scanId: stringOrNull(scan.scan_id),
+    structure: result.structure && typeof result.structure === 'object' ? result.structure : {},
   }
 }
 
@@ -66,4 +68,41 @@ export function formatFileSize(bytes: null | number): string {
   if (bytes === null) return 'N/A'
   const mib = 1024 * 1024
   return bytes < mib ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / mib).toFixed(2)} MB`
+}
+
+/** Console lines for the scanner score and severity counts, when known. */
+export function scoreAndCountLines(summary: ScanSummary): string[] {
+  const lines: string[] = []
+  if (summary.complianceScore !== null) lines.push(`  Scanner score: ${summary.complianceScore}/100`)
+  if (summary.issueCounts) {
+    const { critical, high, low, medium, total } = summary.issueCounts
+    lines.push(
+      '',
+      '  Issues Found:',
+      `  - Critical: ${critical}`,
+      `  - High: ${high}`,
+      `  - Medium: ${medium}`,
+      `  - Low: ${low}`,
+      `  Total: ${total}`,
+    )
+  }
+
+  return lines
+}
+
+/** Console lines for the first successful files of a batch run. */
+export function batchResultLines(results: any[], limit = 5): string[] {
+  const lines: string[] = []
+  const successful = results.filter((r) => !r.error)
+  if (successful.length === 0) return lines
+  lines.push('Top Results:\n')
+  for (const [index, result] of successful.slice(0, limit).entries()) {
+    const summary = summarizeScanDetail(result)
+    lines.push(`${index + 1}. ${result.file}`)
+    if (summary.complianceScore !== null) lines.push(`   Scanner score: ${summary.complianceScore}/100`)
+    if (summary.issueCounts) lines.push(`   Issues: ${summary.issueCounts.total}`)
+    lines.push('')
+  }
+
+  return lines
 }

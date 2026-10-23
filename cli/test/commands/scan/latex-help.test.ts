@@ -23,17 +23,24 @@ describe('scan latex help and report', () => {
 
     command.displaySingleResult(
       {
-        aria_labels_generated: 3,
-        equations_converted: 2,
-        filename: 'equations.tex',
-        mathml_content: '<math></math>',
-        success_rate: 100,
+        scan: {
+          file_name: 'equations.tex',
+          result: {
+            structure: {
+              aria_labels_generated: 3,
+              conversion_success_rate: 100,
+              failed_conversions: 0,
+              successful_conversions: 2,
+              total_equations: 2,
+            },
+          },
+        },
       },
       1500,
     )
 
     const output = lines.join('\n')
-    expect(output).to.contain('MathML generated successfully')
+    expect(output).to.contain('Converted: 2')
     expect(output).to.not.match(/ARIA/i)
   })
 })

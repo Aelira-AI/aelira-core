@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
 import { pollForCompletion } from '../../utils/poll-progress.js'
+import { batchResultLines, numberOrNull, scoreAndCountLines, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanDocx extends Command {
   static args = {
@@ -74,16 +75,7 @@ static flags = {
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    const successfulScans = results.filter((r) => !r.error && r.compliance_score !== undefined)
-
-    if (successfulScans.length > 0) {
-      this.log('Top Results:\n')
-      for (const [index, result] of successfulScans.slice(0, 5).entries()) {
-        this.log(`${index + 1}. ${result.file}`)
-        this.log(`   Score: ${result.compliance_score}/100`)
-        this.log('')
-      }
-    }
+    for (const line of batchResultLines(results)) this.log(line)
 
     if (failed > 0) {
       this.log('Failed Scans:\n')
@@ -97,32 +89,25 @@ static flags = {
   }
 
   private displaySingleResult(result: any, scanTime: number): void {
+    const summary = summarizeScanDetail(result)
+    const { structure } = summary
+
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
     this.log(`  Word Document Accessibility Report`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  File: ${result.filename || 'Unknown'}`)
-    this.log(`  Paragraphs: ${result.paragraph_count || 'N/A'}`)
-    this.log(`  Tables: ${result.table_count || 0}`)
-    this.log(`  Images: ${result.image_count || 0}\n`)
+    this.log(`  File: ${summary.fileName ?? 'Unknown'}`)
+    this.log(`  Paragraphs: ${numberOrNull(structure.total_paragraphs) ?? 'N/A'}`)
+    this.log(`  Tables: ${numberOrNull(structure.total_tables) ?? 'N/A'}`)
+    this.log(`  Images: ${numberOrNull(structure.total_images) ?? 'N/A'}\n`)
 
-    if (result.compliance_score !== undefined) {
-      this.log(`  Compliance Score: ${result.compliance_score}/100`)
-    }
-
-    if (result.issues) {
-      this.log(`\n  Issues Found:`)
-      this.log(`  - Critical: ${result.issues.critical || 0}`)
-      this.log(`  - High: ${result.issues.high || 0}`)
-      this.log(`  - Medium: ${result.issues.medium || 0}`)
-      this.log(`  - Low: ${result.issues.low || 0}`)
-    }
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    if (result.scan_id) {
-      this.log(`  Scan ID: ${result.scan_id}`)
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}`)
     }
 
     this.log('💡 Tip: Use --format json for detailed issue breakdown')
@@ -180,7 +165,7 @@ static flags = {
     }
 
     if (flags.format === 'csv') {
-      const allIssues = results.flatMap((r) => r.issues_list || r.issues || [])
+      const allIssues = results.flatMap((r) => summarizeScanDetail(r).issues)
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
@@ -228,7 +213,7 @@ static flags = {
       s.stop('Scan complete')
 
       if (flags.format === 'csv') {
-        const csv = formatIssuesToCsv(result.issues_list || result.issues || [], path.basename(filePath))
+        const csv = formatIssuesToCsv(summarizeScanDetail(result).issues, path.basename(filePath))
         if (flags.output) {
           await fs.writeFile(flags.output, csv)
           this.log(`CSV report saved to ${flags.output}`)

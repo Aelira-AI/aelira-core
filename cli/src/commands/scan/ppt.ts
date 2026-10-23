@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
 import { pollForCompletion } from '../../utils/poll-progress.js'
+import { batchResultLines, formatFileSize, numberOrNull, scoreAndCountLines, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanPpt extends Command {
   static args = {
@@ -81,27 +82,7 @@ static flags = {
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    // Show top issues from successful scans
-    const successfulScans = results.filter((r) => !r.error && r.compliance_score !== undefined)
-
-    if (successfulScans.length > 0) {
-      this.log('Top Results:\n')
-      for (const [index, result] of successfulScans.slice(0, 5).entries()) {
-        this.log(`${index + 1}. ${result.file}`)
-        this.log(`   Score: ${result.compliance_score}/100`)
-        this.log(`   Slides: ${result.total_slides || 'N/A'}`)
-        if (result.issues) {
-          const totalIssues =
-            (result.issues.missing_alt_text || 0) +
-            (result.issues.contrast_violations || 0) +
-            (result.issues.structure || 0) +
-            (result.issues.other || 0)
-          this.log(`   Issues: ${totalIssues}`)
-        }
-
-        this.log('')
-      }
-    }
+    for (const line of batchResultLines(results)) this.log(line)
 
     if (failed > 0) {
       this.log('Failed Scans:\n')
@@ -117,39 +98,23 @@ static flags = {
   }
 
   private displaySingleResult(result: any, scanTime: number): void {
+    const summary = summarizeScanDetail(result)
+
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
     this.log(`  PowerPoint Accessibility Report`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  File: ${result.filename || 'Unknown'}`)
-    this.log(`  Slides: ${result.total_slides || 'N/A'}`)
-    this.log(`  Size: ${result.file_size_mb ? result.file_size_mb.toFixed(2) + ' MB' : 'N/A'}\n`)
+    this.log(`  File: ${summary.fileName ?? 'Unknown'}`)
+    this.log(`  Slides: ${numberOrNull(summary.structure.total_slides) ?? summary.pages ?? 'N/A'}`)
+    this.log(`  Size: ${formatFileSize(summary.fileSizeBytes)}\n`)
 
-    if (result.compliance_score !== undefined) {
-      this.log(`  Compliance Score: ${result.compliance_score}/100`)
-    }
-
-    if (result.issues) {
-      this.log(`\n  Issues Found:`)
-      this.log(`  - Missing Alt Text: ${result.issues.missing_alt_text || 0}`)
-      this.log(`  - Contrast Violations: ${result.issues.contrast_violations || 0}`)
-      this.log(`  - Structure Issues: ${result.issues.structure || 0}`)
-      this.log(`  - Other: ${result.issues.other || 0}`)
-
-      const totalIssues =
-        (result.issues.missing_alt_text || 0) +
-        (result.issues.contrast_violations || 0) +
-        (result.issues.structure || 0) +
-        (result.issues.other || 0)
-      this.log(`\n  Total Issues: ${totalIssues}`)
-    }
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    if (result.scan_id) {
-      this.log(`  Scan ID: ${result.scan_id}`)
-      this.log(`  View full report: ${result.report_url || 'N/A'}\n`)
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}\n`)
     }
 
     this.log('💡 Tip: Use --format json for detailed issue breakdown')
@@ -214,7 +179,7 @@ static flags = {
 
     // Output results
     if (flags.format === 'csv') {
-      const allIssues = results.flatMap((r) => r.issues_list || r.issues || [])
+      const allIssues = results.flatMap((r) => summarizeScanDetail(r).issues)
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
@@ -262,7 +227,7 @@ static flags = {
       s.stop('Scan complete')
 
       if (flags.format === 'csv') {
-        const csv = formatIssuesToCsv(result.issues_list || result.issues || [], path.basename(filePath))
+        const csv = formatIssuesToCsv(summarizeScanDetail(result).issues, path.basename(filePath))
         if (flags.output) {
           await fs.writeFile(flags.output, csv)
           this.log(`CSV report saved to ${flags.output}`)

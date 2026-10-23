@@ -99,7 +99,7 @@ describe('scan pdf console and CSV summaries', () => {
     expect(stdout).to.contain('Pages: 3')
     expect(stdout).to.contain('Size: 2.50 MB')
     expect(stdout).to.contain('OCR: No')
-    expect(stdout).to.contain('Compliance Score: 62.5/100')
+    expect(stdout).to.contain('Scanner score: 62.5/100')
     expect(stdout).to.contain('- Critical: 1')
     expect(stdout).to.contain('- High: 1')
     expect(stdout).to.contain('Total: 2')
@@ -113,7 +113,7 @@ describe('scan pdf console and CSV summaries', () => {
     try {
       ;(scanDetail.scan.result as any).compliance_score = null
       const { stdout } = await runCommand(['scan:pdf', pdfPath, '--api-url', apiUrl])
-      expect(stdout).not.to.contain('Compliance Score')
+      expect(stdout).not.to.contain('Scanner score')
     } finally {
       scanDetail.scan.result.compliance_score = original
     }
@@ -139,7 +139,7 @@ describe('scan pdf console and CSV summaries', () => {
 
     expect(error).to.equal(undefined)
     expect(stdout).to.contain('1. handout.pdf')
-    expect(stdout).to.contain('Score: 62.5/100')
+    expect(stdout).to.contain('Scanner score: 62.5/100')
     expect(stdout).to.contain('Issues: 2')
   })
 

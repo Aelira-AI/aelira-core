@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
 import { pollForCompletion } from '../../utils/poll-progress.js'
-import { formatFileSize, summarizeScanDetail } from '../../utils/scan-detail.js'
+import { batchResultLines, formatFileSize, scoreAndCountLines, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanPdf extends Command {
   static args = {
@@ -85,24 +85,7 @@ static flags = {
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    // Show top issues from successful scans
-    const successfulScans = results
-      .filter((r) => !r.error)
-      .map((r) => ({ file: r.file, summary: summarizeScanDetail(r) }))
-      .filter(({ summary }) => summary.complianceScore !== null)
-
-    if (successfulScans.length > 0) {
-      this.log('Top Results:\n')
-      for (const [index, { file, summary }] of successfulScans.slice(0, 5).entries()) {
-        this.log(`${index + 1}. ${file}`)
-        this.log(`   Score: ${summary.complianceScore}/100`)
-        if (summary.issueCounts) {
-          this.log(`   Issues: ${summary.issueCounts.total}`)
-        }
-
-        this.log('')
-      }
-    }
+    for (const line of batchResultLines(results)) this.log(line)
 
     if (failed > 0) {
       this.log('Failed Scans:\n')
@@ -129,18 +112,7 @@ static flags = {
     this.log(`  Size: ${formatFileSize(summary.fileSizeBytes)}`)
     this.log(`  OCR: ${summary.ocrUsed ? 'Yes' : 'No'}\n`)
 
-    if (summary.complianceScore !== null) {
-      this.log(`  Compliance Score: ${summary.complianceScore}/100`)
-    }
-
-    if (summary.issueCounts) {
-      this.log(`\n  Issues Found:`)
-      this.log(`  - Critical: ${summary.issueCounts.critical}`)
-      this.log(`  - High: ${summary.issueCounts.high}`)
-      this.log(`  - Medium: ${summary.issueCounts.medium}`)
-      this.log(`  - Low: ${summary.issueCounts.low}`)
-      this.log(`  Total: ${summary.issueCounts.total}`)
-    }
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')

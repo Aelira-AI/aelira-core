@@ -15,6 +15,7 @@ describe('scan detail helpers', () => {
         ocrUsed: false,
         pages: null,
         scanId: null,
+        structure: {},
       })
     })
 

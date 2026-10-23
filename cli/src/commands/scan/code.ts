@@ -7,14 +7,7 @@ import * as path from 'node:path'
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
 import { pollForCompletion } from '../../utils/poll-progress.js'
-
-const ISSUE_CATEGORY_LABELS: Array<[string, string]> = [
-  ['aria', 'ARIA Violations'],
-  ['semantic', 'Semantic HTML'],
-  ['keyboard', 'Keyboard Navigation'],
-  ['contrast', 'Color Contrast'],
-  ['other', 'Other'],
-]
+import { numberOrNull, scoreAndCountLines, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanCode extends Command {
   static args = {
@@ -82,17 +75,10 @@ static flags = {
     const successful = results.filter((r) => !r.error).length
     const failed = results.filter((r) => r.error).length
 
-    const totalIssues = results
-      .filter((r) => !r.error && r.issues)
-      .reduce(
-        (sum, r) =>
-          sum +
-          (r.issues.critical || 0) +
-          (r.issues.high || 0) +
-          (r.issues.medium || 0) +
-          (r.issues.low || 0),
-        0
-      )
+    const summaries = results
+      .filter((r) => !r.error)
+      .map((r) => ({ file: r.file, summary: summarizeScanDetail(r) }))
+    const totalIssues = summaries.reduce((sum, { summary }) => sum + (summary.issueCounts?.total ?? 0), 0)
 
     this.log(`  Total Files: ${results.length}`)
     this.log(`  Successful: ${successful}`)
@@ -102,36 +88,16 @@ static flags = {
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    // Show top issues from successful scans
-    const successfulScans = results.filter((r) => !r.error && r.compliance_score !== undefined)
-
-    if (successfulScans.length > 0) {
-      // Sort by most issues first
-      const sortedScans = successfulScans.sort((a, b) => {
-        const aTotal =
-          (a.issues?.critical || 0) +
-          (a.issues?.high || 0) +
-          (a.issues?.medium || 0) +
-          (a.issues?.low || 0)
-        const bTotal =
-          (b.issues?.critical || 0) +
-          (b.issues?.high || 0) +
-          (b.issues?.medium || 0) +
-          (b.issues?.low || 0)
-        return bTotal - aTotal
-      })
-
+    if (summaries.length > 0) {
+      const sorted = [...summaries].sort(
+        (a, b) => (b.summary.issueCounts?.total ?? 0) - (a.summary.issueCounts?.total ?? 0),
+      )
       this.log('Files Needing Most Attention:\n')
-      for (const [index, result] of sortedScans.slice(0, 5).entries()) {
-        this.log(`${index + 1}. ${result.file}`)
-        this.log(`   Score: ${result.compliance_score}/100`)
-        if (result.issues) {
-          const fileIssues =
-            (result.issues.critical || 0) +
-            (result.issues.high || 0) +
-            (result.issues.medium || 0) +
-            (result.issues.low || 0)
-          this.log(`   Issues: ${fileIssues} (Critical: ${result.issues.critical || 0})`)
+      for (const [index, { file, summary }] of sorted.slice(0, 5).entries()) {
+        this.log(`${index + 1}. ${file}`)
+        if (summary.complianceScore !== null) this.log(`   Scanner score: ${summary.complianceScore}/100`)
+        if (summary.issueCounts) {
+          this.log(`   Issues: ${summary.issueCounts.total} (Critical: ${summary.issueCounts.critical})`)
         }
 
         this.log('')
@@ -152,56 +118,26 @@ static flags = {
   }
 
   private displaySingleResult(result: any, scanTime: number): void {
+    const summary = summarizeScanDetail(result)
+
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
     this.log(`  Code Accessibility Report`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  File: ${result.filename || 'Unknown'}`)
-    this.log(`  Language: ${result.language || 'N/A'}`)
-    this.log(`  Lines of Code: ${result.lines_of_code || 'N/A'}\n`)
+    this.log(`  File: ${summary.fileName ?? 'Unknown'}`)
+    this.log(`  Lines of Code: ${numberOrNull(summary.structure.total_lines) ?? 'N/A'}\n`)
 
-    if (result.compliance_score !== undefined) {
-      this.log(`  Compliance Score: ${result.compliance_score}/100`)
-    }
-
-    this.renderIssueCounts(result.issues)
-    this.renderIssueCategories(result.issue_categories)
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    if (result.scan_id) {
-      this.log(`  Scan ID: ${result.scan_id}`)
-      this.log(`  View full report: ${result.report_url || 'N/A'}\n`)
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}\n`)
     }
 
     this.log('💡 Tip: Use --format json for detailed issue breakdown with line numbers')
     this.log('💡 Tip: Use directory path to batch scan multiple code files')
-  }
-
-  private renderIssueCategories(categories: any): void {
-    if (!categories) return
-
-    this.log(`\n  Issue Categories:`)
-    for (const [key, label] of ISSUE_CATEGORY_LABELS) {
-      if (categories[key]) {
-        this.log(`  - ${label}: ${categories[key]}`)
-      }
-    }
-  }
-
-  private renderIssueCounts(issues: any): void {
-    if (!issues) return
-
-    this.log(`\n  Issues Found:`)
-    this.log(`  - Critical: ${issues.critical || 0}`)
-    this.log(`  - High: ${issues.high || 0}`)
-    this.log(`  - Medium: ${issues.medium || 0}`)
-    this.log(`  - Low: ${issues.low || 0}`)
-
-    const totalIssues =
-      (issues.critical || 0) + (issues.high || 0) + (issues.medium || 0) + (issues.low || 0)
-    this.log(`\n  Total Issues: ${totalIssues}`)
   }
 
   private async findCodeFiles(dirPath: string): Promise<string[]> {
@@ -274,7 +210,7 @@ static flags = {
 
     // Output results
     if (flags.format === 'csv') {
-      const allIssues = results.flatMap((r) => r.issues_list || r.issues || [])
+      const allIssues = results.flatMap((r) => summarizeScanDetail(r).issues)
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
@@ -322,7 +258,7 @@ static flags = {
       s.stop('Scan complete')
 
       if (flags.format === 'csv') {
-        const csv = formatIssuesToCsv(result.issues_list || result.issues || [], path.basename(filePath))
+        const csv = formatIssuesToCsv(summarizeScanDetail(result).issues, path.basename(filePath))
         if (flags.output) {
           await fs.writeFile(flags.output, csv)
           this.log(`CSV report saved to ${flags.output}`)
