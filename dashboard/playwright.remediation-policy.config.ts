@@ -1,13 +1,24 @@
 import { defineConfig } from '@playwright/test';
 import process from 'node:process';
 
+// CI runs the hash-pinned Chrome for Testing build named in
+// scripts/chrome-for-testing.json; elsewhere Playwright's own Chromium is used.
+const chromiumLaunchOptions = {
+  executablePath: process.env.AELIRA_CHROMIUM_EXECUTABLE || undefined,
+};
+
 export default defineConfig({
   testDir: './tests',
   testMatch: 'remediation-policy.spec.ts',
   workers: 1,
   forbidOnly: true,
   use: { baseURL: 'http://127.0.0.1:4326' },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: { browserName: 'chromium', launchOptions: chromiumLaunchOptions },
+    },
+  ],
   webServer: {
     command: './node_modules/.bin/vite --config tests/fixtures/remediation-policy-preview.config.ts',
     url: 'http://127.0.0.1:4326',

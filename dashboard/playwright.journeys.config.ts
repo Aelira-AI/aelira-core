@@ -1,6 +1,12 @@
 /* global process */
 import { defineConfig, devices } from '@playwright/test';
 
+// CI runs the hash-pinned Chrome for Testing build named in
+// scripts/chrome-for-testing.json; elsewhere Playwright's own Chromium is used.
+const chromiumLaunchOptions = {
+  executablePath: process.env.AELIRA_CHROMIUM_EXECUTABLE || undefined,
+};
+
 /**
  * Browser user journeys against the real stack: API, durable worker,
  * PostgreSQL, Redis and the built dashboard. Nothing is mocked or routed.
@@ -30,14 +36,18 @@ export default defineConfig({
     {
       name: 'setup',
       testMatch: /auth\.setup\.ts/,
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], launchOptions: chromiumLaunchOptions },
     },
     {
       name: 'journeys',
       testMatch: /\.spec\.ts$/,
       testIgnore: /lms\.spec\.ts$/,
       dependencies: ['setup'],
-      use: { ...devices['Desktop Chrome'], storageState: 'journey-results/.auth/admin.json' },
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: chromiumLaunchOptions,
+        storageState: 'journey-results/.auth/admin.json',
+      },
     },
     {
       // Needs a Canvas instance and credentials, so it is selected on its own.
@@ -46,6 +56,7 @@ export default defineConfig({
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
+        launchOptions: chromiumLaunchOptions,
         storageState: 'journey-results/.auth/admin.json',
       },
     },

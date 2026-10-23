@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
+from src.security.browser_runtime import chromium_launch_options
 from ..latex_runtime import tex_environment, version_command
 from ..latex_sandbox import UNAVAILABLE, confined, find_compressed_file, tool_home
 from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
@@ -691,7 +692,7 @@ class LaTeXConverter:
             from playwright.async_api import async_playwright
 
             async with async_playwright() as p:
-                browser = await p.chromium.launch()
+                browser = await p.chromium.launch(**chromium_launch_options())
                 page = await browser.new_page()
 
                 # Load HTML file

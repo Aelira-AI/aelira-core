@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { type Browser, chromium, type Page } from 'playwright'
 
 import { ApiClient } from '../utils/api-client.js'
+import { chromiumLaunchOptions } from '../utils/browser.js'
 import { buildReportEvidence, generateVerifiedPdfReport, ReportArtifactError } from '../utils/report-artifact.js'
 
 interface PdfReportOptions {
@@ -84,7 +85,7 @@ static flags = {
       let scanDuration = 0
       let scanSucceeded = false
       try {
-        browser = await chromium.launch({ headless: true })
+        browser = await chromium.launch(chromiumLaunchOptions())
         const context = await browser.newContext()
         page = await context.newPage()
 

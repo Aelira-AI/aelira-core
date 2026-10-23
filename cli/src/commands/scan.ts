@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { type Browser, chromium, type Page } from 'playwright'
 
 import { ApiClient } from '../utils/api-client.js'
+import { chromiumLaunchOptions } from '../utils/browser.js'
 import { buildReportEvidence, generateVerifiedPdfReport } from '../utils/report-artifact.js'
 
 export default class Scan extends Command {
@@ -93,7 +94,7 @@ static flags = {
         let succeeded = false
 
         try {
-          browser = await chromium.launch({ headless: true })
+          browser = await chromium.launch(chromiumLaunchOptions())
           const context = await browser.newContext()
           page = await context.newPage()
 
@@ -144,7 +145,7 @@ static flags = {
           const htmlContent = await this.readHtmlFile(args.target)
 
           s.message('Launching browser...')
-          browser = await chromium.launch({ headless: true })
+          browser = await chromium.launch(chromiumLaunchOptions())
           const context = await browser.newContext()
           page = await context.newPage()
 

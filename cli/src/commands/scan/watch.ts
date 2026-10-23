@@ -8,6 +8,7 @@ import pc from 'picocolors'
 import { type Browser, chromium } from 'playwright'
 
 import { ApiClient } from '../../utils/api-client.js'
+import { chromiumLaunchOptions } from '../../utils/browser.js'
 import { getApiUrl } from '../../utils/config.js'
 
 // ---------------------------------------------------------------------------
@@ -238,7 +239,7 @@ export default class ScanWatch extends Command {
 
   private async scanHtml(filePath: string): Promise<any> {
     if (!this.browserRef.browser) {
-      this.browserRef.browser = await chromium.launch({ headless: true })
+      this.browserRef.browser = await chromium.launch(chromiumLaunchOptions())
     }
 
     const page = await this.browserRef.browser.newPage()

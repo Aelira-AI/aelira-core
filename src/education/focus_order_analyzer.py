@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from playwright.async_api import async_playwright, Page
 import asyncio
 import logging
+from src.security.browser_runtime import chromium_launch_options
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,9 @@ class FocusOrderAnalyzer:
         """
         async with async_playwright() as p:
             self.playwright = p
-            self.browser = await p.chromium.launch(headless=True)
+            self.browser = await p.chromium.launch(
+                headless=True, **chromium_launch_options()
+            )
             page = await self.browser.new_page()
 
             try:
@@ -442,7 +445,9 @@ class FocusOrderAnalyzer:
         """
         async with async_playwright() as p:
             self.playwright = p
-            self.browser = await p.chromium.launch(headless=True)
+            self.browser = await p.chromium.launch(
+                headless=True, **chromium_launch_options()
+            )
             page = await self.browser.new_page()
 
             try:
