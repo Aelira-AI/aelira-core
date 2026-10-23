@@ -2,6 +2,15 @@ import { expect } from 'chai'
 
 import { escapeField, formatIssuesToCsv, formatScanHistoryToCsv } from '../../src/utils/csv-formatter.js'
 
+function historyRow(createdAt: string): string {
+  return formatScanHistoryToCsv([{
+    created_at: createdAt,
+    file_name: 'doc.pdf',
+    issues: [{ message: 'Issue 1', rule: 'rule-1', severity: 'high' }],
+    scan_id: 'abc-123',
+  }]).split('\n')[1]
+}
+
 describe('csv-formatter', () => {
   describe('escapeField', () => {
     it('returns plain string unchanged', () => {
@@ -77,10 +86,36 @@ describe('csv-formatter', () => {
       }]
       const csv = formatScanHistoryToCsv(scans)
       const lines = csv.split('\n')
-      expect(lines[0]).to.equal('scan_id,date,file,issue,severity,rule,element')
+      expect(lines[0]).to.equal('scan_id,date_utc,file,issue,severity,rule,element')
       expect(lines[1]).to.contain('abc-123')
       expect(lines[1]).to.contain('2026-03-17')
       expect(lines[1]).to.contain('doc.pdf')
+    })
+
+    describe('dates', () => {
+      const originalTz = process.env.TZ
+
+      // A zone well east of UTC, where local midnight is the previous UTC day.
+      beforeEach(() => { process.env.TZ = 'Australia/Sydney' })
+
+      afterEach(() => {
+        if (originalTz === undefined) delete process.env.TZ
+        else process.env.TZ = originalTz
+      })
+
+      it('keeps a midnight UTC timestamp on its UTC date', () => {
+        // Scan.created_at is DateTime(timezone=True), so the API sends an offset.
+        expect(historyRow('2026-01-01T00:00:00+00:00')).to.equal('abc-123,2026-01-01,doc.pdf,Issue 1,high,rule-1,')
+      })
+
+      it('reads a timestamp without an offset as UTC, not local time', () => {
+        expect(historyRow('2026-01-01T00:00:00')).to.equal('abc-123,2026-01-01,doc.pdf,Issue 1,high,rule-1,')
+        expect(historyRow('2026-01-01T23:30:00')).to.equal('abc-123,2026-01-01,doc.pdf,Issue 1,high,rule-1,')
+      })
+
+      it('converts an offset timestamp to its UTC date', () => {
+        expect(historyRow('2026-01-01T09:00:00+11:00')).to.equal('abc-123,2025-12-31,doc.pdf,Issue 1,high,rule-1,')
+      })
     })
 
     it('handles scans with no issues', () => {

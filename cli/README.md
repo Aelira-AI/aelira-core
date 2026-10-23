@@ -1059,6 +1059,8 @@ aelira auth logout
 
 Export scan history to CSV or JSON.
 
+The CSV has one row per finding. Its `date_utc` column is the date each scan was created, in UTC.
+
 ```bash
 aelira export
   --format csv|json               # Output format (default: csv)
