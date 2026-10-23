@@ -1,14 +1,35 @@
 # Production Dockerfile for Aelira Backend
 # Multi-stage build for smaller image size
 
-# Build the Debian system library from its pinned source package and the
-# reviewed CVE-2026-6653 backport. This stage is never a shipped layer.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS libxml2-deb-builder
+# Rebuild Debian's libxml2, libX11, libXrender and brotli from their pinned trixie
+# source packages with reviewed security patches. See
+# docs/security/debian-backports-0.9.14.md. These stages never ship.
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential debhelper liblzma-dev pkg-config quilt rename zlib1g-dev \
+    build-essential dpkg-dev perl quilt \
     && rm -rf /var/lib/apt/lists/*
-COPY docker/libxml2-6653/ /tmp/libxml2-input/
-RUN sh /tmp/libxml2-input/build-debs.sh
+COPY docker/debian-backports/build-backport.sh docker/debian-backports/control-run.sh \
+    docker/debian-backports/control-source.pl /tmp/debian-backports/
+
+FROM debian-backport-builder AS libxml2-backport
+COPY docker/debian-backports/libxml2/ /tmp/debian-backports/libxml2/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/libxml2 /out/libxml2
+
+FROM debian-backport-builder AS libx11-backport
+COPY docker/debian-backports/libx11/ /tmp/debian-backports/libx11/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/libx11 /out/libx11
+
+FROM debian-backport-builder AS libxrender-backport
+COPY docker/debian-backports/libxrender/ /tmp/debian-backports/libxrender/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/libxrender /out/libxrender
+
+FROM debian-backport-builder AS brotli-backport
+COPY docker/debian-backports/brotli/ /tmp/debian-backports/brotli/
+RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
+    /tmp/debian-backports/brotli /out/brotli
 
 # Stage 1: Builder
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
@@ -114,10 +135,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY docker/build-python-expat-modules.sh /tmp/build-python-expat-modules.sh
 RUN sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
 
+# The scanner drives Chromium at pages that visitors choose, and Playwright's
+# bundled build can trail Chrome stable by weeks. Use the exact Chrome for
+# Testing release pinned in scripts/chrome-for-testing.json, checked against
+# its SHA-256 before it is unpacked, for each architecture of the image.
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS chrome-for-testing
+ARG TARGETARCH
+COPY scripts/chrome-for-testing.json scripts/install_chrome_for_testing.py /opt/cft-installer/
+RUN python -I /opt/cft-installer/install_chrome_for_testing.py \
+        --dest /opt/chrome-for-testing --arch "${TARGETARCH:-$(uname -m)}"
+
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Resolve the reviewed, locked production tree
 # separately and copy only Node and those dependencies into the API image.
-FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 WORKDIR /opt/pa11y-runtime
@@ -154,7 +185,11 @@ RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 FROM python-expat-base AS runtime
 
 # The global repair and the final-image checks read the reviewed runtime pin.
-COPY --from=libxml2-deb-builder /tmp/libxml2-debs/ /tmp/libxml2-debs/
+COPY --from=libxml2-backport /out/ /tmp/debian-backports/
+COPY --from=libx11-backport /out/ /tmp/debian-backports/
+COPY --from=libxrender-backport /out/ /tmp/debian-backports/
+COPY --from=brotli-backport /out/ /tmp/debian-backports/
+COPY docker/debian-backports/install-backports.sh /tmp/debian-backports/
 COPY requirements.txt /app/requirements.txt
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
@@ -227,14 +262,10 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     texlive-lang-german \
     pandoc \
     && update-language \
-    # Replace the just-installed stock library before this RUN commits a
-    # layer. No image layer therefore contains the vulnerable system libxml2.
-    && apt-get install -y --no-install-recommends /tmp/libxml2-debs/libxml2_*.deb \
-    && test "$(dpkg-query -W -f='${Version}' libxml2)" = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1' \
-    && sha256sum --check --strict /tmp/libxml2-debs/libxml2.sha256 \
-    && mkdir -p /usr/share/doc/aelira-libxml2-6653 \
-    && cp /tmp/libxml2-debs/receipt.txt /tmp/libxml2-debs/libxml2.sha256 /usr/share/doc/aelira-libxml2-6653/ \
-    && rm -rf /tmp/libxml2-debs \
+    # Replace the just-installed stock libxml2, libX11, libXrender and brotli
+    # with the rebuilt backports before this RUN commits a layer. No image layer
+    # therefore contains the unpatched libraries.
+    && sh /tmp/debian-backports/install-backports.sh runtime \
     # xdg-utils is a hard Depends of texlive-base, so apt cannot remove it
     # without removing TeX. Its only callers are interactive (texdoc, LuaTeX
     # os.openurl, ImageMagick's browse delegate) and none runs in a server, so
@@ -282,6 +313,13 @@ RUN if grep -q '^mozilla/emSign_ECC_Root_CA_-_G3\.crt$' /etc/ca-certificates.con
         && update-ca-certificates --fresh; \
     fi
 
+# ImageMagick runs only inside LaTeXML's latexmlpost. Replace Debian's open
+# policy and delegate list with ones that allow only the PNG, JPEG, EPS and PDF
+# reads and the PNG and JPEG writes it needs, and only the Ghostscript program
+# for EPS and PDF. scripts/verify_native_media_components.ts checks both files
+# and what they refuse.
+COPY docker/imagemagick/policy.xml docker/imagemagick/delegates.xml /etc/ImageMagick-7/
+
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib
@@ -296,6 +334,10 @@ RUN ln -s /opt/ffmpeg9/bin/ffmpeg /usr/local/bin/ffmpeg && \
 COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=pa11y-node /opt/pa11y-runtime/node_modules /opt/pa11y-runtime/node_modules
 RUN ln -s /opt/pa11y-runtime/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
+
+# The pinned Chrome for Testing build. Its files stay byte-identical to the
+# archive whose SHA-256 the chrome-for-testing stage verified.
+COPY --from=chrome-for-testing /opt/chrome-for-testing /opt/chrome-for-testing
 
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
     /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv && \
@@ -323,13 +365,12 @@ USER aelira
 
 # Set HOME and Playwright environment variables
 ENV HOME=/home/aelira
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/aelira/.cache/ms-playwright
 ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json
 ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium
-
-# Install Playwright Chromium browser (baked into image)
-# This runs as 'aelira' user and installs to /home/aelira/.cache/ms-playwright
-RUN playwright install chromium
+# Every Playwright launch and Pa11y use this one browser. Playwright's own
+# Chromium is deliberately not installed, so a launch that forgets the setting
+# fails loudly instead of running an older, unpatched build.
+ENV AELIRA_CHROMIUM_EXECUTABLE=/opt/chrome-for-testing/chrome
 RUN python scripts/configure_pa11y_chromium.py
 
 # Expose port

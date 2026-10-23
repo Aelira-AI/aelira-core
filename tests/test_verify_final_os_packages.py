@@ -20,6 +20,7 @@ from scripts.verify_final_os_packages import (
     PLACEHOLDER_PROVIDES,
     RETAINED_ROOTS,
     main,
+    node_trust_store_errors,
     pem_fingerprints,
     trust_store_errors,
     unmet_dependencies,
@@ -618,12 +619,14 @@ def test_main_runs_both_checks_by_default(
 ) -> None:
     monkeypatch.setitem(CHECKS, "packages", lambda: ["package must be absent: x"])
     monkeypatch.setitem(CHECKS, "trust-store", lambda: [])
+    monkeypatch.setitem(CHECKS, "node-trust-store", lambda: [])
 
     assert main([]) == 1
 
     captured = capsys.readouterr()
     assert "package must be absent: x" in captured.err
     assert "Final image system trust store is valid" in captured.out
+    assert "Node's built-in root store" in captured.out
 
 
 def test_main_trust_store_selector_runs_only_that_check(
@@ -644,11 +647,13 @@ def test_main_passes_when_every_selected_check_passes(
 ) -> None:
     monkeypatch.setitem(CHECKS, "packages", lambda: [])
     monkeypatch.setitem(CHECKS, "trust-store", lambda: [])
+    monkeypatch.setitem(CHECKS, "node-trust-store", lambda: [])
 
     assert main([]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "Final image OS package state is valid",
         "Final image system trust store is valid",
+        "Node's built-in root store does not trust the distrusted root",
     ]
 
 
@@ -658,3 +663,41 @@ def test_main_rejects_unknown_arguments(
 ) -> None:
     assert main(arguments) == 2
     assert "usage: verify_final_os_packages.py" in capsys.readouterr().err
+
+
+def _node_roots(*keys: str):
+    fingerprints = {_fingerprint(PUBLISHED_ROOTS[key][1]) for key in keys}
+    return lambda: fingerprints
+
+
+def test_node_store_without_the_distrusted_root_is_accepted() -> None:
+    # Node 24.22.1 keeps emSign Root CA - G1 and drops the other three.
+    assert node_trust_store_errors(_node_roots("g1")) == []
+
+
+def test_node_store_that_trusts_the_distrusted_root_is_reported() -> None:
+    # Node 24.21.0 shipped all four emSign roots.
+    errors = node_trust_store_errors(_node_roots("g3", "g1", "c1", "c3"))
+
+    assert errors == [
+        f"node trust store: Node trusts {DISTRUSTED_ROOT_NAME} "
+        f"(sha256 {DISTRUSTED_ROOT_SHA256}); move to a Node release that "
+        "drops it"
+    ]
+
+
+def test_node_store_that_was_emptied_is_reported() -> None:
+    errors = node_trust_store_errors(lambda: set())
+
+    assert len(errors) == 1
+    assert "lacks emSign Root CA - G1" in errors[0]
+
+
+def test_node_that_cannot_run_fails_closed() -> None:
+    def broken() -> set[str]:
+        raise FileNotFoundError("node")
+
+    errors = node_trust_store_errors(broken)
+
+    assert len(errors) == 1
+    assert errors[0].startswith("node trust store: unable to read")

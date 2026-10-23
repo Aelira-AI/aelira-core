@@ -1113,15 +1113,17 @@ jobs:
           python scripts/verify_release_journeys.py
           --revision "${{ github.sha }}"
           --output test-results/journey-matrix.json
-      - name: Install pinned equation-verifier browser
+      - name: Install pinned Chrome for Testing
+        # The hash-pinned build the API image ships (scripts/chrome-for-testing.json),
+        # not Playwright's bundled Chromium, which trails Chrome stable.
         run: |
-          python -m playwright install --with-deps chromium
-          python - <<'PY' >> "$GITHUB_ENV"
-          from playwright.sync_api import sync_playwright
-
-          with sync_playwright() as playwright:
-              print(f"AELIRA_TEST_CHROMIUM_EXECUTABLE={playwright.chromium.executable_path}")
-          PY
+          python -m playwright install-deps chromium
+          python scripts/install_chrome_for_testing.py --dest "$RUNNER_TEMP/chrome-for-testing"
+          "$RUNNER_TEMP/chrome-for-testing/chrome" --version
+          {
+            printf 'AELIRA_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome"
+            printf 'AELIRA_TEST_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome"
+          } >> "$GITHUB_ENV"
       - name: Install pinned Pa11y and HTML_CodeSniffer for guarded browser fixtures
         run: |
           mkdir -p "$RUNNER_TEMP/aelira-pa11y"
@@ -1413,7 +1415,18 @@ jobs:
       - name: Install dashboard dependencies
         run: npm ci
       - name: Install deterministic release browser
-        run: npx playwright install --with-deps chromium
+        # The release gate runs the exact hash-pinned Chrome for Testing build
+        # in scripts/chrome-for-testing.json, so a Playwright update cannot
+        # change the browser under it.
+        run: |
+          npx playwright install-deps chromium
+          python3 ../scripts/install_chrome_for_testing.py --dest "$RUNNER_TEMP/chrome-for-testing"
+          pinned="$(python3 -c "import json; print(json.load(open('../scripts/chrome-for-testing.json'))['version'])")"
+          # Chrome prints a trailing space after the version.
+          installed="$("$RUNNER_TEMP/chrome-for-testing/chrome" --version | sed 's/[[:space:]]*$//')"
+          echo "$installed"
+          case "$installed" in *" $pinned") ;; *) echo "Expected Chrome for Testing $pinned" >&2; exit 1 ;; esac
+          printf 'AELIRA_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome" >> "$GITHUB_ENV"
       - name: Run release smoke
         run: npm run test:e2e:release
       - name: Run remediation policy regression
@@ -1596,11 +1609,13 @@ jobs:
             /usr/local/bin/python /app/scripts/verify_final_python_packages.py quickstart
           docker compose -f docker-compose.quickstart.yml exec -T api \
             /usr/local/bin/python /app/scripts/verify_final_os_packages.py trust-store
+          docker compose -f docker-compose.quickstart.yml exec -T api \
+            /usr/local/bin/python /app/scripts/verify_final_os_packages.py node-trust-store
           bun run scripts/verify_python_expat_layers.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
           bun run scripts/verify_opencv_layers.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
-          bun run scripts/verify_libxml2_6653.ts \
+          bun run scripts/verify_debian_backports.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)" --dev
       - name: Verify quickstart scene codec decoding
         run: |
@@ -1704,7 +1719,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       - name: Verify candidate bundle refusal controls
-        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts scripts/verify_libxml2_6653.test.ts
+        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts scripts/verify_debian_backports.test.ts
       - name: Load the reproducible API candidate for runtime checks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
         run: |
@@ -1774,7 +1789,7 @@ jobs:
           docker run --rm --network none --user 0 --entrypoint apt-get aelira-worker-isolation:test check
           bun run scripts/verify_python_expat_layers.ts aelira-worker-isolation:test
           bun run scripts/verify_opencv_layers.ts aelira-worker-isolation:test
-          bun run scripts/verify_libxml2_6653.ts aelira-worker-isolation:test
+          bun run scripts/verify_debian_backports.ts aelira-worker-isolation:test
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
       - name: Verify PyAV decodes and resamples the transcription WAV
         run: |

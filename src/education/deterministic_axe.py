@@ -3,6 +3,7 @@
 from typing import Any, Dict
 
 from bs4 import BeautifulSoup
+from src.security.browser_runtime import chromium_launch_options
 
 
 class DeterministicScanUnavailable(RuntimeError):
@@ -68,7 +69,9 @@ async def run_deterministic_axe(html: str) -> Dict[str, Any]:
     try:
         async_playwright, axe_class = _load_runtime()
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True)
+            browser = await playwright.chromium.launch(
+                headless=True, **chromium_launch_options()
+            )
             page = await browser.new_page()
             await page.route("**/*", _abort_request)
             await page.set_content(sanitize_scan_html(html))

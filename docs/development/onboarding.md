@@ -319,13 +319,17 @@ packages in [`Dockerfile.dev`](../../Dockerfile.dev) for the features you use:
 | Python builds/rendering | C/C++ build tools, pkg-config, Cairo development libraries |
 | PDF/OCR | Tesseract with English language data, Poppler utilities |
 | Multimedia | FFmpeg (including ffprobe) |
-| Web/code scanning | Node 24, Pa11y 9.0.1 on PATH, Playwright Chromium and its system libraries |
+| Web/code scanning | Node 24, Pa11y 9.0.1 on PATH, Chromium and its system libraries |
 | LaTeX/document conversion | LaTeXML, libxml2/libxslt, ImageMagick, Ghostscript, TeX Live packages and Pandoc listed in the Dockerfile |
 | Piper TTS | The `.onnx` voice and matching `.onnx.json` under `data/piper-voices/`, as downloaded in the Dockerfile |
 
 For web/code scanning, install Chromium with `python -m playwright install chromium`
 (on supported Linux hosts, `python -m playwright install --with-deps chromium`
-also installs OS dependencies). Install Pa11y 9.0.1 using your Node package
+also installs OS dependencies). That is fine for local development. The Docker
+images and the CI release gates instead run the Chrome for Testing build pinned
+in `scripts/chrome-for-testing.json`; to match them, run
+`python scripts/install_chrome_for_testing.py --dest <dir>` and set
+`AELIRA_CHROMIUM_EXECUTABLE=<dir>/chrome`. Install Pa11y 9.0.1 using your Node package
 manager. Set `PA11Y_CONFIG_PATH` to a local JSON configuration whose
 `chromeLaunchConfig.executablePath` points at that installed Chromium. The
 repository's `config/pa11y.json` targets a container-only path; installing the

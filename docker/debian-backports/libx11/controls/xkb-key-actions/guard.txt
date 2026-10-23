@@ -1,0 +1,2 @@
+        if (((int) rep->firstKeyAct + rep->nKeyActs) > (info->max_key_code + 1))
+            return BadLength;

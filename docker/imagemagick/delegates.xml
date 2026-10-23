@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE delegatemap [
+  <!ELEMENT delegatemap (delegate)+>
+  <!ATTLIST delegatemap xmlns CDATA #FIXED ''>
+  <!ELEMENT delegate EMPTY>
+  <!ATTLIST delegate xmlns CDATA #FIXED '' command CDATA #REQUIRED
+    decode NMTOKEN #IMPLIED encode NMTOKEN #IMPLIED mode NMTOKEN #IMPLIED
+    spawn NMTOKEN #IMPLIED stealth NMTOKEN #IMPLIED>
+]>
+<!--
+  Aelira API image ImageMagick delegates. It replaces Debian's list.
+
+  Only the two Ghostscript rendering delegates that the PS and PDF coders use
+  to read EPS and PDF graphics for LaTeXML remain: colour with alpha (PNG
+  output) and CMYK (PAM output). Each runs Ghostscript with -dSAFER -dBATCH
+  -dNOPAUSE -dNOPROMPT and one fixed raster device. The monochrome delegate is
+  absent because LaTeXML never requests a monochrome read. Every other delegate
+  (format conversion through Ghostscript, LibreOffice, curl, browser and
+  others) is removed, and policy.xml allows only the gs program.
+-->
+<delegatemap>
+  <delegate decode="ps:alpha" stealth="True" command="&apos;gs&apos; -sstdout=%%stderr -dQUIET -dSAFER -dBATCH -dNOPAUSE -dNOPROMPT -dMaxBitmap=500000000 -dAlignToPixels=0 -dGridFitTT=2 &apos;-sDEVICE=pngalpha&apos; -dTextAlphaBits=%u -dGraphicsAlphaBits=%u &apos;-r%s&apos; %s &apos;-sOutputFile=%s&apos; &apos;-f%s&apos; &apos;-f%s&apos;"/>
+  <delegate decode="ps:cmyk" stealth="True" command="&apos;gs&apos; -sstdout=%%stderr -dQUIET -dSAFER -dBATCH -dNOPAUSE -dNOPROMPT -dMaxBitmap=500000000 -dAlignToPixels=0 -dGridFitTT=2 &apos;-sDEVICE=pamcmyk32&apos; -dTextAlphaBits=%u -dGraphicsAlphaBits=%u &apos;-r%s&apos; %s &apos;-sOutputFile=%s&apos; &apos;-f%s&apos; &apos;-f%s&apos;"/>
+</delegatemap>

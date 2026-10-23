@@ -1,0 +1,2 @@
+        if (codeset->length > remaining_bytes)
+	    continue;

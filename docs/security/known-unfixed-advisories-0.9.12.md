@@ -52,13 +52,13 @@ handled directly:
 | Advisory | Packages | Assessment |
 | --- | --- | --- |
 | CVE-2026-36849 | libtiff6 | libtiff may decode TIFF graphics referenced by submitted LaTeX documents. Denial of service only; Debian will not fix it in this release. |
-| CVE-2026-74860 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86138 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86139 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86140 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86142 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86143 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
-| CVE-2026-86144 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. No distribution fix exists. |
+| CVE-2026-74860 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-86138 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-86139 | libxml2 | Listed as affected at publication. Source review for 0.9.14 found the vulnerable code is not present in this libxml2 version ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-86140 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-86142 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-86143 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-86144 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
 | CVE-2026-86420 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists. |
 | CVE-2026-86421 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists. |
 
@@ -116,8 +116,8 @@ handled directly:
 | CVE-2026-88051 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract model (.traineddata) parsing. OCR uses only the distribution-installed English model; users cannot supply model files. |
 | CVE-2026-88052 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract unicharset loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files. |
 | CVE-2026-88053 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract int-template loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files. |
-| CVE-2026-88806 | libx11-6, libx11-data, libx11-xcb1 | `vulnerable_code_not_in_execute_path` | libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
-| CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
+| CVE-2026-88806 | libx11-6, libx11-data, libx11-xcb1 | `vulnerable_code_not_in_execute_path` | libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.9.14 by a rebuilt libX11 ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.9.14 by a rebuilt libXrender ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
 | CVE-2026-93990 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses a separate bundled Expat 2.8.5; its advisory status is assessed independently below. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-9538 | libperl5.40, perl, perl-base, perl-modules-5.40 | `vulnerable_code_not_in_execute_path` | Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar. |
 
@@ -240,20 +240,22 @@ functions, requires a fresh assessment.
 
 ### ImageMagick advisories published after the 0.9.13 candidate review
 
-Six further ImageMagick advisories affect the reviewed
+Eight further ImageMagick advisories affect the reviewed
 `8:7.1.1.43+dfsg1-1+deb13u12` packages on both architectures. Upstream fixed
-them in 7.1.2-30 and 7.1.2-31; Debian has no fixed package for this release.
+them in 7.1.2-30, 7.1.2-31 and 7.1.2-32; Debian has no fixed package for this release.
 The dispositions were reviewed on 2026-10-22 and expire on 2027-01-20. The
 scanner findings remain visible.
 
 | Advisory | Scanner packages | Status | Assessment |
 | --- | --- | --- | --- |
-| [CVE-2026-106576](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-v45j-x8p4-3mh4) | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | Affected | A crafted XMP profile makes the rational conversion in `MagickCore/profile.c` run for a long time when an image carrying it is written. LaTeXML reads and rewrites submitted PNG and JPEG graphics when a document transforms them, for example by rotation. Denial of service only, bounded by the 60-second post-processing timeout. |
-| [CVE-2026-106573](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-qr53-hc3p-fc62) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing macro expansion limit in the MVG decoder. See the MVG basis below. |
-| [CVE-2026-106578](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-6xf5-c3jx-rp39) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Invalid free in the MVG decoder. See the MVG basis below. |
-| [CVE-2026-106579](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-vcjj-32hg-qpx5) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Policies written in the `coder` domain can be bypassed. The only such rules in the image are Debian's denials of `URL`, `HTTP` and `HTTPS`. Those coders declare no magic signature, so only a URL prefix in a file name selects them, and LaTeXML never passes one (see below). |
-| [CVE-2026-106580](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-r868-pmwh-fv2c) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing policy check when the CUT reader loads its palette file. CUT declares no magic signature, so only a `cut:` prefix or a `.cut` name selects it, and submitted content can supply neither. |
+| [CVE-2026-106576](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-v45j-x8p4-3mh4) | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | Affected | A crafted XMP profile makes the rational conversion in `MagickCore/profile.c` run for a long time when an image carrying it is written. LaTeXML reads and rewrites submitted PNG and JPEG graphics when a document transforms them, for example by rotation. Denial of service only, bounded by the 60-second post-processing timeout, which kills the process. The image's ImageMagick policy does not mitigate it (see below). |
+| [CVE-2026-106573](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-qr53-hc3p-fc62) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing macro expansion limit in the MVG decoder. See the MVG basis below; the image policy also refuses the MVG coder. |
+| [CVE-2026-106578](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-6xf5-c3jx-rp39) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Invalid free in the MVG decoder. See the MVG basis below; the image policy also refuses the MVG coder. |
+| [CVE-2026-106579](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-vcjj-32hg-qpx5) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Policies written in the `coder` domain can be bypassed, because ImageMagick checks the requested format name case-sensitively instead of the name of the coder it resolves. The image policy denies every coder with a `*` rule and then allows only upper-case names, so a name that differs only in case matches just the deny-all rule and is refused; it cannot reach a coder the policy does not allow (see below). |
+| [CVE-2026-106580](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-r868-pmwh-fv2c) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing policy check when the CUT reader loads its palette file. CUT declares no magic signature, so only a `cut:` prefix or a `.cut` name selects it, and submitted content can supply neither. The image policy also refuses the CUT coder. |
 | [CVE-2026-107209](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-f2r2-qw7g-3c8x) | The same seven ImageMagick packages | Not affected, `vulnerable_code_not_present` | Use-after-free in the RSVG path of `coders/svg.c`. Debian ships the SVG coder module only in `libmagickcore-7.q16-10-extra`, which is not installed; `libmagickcore-7.q16-10` contains no `svg` module, so no SVG, MSVG or RSVG format is registered. |
+| [CVE-2026-106565](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-m9c7-gf3j-hx6h) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | A missing EOF check reading bzip2-compressed image data causes an infinite loop. The policy cannot refuse it, but compression-wrapped files are refused before LaTeXML starts, so submitted documents cannot reach it. See the bzip2 note below; the library fix is tracked in [#750](https://github.com/Aelira-AI/aelira-core/issues/750). |
+| [CVE-2026-106567](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-g6p6-3ggg-3w7j) | The same seven ImageMagick packages | Not affected, `vulnerable_code_not_present` | Integer-conversion error in the PSD resource-block parser that loops on 32-bit builds only. The image is built for 64-bit targets, and the policy denies the PSD coder anyway. See the PSD note below. |
 
 **MVG, CUT and URL basis.** In ImageMagick 7.1.1-43, file sniffing uses the
 static signatures declared in each coder's header. `coders/mvg.h`,
@@ -274,12 +276,76 @@ read, but such a file is part of the image, not content an attacker supplies.
 The native-image CI check now also asserts that no SVG, MSVG or RSVG format or
 `svg` coder module is registered, that no ImageMagick `svg` coder module occurs
 in any shipped layer, and that a file named `.png` containing MVG drawing
-commands is rejected by both `magick` and Perl `Image::Magick`, while the same
-file is accepted with an explicit `mvg:` prefix. The MVG, CUT and URL basis
-rests on reading the ImageMagick 7.1.1-43 and LaTeXML 0.8.8 sources, not on a
-crafted-input test of LaTeXML itself. A changed ImageMagick or LaTeXML package,
-a new ImageMagick caller, or a wider project file allowlist requires a fresh
-assessment.
+commands is not decoded by `magick` or Perl `Image::Magick`, while the same
+file is decoded with an explicit `mvg:` prefix once a test-only policy allows
+MVG. It also generates a benign bzip2-wrapped PNG, a benign MIFF written with
+BZip compression and a benign PSD under a permissive test policy, and asserts
+that the MIFF and PSD are refused by prefix, by extension and when renamed to
+`.png`, that ImageMagick itself still reads the bzip2-wrapped PNG while the
+application's converter refuses it and a gzip-wrapped PNG with `compressed_input`
+before LaTeXML runs, and that each decodes under the permissive control. The MVG, CUT and URL basis rests on reading the ImageMagick 7.1.1-43 and
+LaTeXML 0.8.8 sources, not on a crafted-input test of LaTeXML itself. A changed
+ImageMagick or LaTeXML package, a new ImageMagick caller, or a wider project
+file allowlist requires a fresh assessment.
+
+**bzip2 note (CVE-2026-106565).** The infinite loop is in `MagickCore/blob.c`, in the transparent whole-file decompression that `OpenBlob` applies when a file begins with the bzip2 magic bytes `BZh`, before any coder is chosen or any policy rule applies. The decompressed bytes then select the coder, so the loop is reached by whichever format the content resolves to, not only by MIFF (the one coder that also reads bzip2 pixel data in its own body). In ImageMagick 7.1.1-43 `OpenBlob` unwraps exactly two wrappers by their leading bytes, gzip (`1F 8B 08`) and bzip2; it does not unwrap xz, zstd, raw zlib or LZW, and its `.gz`, `.bz2`, `.svgz` and `.Z` name checks apply only to writing or to naming the format. ImageMagick itself therefore still reads a bzip2-wrapped `.png` or `.jpg` through the allowed PNG or JPEG coder, as the image check confirms, and the policy cannot deny that without denying PNG and JPEG, which LaTeXML needs.
+
+Submitted documents cannot reach it. ImageMagick runs only inside the `latexml` and `latexmlpost` stages, which can read only their own attempt directory and system files. Before either stage starts, every file it can read is checked, whatever its name, and the stage is refused with the `compressed_input` diagnostic, without starting LaTeXML, if any file begins with a gzip, bzip2, xz or zstd magic (`src/education/latex_sandbox.py`, `src/education/remediation/latex_converter.py`). Uploaded LaTeX projects refuse such a member with `compressed_member`. No accepted LaTeX input type starts with these bytes: images and PDF have their own magic, and the gzip, xz and zstd magics are not valid UTF-8, so they cannot begin a `.tex`, `.bib`, `.sty`, `.cls`, `.bst` or `.txt` file. The one exception is a text file whose first three characters are literally `BZh`; such a file is refused with the same reason, and adding any first line avoids it. Compressed formats such as `.svgz` or `.eps.gz` are already outside the accepted file types. Through the real conversion entry point and in the API image, a benign bzip2- or gzip-wrapped PNG is refused with `compressed_input` before LaTeXML parses, the same PNG unwrapped converts, and the bare launcher without the check still renders the wrapped file. The library fix, upstream commit `e9872c4a165d869e75d10799c47195725ebf4132` in 7.1.2-32, is tracked in [#750](https://github.com/Aelira-AI/aelira-core/issues/750).
+
+**PSD note (CVE-2026-106567).** The upstream advisory and fix `f053f778409932d55b95758c4b1516b63191d1eb` state the PSD resource-block loop happens on 32-bit builds only: the block length is read into a 32-bit unsigned int and cast to `ssize_t`, which overflows only where `ssize_t` is 32-bit. The API image is built for 64-bit amd64 and arm64, where the cast is lossless and the bounds check holds, so the vulnerable path is not present. Independently, the policy denies the PSD coder: a PSD file is refused by a `psd:` prefix, by a `.psd` name and by content sniffing of a `.png`-named file, in the image and through the LaTeXML launcher.
+
+**ImageMagick policy.** From [#749](https://github.com/Aelira-AI/aelira-core/issues/749)
+the API image replaces Debian's open `policy.xml` and `delegates.xml` with
+[`docker/imagemagick/policy.xml`](../../docker/imagemagick/policy.xml) and
+[`docker/imagemagick/delegates.xml`](../../docker/imagemagick/delegates.xml).
+LaTeXML 0.8.8 reads graphics through `LaTeXML::Util::Image`: it reads PNG,
+JPEG, EPS and PDF files, renders EPS and PDF through Ghostscript and reads the
+result back as PNG, or as PAM for a CMYK document, and writes PNG and JPEG
+files. The policy denies every coder and then allows reading and writing PNG,
+JPEG and JPG and reading EPS, PDF and PAM. It allows only the `gs` delegate
+program, denies all filters, `@` file lists and URL reads, and lowers the
+width and height limits to 16000 pixels, memory to 256 MiB, map to 512 MiB,
+area to 64 megapixels, disk to 1 GiB, image lists to 32 and threads to 2.
+ImageMagick 7.1.1-43 applies the policy's 50-second time value only as a cap,
+so the LaTeX tool environment also sets `MAGICK_TIME_LIMIT=50`. The delegate
+list keeps only the two Ghostscript rendering delegates, both run with
+`-dSAFER -dBATCH -dNOPAUSE` and a fixed `pngalpha` or `pamcmyk32` device.
+Ghostscript 10.05.1 (`10.05.1~dfsg-1+deb13u3`) also applies `-dSAFER` by
+default; Debian's open Ghostscript advisories for this release are fixed in
+that version or are marked unimportant for components the image does not use.
+
+Before this change, a file named `.png` that held a PostScript program was
+identified by its content and rendered through Ghostscript, including inside
+LaTeXML, and the MSL, MVG, CUT, TEXT, TXT and PS coders read files when named
+with a prefix or extension. The native-image CI check now runs real LaTeXML
+conversions of EPS, PDF, PNG and JPEG graphics, including rotated and CMYK
+ones, and records every Ghostscript command line. It asserts that those reads
+are refused by the policy, that LaTeXML refuses the PostScript `.png` file
+before Ghostscript runs, that images wider or taller than the limit are
+refused, and that the shipped files equal the reviewed ones. Each refusal has
+a control that passes when a test-only policy file allows the coder.
+
+The policy does not mitigate CVE-2026-106576. ImageMagick has no policy rule
+for embedded profiles, so denying the `XMP` coder does not stop the
+conversion, and its time limit is checked only when pixels are accessed, not
+inside the loop: a crafted PNG converted through LaTeXML with a 10-second
+ImageMagick time limit ran until it was killed. The upstream fix is ImageMagick
+commit `f491576297141ff685dc4460d811986f5b6b6cec` in 7.1.2-31, which replaces
+the search in `GetXmpNumeratorAndDenominator` with a bounded continued
+fraction; it applies without changes to the Debian 7.1.1-43 source.
+
+ImageMagick also reads policy files from `$HOME/.config/ImageMagick` and
+`$XDG_CONFIG_HOME/ImageMagick` after the system file, and a later rule wins, so
+a file there could loosen the policy. LaTeX tools used to run with their
+conversion directory as `$HOME`. Each tool run now gets a new, empty home
+directory outside the conversion directory, which the Landlock ruleset lets the
+tool neither read nor write, and which is removed after the run
+(`src/education/latex_sandbox.py`). `MAGICK_CONFIGURE_PATH` stays unset: it is
+read in addition to the system configuration, and a policy file there raised
+the width limit to 64000 pixels in a test. The native-image check plants a
+policy allowing PostScript in a conversion directory and runs LaTeXML through
+the application's launcher: the PostScript `.png` file stays refused, and the
+same run with `$HOME` set to the conversion directory renders it.
 
 ### CVE-2026-6653 remains open
 
@@ -290,9 +356,21 @@ machine-readable exception was removed, and stock Debian `libxml2` remains
 blocked by the CRITICAL Trivy inventory gate. The subsequent `+aelira1`
 backport has a [conditional repair disposition](libxml2-6653-backport-0.9.13.md):
 acceptance requires the rebuilt package, native consumer checks and shipped
-layer checks to pass for the exact image. The other `libxml2` advisories remain
-affected and disclosed; the three component-absence dispositions above do not
-resolve them.
+layer checks to pass for the exact image. In 0.9.14 the same rebuild carries
+the fixes for the other `libxml2` advisories; see the next section.
+
+### libxml2, libX11 and libXrender repaired in 0.9.14
+
+The `libxml2` rows above said "No distribution fix exists". That was true of
+Debian trixie, and it is still true there, but it read as if no fix existed
+anywhere. Upstream libxml2 2.15.3 and 2.15.4 fix these advisories, and
+Canonical published fixes for its 2.9.14 package in Ubuntu 24.04 (USN-8910-1).
+Upstream libX11 1.8.14 and libXrender 0.9.13 fix CVE-2026-88806 and
+CVE-2026-88807. From 0.9.14 the API and development images rebuild Debian's
+own `libxml2`, `libx11` and `libxrender` source packages with those fixes, as
+described in the [0.9.14 backport record](debian-backports-0.9.14.md).
+CVE-2026-86139 was listed as affected, but the vulnerable code is not present
+in the 2.9.14 source Debian ships.
 
 ### Debian FFmpeg is removed; 22 dispositions are retired
 

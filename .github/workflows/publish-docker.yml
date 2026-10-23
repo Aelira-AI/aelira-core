@@ -102,7 +102,7 @@ jobs:
             /app/scripts/verify_final_os_packages.py
           docker run --rm --user 0 --entrypoint apt-get "$IMAGE" check
           bun run scripts/verify_python_expat_layers.ts "$IMAGE"
-          bun run scripts/verify_libxml2_6653.ts "$IMAGE"
+          bun run scripts/verify_debian_backports.ts "$IMAGE"
           bun run scripts/verify_native_media_components.ts "$IMAGE"
           docker run --rm --network none --read-only \
             --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
