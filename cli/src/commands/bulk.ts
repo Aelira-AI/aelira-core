@@ -6,6 +6,8 @@ import * as path from 'node:path'
 import pc from 'picocolors'
 import { type Browser, chromium, type Page } from 'playwright'
 
+import { chromiumLaunchOptions } from '../utils/browser.js'
+
 interface BulkScanResult {
   criticalCount: number
   duration: number
@@ -663,7 +665,7 @@ static flags = {
     let browser: Browser | null = null
 
     try {
-      browser = await chromium.launch({ headless: true })
+      browser = await chromium.launch(chromiumLaunchOptions())
 
       // Process files with limited concurrency
       let completed = 0

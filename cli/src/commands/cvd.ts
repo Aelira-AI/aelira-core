@@ -5,6 +5,8 @@ import * as path from 'node:path'
 import pc from 'picocolors'
 import { type Browser, chromium, type Page } from 'playwright'
 
+import { chromiumLaunchOptions } from '../utils/browser.js'
+
 // Color Vision Deficiency Types
 const CVD_TYPES = {
   achromatopsia: { description: 'Complete color blindness (grayscale)', name: 'Achromatopsia', population: 0.003 },
@@ -133,7 +135,7 @@ static flags = {
       const s = spinner()
       s.start('Launching browser...')
 
-      browser = await chromium.launch({ headless: true })
+      browser = await chromium.launch(chromiumLaunchOptions())
       const context = await browser.newContext()
       page = await context.newPage()
 

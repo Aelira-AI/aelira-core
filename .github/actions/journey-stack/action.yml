@@ -46,10 +46,11 @@ runs:
     - name: Install the scanner browser and pinned Pa11y
       shell: bash
       run: |
-        python -m playwright install --with-deps chromium
-        chromium="$(python -c 'from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            print(p.chromium.executable_path)')"
+        python -m playwright install-deps chromium
+        python scripts/install_chrome_for_testing.py --dest "$RUNNER_TEMP/chrome-for-testing"
+        chromium="$RUNNER_TEMP/chrome-for-testing/chrome"
+        "$chromium" --version
+        printf 'AELIRA_CHROMIUM_EXECUTABLE=%s\n' "$chromium" >> "$GITHUB_ENV"
         mkdir -p "$RUNNER_TEMP/pa11y"
         npm install --prefix "$RUNNER_TEMP/pa11y" --no-audit --no-fund pa11y@9.0.1 html_codesniffer@2.5.1
         printf '%s\n' "$RUNNER_TEMP/pa11y/node_modules/.bin" >> "$GITHUB_PATH"
@@ -185,4 +186,4 @@ runs:
       working-directory: dashboard
       run: |
         npm ci
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium

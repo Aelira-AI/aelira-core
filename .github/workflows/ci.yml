@@ -1113,15 +1113,17 @@ jobs:
           python scripts/verify_release_journeys.py
           --revision "${{ github.sha }}"
           --output test-results/journey-matrix.json
-      - name: Install pinned equation-verifier browser
+      - name: Install pinned Chrome for Testing
+        # The hash-pinned build the API image ships (scripts/chrome-for-testing.json),
+        # not Playwright's bundled Chromium, which trails Chrome stable.
         run: |
-          python -m playwright install --with-deps chromium
-          python - <<'PY' >> "$GITHUB_ENV"
-          from playwright.sync_api import sync_playwright
-
-          with sync_playwright() as playwright:
-              print(f"AELIRA_TEST_CHROMIUM_EXECUTABLE={playwright.chromium.executable_path}")
-          PY
+          python -m playwright install-deps chromium
+          python scripts/install_chrome_for_testing.py --dest "$RUNNER_TEMP/chrome-for-testing"
+          "$RUNNER_TEMP/chrome-for-testing/chrome" --version
+          {
+            printf 'AELIRA_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome"
+            printf 'AELIRA_TEST_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome"
+          } >> "$GITHUB_ENV"
       - name: Install pinned Pa11y and HTML_CodeSniffer for guarded browser fixtures
         run: |
           mkdir -p "$RUNNER_TEMP/aelira-pa11y"
@@ -1413,7 +1415,18 @@ jobs:
       - name: Install dashboard dependencies
         run: npm ci
       - name: Install deterministic release browser
-        run: npx playwright install --with-deps chromium
+        # The release gate runs the exact hash-pinned Chrome for Testing build
+        # in scripts/chrome-for-testing.json, so a Playwright update cannot
+        # change the browser under it.
+        run: |
+          npx playwright install-deps chromium
+          python3 ../scripts/install_chrome_for_testing.py --dest "$RUNNER_TEMP/chrome-for-testing"
+          pinned="$(python3 -c "import json; print(json.load(open('../scripts/chrome-for-testing.json'))['version'])")"
+          # Chrome prints a trailing space after the version.
+          installed="$("$RUNNER_TEMP/chrome-for-testing/chrome" --version | sed 's/[[:space:]]*$//')"
+          echo "$installed"
+          case "$installed" in *" $pinned") ;; *) echo "Expected Chrome for Testing $pinned" >&2; exit 1 ;; esac
+          printf 'AELIRA_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome" >> "$GITHUB_ENV"
       - name: Run release smoke
         run: npm run test:e2e:release
       - name: Run remediation policy regression
@@ -1596,6 +1609,8 @@ jobs:
             /usr/local/bin/python /app/scripts/verify_final_python_packages.py quickstart
           docker compose -f docker-compose.quickstart.yml exec -T api \
             /usr/local/bin/python /app/scripts/verify_final_os_packages.py trust-store
+          docker compose -f docker-compose.quickstart.yml exec -T api \
+            /usr/local/bin/python /app/scripts/verify_final_os_packages.py node-trust-store
           bun run scripts/verify_python_expat_layers.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
           bun run scripts/verify_opencv_layers.ts \

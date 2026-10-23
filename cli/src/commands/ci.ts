@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import pc from 'picocolors'
 import { type Browser, chromium, type Page } from 'playwright'
 
+import { chromiumLaunchOptions } from '../utils/browser.js'
 import {buildSarifLog, calculateCiExitCode, resolveSarifSource, type SarifLog} from '../utils/sarif.js'
 
 interface CIResult {
@@ -85,7 +86,7 @@ static flags = {
       const s = quiet ? null : spinner()
       s?.start('Running accessibility checks...')
 
-      browser = await chromium.launch({ headless: true })
+      browser = await chromium.launch(chromiumLaunchOptions())
       const context = await browser.newContext()
       page = await context.newPage()
 

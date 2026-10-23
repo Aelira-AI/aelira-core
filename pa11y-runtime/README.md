@@ -16,13 +16,13 @@
 | Pa11y | 9.0.1 |
 | HTML_CodeSniffer | 2.5.1 |
 | `@puppeteer/browsers` (exact override) | 3.2.4 |
-| Node | 22.12 or newer required by the override; the images use pinned Node 24 |
+| Node | 22.12 or newer required by the override; the images use pinned Node 24, at 24.22.1 or later |
 
 ## Why the override exists
 
 The exact `@puppeteer/browsers` 3.2.4 override removes the older FTP and ZIP downloader dependency chain. It is outside Puppeteer 24's declared version range and requires Node 22.12 or newer.
 
-The API uses its installed Chromium with browser downloads disabled. Optional downloader peers are intentionally absent from the lock.
+The API uses its installed Chromium, the Chrome for Testing build pinned in [`scripts/chrome-for-testing.json`](../scripts/chrome-for-testing.json), with browser downloads disabled. Optional downloader peers are intentionally absent from the lock.
 
 ## Changing the override
 

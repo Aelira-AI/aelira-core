@@ -10,9 +10,13 @@ and apt keeps working in images built from this one.
 The system trust store must not trust emSign ECC Root CA - G3 and must keep the
 three emSign roots that are not affected (GHSA-6q48-6c7w-9gw2).
 
-Usage: verify_final_os_packages.py [packages | trust-store]
-Without an argument both checks run. The developer image has no placeholder
-package, so it runs only the trust-store check.
+Node.js compiles its own root store into the binary, so the pa11y runtime is
+checked separately: Node 24.22.1 and later drop the root, and node-trust-store
+fails if the installed Node still trusts it (#726).
+
+Usage: verify_final_os_packages.py [packages | trust-store | node-trust-store]
+Without an argument every check runs. The developer image has no placeholder
+package, so it runs only the two trust-store checks.
 """
 
 from __future__ import annotations
@@ -344,13 +348,66 @@ def trust_store_errors(
     return errors
 
 
+# Prints the SHA-256 of every certificate in Node's built-in root store, one
+# lowercase hex string per line, so the check compares by fingerprint like the
+# system trust-store check does.
+NODE_ROOT_FINGERPRINTS_SCRIPT = (
+    "const {X509Certificate}=require('crypto');"
+    "for (const pem of require('tls').rootCertificates)"
+    "{console.log(new X509Certificate(pem).fingerprint256"
+    ".replace(/:/g,'').toLowerCase())}"
+)
+
+
+def node_root_fingerprints() -> set[str]:
+    """Return the fingerprints of the roots compiled into the installed Node."""
+    result = subprocess.run(
+        ["node", "--eval", NODE_ROOT_FINGERPRINTS_SCRIPT],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def node_trust_store_errors(
+    roots: Callable[[], set[str]] = node_root_fingerprints,
+) -> list[str]:
+    """Return every way Node's built-in store trusts the distrusted root.
+
+    Fails closed: a Node that cannot be run, or one that reports no roots at
+    all, is an error. The store must still hold emSign Root CA - G1, the one
+    emSign root Node keeps, so an emptied store cannot pass.
+    """
+    try:
+        fingerprints = roots()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return [f"node trust store: unable to read Node's root store: {exc}"]
+    errors: list[str] = []
+    if DISTRUSTED_ROOT_SHA256 in fingerprints:
+        errors.append(
+            f"node trust store: Node trusts {DISTRUSTED_ROOT_NAME} "
+            f"(sha256 {DISTRUSTED_ROOT_SHA256}); move to a Node release that "
+            "drops it"
+        )
+    retained_name, retained_sha256 = RETAINED_ROOTS[0]
+    if retained_sha256 not in fingerprints:
+        errors.append(
+            f"node trust store: Node's root store lacks {retained_name} "
+            f"(sha256 {retained_sha256})"
+        )
+    return errors
+
+
 CHECKS: dict[str, Callable[[], list[str]]] = {
     "packages": validate,
     "trust-store": trust_store_errors,
+    "node-trust-store": node_trust_store_errors,
 }
 SUCCESS_MESSAGES = {
     "packages": "Final image OS package state is valid",
     "trust-store": "Final image system trust store is valid",
+    "node-trust-store": "Node's built-in root store does not trust the distrusted root",
 }
 
 

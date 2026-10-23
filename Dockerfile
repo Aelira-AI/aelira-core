@@ -130,10 +130,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY docker/build-python-expat-modules.sh /tmp/build-python-expat-modules.sh
 RUN sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
 
+# The scanner drives Chromium at pages that visitors choose, and Playwright's
+# bundled build can trail Chrome stable by weeks. Use the exact Chrome for
+# Testing release pinned in scripts/chrome-for-testing.json, checked against
+# its SHA-256 before it is unpacked, for each architecture of the image.
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS chrome-for-testing
+ARG TARGETARCH
+COPY scripts/chrome-for-testing.json scripts/install_chrome_for_testing.py /opt/cft-installer/
+RUN python -I /opt/cft-installer/install_chrome_for_testing.py \
+        --dest /opt/chrome-for-testing --arch "${TARGETARCH:-$(uname -m)}"
+
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Resolve the reviewed, locked production tree
 # separately and copy only Node and those dependencies into the API image.
-FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 WORKDIR /opt/pa11y-runtime
@@ -319,6 +329,10 @@ COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=pa11y-node /opt/pa11y-runtime/node_modules /opt/pa11y-runtime/node_modules
 RUN ln -s /opt/pa11y-runtime/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
+# The pinned Chrome for Testing build. Its files stay byte-identical to the
+# archive whose SHA-256 the chrome-for-testing stage verified.
+COPY --from=chrome-for-testing /opt/chrome-for-testing /opt/chrome-for-testing
+
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
     /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv && \
     /usr/local/bin/python /app/scripts/verify_final_os_packages.py
@@ -345,13 +359,12 @@ USER aelira
 
 # Set HOME and Playwright environment variables
 ENV HOME=/home/aelira
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/aelira/.cache/ms-playwright
 ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json
 ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium
-
-# Install Playwright Chromium browser (baked into image)
-# This runs as 'aelira' user and installs to /home/aelira/.cache/ms-playwright
-RUN playwright install chromium
+# Every Playwright launch and Pa11y use this one browser. Playwright's own
+# Chromium is deliberately not installed, so a launch that forgets the setting
+# fails loudly instead of running an older, unpatched build.
+ENV AELIRA_CHROMIUM_EXECUTABLE=/opt/chrome-for-testing/chrome
 RUN python scripts/configure_pa11y_chromium.py
 
 # Expose port

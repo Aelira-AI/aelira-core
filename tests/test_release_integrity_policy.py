@@ -288,7 +288,7 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
         "python:3.14-slim@sha256:"
         "a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170"
     )
-    assert api.count(f"FROM {python_base}") == 3
+    assert api.count(f"FROM {python_base}") == 4
     assert "pip install --no-cache-dir piper-tts" not in api
     assert "npm ci --omit=dev --no-audit --no-fund" in api
     assert {name: digest for name, _, digest in VOICE_ASSETS} == {
@@ -734,7 +734,9 @@ def test_dockerfiles_verify_the_trust_store_where_each_image_is_built() -> None:
         "/app/scripts/verify_final_os_packages.py"
     )
     assert dev.count(copy) == 1
-    assert dev.count(os_assertion) == 1
+    # The second run checks Node's built-in store once Node is copied in.
+    assert dev.count(os_assertion) == 2
+    assert dev.count(f"{os_assertion} node-trust-store") == 1
     step_start = dev.index(DISTRUST_STEP_START)
     layer = dev[step_start : dev.index("\n\n", step_start)]
     assert dev.index(copy) < step_start
@@ -754,6 +756,7 @@ def test_quickstart_ci_checks_the_developer_image_trust_store() -> None:
     assert quickstart.index(
         "verify_final_python_packages.py quickstart"
     ) < quickstart.index(check)
+    assert quickstart.count("verify_final_os_packages.py node-trust-store") == 1
 
 
 def _gnu_sed() -> bool:
