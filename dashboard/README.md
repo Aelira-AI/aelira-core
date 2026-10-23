@@ -87,6 +87,10 @@ Copy [`.env.example`](.env.example) to `.env` and fill in real values. Everythin
 | Variable | Required | Purpose |
 |---|---|---|
 | `VITE_API_URL` | Yes | Backend API base URL. `http://localhost:8000` in development, your API domain in production. Read in `src/api/client.ts`, `src/api/ltiClient.ts`, and elsewhere. |
+| `VITE_BRAND_NAME` | No | Display name for the dashboard. Keep it aligned with the backend `BRAND_NAME`. |
+| `VITE_LOGO_LIGHT` | No | Logo path for the light theme. |
+| `VITE_LOGO_DARK` | No | Logo path for the dark theme. |
+| `VITE_PRIVACY_POLICY_URL` | No | Your deployment's privacy policy. Set it before onboarding users; no hosted Aelira policy is used when it is unset. |
 | `VITE_UMAMI_WEBSITE_ID` | No | Umami (privacy-focused, open-source analytics) website ID. Only loads when the user consents to analytics cookies via the cookie banner. |
 | `VITE_UMAMI_URL` | No | Umami instance URL, paired with the ID above. |
 

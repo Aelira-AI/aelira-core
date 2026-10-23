@@ -682,12 +682,12 @@ aelira integrations connect [provider]
 |---|---|---|
 | `google` | Google Workspace (Drive, Docs, Slides, Sheets) | |
 | `microsoft` | Microsoft 365 (OneDrive, Word, PowerPoint, Excel) | |
-| `canvas` | Canvas LMS | **Production-verified** |
+| `canvas` | Canvas LMS | Integration verified; institution user-journey acceptance still needed |
 | `blackboard` | Blackboard Learn | **Experimental** (implemented, not yet tested end to end) |
 | `moodle` | Moodle LMS | **Experimental** (implemented, not yet tested end to end) |
 | `brightspace` | D2L Brightspace | **Beta** (tested against a D2L developer instance, not recently re-verified) |
 
-> LMS connector maturity varies. See the [integration status table](../README.md#lms-integration-status) in the main README before relying on a connector in production.
+> LMS connector maturity varies. See the [integration status table](https://github.com/Aelira-AI/aelira-core#lms-integration-status) in the main README before relying on a connector in production.
 
 Examples:
 
@@ -766,12 +766,11 @@ Interactive selection:
 - Subfolder syncing enabled by default
 - Changes take effect on next sync
 
-Privacy guarantee:
+Folder access:
 
 - Only selected folders are scanned
 - No files are accessed until folders are explicitly chosen
 - You can add/remove folders anytime
-- All file access is logged
 
 </details>
 
@@ -809,8 +808,7 @@ aelira integrations sync --api-url http://localhost:8000 --api-key your-api-key
 Automatic sync:
 
 - Webhooks detect file changes in real-time (Google Drive push notifications, Microsoft Graph subscriptions)
-- Manual sync ensures nothing is missed
-- Typical sync time: 1-5 minutes for 1,000 files
+- Manual sync picks up changes that webhooks miss
 
 Background processing:
 
@@ -1200,9 +1198,9 @@ Institutions covered by the DOJ ADA Title II rule need WCAG 2.1 AA by April 26, 
 
 ## License
 
-MIT © Aelira AI Pty Ltd. This licence covers the code under `cli/`; the root of this repository is licensed separately. See the [root README](../README.md#licence-and-branding).
+MIT © Aelira AI Pty Ltd. This licence covers the code under `cli/`; the root of this repository is licensed separately. See the [root README](https://github.com/Aelira-AI/aelira-core#licence-and-branding).
 
 ## Links
 
-- **Backend:** [Repository root](..)
+- **Backend:** [Repository root](https://github.com/Aelira-AI/aelira-core)
 - **API Docs:** http://localhost:8000/docs (when the backend is running)
