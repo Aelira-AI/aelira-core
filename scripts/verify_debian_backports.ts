@@ -409,8 +409,10 @@ function checkXConsumers(image: string, receipts: Map<string, Receipt>): void {
   const xrender = libraryPath(receipts, 'libxrender', 'libXrender.so.1.3.0');
   const script = String.raw`
     x11=$1 xrender=$2
-    chrome=$(find /home/aelira/.cache/ms-playwright -type f \( -name chrome-headless-shell -o -name chrome \) | sort | head -n 1)
-    test -n "$chrome"
+    # The scanner's pinned Chrome for Testing build, named by the image.
+    chrome="$AELIRA_CHROMIUM_EXECUTABLE"
+    test -n "$chrome" || chrome=/opt/chrome-for-testing/chrome
+    test -x "$chrome"
     seen_x11=0 seen_xrender=0
     for binary in /usr/bin/gs "$chrome" /usr/lib/*/libcairo.so.2 /usr/lib/*/libMagickCore-7.Q16.so.10; do
       ldd "$binary" > /tmp/ldd.txt
