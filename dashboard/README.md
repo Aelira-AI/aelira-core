@@ -146,19 +146,24 @@ The exact hex values above live only in `src/index.css`. Treat that file as the 
 dashboard/
 ├── src/
 │   ├── api/              # API clients (client.ts, ltiClient.ts)
+│   ├── assets/           # Bundled images (horizontal logos used by Logo.tsx)
 │   ├── components/       # Reusable UI components
+│   │   ├── admin/        # Institution compliance, LMS AI policy, operations health cards
 │   │   ├── auth/         # Auth-related components
 │   │   ├── charts/       # Recharts-based chart components
-│   │   ├── layout/       # Navbar, Sidebar
+│   │   ├── layout/       # Navbar, Sidebar, Breadcrumbs, RouteAnnouncer
 │   │   ├── results/      # Scan result components
 │   │   ├── review/       # Document review / table structure editing
 │   │   ├── settings/     # Settings page subcomponents
+│   │   ├── ui/           # Shared primitives (Button, Card, Badge, DataTable, ...)
 │   │   └── upload/       # File upload components
-│   ├── context/          # React context providers (Theme, Toast, ...)
+│   ├── context/          # React context providers (Auth, Theme, Toast)
 │   ├── hooks/            # Shared hooks (e.g. useFocusTrap)
 │   ├── pages/            # Route pages
+│   ├── styles/           # Shared stylesheets imported by index.css (workspace.css)
 │   ├── types/            # Shared TypeScript types
 │   ├── utils/            # Utility functions
+│   ├── App.tsx           # Router and route definitions
 │   ├── index.css         # Global styles + design token system
 │   └── main.tsx          # App entry point
 ├── public/               # Static assets (favicons, logos, manifest)
