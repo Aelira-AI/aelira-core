@@ -1154,7 +1154,7 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
     ]
 
     assert development_lines[0] == "-r requirements.txt"
-    assert len(runtime_requirements) == 150
+    assert len(runtime_requirements) == 154
     assert len(development_requirements) == 30
     assert (
         f"**{len(runtime_requirements)}** runtime dependency entries" in documentation

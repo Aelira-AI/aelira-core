@@ -38,7 +38,7 @@ MANIFEST = ROOT / "tests/fixtures/pdf_font_recovery/manifest.json"
 PINNED = {
     "pdfminer.six": "20260107",
     "pikepdf": "10.17.0",
-    "PyMuPDF": "1.28.2",
+    "PyMuPDF": "2.0",
     "fonttools": "4.66.1",
 }
 

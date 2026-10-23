@@ -379,6 +379,7 @@ its own root store, so pa11y's Node still trusts the root
 | ocrmypdf | `deprecation`, `packaging`, `pathvalidate`, `pypdfium2`, `rich`, `typer`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
 | ocrmypdf / pikepdf PDF/A support | `fpdf2`, `uharfbuzz`, `fonttools`, `jsonschema`, `jsonschema-specifications`, `referencing`, `rpds-py`, `attrs` |
 | reportlab (PDF reports) | `freetype-py`, `pycairo`, `rlPyCairo`, `tinycss2`, `webencodings` |
+| PyMuPDF 2.0 | `pymupdf-layout`, `pymupdf4llm`, `networkx`, `tabulate`, plus `numpy`, `onnxruntime`, `PyYAML` and `psutil` pinned above |
 | faster-whisper / onnxruntime | `huggingface_hub`, `tokenizers`, `hf-xet`, `httpx2`, `httpcore2`, `truststore`, `fsspec`, `filelock`, `tqdm`, `flatbuffers`, `sympy`, `mpmath` |
 | locust (load tests) | `Flask`, `flask-cors`, `Flask-Login`, `Werkzeug`, `Jinja2`, `itsdangerous`, `blinker`, `gevent`, `geventhttpclient`, `zope.event`, `zope.interface`, `msgpack`, `pyzmq`, `ConfigArgParse`, `bidict`, `python-engineio`, `python-socketio`, `simple-websocket`, `websocket-client`, `wsproto` |
 | pytest / black | `iniconfig`, `pluggy`, `coverage`, `pytokens`, `pathspec`, `mypy_extensions` |
