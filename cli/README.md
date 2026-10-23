@@ -1,10 +1,36 @@
-# @aelira/cli
+<h1 align="center">@aelira/cli</h1>
 
-AI-powered accessibility testing CLI for WCAG 2.1 AA compliance, optimized for Higher Education.
+<p align="center"><strong>AI-assisted accessibility testing CLI for WCAG 2.1 AA compliance, built for higher education.</strong></p>
 
-> **AELIRA** — **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@aelira/cli"><img alt="npm package @aelira/cli" src="https://img.shields.io/npm/v/%40aelira%2Fcli?label=npm&color=%23cb3837"></a>
+  <a href="https://github.com/Aelira-AI/aelira-core/blob/main/cli/LICENSE"><img alt="Licence: MIT" src="https://img.shields.io/badge/licence-MIT-informational?color=%230f766e"></a>
+  <a href="https://github.com/Aelira-AI/aelira-core/blob/main/cli/package.json"><img alt="Node.js 22 or newer" src="https://img.shields.io/badge/node-%3E%3D22-informational?color=%232e2963"></a>
+</p>
+
+<p align="center">
+  <a href="#installation">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#command-reference">Commands</a> ·
+  <a href="#cicd-integration">CI/CD</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="https://github.com/Aelira-AI/aelira-core">Aelira Core on GitHub</a>
+</p>
+
+> **AELIRA**: **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
 
 **Version:** 0.9.13
+
+## What it does
+
+| Area | What you get |
+|---|---|
+| <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/document-magnifying-glass.svg" width="24" height="24" alt=""> **Scanning** | PDF (with OCR), Word, PowerPoint, Excel, LaTeX to MathML, images (AI alt text), video and audio (transcription), source code, and websites (single, batch, or from a sitemap). Watch a directory to auto-scan on change. |
+| <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/wrench-screwdriver.svg" width="24" height="24" alt=""> **Remediation** | `aelira remediate` fixes issues and downloads the corrected file; `aelira diff` tracks regressions between scans. |
+| <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/academic-cap.svg" width="24" height="24" alt=""> **LMS and cloud** | Canvas course scanning and per-file remediation; cloud integration status, OAuth connect, folder selection, and background sync for Google, Microsoft, Blackboard. |
+| <img src="https://raw.githubusercontent.com/Aelira-AI/aelira-core/main/docs/assets/readme/icons/clipboard-document-check.svg" width="24" height="24" alt=""> **Reporting, team and CI** | Accessibility evidence reports for scanned content and historical trend analytics with deadline projection; an issue tracker with assignments and filters; `aelira ci` emits exit codes, JUnit XML, and badges for pipelines; CSV/JSON export of scan history. Evidence reports describe Aelira's checks and limitations; they are not accessibility or legal determinations. |
+
+Authentication supports magic-link, browser, or API-key login with multi-profile config, and the CLI retries transient API errors automatically with backoff.
 
 ## Installation
 
@@ -12,11 +38,11 @@ AI-powered accessibility testing CLI for WCAG 2.1 AA compliance, optimized for H
 npm install -g @aelira/cli
 ```
 
-## Quick Start
+## Quick start
 
-### Interactive Mode (Recommended)
+### Interactive mode (recommended)
 
-Launch the interactive CLI with beautiful ASCII art and menu navigation:
+Launch the interactive CLI with ASCII art and menu navigation:
 
 ```bash
 aelira interactive
@@ -32,31 +58,45 @@ This opens the main menu where you can:
 - Settings & Configuration
 - Help & Documentation
 
-Word and Excel scanning (`aelira scan docx`, `aelira scan xlsx`) are not on the interactive menu yet — run them directly.
+Word and Excel scanning (`aelira scan docx`, `aelira scan xlsx`) are not on the interactive menu yet; run them directly.
 
-### API Configuration
-
-All network commands resolve the API endpoint in the same order: an explicit
-`--api-url`, `AELIRA_API_URL`, the active profile's `apiUrl`, then
-`http://localhost:8000`. Configure a deployment once with:
-
-```bash
-aelira config set api-url https://api.example.edu
-```
-
-**Navigation:**
+Navigation:
 
 - Use arrow keys or number keys to select options
 - Press Enter to confirm
 - Press Ctrl+C to exit
 
----
+### API configuration
 
-## Document Scanning Commands
+All network commands resolve the API endpoint in the same order: an explicit `--api-url`, `AELIRA_API_URL`, the active profile's `apiUrl`, then `http://localhost:8000`. Configure a deployment once with:
 
-### `aelira scan pdf` - PDF Accessibility Scanner
+```bash
+aelira config set api-url https://api.example.edu
+```
 
-Scan PDF files for accessibility issues with OCR and remediation support.
+## Command reference
+
+| Group | Commands |
+|---|---|
+| [Document scanning](#document-scanning-commands) | `scan pdf`, `scan docx`, `scan xlsx`, `scan ppt`, `scan latex`, `scan watch` |
+| [Media scanning](#media-scanning-commands) | `scan image`, `scan video` |
+| [Web scanning](#web-scanning-commands) | `scan`, `scan web`, `analyze`, `scan code` |
+| [Canvas LMS](#canvas-lms-commands) | `canvas status`, `canvas courses`, `canvas files`, `canvas scan`, `canvas remediate` |
+| [Remediation](#remediation-commands) | `remediate` |
+| [Evidence reporting](#accessibility-evidence-reporting-commands) | `report evidence`, `report compliance`, `report analytics` |
+| [Issue management](#issue-management-commands) | `issues` |
+| [Cloud integrations](#cloud-integration-commands) | `integrations`, `integrations connect`, `integrations folders`, `integrations sync` |
+| [Accessibility analysis](#accessibility-analysis-commands) | `focus`, `cvd` |
+| [Bulk operations](#bulk-operations) | `bulk` |
+| [Comparison and history](#comparison-and-history) | `diff`, `history` |
+| [Configuration](#configuration) | `config`, `auth login`, `auth logout`, `export` |
+| [CI/CD](#cicd-integration) | `ci` |
+
+## Document scanning commands
+
+### `aelira scan pdf`
+
+PDF accessibility scanner. Scan PDF files for accessibility issues with OCR and remediation support.
 
 ```bash
 aelira scan pdf <file or directory>
@@ -67,18 +107,17 @@ aelira scan pdf <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan pdf document.pdf
 aelira scan pdf ./course-materials/
 aelira scan pdf document.pdf --skip-ocr
 ```
 
----
+### `aelira scan docx`
 
-### `aelira scan docx` - Word Document Scanner
-
-Scan Word documents (.docx) for accessibility issues.
+Word document scanner. Scan Word documents (.docx) for accessibility issues.
 
 ```bash
 aelira scan docx <file or directory>
@@ -88,18 +127,17 @@ aelira scan docx <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan docx syllabus.docx
 aelira scan docx ./documents/
 aelira scan docx report.docx --format json
 ```
 
----
+### `aelira scan xlsx`
 
-### `aelira scan xlsx` - Excel Spreadsheet Scanner
-
-Scan Excel spreadsheets (.xlsx) for accessibility issues.
+Excel spreadsheet scanner. Scan Excel spreadsheets (.xlsx) for accessibility issues.
 
 ```bash
 aelira scan xlsx <file or directory>
@@ -109,18 +147,17 @@ aelira scan xlsx <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan xlsx grades.xlsx
 aelira scan xlsx ./spreadsheets/
 aelira scan xlsx data.xlsx --format json
 ```
 
----
+### `aelira scan ppt`
 
-### `aelira scan ppt` - PowerPoint Accessibility Scanner
-
-Scan PowerPoint presentations for accessibility issues (alt text, contrast, structure).
+PowerPoint accessibility scanner. Scan PowerPoint presentations for accessibility issues (alt text, contrast, structure).
 
 ```bash
 aelira scan ppt <file or directory>
@@ -130,19 +167,19 @@ aelira scan ppt <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan ppt lecture.pptx
 aelira scan ppt ./presentations/
 ```
 
----
+### `aelira scan latex`
 
-### `aelira scan latex` - LaTeX to MathML Converter
+LaTeX to MathML converter. Convert LaTeX equations to MathML. Model-drafted equation descriptions are kept as review drafts and never written as ARIA labels.
 
-Convert LaTeX equations to MathML. Model-drafted equation descriptions are kept as review drafts and never written as ARIA labels.
+Advanced LaTeX support:
 
-**Advanced LaTeX support:**
 - ChemFig chemical structure support
 - mhchem chemistry notation
 - Physics package (bra-ket, vectors, tensors)
@@ -159,7 +196,8 @@ aelira scan latex <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan latex equations.tex
 aelira scan latex chemistry.tex --type chemistry
@@ -167,9 +205,7 @@ aelira scan latex quantum.tex --type physics
 aelira scan latex ./math-dept/
 ```
 
----
-
-### `aelira scan watch` - Watch Directory for Changes
+### `aelira scan watch`
 
 Watch a directory for file changes and automatically scan new or modified files.
 
@@ -182,7 +218,8 @@ aelira scan watch <directory>
   --api-url <url>
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Watch current directory
 aelira scan watch .
@@ -197,13 +234,11 @@ aelira scan watch ./uploads --no-recursive --concurrency 5
 aelira scan watch ./shared-drive --debounce 5000
 ```
 
----
+## Media scanning commands
 
-## Media Scanning Commands
+### `aelira scan image`
 
-### `aelira scan image` - AI Alt Text Generator
-
-Generate AI-powered alt text for images using vision models.
+AI alt text generator. Generate AI-powered alt text for images using vision models.
 
 ```bash
 aelira scan image <file or directory>
@@ -214,17 +249,16 @@ aelira scan image <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan image photo.jpg
 aelira scan image ./images/ --batch
 ```
 
----
+### `aelira scan video`
 
-### `aelira scan video` - Video/Audio Transcription
-
-Transcribe video/audio files to accessible WebVTT and SRT captions using Whisper AI.
+Video and audio transcription. Transcribe video/audio files to accessible WebVTT and SRT captions using Whisper AI.
 
 ```bash
 aelira scan video <file or directory>
@@ -234,20 +268,19 @@ aelira scan video <file or directory>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira scan video lecture.mp4
 aelira scan video recording.mp3
 aelira scan video ./videos/
 ```
 
----
+## Web scanning commands
 
-## Web Scanning Commands
+### `aelira scan`
 
-### `aelira scan` - Basic Website Scan
-
-Fast, local-only website scanning using axe-core.
+Basic website scan. Fast, local-only website scanning using axe-core.
 
 ```bash
 aelira scan <URL or HTML file>
@@ -261,11 +294,9 @@ aelira scan <URL or HTML file>
   --load-delay <ms>
 ```
 
----
+### `aelira scan web`
 
-### `aelira scan web` - Advanced Web Scanner
-
-Advanced web scanning with batch and sitemap support.
+Advanced web scanner with batch and sitemap support.
 
 ```bash
 aelira scan web <URL>
@@ -278,7 +309,8 @@ aelira scan web <URL>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Single page scan
 aelira scan web https://example.com
@@ -290,11 +322,9 @@ aelira scan web https://example.com --batch --max-pages 50
 aelira scan web https://example.com/sitemap.xml --sitemap
 ```
 
----
+### `aelira analyze`
 
-### `aelira analyze` - AI-Enhanced Website Scan
-
-Scans with axe-core + sends violations to Aelira AI for classification and code fix generation.
+AI-enhanced website scan. Scans with axe-core and sends violations to Aelira AI for classification and code fix generation.
 
 ```bash
 aelira analyze <URL or HTML file>
@@ -306,11 +336,9 @@ aelira analyze <URL or HTML file>
   --timer
 ```
 
----
+### `aelira scan code`
 
-### `aelira scan code` - Code Accessibility Scanner
-
-Scan source code for accessibility issues (ARIA attributes, semantic HTML, keyboard navigation).
+Code accessibility scanner. Scan source code for accessibility issues (ARIA attributes, semantic HTML, keyboard navigation).
 
 ```bash
 aelira scan code <file or directory>
@@ -320,9 +348,7 @@ aelira scan code <file or directory>
   --timer
 ```
 
----
-
-### CSV Output Format
+### CSV output format
 
 All issue-based scan commands support `--format csv` for easy spreadsheet import:
 
@@ -332,19 +358,18 @@ aelira scan docx syllabus.docx --format csv --output results.csv
 aelira scan web https://example.com --format csv --output results.csv
 ```
 
-**Supported commands:** `scan pdf`, `scan docx`, `scan ppt`, `scan xlsx`, `scan latex`, `scan code`, `scan web`.
+| | Commands |
+|---|---|
+| Supported | `scan pdf`, `scan docx`, `scan ppt`, `scan xlsx`, `scan latex`, `scan code`, `scan web` |
+| Not supported | `scan image` and `scan video` (these produce alt text and transcriptions, not issue lists) |
 
-**Not supported:** `scan image` and `scan video` (these produce alt text and transcriptions, not issue lists).
+## Canvas LMS commands
 
----
-
-## Canvas LMS Commands
-
-Scan and remediate Canvas course content without leaving the terminal (requires a Canvas connection set up via `aelira integrations connect canvas`).
+Scan and remediate Canvas course content without leaving the terminal. These commands require a Canvas connection set up via `aelira integrations connect canvas`.
 
 Every command below accepts `--department <id>` and falls back to the department set with `aelira config set department <id>`.
 
-### `aelira canvas status` - Canvas Connection Status
+### `aelira canvas status`
 
 Check whether a department's Canvas connection is set up and working.
 
@@ -356,15 +381,14 @@ aelira canvas status
   --format console|json
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira canvas status
 aelira canvas status --department 42 --format json
 ```
 
----
-
-### `aelira canvas courses` - List Canvas Courses
+### `aelira canvas courses`
 
 List the Canvas courses available to the connected account.
 
@@ -376,15 +400,14 @@ aelira canvas courses
   --format console|json
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira canvas courses
 aelira canvas courses --department 42 --format json
 ```
 
----
-
-### `aelira canvas files` - List a Course's Files
+### `aelira canvas files`
 
 List the files in a Canvas course. Use this to find the file id needed for `aelira canvas remediate`.
 
@@ -397,17 +420,16 @@ aelira canvas files <course_id>
   --format console|json
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira canvas files 101
 aelira canvas files 101 --search syllabus --format json
 ```
 
----
+### `aelira canvas scan`
 
-### `aelira canvas scan` - Bulk-Scan a Course
-
-Scan every file in a Canvas course for accessibility issues in one pass.
+Bulk-scan a course: scan every file in a Canvas course for accessibility issues in one pass.
 
 ```bash
 aelira canvas scan <course_id>
@@ -418,15 +440,14 @@ aelira canvas scan <course_id>
   --format console|json
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira canvas scan 101
 aelira canvas scan 101 --wait --format json
 ```
 
----
-
-### `aelira canvas remediate` - Remediate One File
+### `aelira canvas remediate`
 
 Fix accessibility issues in a single Canvas file.
 
@@ -445,7 +466,8 @@ aelira canvas remediate <course_id> <file_id>
   --format console|json
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Remediate and leave the original file in Canvas untouched
 aelira canvas remediate 101 555
@@ -460,13 +482,11 @@ aelira canvas remediate 101 555 --upload-back --yes
 aelira canvas remediate 101 555 --no-ai
 ```
 
----
+## Remediation commands
 
-## Remediation Commands
+### `aelira remediate`
 
-### `aelira remediate` - Auto-Remediation Engine
-
-Auto-remediate accessibility issues from a previous scan.
+Auto-remediation engine. Auto-remediate accessibility issues from a previous scan.
 
 ```bash
 aelira remediate <scan_id>
@@ -477,7 +497,8 @@ aelira remediate <scan_id>
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Remediate a scan
 aelira remediate abc123
@@ -489,15 +510,11 @@ aelira remediate abc123 --download
 aelira remediate abc123 --download --output fixed_document.pdf
 ```
 
----
+## Accessibility evidence reporting commands
 
-## Accessibility Evidence Reporting Commands
+### `aelira report evidence`
 
-### `aelira report evidence` - Accessibility Evidence Report
-
-Download a PDF record of Aelira's scanned-content findings, methods, and
-limitations. The report does not determine conformance with an accessibility
-standard or legal requirement.
+Download a PDF record of Aelira's scanned-content findings, methods, and limitations. The report does not determine conformance with an accessibility standard or legal requirement.
 
 ```bash
 aelira report evidence [department_id]
@@ -506,20 +523,16 @@ aelira report evidence [department_id]
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 aelira report evidence dept-123
 aelira report evidence dept-123 --output evidence-report.pdf
 ```
 
----
+### `aelira report compliance`
 
-### `aelira report compliance` - Deprecated Scan-Evidence Statistics View
-
-This compatibility command exposes console or JSON scan statistics and
-findings. Its `--pdf` option downloads the same bounded accessibility evidence
-report as `aelira report evidence`; it does not make a conformance or legal
-determination.
+Deprecated scan-evidence statistics view. This compatibility command exposes console or JSON scan statistics and findings. Its `--pdf` option downloads the same bounded accessibility evidence report as `aelira report evidence`; it does not make a conformance or legal determination.
 
 ```bash
 aelira report compliance [department_id]
@@ -530,7 +543,8 @@ aelira report compliance [department_id]
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Export scan statistics and findings
 aelira report compliance dept-123 --format json --output scan-evidence.json
@@ -539,15 +553,11 @@ aelira report compliance dept-123 --format json --output scan-evidence.json
 aelira report compliance dept-123 --pdf evidence-report.pdf
 ```
 
-`aelira report certificate` remains as a deprecated alias. It downloads the
-same accessibility evidence report and does not perform an eligibility or
-score-threshold check.
+`aelira report certificate` remains as a deprecated alias. It downloads the same accessibility evidence report and does not perform an eligibility or score-threshold check.
 
----
+### `aelira report analytics`
 
-### `aelira report analytics` - Historical Trends
-
-View historical compliance trends and deadline projections.
+Historical trends. View historical compliance trends and deadline projections.
 
 ```bash
 aelira report analytics [department_id]
@@ -559,7 +569,8 @@ aelira report analytics [department_id]
   --timer
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # View 30-day trend
 aelira report analytics
@@ -571,13 +582,11 @@ aelira report analytics dept-123 --days 90 --projection
 aelira report analytics --format json --output analytics.json
 ```
 
----
+## Issue management commands
 
-## Issue Management Commands
+### `aelira issues`
 
-### `aelira issues` - Issue Tracker
-
-Manage and track accessibility issues for team collaboration.
+Issue tracker. Manage and track accessibility issues for team collaboration.
 
 ```bash
 aelira issues <action> [issue_id]
@@ -593,14 +602,16 @@ aelira issues <action> [issue_id]
   --timer
 ```
 
-**Actions:**
-- `list` - List issues (with optional filters)
-- `stats` - Show issue statistics
-- `update` - Update issue status
-- `assign` - Assign issue to team member
-- `note` - Add note to issue
+| Action | What it does |
+|---|---|
+| `list` | List issues (with optional filters) |
+| `stats` | Show issue statistics |
+| `update` | Update issue status |
+| `assign` | Assign issue to team member |
+| `note` | Add note to issue |
 
-**Examples:**
+Examples:
+
 ```bash
 # List all open issues
 aelira issues list --status open
@@ -621,13 +632,11 @@ aelira issues note abc123 --message "Fixed manually by adding alt text"
 aelira issues list --severity critical --status open
 ```
 
----
+## Cloud integration commands
 
-## Cloud Integration Commands
+### `aelira integrations`
 
-### `aelira integrations` - Cloud Integration Status
-
-View connection status for Google Workspace, Microsoft 365, Canvas LMS, Blackboard Learn, Moodle LMS, and D2L Brightspace integrations.
+Cloud integration status. View connection status for Google Workspace, Microsoft 365, Canvas LMS, Blackboard Learn, Moodle LMS, and D2L Brightspace integrations.
 
 ```bash
 aelira integrations
@@ -636,7 +645,8 @@ aelira integrations
   --format console|json
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # View integration status (interactive display)
 aelira integrations
@@ -648,20 +658,18 @@ aelira integrations --format json
 aelira integrations --api-url http://localhost:8000 --api-key your-api-key
 ```
 
-**Output includes:**
+The output includes:
 
 - Connection status for each provider
 - Connected account email/name
 - Last sync timestamp
 - Selected folder count
 
----
-
-### `aelira integrations connect` - Connect Cloud Providers
+### `aelira integrations connect`
 
 Connect Google Workspace, Microsoft 365, Canvas LMS, or Blackboard Learn accounts via OAuth 2.0.
 
-**PRIVACY-FIRST:** After connecting, you must explicitly select which folders to sync. By default, NO files are synced until you choose folders with `aelira integrations folders`.
+**Privacy first:** after connecting, you must explicitly select which folders to sync. By default, NO files are synced until you choose folders with `aelira integrations folders`.
 
 ```bash
 aelira integrations connect [provider]
@@ -670,18 +678,19 @@ aelira integrations connect [provider]
   --instance-url <url>      # LMS instance URL (required for Canvas, Blackboard, Moodle, Brightspace)
 ```
 
-**Supported Providers:**
+| Provider | What it connects | Status |
+|---|---|---|
+| `google` | Google Workspace (Drive, Docs, Slides, Sheets) | |
+| `microsoft` | Microsoft 365 (OneDrive, Word, PowerPoint, Excel) | |
+| `canvas` | Canvas LMS | Integration verified; institution user-journey acceptance still needed |
+| `blackboard` | Blackboard Learn | **Experimental** (implemented, not yet tested end to end) |
+| `moodle` | Moodle LMS | **Experimental** (implemented, not yet tested end to end) |
+| `brightspace` | D2L Brightspace | **Beta** (tested against a D2L developer instance, not recently re-verified) |
 
-- `google` - Google Workspace (Drive, Docs, Slides, Sheets)
-- `microsoft` - Microsoft 365 (OneDrive, Word, PowerPoint, Excel)
-- `canvas` - Canvas LMS — **production-verified**
-- `blackboard` - Blackboard Learn — **experimental** (implemented, not yet tested end to end)
-- `moodle` - Moodle LMS — **experimental** (implemented, not yet tested end to end)
-- `brightspace` - D2L Brightspace — **beta** (tested against a D2L developer instance, not recently re-verified)
+> LMS connector maturity varies. See the [integration status table](https://github.com/Aelira-AI/aelira-core#lms-integration-status) in the main README before relying on a connector in production.
 
-> LMS connector maturity varies. See the [integration status table](../README.md#lms-integration-status) in the main README before relying on a connector in production.
+Examples:
 
-**Examples:**
 ```bash
 # Interactive provider selection
 aelira integrations connect
@@ -705,7 +714,10 @@ aelira integrations connect moodle --instance-url https://moodle.university.edu
 aelira integrations connect brightspace --instance-url https://university.brightspace.com
 ```
 
-**OAuth Flow:**
+<details>
+<summary><strong>OAuth flow</strong></summary>
+
+<br>
 
 1. CLI generates authorization URL via backend
 2. Opens browser automatically (with confirmation)
@@ -713,11 +725,11 @@ aelira integrations connect brightspace --instance-url https://university.bright
 4. Backend receives OAuth callback and stores encrypted tokens
 5. User returns to CLI to select folders (next step)
 
----
+</details>
 
-### `aelira integrations folders` - Manage Folder Selection
+### `aelira integrations folders`
 
-**PRIVACY-CRITICAL:** Select which folders to sync from Google Drive or OneDrive. This prevents Aelira from scanning your entire cloud storage.
+Manage folder selection. **Privacy critical:** select which folders to sync from Google Drive or OneDrive. This prevents Aelira from scanning your entire cloud storage.
 
 ```bash
 aelira integrations folders
@@ -727,9 +739,10 @@ aelira integrations folders
   --format console|json
 ```
 
-Run with no flags for an interactive menu (view selected folders, select folders for a provider, or remove folders). Pass `--provider` to jump straight into selecting folders for that provider; there is no separate `list`/`select`/`remove` subcommand — those are menu choices, not CLI arguments.
+Run with no flags for an interactive menu (view selected folders, select folders for a provider, or remove folders). Pass `--provider` to jump straight into selecting folders for that provider. There is no separate `list`/`select`/`remove` subcommand; those are menu choices, not CLI arguments.
 
-**Examples:**
+Examples:
+
 ```bash
 # Interactive menu: view, select, or remove synced folders
 aelira integrations folders
@@ -741,25 +754,29 @@ aelira integrations folders --provider google
 aelira integrations folders --provider microsoft
 ```
 
-**Interactive Selection:**
+<details>
+<summary><strong>Interactive selection and privacy guarantee</strong></summary>
+
+<br>
+
+Interactive selection:
 
 - Browse folder hierarchy from your cloud storage
 - Multi-select folders with checkboxes
 - Subfolder syncing enabled by default
 - Changes take effect on next sync
 
-**Privacy Guarantee:**
+Folder access:
 
 - Only selected folders are scanned
 - No files are accessed until folders are explicitly chosen
 - You can add/remove folders anytime
-- All file access is logged
 
----
+</details>
 
-### `aelira integrations sync` - Trigger File Sync
+### `aelira integrations sync`
 
-Manually trigger background sync jobs for connected cloud providers. Sync jobs discover new files, detect changes, and queue accessibility scans.
+Trigger file sync. Manually trigger background sync jobs for connected cloud providers. Sync jobs discover new files, detect changes, and queue accessibility scans.
 
 ```bash
 aelira integrations sync
@@ -767,7 +784,8 @@ aelira integrations sync
   --api-key <key>
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Trigger sync for all connected providers
 aelira integrations sync
@@ -776,7 +794,10 @@ aelira integrations sync
 aelira integrations sync --api-url http://localhost:8000 --api-key your-api-key
 ```
 
-**What Happens During Sync:**
+<details>
+<summary><strong>What happens during sync</strong></summary>
+
+<br>
 
 1. Fetches file metadata from selected folders only
 2. Detects new files and modified files (version changes)
@@ -784,25 +805,24 @@ aelira integrations sync --api-url http://localhost:8000 --api-key your-api-key
 4. Scans run automatically in the backend job queue
 5. Results appear in dashboard and reports
 
-**Automatic Sync:**
+Automatic sync:
 
 - Webhooks detect file changes in real-time (Google Drive push notifications, Microsoft Graph subscriptions)
-- Manual sync ensures nothing is missed
-- Typical sync time: 1-5 minutes for 1,000 files
+- Manual sync picks up changes that webhooks miss
 
-**Background Processing:**
+Background processing:
 
 - Sync jobs run asynchronously (non-blocking)
 - Progress tracked in backend job queue
 - Use `aelira report analytics` to view scan results
 
----
+</details>
 
-## Accessibility Analysis Commands
+## Accessibility analysis commands
 
-### `aelira focus` - Focus Order Analysis
+### `aelira focus`
 
-Analyze keyboard focus order for WCAG 2.4.3 compliance. Detects focus traps, invisible elements, and illogical tab order.
+Focus order analysis. Analyze keyboard focus order for WCAG 2.4.3 compliance. Detects focus traps, invisible elements, and illogical tab order.
 
 ```bash
 aelira focus <URL or file>
@@ -812,28 +832,26 @@ aelira focus <URL or file>
   --timer
 ```
 
-**Examples:**
+Examples:
 
 ```bash
 aelira focus https://example.com
 aelira focus ./index.html --format json --output focus-report.json
 ```
 
----
+### `aelira cvd`
 
-### `aelira cvd` - Color Vision Deficiency Analysis
+Color vision deficiency analysis. Simulate how your site appears to color-blind users (8% of males affected).
 
-Simulate how your site appears to color-blind users (8% of males affected).
-
-**CVD Types:**
-
-- Protanopia (red-blind, 1% males)
-- Deuteranopia (green-blind, 1% males)
-- Tritanopia (blue-blind, rare)
-- Protanomaly (red-weak, 1% males)
-- Deuteranomaly (green-weak, 5% males - most common)
-- Tritanomaly (blue-weak, rare)
-- Achromatopsia (complete color blindness)
+| CVD type | Description |
+|---|---|
+| Protanopia | Red-blind, 1% males |
+| Deuteranopia | Green-blind, 1% males |
+| Tritanopia | Blue-blind, rare |
+| Protanomaly | Red-weak, 1% males |
+| Deuteranomaly | Green-weak, 5% males (most common) |
+| Tritanomaly | Blue-weak, rare |
+| Achromatopsia | Complete color blindness |
 
 ```bash
 aelira cvd <URL or file>
@@ -844,7 +862,7 @@ aelira cvd <URL or file>
   --output <file>
 ```
 
-**Examples:**
+Examples:
 
 ```bash
 aelira cvd https://example.com
@@ -852,20 +870,18 @@ aelira cvd https://example.com --type deuteranopia
 aelira cvd ./index.html --all-types --format json
 ```
 
----
+## Bulk operations
 
-## Bulk Operations
+### `aelira bulk`
 
-### `aelira bulk` - Bulk Directory Operations
+Bulk directory operations. Scan entire directories with parallel processing, progress tracking, and resume support.
 
-Scan entire directories with parallel processing, progress tracking, and resume support.
-
-**Actions:**
-
-- `scan` - Scan files for accessibility issues
-- `remediate` - Batch remediate files
-- `export` - Export results to CSV/JSON/HTML
-- `report` - Generate comprehensive HTML report
+| Action | What it does |
+|---|---|
+| `scan` | Scan files for accessibility issues |
+| `remediate` | Batch remediate files |
+| `export` | Export results to CSV/JSON/HTML |
+| `report` | Generate comprehensive HTML report |
 
 ```bash
 aelira bulk <action> <path>
@@ -879,7 +895,7 @@ aelira bulk <action> <path>
   --output <file>
 ```
 
-**Examples:**
+Examples:
 
 ```bash
 # Scan all HTML files recursively
@@ -892,11 +908,9 @@ aelira bulk report ./documents --output report.html
 aelira bulk export ./scan-results.json --format csv --output results.csv
 ```
 
----
+## Comparison and history
 
-## Comparison & History
-
-### `aelira diff` - Compare Scan Results
+### `aelira diff`
 
 Compare two scan results to track accessibility changes over time.
 
@@ -908,7 +922,7 @@ aelira diff <baseline.json> <current.json>
   --output <file>
 ```
 
-**Examples:**
+Examples:
 
 ```bash
 aelira diff scan-v1.json scan-v2.json
@@ -916,9 +930,7 @@ aelira diff baseline.json current.json --format html --output diff-report.html
 aelira diff old.json new.json --show-fixed
 ```
 
----
-
-### `aelira history` - Scan History
+### `aelira history`
 
 View and manage your scan history.
 
@@ -932,7 +944,7 @@ aelira history
   --format table|json|csv
 ```
 
-**Examples:**
+Examples:
 
 ```bash
 aelira history
@@ -941,21 +953,19 @@ aelira history --type pdf --format json
 aelira history --export history.json
 ```
 
----
-
 ## Configuration
 
-### `aelira config` - Configuration Management
+### `aelira config`
 
 Manage CLI configuration with support for multiple profiles.
 
-**Subcommands:**
-
-- `init` - Interactive setup wizard
-- `show` - Display current configuration
-- `set <key> <value>` - Set a configuration value
-- `validate` - Test backend connection
-- `profile list|create|use|delete` - Manage profiles
+| Subcommand | What it does |
+|---|---|
+| `init` | Interactive setup wizard |
+| `show` | Display current configuration |
+| `set <key> <value>` | Set a configuration value |
+| `validate` | Test backend connection |
+| `profile list\|create\|use\|delete` | Manage profiles |
 
 ```bash
 aelira config init
@@ -969,34 +979,31 @@ aelira config profile use staging
 
 Valid `config set` keys: `api-url`, `api-key`, `department`.
 
-**Configuration File:** `~/.aelira/config.json`
+Configuration file: `~/.aelira/config.json`
 
----
-
-### `aelira auth login` - Authenticate CLI
+### `aelira auth login`
 
 Authenticate the CLI with the Aelira backend. Three methods are supported:
 
-1. **Email magic link** - Enter your email, receive a magic link, click to authenticate
-2. **Browser** - Opens the dashboard in your browser to authenticate
-3. **API key** - Paste an existing API key directly
+1. **Email magic link:** enter your email, receive a magic link, click to authenticate
+2. **Browser:** opens the dashboard in your browser to authenticate
+3. **API key:** paste an existing API key directly
 
-The authenticated API key is stored in your local config file. There is no flag to pick the method up front — `aelira auth login` always prompts you to choose.
+The authenticated API key is stored in your local config file. There is no flag to pick the method up front; `aelira auth login` always prompts you to choose.
 
 ```bash
 aelira auth login
   --api-url <url>
 ```
 
-**Example:**
+Example:
+
 ```bash
 # Prompts for a method (email magic link, browser, or paste an API key), then authenticates
 aelira auth login
 ```
 
----
-
-### `aelira auth logout` - Remove Authentication
+### `aelira auth logout`
 
 Remove the stored API key from local config.
 
@@ -1004,9 +1011,7 @@ Remove the stored API key from local config.
 aelira auth logout
 ```
 
----
-
-### `aelira export` - Export Scan History
+### `aelira export`
 
 Export scan history to CSV or JSON.
 
@@ -1018,7 +1023,8 @@ aelira export
   --api-url <url>
 ```
 
-**Examples:**
+Examples:
+
 ```bash
 # Export to CSV
 aelira export --output scans.csv
@@ -1030,11 +1036,9 @@ aelira export --format json --output scans.json
 aelira export --limit 100 --output scans.csv
 ```
 
----
+## Environment variables
 
-## Environment Variables
-
-Override configuration values via environment variables. Useful for CI/CD pipelines and scripting.
+Override configuration values via environment variables. This is useful for CI/CD pipelines and scripting.
 
 | Variable | Description |
 |----------|-------------|
@@ -1045,9 +1049,7 @@ Override configuration values via environment variables. Useful for CI/CD pipeli
 
 Environment variables take precedence over values in the config file.
 
----
-
-## Progress Tracking
+## Progress tracking
 
 Document scan commands (`scan pdf`, `scan docx`, `scan ppt`, `scan xlsx`, `scan latex`, `scan code`, `scan web`, `scan image`, `scan video`) now show real-time progress during backend processing:
 
@@ -1057,24 +1059,20 @@ Scanning document.pdf... 45% - Analyzing structure
 
 Progress includes a percentage and current operation description, updated as the backend processes the file.
 
----
+## Automatic retry
 
-## Automatic Retry
+The CLI automatically retries failed API requests with exponential backoff, which helps it ride out transient network issues and backend restarts.
 
-The CLI automatically retries failed API requests with exponential backoff:
+| Setting | Value |
+|---|---|
+| Retries | 3 attempts |
+| Retried status codes | 429 (rate limited), 502, 503, 504 (server errors) |
+| Retried errors | Network connection failures, timeouts |
+| Backoff | Exponential (increasing delay between retries) |
 
-- **Retries:** 3 attempts
-- **Retried status codes:** 429 (rate limited), 502, 503, 504 (server errors)
-- **Retried errors:** Network connection failures, timeouts
-- **Backoff:** Exponential (increasing delay between retries)
+## CI/CD integration
 
-This makes the CLI resilient to transient network issues and backend restarts.
-
----
-
-## CI/CD Integration
-
-### `aelira ci` - CI/CD Command
+### `aelira ci`
 
 Dedicated command for CI/CD pipelines with proper exit codes, JSON, JUnit XML, SARIF 2.1.0, and badge generation.
 
@@ -1088,13 +1086,13 @@ aelira ci <URL or file>
   --timeout <ms>
 ```
 
-**Exit Codes:**
+| Exit code | Meaning |
+|---|---|
+| `0` | All checks passed |
+| `1` | Accessibility issues found (threshold not met) |
+| `2` | Error during scan |
 
-- `0` - All checks passed
-- `1` - Accessibility issues found (threshold not met)
-- `2` - Error during scan
-
-**Examples:**
+Examples:
 
 ```bash
 # Basic CI check
@@ -1115,7 +1113,7 @@ aelira ci https://example.com --fail-on critical
 
 SARIF source annotations are deliberately narrow. When the target is an HTML file inside the current repository, Aelira adds a location only when the affected node's exact HTML occurs once in that file. Remote pages, files outside the repository, and ambiguous or unmatched nodes remain in the report without a fabricated path or region.
 
-### GitHub Actions Example
+### GitHub Actions example
 
 ```yaml
 name: Accessibility Scan
@@ -1163,8 +1161,6 @@ jobs:
         run: exit 1
 ```
 
----
-
 ## Development
 
 ```bash
@@ -1185,9 +1181,7 @@ npm run build
 ./bin/dev.js issues stats
 ```
 
----
-
-## Backend Requirements
+## Backend requirements
 
 The CLI commands require the Aelira backend API running. From the repository root (one level up from `cli/`):
 
@@ -1196,37 +1190,17 @@ cd ..
 docker compose -f docker-compose.quickstart.yml up -d   # Start API, PostgreSQL, Redis
 ```
 
-The API will be available at `http://localhost:8000` (see the root `README.md` for full setup options, including `docker-compose.dev.yml` for local development).
-
----
-
-## Feature highlights
-
-**Scanning** — PDF (with OCR), Word, PowerPoint, Excel, LaTeX→MathML, images (AI alt text), video/audio (transcription), source code, and websites (single, batch, or from a sitemap). Watch a directory to auto-scan on change.
-
-**Remediation** — `aelira remediate` fixes issues and downloads the corrected file; `aelira diff` tracks regressions between scans.
-
-**LMS & cloud** — Canvas course scanning and per-file remediation; cloud integration status, OAuth connect, folder selection, and background sync for Google, Microsoft, Blackboard.
-
-**Reporting** — accessibility evidence reports for scanned content and historical trend analytics with deadline projection. Evidence reports describe Aelira's checks and limitations; they are not accessibility or legal determinations.
-
-**Team & CI** — issue tracker with assignments and filters; `aelira ci` emits exit codes, JUnit XML, and badges for pipelines; CSV/JSON export of scan history.
-
-**Authentication** — magic-link, browser, or API-key login with multi-profile config, and automatic retry with backoff on transient API errors.
+The API will be available at `http://localhost:8000`. See the root `README.md` for full setup options, including `docker-compose.dev.yml` for local development.
 
 ## Compliance context
 
-Institutions covered by the DOJ ADA Title II rule need WCAG 2.1 AA by April 26, 2027 (public entities with population ≥50,000) or April 26, 2028 (smaller entities) — extended one year from the original April 24, 2026 date under the Interim Final Rule RIN 1190-AA82 (April 20, 2026). `aelira report analytics --projection` estimates whether current progress is on track for that deadline.
-
----
+Institutions covered by the DOJ ADA Title II rule need WCAG 2.1 AA by April 26, 2027 (public entities with population ≥50,000) or April 26, 2028 (smaller entities). That is extended one year from the original April 24, 2026 date under the Interim Final Rule RIN 1190-AA82 (April 20, 2026). `aelira report analytics --projection` estimates whether current progress is on track for that deadline.
 
 ## License
 
-MIT © Aelira AI Pty Ltd. This licence covers the code under `cli/`; the root of this repository is licensed separately — see the [root README](../README.md#licence-and-branding).
-
----
+MIT © Aelira AI Pty Ltd. This licence covers the code under `cli/`; the root of this repository is licensed separately. See the [root README](https://github.com/Aelira-AI/aelira-core#licence-and-branding).
 
 ## Links
 
-- **Backend:** [Repository root](..)
+- **Backend:** [Repository root](https://github.com/Aelira-AI/aelira-core)
 - **API Docs:** http://localhost:8000/docs (when the backend is running)
