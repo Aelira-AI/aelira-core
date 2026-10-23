@@ -1422,7 +1422,8 @@ jobs:
           npx playwright install-deps chromium
           python3 ../scripts/install_chrome_for_testing.py --dest "$RUNNER_TEMP/chrome-for-testing"
           pinned="$(python3 -c "import json; print(json.load(open('../scripts/chrome-for-testing.json'))['version'])")"
-          installed="$("$RUNNER_TEMP/chrome-for-testing/chrome" --version)"
+          # Chrome prints a trailing space after the version.
+          installed="$("$RUNNER_TEMP/chrome-for-testing/chrome" --version | sed 's/[[:space:]]*$//')"
           echo "$installed"
           case "$installed" in *" $pinned") ;; *) echo "Expected Chrome for Testing $pinned" >&2; exit 1 ;; esac
           printf 'AELIRA_CHROMIUM_EXECUTABLE=%s\n' "$RUNNER_TEMP/chrome-for-testing/chrome" >> "$GITHUB_ENV"
