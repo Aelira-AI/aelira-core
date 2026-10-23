@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pikepdf
 
 from src.education.latex_runtime import tex_environment
+from src.education.latex_sandbox import tool_home
 from src.education.remediation.base import RemediationConfig
 from src.education.remediation.latex_converter import LaTeXConverter
 from src.education.remediation.latex_remediator import LatexRemediator
@@ -45,20 +46,21 @@ def verify(root):
         # Test the generated source with the real compiler. Application
         # diagnostics and publication acceptance are separate checks.
         for _ in range(2):
-            compiled = subprocess.run(
-                [
-                    "lualatex",
-                    "--no-shell-escape",
-                    "--interaction=nonstopmode",
-                    "--halt-on-error",
-                    candidate.name,
-                ],
-                cwd=folder,
-                env=tex_environment(folder),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            with tool_home(folder) as home:
+                compiled = subprocess.run(
+                    [
+                        "lualatex",
+                        "--no-shell-escape",
+                        "--interaction=nonstopmode",
+                        "--halt-on-error",
+                        candidate.name,
+                    ],
+                    cwd=folder,
+                    env=tex_environment(folder, home),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
             assert compiled.returncode == 0, compiled.stdout + compiled.stderr
         pdf_path = candidate.with_suffix(".pdf")
         compiled_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
