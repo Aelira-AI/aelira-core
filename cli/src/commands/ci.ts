@@ -8,6 +8,7 @@ import { type Browser, chromium, type Page } from 'playwright'
 
 import { chromiumLaunchOptions } from '../utils/browser.js'
 import {buildSarifLog, calculateCiExitCode, resolveSarifSource, type SarifLog} from '../utils/sarif.js'
+import { isCI as detectCI } from '../utils/terminal.js'
 
 interface CIResult {
   criticalCount: number
@@ -70,7 +71,7 @@ static flags = {
     const { args, flags } = await this.parse(CI)
 
     // CI mode - minimal output unless verbose
-    const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true' || process.env.GITLAB_CI === 'true'
+    const isCI = detectCI()
     const isMachineReadableStdout = !flags.output && ['json', 'sarif'].includes(flags.format)
     const quiet = isCI || isMachineReadableStdout
 

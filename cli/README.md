@@ -42,7 +42,7 @@ npm install -g @aelira/cli
 
 ### Interactive mode (recommended)
 
-Launch the interactive CLI with ASCII art and menu navigation:
+Launch the interactive CLI with menu navigation:
 
 ```bash
 aelira interactive
@@ -65,6 +65,25 @@ Navigation:
 - Use arrow keys or number keys to select options
 - Press Enter to confirm
 - Press Ctrl+C to exit
+
+#### Start-up banner and screen readers
+
+Interactive mode starts with a plain-text line naming the tool and its version, for example `Aelira CLI 0.9.13`, followed by a one-line description. It does not clear your terminal, so earlier output stays in your scrollback.
+
+On an interactive terminal it also shows a decorative logo drawn with block characters. Screen readers read those characters out one by one, so the logo is skipped when any of these apply:
+
+- Output is not a terminal, for example when piped or redirected.
+- `NO_COLOR` is set to any non-empty value (see [no-color.org](https://no-color.org)). This also turns off colour.
+- `TERM` is `dumb`.
+- `CI` is set to a value other than `0` or `false`, or `GITHUB_ACTIONS` or `GITLAB_CI` is `true`.
+- `AELIRA_NO_BANNER` is set to a value other than `0` or `false`.
+- You pass `--no-banner`.
+
+To skip the logo every time, add `export AELIRA_NO_BANNER=1` to your shell profile. For a single run:
+
+```bash
+aelira interactive --no-banner
+```
 
 ### API configuration
 
