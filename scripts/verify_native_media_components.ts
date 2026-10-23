@@ -119,6 +119,10 @@ export const expectedProbes: Record<string, string | RegExp> = {
   'control-ps-named-png': 'accepted', 'control-mvg-named-png': 'accepted',
   'mvg-named-png': 'other', 'perl-mvg-named-png-undecoded': 'accepted',
   'edge-width': 'accepted', 'over-width': 'limit', 'over-height': 'limit', 'over-width-eps': 'limit',
+  'bzpng-extension': 'accepted', 'bzpng-png-prefix': 'accepted',
+  'miff-prefix': policy('MIFF'), 'miff-extension': policy('MIFF'), 'miff-named-png': policy('MIFF'),
+  'psd-prefix': policy('PSD'), 'psd-extension': policy('PSD'), 'psd-named-png': policy('PSD'),
+  'control-bzpng': 'accepted', 'control-miff': 'accepted', 'control-psd': 'accepted',
   'png-to-png': 'accepted', 'png-to-jpeg': 'accepted', 'jpeg-to-png': 'accepted',
   'cmyk-eps-to-png': 'accepted', 'cmyk-pdf-to-png': 'accepted',
   'write-gif': policy('GIF'), 'write-pdf': policy('PDF'), 'perl-png-jpeg': 'accepted',
@@ -193,6 +197,14 @@ export function checkPolicyProbe(output: string): void {
   }
   if (launcher.get('planted-control') !== 'exits 0,0 policy-refusals 0 images 1 home-removed yes') {
     throw new Error('the planted policy control did not render through the LaTeX launcher');
+  }
+  if (launcher.get('media-bzpng') !== 'refused no rendered yes') {
+    throw new Error('a bzip2-wrapped PNG was not reachable through the LaTeX launcher (CVE-2026-106565 reachability)');
+  }
+  for (const format of ['miff', 'psd']) {
+    if (launcher.get(`media-${format}`) !== 'refused yes rendered no') {
+      throw new Error(`a ${format.toUpperCase()} file named .png was not refused through the LaTeX launcher`);
+    }
   }
   if (policyPaths !== '/etc/ImageMagick-7/policy.xml [built-in]') {
     throw new Error(`ImageMagick loaded policies from ${policyPaths ?? 'nowhere'}`);

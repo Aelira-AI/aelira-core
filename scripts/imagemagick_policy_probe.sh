@@ -17,7 +17,7 @@ export HOME="$F/home"
 export MAGICK_TIME_LIMIT=50
 
 python3 -I - "$F" <<'PY'
-import os, struct, sys, zlib
+import bz2, os, struct, sys, zlib
 
 out = sys.argv[1]
 
@@ -74,6 +74,8 @@ write("probe.text", b"hello\n")
 write("probe.cut", b"\x02\x00\x01\x00\x00\x00\x04\x00\x02\x05\x06\x00")
 write("probe.svg", b'<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"/>\n')
 write("list.txt", out.encode() + b"/control.png\n")
+# A complete, valid bzip2 stream of a valid PNG: benign, not malformed.
+write("bz-png.png", bz2.compress(png(8, 6)))
 PY
 
 cat > "$F/override/.config/ImageMagick/policy.xml" <<'XML'
@@ -81,6 +83,26 @@ cat > "$F/override/.config/ImageMagick/policy.xml" <<'XML'
   <policy domain="coder" rights="read" pattern="{MSL,MVG,CUT,TEXT,TXT,PS}"/>
 </policymap>
 XML
+
+# A fully permissive test policy, used to write benign MIFF and PSD fixtures and
+# as the control for the MIFF, PSD and bzip2 probes below.
+mkdir -p "$F/permissive/.config/ImageMagick"
+cat > "$F/permissive/.config/ImageMagick/policy.xml" <<'XML'
+<policymap>
+  <policy domain="coder" rights="read|write" pattern="*"/>
+  <policy domain="delegate" rights="read|write|execute" pattern="*"/>
+</policymap>
+XML
+# Benign 2x2 fixtures: a MIFF written with BZip pixel compression, and a PSD.
+# They are written under the permissive policy because the shipped policy
+# refuses writing them. Neither is malformed; the bzip2 and PSD readers run
+# their normal paths on them.
+HOME="$F/permissive" XDG_CONFIG_HOME="$F/permissive/.config" sh -c \
+  'magick -size 2x2 xc:red miff:- | magick - -compress BZip "$1"' sh "$F/benign.miff"
+HOME="$F/permissive" XDG_CONFIG_HOME="$F/permissive/.config" magick -size 2x2 xc:blue "$F/benign.psd"
+cp "$F/benign.miff" "$F/miff-as.png"
+cp "$F/benign.psd" "$F/psd-as.png"
+
 
 # Classify one command: accepted, policy:<NAME> for a security policy
 # refusal, unregistered for a format ImageMagick does not have, limit for a
@@ -137,6 +159,24 @@ probe control-ps-named-png env HOME="$F/override" magick identify "$F/postscript
 probe control-mvg-named-png env HOME="$F/override" magick identify "mvg:$F/mvg-probe.png"
 probe mvg-named-png env HOME="$F/override" magick identify "$F/mvg-probe.png"
 probe perl-mvg-named-png-undecoded perl -MImage::Magick -e 'my $i=Image::Magick->new; $i->Read($ARGV[0]); die "decoded\n" if @$i;' "$F/mvg-probe.png"
+
+# bzip2, MIFF and PSD (CVE-2026-106565, CVE-2026-106567). ImageMagick
+# decompresses a leading bzip2 magic transparently before choosing a coder, so
+# a bzip2-wrapped PNG is still read through the allowed PNG coder: an accepted
+# outcome that records the affected finding, not a policy hole. MIFF and PSD are
+# refused by prefix, extension and content sniffing; each refusal has a control
+# that decodes the same file under the permissive policy.
+probe bzpng-extension magick identify "$F/bz-png.png"
+probe bzpng-png-prefix magick identify "png:$F/bz-png.png"
+probe miff-prefix magick identify "miff:$F/benign.miff"
+probe miff-extension magick identify "$F/benign.miff"
+probe miff-named-png magick identify "$F/miff-as.png"
+probe psd-prefix magick identify "psd:$F/benign.psd"
+probe psd-extension magick identify "$F/benign.psd"
+probe psd-named-png magick identify "$F/psd-as.png"
+probe control-bzpng env HOME="$F/permissive" XDG_CONFIG_HOME="$F/permissive/.config" magick identify "$F/bz-png.png"
+probe control-miff env HOME="$F/permissive" XDG_CONFIG_HOME="$F/permissive/.config" magick identify "miff:$F/benign.miff"
+probe control-psd env HOME="$F/permissive" XDG_CONFIG_HOME="$F/permissive/.config" magick identify "psd:$F/benign.psd"
 
 # Size limits and their boundary controls.
 probe edge-width magick "$F/edge.png" "$F/edge-out.png"
@@ -264,6 +304,38 @@ home_removed = "yes" if not home.exists() else "no"
 refusals = log.count("not allowed by the security policy `PS'")
 images = len(list(work.glob("x*.png")))
 print(f"launcher planted-{mode} exits {','.join(codes)} policy-refusals {refusals} images {images} home-removed {home_removed}")
+PY
+done
+
+# bzip2, MIFF and PSD through the real LaTeXML launcher. A benign bzip2-wrapped
+# PNG still renders (CVE-2026-106565 is reachable); a benign MIFF and PSD named
+# .png are refused by the policy before they decode (CVE-2026-106567 and the
+# MIFF path). Each figure is the benign fixture written earlier.
+for case in "bzpng bz-png.png" "miff benign.miff" "psd benign.psd"; do
+  name=${case%% *}
+  fixture=${case#* }
+  W="$F/w/launcher-$name"
+  mkdir -p "$W"
+  cp "$F/$fixture" "$W/figure.png"
+  printf '%s\n' '\documentclass{article}\usepackage{graphicx}\begin{document}\includegraphics[angle=90]{figure.png}\end{document}' > "$W/doc.tex"
+  python3 -I - "$W" "$name" <<'PY'
+import importlib.util, pathlib, subprocess, sys
+
+work, name = pathlib.Path(sys.argv[1]), sys.argv[2]
+spec = importlib.util.spec_from_file_location("latex_sandbox", "/app/src/education/latex_sandbox.py")
+sandbox = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sandbox)
+log = ""
+with sandbox.tool_home(work) as home:
+    environment = sandbox.tool_environment(work, home)
+    for args in (["latexml", "--quiet", "--dest=doc.xml", "doc.tex"],
+                 ["latexmlpost", "--dest=doc.html", "--format=html5", "doc.xml"]):
+        result = subprocess.run(sandbox.confined(args, work), cwd=work, env=environment,
+                                capture_output=True, text=True, timeout=120)
+        log += result.stderr
+refused = "yes" if "not allowed by the security policy" in log else "no"
+rendered = "yes" if list(work.glob("x*.png")) else "no"
+print(f"launcher media-{name} refused {refused} rendered {rendered}")
 PY
 done
 

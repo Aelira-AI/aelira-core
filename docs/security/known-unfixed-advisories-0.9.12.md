@@ -240,9 +240,9 @@ functions, requires a fresh assessment.
 
 ### ImageMagick advisories published after the 0.9.13 candidate review
 
-Six further ImageMagick advisories affect the reviewed
+Eight further ImageMagick advisories affect the reviewed
 `8:7.1.1.43+dfsg1-1+deb13u12` packages on both architectures. Upstream fixed
-them in 7.1.2-30 and 7.1.2-31; Debian has no fixed package for this release.
+them in 7.1.2-30, 7.1.2-31 and 7.1.2-32; Debian has no fixed package for this release.
 The dispositions were reviewed on 2026-10-22 and expire on 2027-01-20. The
 scanner findings remain visible.
 
@@ -254,6 +254,8 @@ scanner findings remain visible.
 | [CVE-2026-106579](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-vcjj-32hg-qpx5) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Policies written in the `coder` domain can be bypassed, because ImageMagick checks the requested format name case-sensitively instead of the name of the coder it resolves. The image policy denies every coder with a `*` rule and then allows only upper-case names, so a name that differs only in case matches just the deny-all rule and is refused; it cannot reach a coder the policy does not allow (see below). |
 | [CVE-2026-106580](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-r868-pmwh-fv2c) | The same seven ImageMagick packages | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Missing policy check when the CUT reader loads its palette file. CUT declares no magic signature, so only a `cut:` prefix or a `.cut` name selects it, and submitted content can supply neither. The image policy also refuses the CUT coder. |
 | [CVE-2026-107209](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-f2r2-qw7g-3c8x) | The same seven ImageMagick packages | Not affected, `vulnerable_code_not_present` | Use-after-free in the RSVG path of `coders/svg.c`. Debian ships the SVG coder module only in `libmagickcore-7.q16-10-extra`, which is not installed; `libmagickcore-7.q16-10` contains no `svg` module, so no SVG, MSVG or RSVG format is registered. |
+| [CVE-2026-106565](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-m9c7-gf3j-hx6h) | The same seven ImageMagick packages | Affected | A missing EOF check reading bzip2-compressed image data causes an infinite loop. The policy does not stop it: see the bzip2 note below. Denial of service only, bounded by the 60-second post-processing timeout. |
+| [CVE-2026-106567](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-g6p6-3ggg-3w7j) | The same seven ImageMagick packages | Not affected, `vulnerable_code_not_present` | Integer-conversion error in the PSD resource-block parser that loops on 32-bit builds only. The image is built for 64-bit targets, and the policy denies the PSD coder anyway. See the PSD note below. |
 
 **MVG, CUT and URL basis.** In ImageMagick 7.1.1-43, file sniffing uses the
 static signatures declared in each coder's header. `coders/mvg.h`,
@@ -276,10 +278,18 @@ The native-image CI check now also asserts that no SVG, MSVG or RSVG format or
 in any shipped layer, and that a file named `.png` containing MVG drawing
 commands is not decoded by `magick` or Perl `Image::Magick`, while the same
 file is decoded with an explicit `mvg:` prefix once a test-only policy allows
-MVG. The MVG, CUT and URL basis rests on reading the ImageMagick 7.1.1-43 and
+MVG. It also generates a benign bzip2-wrapped PNG, a benign MIFF written with
+BZip compression and a benign PSD under a permissive test policy, and asserts
+that the MIFF and PSD are refused by prefix, by extension and when renamed to
+`.png`, that the bzip2-wrapped PNG is still read (the affected finding above),
+and that each decodes under the permissive control. The MVG, CUT and URL basis rests on reading the ImageMagick 7.1.1-43 and
 LaTeXML 0.8.8 sources, not on a crafted-input test of LaTeXML itself. A changed
 ImageMagick or LaTeXML package, a new ImageMagick caller, or a wider project
 file allowlist requires a fresh assessment.
+
+**bzip2 note (CVE-2026-106565).** The infinite loop is in `MagickCore/blob.c`, in the transparent whole-file decompression that `OpenBlob` selects when a file begins with the bzip2 magic bytes `BZh`, before any coder is chosen. The decompressed bytes then select the coder, so the loop is reached by whichever format the content resolves to, not only by MIFF (the one coder that also reads bzip2 pixel data in its own body). A `.png` or `.jpg` file whose bytes are a bzip2 stream is decompressed and read through the allowed PNG or JPEG coder; this was confirmed in the API image, by extension and by a `png:` prefix, and through the LaTeXML launcher, where a benign bzip2-wrapped PNG rendered. LaTeXML reads and transforms submitted PNG and JPEG graphics, so a document can reach it. The policy cannot deny this without denying PNG or JPEG, which LaTeXML needs, and the ImageMagick time limit does not fire inside a blob read, so the finding stays affected, bounded by the 60-second timeout. The upstream fix is ImageMagick commit `e9872c4a165d869e75d10799c47195725ebf4132` in 7.1.2-32, which is backportable; it is for the backports workstream, not this change.
+
+**PSD note (CVE-2026-106567).** The upstream advisory and fix `f053f778409932d55b95758c4b1516b63191d1eb` state the PSD resource-block loop happens on 32-bit builds only: the block length is read into a 32-bit unsigned int and cast to `ssize_t`, which overflows only where `ssize_t` is 32-bit. The API image is built for 64-bit amd64 and arm64, where the cast is lossless and the bounds check holds, so the vulnerable path is not present. Independently, the policy denies the PSD coder: a PSD file is refused by a `psd:` prefix, by a `.psd` name and by content sniffing of a `.png`-named file, in the image and through the LaTeXML launcher.
 
 **ImageMagick policy.** From [#749](https://github.com/Aelira-AI/aelira-core/issues/749)
 the API image replaces Debian's open `policy.xml` and `delegates.xml` with

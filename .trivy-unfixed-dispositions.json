@@ -1227,6 +1227,85 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-106565",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "affected",
+      "reason": "Missing EOF check reading bzip2-compressed image data causes an infinite loop. The fix is in MagickCore/blob.c, in the transparent whole-file decompression that OpenBlob selects when a file begins with the bzip2 magic bytes (BZh), before any coder is chosen, so the loop is reached by whichever coder the decompressed content resolves to, not only by MIFF. The image's ImageMagick policy does not mitigate it: a .png or .jpg file whose bytes are a bzip2 stream is decompressed and read through the allowed PNG or JPEG coder, which was confirmed in the image and through the LaTeXML launcher. LaTeXML reads and transforms submitted PNG and JPEG graphics, so a document can reach it. Denial of service only, bounded by the 60-second post-processing timeout, which kills the process; no distribution fix exists.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-106567",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Integer-conversion error in the PSD resource-block parser (coders/psd.c ParseImageResourceBlocks) that causes an infinite loop on 32-bit builds only, as the upstream advisory and fix f053f778 state: the block length is read into a 32-bit unsigned int and cast to ssize_t, which only overflows where ssize_t is 32-bit. The API image is built for 64-bit targets (amd64 and arm64), where ssize_t is 64-bit and the bounds check holds, so the vulnerable path is not present. Independently, the image's ImageMagick policy denies the PSD coder, confirmed in the image and through the LaTeXML launcher by explicit prefix, by extension and by content sniffing of a .png-named file, so PSD is never decoded regardless of word size.",
+      "reviewed": "2026-10-22",
+      "expires": "2027-01-20",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
       "id": "CVE-2026-9538",
       "osFamily": "debian",
       "packages": [

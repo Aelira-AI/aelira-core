@@ -83,7 +83,9 @@ function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: str
   lines.push(`latexml ps-named-png-refused ${latexml['ps-named-png-refused']}`);
   lines.push(`latexml ps-named-png-control ${latexml['ps-named-png-control']}`);
   const launcher = { 'planted-launcher': 'exits 0,0 policy-refusals 1 images 0 home-removed yes',
-    'planted-control': 'exits 0,0 policy-refusals 0 images 1 home-removed yes', ...extra.launcher };
+    'planted-control': 'exits 0,0 policy-refusals 0 images 1 home-removed yes',
+    'media-bzpng': 'refused no rendered yes', 'media-miff': 'refused yes rendered no',
+    'media-psd': 'refused yes rendered no', ...extra.launcher };
   for (const [name, value] of Object.entries(launcher)) lines.push(`launcher ${name} ${value}`);
   lines.push(`policy-paths ${extra.paths ?? '/etc/ImageMagick-7/policy.xml [built-in]'} `);
   lines.push(...(extra.lines ?? []));
@@ -139,6 +141,20 @@ test('a policy planted in the conversion directory must not loosen the LaTeX lau
   expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'planted-launcher': 'exits 126,126 policy-refusals 0 images 0 home-removed yes' } }))).toThrow('planted in the conversion directory');
   expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'planted-control': 'exits 0,0 policy-refusals 1 images 0 home-removed yes' } }))).toThrow('control did not render');
   expect(() => checkPolicyProbe(probeOutput().replace(/launcher planted-control[^\n]*\n/, ''))).toThrow('control did not render');
+});
+
+test('MIFF and PSD are refused and a bzip2-wrapped PNG stays reachable through the launcher', () => {
+  // Outcomes recorded against Debian's open policy, where each is accepted.
+  for (const name of ['miff-prefix', 'miff-extension', 'miff-named-png', 'psd-prefix', 'psd-extension', 'psd-named-png']) {
+    expect(() => checkPolicyProbe(probeOutput({ [name]: 'accepted' }))).toThrow(`policy probe ${name}`);
+  }
+  // The bzip2-wrapped PNG must stay reachable: a refusal here would be a false
+  // not_affected for CVE-2026-106565, so the check requires 'accepted'.
+  expect(() => checkPolicyProbe(probeOutput({ 'bzpng-extension': 'policy:PNG' }))).toThrow('bzpng-extension');
+  expect(() => checkPolicyProbe(probeOutput({ 'control-miff': 'policy:MIFF' }))).toThrow('control-miff');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-bzpng': 'refused yes rendered no' } }))).toThrow('CVE-2026-106565 reachability');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-miff': 'refused no rendered yes' } }))).toThrow('MIFF file named .png');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-psd': 'refused no rendered yes' } }))).toThrow('PSD file named .png');
 });
 
 test('effective resource limits must match the policy, including the time cap', () => {
