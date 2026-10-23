@@ -96,6 +96,9 @@ export function parseBackportConf(raw: string): Backport {
         if (fields.length !== 1) fail(`invalid ${key} in backport recipe`);
         backport.controls.push(fields[0]);
         break;
+      case 'reproducible':
+        if (fields.length) fail('invalid reproducible in backport recipe');
+        break;
       case 'tests':
         if (fields.length || backport.controls.includes('package-test-suite')) fail('invalid tests in backport recipe');
         backport.controls.push('package-test-suite');

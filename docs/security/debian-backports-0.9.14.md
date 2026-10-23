@@ -86,6 +86,20 @@ ships. For each package it:
    patches fix, the assertions and controls run, and the hash of each shared
    library.
 
+Builds are reproducible, because the image check compares two no-cache builds
+by manifest digest:
+
+- **Fixed build path:** each package builds under a fixed path,
+  `/tmp/debian-backport-SOURCE`. Compilers record the build path in debug
+  information, and the GNU build-id is computed before stripping. A random
+  path therefore changed the shipped brotli libraries between builds.
+- **Fixed file times:** `SOURCE_DATE_EPOCH` is the generated changelog entry's
+  date, so `dpkg-deb` clamps package file times to it. The builder refuses a
+  `changelog_date` in the future, because `dpkg-deb` only lowers later times.
+- **Second build check:** a recipe with `reproducible` (brotli has it) is built
+  a second time from scratch. The build fails unless every package and the
+  receipt are byte-identical.
+
 `install-backports.sh` installs the rebuilt packages in the same `RUN` as the
 first `apt-get install`. It replaces every installed binary package from the
 three sources, refuses mixed versions, checks the library hashes and keeps

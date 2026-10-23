@@ -22,6 +22,8 @@
 #   control NAME                    run controls/NAME/run.sh after patching
 #   tests                           run the package's own build-time test
 #                                   suite instead of building with nocheck
+#   reproducible                    build a second time and require every
+#                                   .deb and the receipt to be byte-identical
 #   check NAME                      run controls/NAME/run.sh after the build,
 #                                   with the built packages as fourth argument
 #   profile NAME                    Debian build profile (repeatable)
@@ -38,13 +40,19 @@ set -eu
 input=$1
 out=$2
 conf="$input/backport.conf"
-work=$(mktemp -d /tmp/debian-backport.XXXXXX)
 test -f "$conf"
 test ! -e "$out"
 mkdir -p "$out"
 
 value() { awk -v k="$1" '$1 == k { $1 = ""; sub(/^ +/, ""); print; n++ } END { exit n != 1 }' "$conf"; }
 source_name=$(value source)
+# A fixed scratch path, not mktemp: compilers record build paths in debug
+# information, and the GNU build-id is hashed over the unstripped objects, so
+# a random path changes the shipped libraries between otherwise equal builds.
+# Each builder stage is a fresh container, so the path is never shared.
+work="/tmp/debian-backport-$source_name"
+test ! -e "$work"
+mkdir "$work"
 source_version=$(value source_version)
 version=$(value rebuilt_version)
 changelog_date=$(value changelog_date)
@@ -151,7 +159,16 @@ fi
 # -nc keeps the reviewed patches applied; the tree is fresh from the .dsc.
 nocheck=nocheck
 grep -qx tests "$conf" && nocheck=""
-DEB_BUILD_OPTIONS="$nocheck parallel=$(nproc)" SOURCE_DATE_EPOCH=0 \
+# SOURCE_DATE_EPOCH is the generated changelog entry's date, fixed by the
+# recipe. dpkg-deb clamps package file times to it; a value of 0 left the
+# times of files written during the build unclamped, so .deb bytes varied.
+# dpkg-deb only lowers times later than it, so a date still in the future
+# would leave build times in the packages; refuse that.
+source_date_epoch=$(dpkg-parsechangelog -S Timestamp)
+test "$source_date_epoch" -gt 0
+test "$source_date_epoch" -le "$(date +%s)" || {
+    echo 'changelog_date is in the future, so package times would not be clamped' >&2; exit 1; }
+DEB_BUILD_OPTIONS="$nocheck parallel=$(nproc)" SOURCE_DATE_EPOCH="$source_date_epoch" \
     dpkg-buildpackage "$build_flag" -nc -us -uc "$@" > "$work/build.log" 2>&1 || {
     tail -c 16384 "$work/build.log" >&2; exit 1; }
 if test -z "$nocheck"; then
@@ -209,3 +226,21 @@ mkdir "$work/extracted"
 cp "$conf" "$out/backport.conf"
 cat "$out/receipt.txt"
 rm -rf "$work"
+
+# Reproducibility check: rebuild from scratch at the same path and require
+# identical packages. Image builds compare manifest digests, so a package
+# that differs between builds makes the whole image irreproducible.
+if grep -qx reproducible "$conf" && test "${BACKPORT_REPRODUCIBILITY_PASS:-0}" != 1; then
+    BACKPORT_REPRODUCIBILITY_PASS=1 sh "$0" "$input" "$out.second" > "$out.second.log" 2>&1 || {
+        tail -c 8192 "$out.second.log" >&2; echo 'second build failed' >&2; exit 1; }
+    if ! cmp -s "$out/receipt.txt" "$out.second/receipt.txt"; then
+        diff "$out/receipt.txt" "$out.second/receipt.txt" >&2 || true
+        echo "$source_name is not reproducible: a second build produced different packages" >&2
+        exit 1
+    fi
+    (cd "$out" && sha256sum ./*.deb) > "$out.first.sha256"
+    (cd "$out.second" && sha256sum ./*.deb) | cmp -s - "$out.first.sha256" || {
+        echo "$source_name is not reproducible: package bytes differ" >&2; exit 1; }
+    rm -rf "$out.second" "$out.second.log" "$out.first.sha256"
+    echo "reproducible: $source_name second build matched every package"
+fi
