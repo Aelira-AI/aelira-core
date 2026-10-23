@@ -41,6 +41,10 @@ RUN apt-get update && apt-get install -y \
     libopenjp2-7-dev \
     libavif-dev \
     libdav1d-dev=1.5.1-1 \
+    # MP3 and Ogg Vorbis encoders for the source-built ffmpeg program.
+    libmp3lame-dev=3.100-6+b3 \
+    libvorbis-dev=1.3.7-3 \
+    libogg-dev=1.3.5-3+b2 \
     libxcb1-dev \
     liblzma-dev \
     libzstd-dev \
@@ -166,7 +170,6 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     tesseract-ocr \
     tesseract-ocr-eng \
     poppler-utils \
-    ffmpeg \
     libpq5 \
     curl \
     # Playwright Chromium dependencies
@@ -202,6 +205,13 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     libopenjp2-7 \
     libavif16 \
     libdav1d7=1.5.1-1 \
+    # Encoders the source-built ffmpeg program links for MP3 and Ogg output.
+    # Debian's ffmpeg package is not installed: its libraries pull in librist,
+    # cJSON, SDL, PulseAudio and network protocol stacks the image never uses.
+    libmp3lame0=3.100-6+b3 \
+    libvorbis0a=1.3.7-3 \
+    libvorbisenc2=1.3.7-3 \
+    libogg0=1.3.5-3+b2 \
     libxcb1 \
     liblzma5 \
     libzstd1 \
@@ -275,8 +285,12 @@ RUN if grep -q '^mozilla/emSign_ECC_Root_CA_-_G3\.crt$' /etc/ca-certificates.con
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib
+COPY --from=builder /opt/ffmpeg9/bin /opt/ffmpeg9/bin
 COPY --from=builder /opt/ffmpeg9/licenses /opt/ffmpeg9/licenses
 ENV PATH="/opt/venv/bin:$PATH"
+# The application and ImageMagick call ffmpeg and ffprobe by name.
+RUN ln -s /opt/ffmpeg9/bin/ffmpeg /usr/local/bin/ffmpeg && \
+    ln -s /opt/ffmpeg9/bin/ffprobe /usr/local/bin/ffprobe
 
 # Copy the locked Pa11y runtime without Debian's npm toolchain.
 COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node

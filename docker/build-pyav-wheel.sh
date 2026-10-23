@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build the pinned PyAV source release against the shared FFmpeg 9.0.2
-# prefix also used by the source-built OpenCV wheel.
+# prefix also used by the source-built OpenCV wheel and the image's ffmpeg
+# and ffprobe programs.
 set -eu
 
 out="$1"
@@ -33,9 +34,18 @@ fetch https://files.pythonhosted.org/packages/8d/f4/f22114d30d3435e38c6af2b4870f
 tar -xJf ffmpeg-9.0.2.tar.xz
 (
     cd ffmpeg-9.0.2
+    # The ffmpeg and ffprobe programs replace Debian's ffmpeg package in the
+    # API image. Only the file and pipe protocols are compiled in, so no
+    # demuxer can follow a reference over the network. libmp3lame and
+    # libvorbis keep MP3 and Ogg Vorbis speech output (Ogg defaults to FLAC
+    # without libvorbis).
     ./configure --prefix="$prefix" --enable-shared --disable-static \
-        --disable-programs --disable-doc --disable-autodetect --disable-debug \
+        --disable-programs --enable-ffmpeg --enable-ffprobe \
+        --disable-doc --disable-autodetect --disable-debug \
+        --disable-network --disable-protocols \
+        --enable-protocol=file --enable-protocol=pipe \
         --enable-libdav1d --disable-decoder=av1 \
+        --enable-libmp3lame --enable-libvorbis \
         --extra-cflags="-O2 -g0 -ffile-prefix-map=$work=." \
         --extra-ldflags="-Wl,--disable-new-dtags,-rpath,$prefix/lib"
     make --jobs="$(nproc)"

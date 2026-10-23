@@ -181,12 +181,32 @@ export function inspectInventory(
   return report(errors, accepted);
 }
 
+/**
+ * Name every disposition package that the image does not install. A package
+ * that left the image takes its findings with it, so its dispositions must
+ * be retired rather than kept as silent, unused exceptions. `installed` is
+ * dpkg-query output with the package name in the first tab-separated field.
+ */
+export function absentDispositionPackages(dispositions: Disposition[], installed: string): string[] {
+  const names = new Set(installed.split('\n').map((line) => line.split('\t')[0].trim()).filter(Boolean));
+  if (names.size === 0) return ['Installed package inventory is empty'];
+  const errors: string[] = [];
+  for (const entry of dispositions) {
+    for (const item of entry.packages) {
+      if (!names.has(item.name)) {
+        errors.push(`Disposition ${entry.id} names ${item.name}, which the image does not install`);
+      }
+    }
+  }
+  return errors;
+}
+
 if (import.meta.main) {
   try {
     const { values, positionals } = parseArgs({
       options: {
         file: { type: 'string' }, image: { type: 'string' }, architecture: { type: 'string' },
-        dispositions: { type: 'string' }, today: { type: 'string' },
+        dispositions: { type: 'string' }, today: { type: 'string' }, installed: { type: 'string' },
       },
       allowPositionals: false,
     });
@@ -218,6 +238,15 @@ if (import.meta.main) {
       const checked = verifyDispositions(raw, today);
       dispositions = checked.dispositions;
       errors.push(...checked.errors);
+      if (values.installed) {
+        let installed = '';
+        try {
+          installed = await readFile(values.installed, 'utf8');
+        } catch {
+          throw new Error('Installed package inventory is not readable');
+        }
+        errors.push(...absentDispositionPackages(dispositions, installed));
+      }
     }
     const needsLibxml2Proof = dispositions.some((entry) => entry.id === 'CVE-2026-6653') &&
       isRecord(inventory) && Array.isArray(inventory.Results) &&

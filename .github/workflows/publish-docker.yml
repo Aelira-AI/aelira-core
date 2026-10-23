@@ -104,6 +104,11 @@ jobs:
           bun run scripts/verify_python_expat_layers.ts "$IMAGE"
           bun run scripts/verify_libxml2_6653.ts "$IMAGE"
           bun run scripts/verify_native_media_components.ts "$IMAGE"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
+            --volume "$PWD/tests/fixtures/media_cli:/fixtures:ro" \
+            --entrypoint /opt/venv/bin/python "$IMAGE" \
+            /app/scripts/smoke_media_cli.py /fixtures
 
       - name: Generate SPDX JSON SBOM for immutable image
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3

@@ -11,6 +11,7 @@ import importlib.metadata
 import pytest
 
 from scripts.verify_final_python_packages import (
+    FFMPEG_CLI_CONFIGURATION,
     PYAV_LIBRARIES,
     required_opencv_version,
     required_msgpack_version,
@@ -19,6 +20,7 @@ from scripts.verify_final_python_packages import (
     required_psycopg2_version,
     required_urllib3_version,
     validate,
+    validate_ffmpeg_cli,
     validate_opencv_native,
     validate_pillow,
     validate_pyav_native,
@@ -1110,3 +1112,193 @@ def test_opencv_source_disables_optional_image_discovery():
     ).read_text()
     for backend in ("AVIF", "JPEG", "PNG", "SPNG", "TIFF", "WEBP", "GDCM", "GDAL"):
         assert f"-DWITH_{backend}=OFF" in source
+
+
+def _cli_ldd(
+    prefix: str = "/opt/ffmpeg9/lib",
+    extra: str = "",
+) -> str:
+    rows = [
+        f"\t{stem}.so.{numbers[0]} => {prefix}/{stem}.so.{numbers[0]} (0x1234)"
+        for stem, numbers in PYAV_LIBRARIES.items()
+    ]
+    rows += [
+        "\tlibmp3lame.so.0 => /usr/lib/aarch64-linux-gnu/libmp3lame.so.0 (0x1234)",
+        "\tlibvorbisenc.so.2 => /usr/lib/aarch64-linux-gnu/libvorbisenc.so.2 (0x1234)",
+        "\tlibdav1d.so.7 => /usr/lib/aarch64-linux-gnu/libdav1d.so.7 (0x1234)",
+    ]
+    return "\n".join(rows) + extra
+
+
+_CLI_PROTOCOLS = (
+    "Supported file protocols:\nInput:\n  file\n  pipe\nOutput:\n  file\n  pipe\n"
+)
+_CLI_ENCODERS = (
+    "Encoders:\n V..... = Video\n ------\n"
+    " A....D aac                  AAC (Advanced Audio Coding)\n"
+    " A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3)\n"
+    " A....D libvorbis            libvorbis\n"
+)
+
+
+def _cli_run(
+    version: str = "9.0.2",
+    configuration: str = FFMPEG_CLI_CONFIGURATION,
+    protocols: str = _CLI_PROTOCOLS,
+    encoders: str = _CLI_ENCODERS,
+):
+    def run(command: list[str]) -> str:
+        tool = Path(command[0]).name
+        if command[-1] == "-version":
+            return (
+                f"{tool} version {version} Copyright (c) 2007-2026 the FFmpeg developers\n"
+                "built with gcc 14 (Debian 14.2.0-19)\n"
+                f"configuration: {configuration}\n"
+            )
+        if command[-1] == "-protocols":
+            return protocols
+        if command[-1] == "-encoders":
+            return encoders
+        raise AssertionError(command)
+
+    return run
+
+
+def _validate_cli(**overrides):
+    links = {
+        "/usr/local/bin/ffmpeg": "/opt/ffmpeg9/bin/ffmpeg",
+        "/usr/local/bin/ffprobe": "/opt/ffmpeg9/bin/ffprobe",
+    }
+    options = {
+        "which": lambda tool: f"/usr/local/bin/{tool}",
+        "realpath": lambda path: links.get(path, path),
+        "run": _cli_run(),
+        "ldd": lambda _path: _cli_ldd(),
+    }
+    options.update(overrides)
+    return validate_ffmpeg_cli(**options)
+
+
+def test_ffmpeg_cli_verifier_accepts_the_source_built_programs() -> None:
+    assert _validate_cli() == []
+
+
+def test_ffmpeg_cli_configuration_pins_local_protocols_and_encoders() -> None:
+    script = (
+        Path(__file__).resolve().parents[1] / "docker" / "build-pyav-wheel.sh"
+    ).read_text()
+    for flag in FFMPEG_CLI_CONFIGURATION.split(" --"):
+        flag = flag if flag.startswith("--") else f"--{flag}"
+        if flag.startswith(("--prefix", "--extra-")):
+            continue
+        assert flag in script, flag
+    assert "--disable-network --disable-protocols" in FFMPEG_CLI_CONFIGURATION
+    assert "--enable-gpl" not in FFMPEG_CLI_CONFIGURATION
+    assert "--enable-nonfree" not in FFMPEG_CLI_CONFIGURATION
+
+
+def test_ffmpeg_cli_verifier_rejects_debian_ffmpeg_on_path() -> None:
+    # Debian's package installs real binaries in /usr/bin.
+    errors = _validate_cli(
+        which=lambda tool: f"/usr/bin/{tool}", realpath=lambda path: path
+    )
+    assert (
+        "cli: ffmpeg on PATH is /usr/bin/ffmpeg -> /usr/bin/ffmpeg; expected /opt/ffmpeg9/bin/ffmpeg"
+        in errors
+    )
+    assert (
+        "cli: ffprobe on PATH is /usr/bin/ffprobe -> /usr/bin/ffprobe; expected /opt/ffmpeg9/bin/ffprobe"
+        in errors
+    )
+
+
+def test_ffmpeg_cli_verifier_rejects_missing_programs() -> None:
+    errors = _validate_cli(which=lambda _tool: None)
+    assert errors == ["cli: ffmpeg is not on PATH", "cli: ffprobe is not on PATH"]
+
+
+def test_ffmpeg_cli_verifier_rejects_wrong_version_and_configuration() -> None:
+    errors = _validate_cli(
+        run=_cli_run(
+            version="7.1.5-0+deb13u1",
+            configuration=FFMPEG_CLI_CONFIGURATION.replace("--disable-network ", ""),
+        )
+    )
+    assert any(
+        "ffmpeg reports" in error and "expected version 9.0.2" in error
+        for error in errors
+    )
+    assert any("ffprobe configuration differs" in error for error in errors)
+
+
+def test_ffmpeg_cli_verifier_rejects_network_protocols() -> None:
+    errors = _validate_cli(
+        run=_cli_run(
+            protocols=_CLI_PROTOCOLS.replace(
+                "  pipe\nOutput", "  pipe\n  https\nOutput"
+            )
+        )
+    )
+    assert errors == [
+        "cli: ffmpeg input protocols are ['file', 'https', 'pipe']; expected ['file', 'pipe']"
+    ]
+
+
+def test_ffmpeg_cli_verifier_requires_speech_encoders() -> None:
+    errors = _validate_cli(
+        run=_cli_run(encoders=_CLI_ENCODERS.replace("libvorbis ", "vorbis "))
+    )
+    assert errors == ["cli: ffmpeg lacks the libvorbis encoder"]
+
+
+@pytest.mark.parametrize("prefix", ["/usr/lib/aarch64-linux-gnu", "/tmp/ffmpeg"])
+def test_ffmpeg_cli_verifier_rejects_libraries_outside_the_prefix(prefix: str) -> None:
+    errors = _validate_cli(ldd=lambda _path: _cli_ldd(prefix))
+    assert (
+        len([error for error in errors if "expected /opt/ffmpeg9/lib/" in error]) == 14
+    )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "\tlibrist.so.4 => /usr/lib/aarch64-linux-gnu/librist.so.4 (0x1)",
+        "\tlibcjson.so.1 => /usr/lib/aarch64-linux-gnu/libcjson.so.1 (0x1)",
+        "\tlibgnutls.so.30 => /usr/lib/aarch64-linux-gnu/libgnutls.so.30 (0x1)",
+        "\tlibSDL2-2.0.so.0 => /usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0 (0x1)",
+        "\tlibavcodec.so.61 => /usr/lib/aarch64-linux-gnu/libavcodec.so.61 (0x1)",
+    ],
+)
+def test_ffmpeg_cli_verifier_rejects_debian_ffmpeg_libraries(row: str) -> None:
+    errors = _validate_cli(ldd=lambda _path: _cli_ldd(extra=f"\n{row}"))
+    name = row.split()[0]
+    assert any(name in error for error in errors), errors
+
+
+def test_ffmpeg_cli_verifier_rejects_unresolved_or_missing_encoder_library() -> None:
+    ldd = _cli_ldd().replace(
+        "/usr/lib/aarch64-linux-gnu/libmp3lame.so.0 (0x1234)", "not found"
+    )
+    errors = _validate_cli(ldd=lambda _path: ldd)
+    assert "cli: ffmpeg cannot resolve libmp3lame.so.0: not found" in errors
+    assert "cli: ffmpeg lacks Debian libmp3lame.so.0: not found" in errors
+
+
+def test_api_dockerfile_ships_the_source_built_cli_instead_of_debian_ffmpeg() -> None:
+    root = Path(__file__).resolve().parents[1]
+    api = (root / "Dockerfile").read_text()
+    runtime = api.split("AS runtime", 1)[1]
+    assert "COPY --from=builder /opt/ffmpeg9/bin /opt/ffmpeg9/bin" in runtime
+    assert "ln -s /opt/ffmpeg9/bin/ffmpeg /usr/local/bin/ffmpeg" in runtime
+    assert "ln -s /opt/ffmpeg9/bin/ffprobe /usr/local/bin/ffprobe" in runtime
+    apt_lines = {line.strip() for line in runtime.splitlines()}
+    assert "ffmpeg \\" not in apt_lines
+    for pin in (
+        "libmp3lame0=3.100-6+b3",
+        "libvorbis0a=1.3.7-3",
+        "libvorbisenc2=1.3.7-3",
+        "libogg0=1.3.5-3+b2",
+    ):
+        assert f"{pin} \\" in apt_lines, pin
+    opencv = (root / "docker" / "build-opencv-wheel.sh").read_text()
+    assert '"$prefix/bin"' not in opencv

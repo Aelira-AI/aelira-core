@@ -293,3 +293,37 @@ acceptance requires the rebuilt package, native consumer checks and shipped
 layer checks to pass for the exact image. The other `libxml2` advisories remain
 affected and disclosed; the three component-absence dispositions above do not
 resolve them.
+
+### Debian FFmpeg is removed; 22 dispositions are retired
+
+From 0.9.15 the API image no longer installs Debian's `ffmpeg` package. The
+`ffmpeg` and `ffprobe` programs come from the image's own build of the
+hash-verified FFmpeg 9.0.2 release under `/opt/ffmpeg9`, the build PyAV and
+OpenCV already used. It compiles in only the `file` and `pipe` protocols, so no
+network protocol (RIST, HTTP, RTP and the rest) exists to reach even without
+the application's input whitelist. Removing the package also removes Debian's
+FFmpeg 7.1.5 libraries, `librist4` with its `libcjson1` dependency, and
+`libsndfile1`, which only PulseAudio and SDL loaded for FFmpeg. The final-image
+package gate fails if any of them returns.
+
+These dispositions are removed from `.trivy-unfixed-dispositions.json` for
+subsequent images, and the historical table above remains intact:
+
+- Debian FFmpeg (`ffmpeg`, `libavcodec61`, `libavdevice61`, `libavfilter10`,
+  `libavformat61`, `libavutil59`, `libpostproc58`, `libswresample5`,
+  `libswscale8`): CVE-2026-58049, CVE-2026-64830, CVE-2026-64832,
+  CVE-2026-64833, CVE-2026-64834, CVE-2026-64835, CVE-2026-66036,
+  CVE-2026-66039, CVE-2026-66040, CVE-2026-66041, CVE-2026-70628,
+  CVE-2026-70632, CVE-2026-75142, CVE-2026-75143, CVE-2026-75144 and
+  CVE-2026-75146.
+- `libcjson1`: CVE-2026-16554, CVE-2026-29036, CVE-2026-67215, CVE-2026-67216
+  and CVE-2026-87933.
+- `libsndfile1`: CVE-2026-37555.
+
+Moving to the in-house build takes FFmpeg out of the image scanner's view; it
+does not make FFmpeg free of advisories. Debian's security tracker records each
+of the 16 FFmpeg advisories above as fixed in unstable's first FFmpeg 9.0.2
+upload, 7:9.0.2-1 (checked 2026-10-23). Whether every fix is in the upstream
+9.0.2 release archive, rather than a Debian patch, was not checked commit by
+commit. The application's input whitelist still applies to every ffmpeg and
+ffprobe input, and PyAV and OpenCV link the same FFmpeg 9.0.2 libraries.

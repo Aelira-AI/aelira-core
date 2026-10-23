@@ -1764,7 +1764,8 @@ jobs:
             --file test-results/api-image-inventory/trivy.json \
             --image aelira-worker-isolation:test \
             --architecture ${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }} \
-            --dispositions .trivy-unfixed-dispositions.json
+            --dispositions .trivy-unfixed-dispositions.json \
+            --installed test-results/api-image-inventory/dpkg-packages.tsv
       - name: Verify production package state and baked Piper synthesis
         run: |
           docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
@@ -1787,6 +1788,15 @@ jobs:
                 run_path("/tmp/test_multimedia_decode_acceptance.py")["test_pyav_decodes_and_resamples_audio_for_transcription"](Path(directory))
             print("PyAV WAV decode and 8 kHz to 16 kHz resample verified")
           '
+      - name: Verify every ffmpeg and ffprobe call site against the image's own CLI
+        # The repository's other real-ffmpeg tests run on the runner's apt
+        # ffmpeg. This runs the shipped programs, without network.
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
+            --volume "$PWD/tests/fixtures/media_cli:/fixtures:ro" \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_media_cli.py /fixtures
       - name: Verify OpenCV codecs, real scene cuts and Pillow image decoding
         run: |
           docker run --rm --network none \

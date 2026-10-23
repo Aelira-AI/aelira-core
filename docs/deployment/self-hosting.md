@@ -49,8 +49,9 @@ Two Dockerfiles matter here:
 - **`Dockerfile`** (repo root) — the production image. Multi-stage build:
   a builder stage installs Python dependencies from `requirements.txt` into a
   venv, then the runtime stage installs OS packages (Tesseract, Poppler,
-  ffmpeg, the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
-  dependencies, and Node.js for Pa11y), copies the venv, runs as a non-root
+  the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
+  dependencies, and Node.js for Pa11y), copies the venv and the `ffmpeg` and
+  `ffprobe` programs from its own FFmpeg 9.0.2 build, runs as a non-root
   `aelira` user, and starts via `entrypoint.sh`. Both the production and
   development images pin Pa11y 9.0.1 and use the same digest-pinned Node 24
   runtime. Their smoke gate requires Node 24, and Puppeteer is prevented from

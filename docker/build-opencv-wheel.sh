@@ -46,6 +46,7 @@ export CMAKE_ARGS="-DBUILD_LIST=core,imgproc,imgcodecs,videoio,features,calib,py
 "$build_venv/bin/python" -m pip wheel --no-build-isolation --no-deps \
     --no-cache-dir --wheel-dir "$out" ./opencv_python-5.0.0.93
 
-# Keep only runtime FFmpeg libraries and license texts in later image layers.
-rm -rf "$prefix/include" "$prefix/lib/pkgconfig" "$prefix/share" "$prefix/bin"
+# Keep only the runtime FFmpeg libraries, the ffmpeg and ffprobe programs and
+# the license texts in later image layers.
+rm -rf "$prefix/include" "$prefix/lib/pkgconfig" "$prefix/share"
 find "$prefix/lib" -maxdepth 1 -type l -name 'lib*.so' -delete

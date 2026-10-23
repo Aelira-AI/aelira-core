@@ -149,13 +149,6 @@ TEX
       tail -c 4096 /tmp/latexmlpost.log >&2
       exit 1
     fi
-    run_logged FFmpeg /tmp/ffmpeg.log ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=44100 -t 0.2 -c:a aac -f dash /tmp/consumer.mpd
-    run_logged FFprobe /tmp/ffprobe.log ffprobe -v error -show_entries stream=codec_name -of default=noprint_wrappers=1 /tmp/consumer.mpd
-    if ! grep -q codec_name=aac /tmp/ffprobe.log; then
-      echo 'FFprobe DASH output lacks AAC; last 4096 probe bytes:' >&2
-      tail -c 4096 /tmp/ffprobe.log >&2
-      exit 1
-    fi
     cat > /tmp/control.msl <<'MSL'
 <?xml version="1.0" encoding="UTF-8"?>
 <image><read filename="/tmp/input.png"/><write filename="/tmp/output.png"/></image>
@@ -196,7 +189,7 @@ MSL
   const out = run('docker', ['run', '--rm', '--network', 'none', '--read-only',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m,mode=1777',
     '--env', `LIBXML_EXPECTED_PATH=${expected}`, '--entrypoint', '/bin/sh', image, '-ec', script]);
-  if (!out.includes('full-native-xml-consumers-ok')) throw new Error('native LaTeXML/FFmpeg/ImageMagick probe gave no success marker');
+  if (!out.includes('full-native-xml-consumers-ok')) throw new Error('native LaTeXML/ImageMagick probe gave no success marker');
 }
 
 function checkLayers(image: string, receipt: Map<string, string>): void {

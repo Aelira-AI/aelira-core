@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { inspectInventory, verifyDispositions, verifyInventory } from './verify_trivy_inventory';
+import { absentDispositionPackages, inspectInventory, verifyDispositions, verifyInventory } from './verify_trivy_inventory';
 
 const image = `ghcr.io/example/api@sha256:${'1'.repeat(64)}`;
 function clean(architecture: 'amd64' | 'arm64' = 'arm64') {
@@ -275,4 +275,29 @@ test('the repository disposition list is valid and unexpired today', async () =>
   for (const entry of value.dispositions) {
     expect(await Bun.file(join(import.meta.dir, '..', entry.disclosure)).text()).toContain(entry.id);
   }
+});
+
+test('a disposition for a package the image no longer installs is rejected', async () => {
+  const file = join(import.meta.dir, '..', '.trivy-unfixed-dispositions.json');
+  const { dispositions } = verifyDispositions(JSON.parse(await Bun.file(file).text()), '2026-10-23');
+  const names = [...new Set(dispositions.flatMap((entry) => entry.packages.map((item) => item.name)))];
+  const installed = names.map((name) => `${name}\tarm64\t1.0`).join('\n');
+  expect(absentDispositionPackages(dispositions, installed)).toEqual([]);
+  // Drop one installed package: every disposition naming it must be reported.
+  const removed = names[0];
+  const errors = absentDispositionPackages(dispositions,
+    installed.split('\n').filter((line) => !line.startsWith(`${removed}\t`)).join('\n'));
+  expect(errors.length).toBeGreaterThan(0);
+  expect(errors.every((error) => error.includes(`names ${removed}, which the image does not install`))).toBe(true);
+  expect(absentDispositionPackages(dispositions, '')).toEqual(['Installed package inventory is empty']);
+});
+
+test('no disposition names a package that left with Debian ffmpeg', async () => {
+  const file = join(import.meta.dir, '..', '.trivy-unfixed-dispositions.json');
+  const value = JSON.parse(await Bun.file(file).text());
+  const retired = new Set(['ffmpeg', 'libavcodec61', 'libavdevice61', 'libavfilter10', 'libavformat61',
+    'libavutil59', 'libpostproc58', 'libswresample5', 'libswscale8', 'librist4', 'libcjson1', 'libsndfile1']);
+  const named = value.dispositions.flatMap((entry: { packages: { name: string }[] }) =>
+    entry.packages.map((item) => item.name)).filter((name: string) => retired.has(name));
+  expect(named).toEqual([]);
 });
