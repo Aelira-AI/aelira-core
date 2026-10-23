@@ -67,7 +67,7 @@ test('Debian FFmpeg, librist, cJSON and libsndfile files are rejected in any lay
   expect(debianFfmpegPackages).toContain('libcjson1');
 });
 
-function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: string; lines?: string[]; gs?: string[]; latexml?: Record<string, string>; launcher?: Record<string, string>; paths?: string } = {}): string {
+function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: string; lines?: string[]; gs?: string[]; latexml?: Record<string, string>; launcher?: Record<string, string>; converter?: Record<string, string>; paths?: string } = {}): string {
   const lines: string[] = [];
   for (const [name, expected] of Object.entries(expectedProbes)) {
     if (name === extra.drop) continue;
@@ -87,6 +87,9 @@ function probeOutput(overrides: Record<string, string> = {}, extra: { drop?: str
     'media-bzpng': 'refused no rendered yes', 'media-miff': 'refused yes rendered no',
     'media-psd': 'refused yes rendered no', ...extra.launcher };
   for (const [name, value] of Object.entries(launcher)) lines.push(`launcher ${name} ${value}`);
+  const converter = { bzpng: 'compressed-input yes parsed no converted no', gzpng: 'compressed-input yes parsed no converted no',
+    png: 'compressed-input no parsed yes converted yes', ...extra.converter };
+  for (const [name, value] of Object.entries(converter)) lines.push(`converter ${name} ${value}`);
   lines.push(`policy-paths ${extra.paths ?? '/etc/ImageMagick-7/policy.xml [built-in]'} `);
   lines.push(...(extra.lines ?? []));
   lines.push('imagemagick-policy-probe-complete');
@@ -143,7 +146,7 @@ test('a policy planted in the conversion directory must not loosen the LaTeX lau
   expect(() => checkPolicyProbe(probeOutput().replace(/launcher planted-control[^\n]*\n/, ''))).toThrow('control did not render');
 });
 
-test('MIFF and PSD are refused and a bzip2-wrapped PNG stays reachable through the launcher', () => {
+test('MIFF and PSD are refused, and the converter refuses compression-wrapped PNGs the bare launcher would render', () => {
   // Outcomes recorded against Debian's open policy, where each is accepted.
   for (const name of ['miff-prefix', 'miff-extension', 'miff-named-png', 'psd-prefix', 'psd-extension', 'psd-named-png']) {
     expect(() => checkPolicyProbe(probeOutput({ [name]: 'accepted' }))).toThrow(`policy probe ${name}`);
@@ -152,7 +155,12 @@ test('MIFF and PSD are refused and a bzip2-wrapped PNG stays reachable through t
   // not_affected for CVE-2026-106565, so the check requires 'accepted'.
   expect(() => checkPolicyProbe(probeOutput({ 'bzpng-extension': 'policy:PNG' }))).toThrow('bzpng-extension');
   expect(() => checkPolicyProbe(probeOutput({ 'control-miff': 'policy:MIFF' }))).toThrow('control-miff');
-  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-bzpng': 'refused yes rendered no' } }))).toThrow('CVE-2026-106565 reachability');
+  expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-bzpng': 'refused yes rendered no' } }))).toThrow('bare-launcher control');
+  // Recorded with the converter check removed: LaTeXML parses and converts the wrapped file.
+  expect(() => checkPolicyProbe(probeOutput({}, { converter: { bzpng: 'compressed-input no parsed yes converted yes' } }))).toThrow('bzip2-wrapped PNG before LaTeXML ran');
+  expect(() => checkPolicyProbe(probeOutput({}, { converter: { gzpng: 'compressed-input no parsed yes converted yes' } }))).toThrow('gzip-wrapped PNG before LaTeXML ran');
+  expect(() => checkPolicyProbe(probeOutput({}, { converter: { png: 'compressed-input yes parsed no converted no' } }))).toThrow('plain PNG control');
+  expect(() => checkPolicyProbe(probeOutput().replace(/converter gzpng[^\n]*\n/, ''))).toThrow('gzip-wrapped');
   expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-miff': 'refused no rendered yes' } }))).toThrow('MIFF file named .png');
   expect(() => checkPolicyProbe(probeOutput({}, { launcher: { 'media-psd': 'refused no rendered yes' } }))).toThrow('PSD file named .png');
 });

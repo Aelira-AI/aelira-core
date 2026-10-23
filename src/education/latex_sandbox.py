@@ -53,6 +53,69 @@ SYSTEM_READ_ONLY = (
 DEVICES = ("/dev/null", "/dev/zero", "/dev/urandom", "/dev/random")
 UNAVAILABLE = 126
 
+# ImageMagick 7.1.1-43 unwraps a gzip (1F 8B 08) or bzip2 ("BZh") file by its
+# leading bytes in OpenBlob (MagickCore/blob.c), before it chooses a coder or
+# applies its policy, so the policy cannot refuse such a file. LaTeXML starts
+# ImageMagick on any file a document names. Files starting with these wrappers
+# are therefore refused before LaTeXML runs. That ImageMagick does not unwrap xz
+# or zstd; both are refused anyway, so a later version that does is covered.
+COMPRESSION_MAGICS = (
+    (b"\x1f\x8b", "gzip"),
+    (b"BZh", "bzip2"),
+    (b"\xfd7zXZ\x00", "xz"),
+    (b"\x28\xb5\x2f\xfd", "zstd"),
+)
+MAX_SCANNED_FILES = 4096
+
+
+def compression_wrapper(head: bytes) -> str | None:
+    """The compression wrapper ``head`` starts with, or None."""
+    for magic, name in COMPRESSION_MAGICS:
+        if head.startswith(magic):
+            return name
+    return None
+
+
+def find_compressed_file(directories) -> Path | None:
+    """The first file under ``directories`` that starts with a compression wrapper.
+
+    Every file is checked, whatever its name, because ImageMagick identifies a
+    file by its bytes. A link to a file is checked through the link; a link to
+    a directory is not entered. The scan fails closed: an unreadable entry, or
+    a tree with more than MAX_SCANNED_FILES files, is returned as the finding.
+    """
+    seen: set[Path] = set()
+    count = 0
+    pending = []
+    for directory in directories:
+        root = Path(directory).resolve()
+        if root not in seen:
+            seen.add(root)
+            pending.append(root)
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return directory
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                    continue
+                if not entry.is_file(follow_symlinks=True):
+                    continue
+                count += 1
+                if count > MAX_SCANNED_FILES:
+                    return path
+                with open(path, "rb") as handle:
+                    if compression_wrapper(handle.read(8)):
+                        return path
+            except OSError:
+                return path
+    return None
+
 
 def confined(
     args: list[str], directory: Path, read_only: tuple[Path, ...] = ()

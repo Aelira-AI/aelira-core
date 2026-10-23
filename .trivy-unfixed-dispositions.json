@@ -1259,8 +1259,9 @@
           "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
         }
       ],
-      "status": "affected",
-      "reason": "Missing EOF check reading bzip2-compressed image data causes an infinite loop. The fix is in MagickCore/blob.c, in the transparent whole-file decompression that OpenBlob selects when a file begins with the bzip2 magic bytes (BZh), before any coder is chosen, so the loop is reached by whichever coder the decompressed content resolves to, not only by MIFF. The image's ImageMagick policy does not mitigate it: a .png or .jpg file whose bytes are a bzip2 stream is decompressed and read through the allowed PNG or JPEG coder, which was confirmed in the image and through the LaTeXML launcher. LaTeXML reads and transforms submitted PNG and JPEG graphics, so a document can reach it. Denial of service only, bounded by the 60-second post-processing timeout, which kills the process; no distribution fix exists.",
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Missing EOF check reading bzip2-compressed image data causes an infinite loop. The loop is in MagickCore/blob.c, in the transparent whole-file decompression that OpenBlob applies when a file begins with the bzip2 magic bytes, before any coder or policy check, so the image's ImageMagick policy cannot refuse it. Submitted documents cannot reach it: before latexml or latexmlpost starts, every file either tool can read is checked and the stage is refused with compressed_input if any file begins with a gzip, bzip2, xz or zstd magic, whatever its name (src/education/latex_sandbox.py, src/education/remediation/latex_converter.py). The confined LaTeXML stages can read only their own attempt directory and system files, which documents cannot write, and uploaded LaTeX projects reject such members with compressed_member. A benign bzip2-wrapped PNG was refused this way through the real conversion entry point and in the API image, while the same PNG unwrapped converts. The library fix, upstream commit e9872c4a in 7.1.2-32, is tracked in #750.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-20",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"

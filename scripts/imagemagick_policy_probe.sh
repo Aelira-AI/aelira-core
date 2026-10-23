@@ -162,10 +162,11 @@ probe perl-mvg-named-png-undecoded perl -MImage::Magick -e 'my $i=Image::Magick-
 
 # bzip2, MIFF and PSD (CVE-2026-106565, CVE-2026-106567). ImageMagick
 # decompresses a leading bzip2 magic transparently before choosing a coder, so
-# a bzip2-wrapped PNG is still read through the allowed PNG coder: an accepted
-# outcome that records the affected finding, not a policy hole. MIFF and PSD are
-# refused by prefix, extension and content sniffing; each refusal has a control
-# that decodes the same file under the permissive policy.
+# ImageMagick itself still reads a bzip2-wrapped PNG through the allowed PNG
+# coder: the policy cannot refuse it. The converter refuses such files before
+# LaTeXML starts (checked further down). MIFF and PSD are refused by prefix,
+# extension and content sniffing; each refusal has a control that decodes the
+# same file under the permissive policy.
 probe bzpng-extension magick identify "$F/bz-png.png"
 probe bzpng-png-prefix magick identify "png:$F/bz-png.png"
 probe miff-prefix magick identify "miff:$F/benign.miff"
@@ -307,10 +308,11 @@ print(f"launcher planted-{mode} exits {','.join(codes)} policy-refusals {refusal
 PY
 done
 
-# bzip2, MIFF and PSD through the real LaTeXML launcher. A benign bzip2-wrapped
-# PNG still renders (CVE-2026-106565 is reachable); a benign MIFF and PSD named
-# .png are refused by the policy before they decode (CVE-2026-106567 and the
-# MIFF path). Each figure is the benign fixture written earlier.
+# bzip2, MIFF and PSD through the bare LaTeXML launcher, without the
+# converter's compression check. A benign bzip2-wrapped PNG still renders here,
+# which is the negative control for the converter check below; a benign MIFF
+# and PSD named .png are refused by the policy before they decode
+# (CVE-2026-106567 and the MIFF path).
 for case in "bzpng bz-png.png" "miff benign.miff" "psd benign.psd"; do
   name=${case%% *}
   fixture=${case#* }
@@ -338,6 +340,45 @@ rendered = "yes" if list(work.glob("x*.png")) else "no"
 print(f"launcher media-{name} refused {refused} rendered {rendered}")
 PY
 done
+
+# The same files through the application's converter, which checks every file
+# a LaTeXML stage can read before the stage starts. The bzip2-wrapped and a
+# gzip-wrapped PNG are refused with compressed_input and LaTeXML never runs
+# (CVE-2026-106565); the plain PNG converts as the control.
+python3 -I - "$F" <<'PY'
+import gzip, json, pathlib, shutil, sys
+
+sys.path.insert(0, "/app")
+from src.education.remediation.latex_converter import LaTeXConverter
+
+base = pathlib.Path(sys.argv[1]) / "w" / "converter"
+source = base / "source"
+source.mkdir(parents=True)
+(source / "doc.tex").write_text(
+    "\\documentclass{article}\\usepackage{graphicx}\\begin{document}"
+    "\\includegraphics{figure.png}\\end{document}\n"
+)
+plain = (pathlib.Path(sys.argv[1]) / "control.png").read_bytes()
+cases = {
+    "bzpng": (pathlib.Path(sys.argv[1]) / "bz-png.png").read_bytes(),
+    "gzpng": gzip.compress(plain),
+    "png": plain,
+}
+converter = LaTeXConverter()
+for name, figure in cases.items():
+    attempt = base / name
+    attempt.mkdir()
+    (attempt / "figure.png").write_bytes(figure)
+    converter._convert_with_latexml(str(source / "doc.tex"), attempt)
+    stage = json.loads((attempt / "latexml-parse-1.diagnostics.json").read_text())
+    refused = "yes" if any(d["code"] == "compressed_input" for d in stage["diagnostics"]) else "no"
+    parsed = "yes" if (attempt / "doc.xml").exists() else "no"
+    # The converter's later acceptance checks refuse a figure without
+    # alternative text, so the control is that LaTeXML processed the graphic.
+    output = attempt / "doc.html"
+    converted = "yes" if output.exists() and "figure.png" in output.read_text() else "no"
+    print(f"converter {name} compressed-input {refused} parsed {parsed} converted {converted}")
+PY
 
 printf 'policy-paths %s\n' "$(magick -list policy | sed -n 's/^Path: //p' | tr '\n' ' ')"
 echo imagemagick-policy-probe-complete

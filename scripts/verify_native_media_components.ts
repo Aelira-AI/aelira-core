@@ -143,6 +143,7 @@ export function checkPolicyProbe(output: string): void {
   const ghostscript: string[][] = [];
   const latexml = new Map<string, string>();
   const launcher = new Map<string, string>();
+  const converter = new Map<string, string>();
   let policyPaths: string | undefined;
   for (const line of lines.slice(0, -1)) {
     const [kind, ...rest] = line.split(/\s+/);
@@ -154,6 +155,7 @@ export function checkPolicyProbe(output: string): void {
     else if (kind === 'latexml' && rest.length > 0) latexml.set(rest[0], rest.slice(1).join(' '));
     else if (kind === 'policy-paths') policyPaths = rest.join(' ');
     else if (kind === 'launcher' && rest.length > 0) launcher.set(rest[0], rest.slice(1).join(' '));
+    else if (kind === 'converter' && rest.length > 0) converter.set(rest[0], rest.slice(1).join(' '));
     else throw new Error(`unexpected policy probe line: ${line}`);
   }
   for (const [name, expected] of Object.entries(expectedProbes)) {
@@ -198,8 +200,18 @@ export function checkPolicyProbe(output: string): void {
   if (launcher.get('planted-control') !== 'exits 0,0 policy-refusals 0 images 1 home-removed yes') {
     throw new Error('the planted policy control did not render through the LaTeX launcher');
   }
+  // Without the converter's check the bare launcher still renders a bzip2-wrapped
+  // PNG: the negative control that shows the converter check is what refuses it.
   if (launcher.get('media-bzpng') !== 'refused no rendered yes') {
-    throw new Error('a bzip2-wrapped PNG was not reachable through the LaTeX launcher (CVE-2026-106565 reachability)');
+    throw new Error('the bare-launcher control did not render the bzip2-wrapped PNG');
+  }
+  for (const name of ['bzpng', 'gzpng']) {
+    if (converter.get(name) !== 'compressed-input yes parsed no converted no') {
+      throw new Error(`the converter did not refuse the ${name === 'bzpng' ? 'bzip2' : 'gzip'}-wrapped PNG before LaTeXML ran (CVE-2026-106565)`);
+    }
+  }
+  if (converter.get('png') !== 'compressed-input no parsed yes converted yes') {
+    throw new Error('the plain PNG control did not convert through the converter');
   }
   for (const format of ['miff', 'psd']) {
     if (launcher.get(`media-${format}`) !== 'refused yes rendered no') {

@@ -382,3 +382,42 @@ def test_tex_character_code_escape_is_explicitly_unsupported(source):
     result = project(source)
     assert "dependency_dynamic" in codes(result)
     assert result.flattened_source is None
+
+
+# Leading bytes ImageMagick unwraps ahead of its policy (gzip, bzip2), and the
+# two it does not yet unwrap but is refused for defensively (xz, zstd).
+WRAPPERS = {
+    "gzip": b"\x1f\x8b\x08\x00\x00\x00\x00\x00",
+    "bzip2": b"BZh91AY&SY",
+    "xz": b"\xfd7zXZ\x00\x00\x04",
+    "zstd": b"\x28\xb5\x2f\xfd\x00\x58",
+}
+
+
+@pytest.mark.parametrize("wrapper", sorted(WRAPPERS))
+@pytest.mark.parametrize(
+    "name", ["figure.png", "figure.eps", "chapter.tex", "notes.txt"]
+)
+def test_compression_wrapped_members_are_refused(monkeypatch, wrapper, name):
+    data = archive({"main.tex": "Hi", name: WRAPPERS[wrapper] + b"payload"})
+    with pytest.raises(lp.ProjectError, match="compressed_member") as caught:
+        lp.inspect_archive(data, "main.tex")
+    assert caught.value.path == name
+    # Negative control: without the check the same archive is accepted.
+    monkeypatch.setattr(lp, "compression_wrapper", lambda head: None)
+    assert name in lp.inspect_archive(data, "main.tex").files
+
+
+def test_ordinary_members_are_not_mistaken_for_compression():
+    files = {
+        "main.tex": "\\documentclass{article}\\begin{document}Hi\\end{document}",
+        "refs.bib": "@article{k, title={BZh is not a prefix here}}",
+        "figure.png": b"\x89PNG\r\n\x1a\n" + b"\x00" * 16,
+        "photo.jpg": b"\xff\xd8\xff\xe0" + b"\x00" * 16,
+        "plot.pdf": b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n",
+        "plot.eps": b"%!PS-Adobe-3.0 EPSF-3.0\n",
+        "empty.txt": b"",
+        "short.txt": b"BZ",
+    }
+    project = lp.inspect_archive(archive(files), "main.tex")
+    assert set(files) <= set(project.files)

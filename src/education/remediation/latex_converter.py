@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
 from ..latex_runtime import tex_environment, version_command
-from ..latex_sandbox import UNAVAILABLE, confined, tool_home
+from ..latex_sandbox import UNAVAILABLE, confined, find_compressed_file, tool_home
 from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
 from ..latex_semantics import extract_semantics, save_html_semantics
 from ..latex_compatibility import decide_html, tool_versions
@@ -51,6 +51,15 @@ logger = logging.getLogger(__name__)
 
 # Tools that read files named inside the user's document.
 CONFINED_TOOLS = frozenset({"latexml", "latexmlpost", "lualatex", "pdflatex", "pandoc"})
+# The stages that can start ImageMagick: latexml sizes graphics and latexmlpost
+# converts them. Before either runs, every file it may read is checked for a
+# compression wrapper that ImageMagick would unwrap ahead of its policy.
+IMAGEMAGICK_TOOLS = frozenset({"latexml", "latexmlpost"})
+
+
+class _CompressedInput(Exception):
+    """A file the stage could read starts with a compression wrapper."""
+
 
 # Import through LaTeXML's local XML catalog, independent of its install path.
 # Use LaTeXML's own unaligned equation templates so source equation nodes render
@@ -187,6 +196,11 @@ class LaTeXConverter:
             pass
         try:
             confine = tool in CONFINED_TOOLS
+            if tool in IMAGEMAGICK_TOOLS and find_compressed_file(
+                (candidate.parent, source.parent)
+            ):
+                # Refused before the tool starts, so ImageMagick never sees it.
+                raise _CompressedInput
             with contextlib.ExitStack() as run_scope:
                 if confine:
                     # Writes stay in the candidate's directory and the source
@@ -220,6 +234,9 @@ class LaTeXConverter:
                     exit_code=result.returncode,
                     final_pass=final_pass,
                 )
+        except _CompressedInput:
+            result = SimpleNamespace(returncode=1)
+            findings = [diagnostic("compressed_input")]
         except subprocess.TimeoutExpired:
             result = SimpleNamespace(returncode=1)
             findings = [diagnostic("timeout")]

@@ -65,6 +65,7 @@ class Diagnostic(BaseModel):
         "siunitx_syntax_ambiguous",
         "siunitx_number_unverified",
         "siunitx_source_unbounded",
+        "compressed_input",
     ]
     severity: Literal["info", "warning", "error"]
     source_line: int | None = Field(default=None, ge=1, le=10000000)

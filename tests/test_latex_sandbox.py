@@ -7,9 +7,14 @@ positive control uses the same syntax on a file inside the readable directory
 and must succeed, so a refused read is the boundary and not a broken probe.
 """
 
+import bz2
+import gzip
+import json
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pymupdf
@@ -18,6 +23,7 @@ import pytest
 from src.education import latex_project_conversion as project_conversion
 from src.education import latex_runtime as runtime
 from src.education import latex_sandbox as sandbox
+from src.education.remediation import latex_converter
 from src.education.remediation.latex_converter import LaTeXConverter
 
 MARKER = "OUTSIDEMARKER4242"
@@ -421,3 +427,126 @@ def test_unconfined_run_is_only_available_by_request(tmp_path, monkeypatch):
     runtime.run_tool(["dpkg-query", "-W"], tmp_path, 5, confine=False)
     assert seen[0][:3] == [sys.executable, "-I", str(Path(sandbox.__file__).resolve())]
     assert seen[1] == ["dpkg-query", "-W"]
+
+
+def _png(width=4, height=3):
+    """A small, valid RGB PNG."""
+
+    def chunk(kind, data):
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    rows = b"".join(b"\x00" + b"\x00\x80\xff" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+@pytest.mark.parametrize(
+    "head,expected",
+    [
+        (b"\x1f\x8b\x08\x00", "gzip"),
+        (b"BZh91AY&SY", "bzip2"),
+        (b"\xfd7zXZ\x00\x00", "xz"),
+        (b"\x28\xb5\x2f\xfd\x00", "zstd"),
+        (b"\x89PNG\r\n\x1a\n", None),
+        (b"\xff\xd8\xff\xe0", None),
+        (b"%PDF-1.7", None),
+        (b"%!PS-Adobe-3.0 EPSF-3.0", None),
+        (b"\\documentclass{article}", None),
+        (b"@article{key,", None),
+        (b"BZ", None),
+        (b"\x1f", None),
+        (b"", None),
+    ],
+)
+def test_compression_wrapper_recognises_exactly_the_refused_magics(head, expected):
+    assert sandbox.compression_wrapper(head) == expected
+
+
+def test_find_compressed_file_checks_every_file_whatever_its_name(
+    tmp_path, monkeypatch
+):
+    work = tmp_path / "work"
+    (work / "nested" / "deeper").mkdir(parents=True)
+    (work / "doc.tex").write_text("\\documentclass{article}")
+    (work / "figure.png").write_bytes(_png())
+    assert sandbox.find_compressed_file([work]) is None
+    hidden = work / "nested" / "deeper" / "anything.dat"
+    hidden.write_bytes(bz2.compress(_png()))
+    assert sandbox.find_compressed_file([work, work]) == hidden.resolve()
+    hidden.unlink()
+    # A link to a wrapped file is checked through the link; a link to a
+    # directory is not entered.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "wrapped.png").write_bytes(bz2.compress(_png()))
+    (work / "linked-dir").symlink_to(outside, target_is_directory=True)
+    assert sandbox.find_compressed_file([work]) is None
+    (work / "linked.png").symlink_to(outside / "wrapped.png")
+    assert sandbox.find_compressed_file([work]) == work.resolve() / "linked.png"
+    (work / "linked.png").unlink()
+    # Too many files to check is a finding, not a pass.
+    monkeypatch.setattr(sandbox, "MAX_SCANNED_FILES", 1)
+    assert sandbox.find_compressed_file([work]) is not None
+
+
+def _latexml_codes(attempt):
+    path = attempt / "latexml-parse-1.diagnostics.json"
+    return [d["code"] for d in json.loads(path.read_text())["diagnostics"]]
+
+
+@requires_tool("latexmlpost")
+@pytest.mark.parametrize("wrapper", ["bzip2", "gzip"])
+def test_latexml_refuses_a_compression_wrapped_graphic_before_it_runs(
+    dirs, monkeypatch, wrapper
+):
+    work, source, _ = dirs
+    converter = LaTeXConverter()
+    (source / "doc.tex").write_text(
+        _document("\\includegraphics{figure.png}").replace(
+            "\\begin{document}", "\\usepackage{graphicx}\n\\begin{document}"
+        )
+    )
+    wrap = bz2.compress if wrapper == "bzip2" else gzip.compress
+
+    def attempt(name, figure):
+        directory = work / name
+        directory.mkdir()
+        (directory / "figure.png").write_bytes(figure)
+        html = converter._convert_with_latexml(str(source / "doc.tex"), directory)
+        return directory, html
+
+    refused, html = attempt("refused", wrap(_png()))
+    assert html is None
+    assert _latexml_codes(refused) == ["compressed_input"]
+    assert not (refused / "doc.xml").exists()
+    # Control: the same PNG, unwrapped, goes through both LaTeXML stages and
+    # the graphic reaches the output. (The converter's later acceptance checks
+    # refuse a figure without alternative text, which is not what is tested.)
+    control, _ = attempt("control", _png())
+    assert _latexml_codes(control) == []
+    assert "figure.png" in (control / "doc.html").read_text()
+    # Negative control: with the check removed, LaTeXML runs on the wrapped file.
+    monkeypatch.setattr(latex_converter, "find_compressed_file", lambda dirs: None)
+    unchecked, _ = attempt("unchecked", wrap(_png()))
+    assert (unchecked / "doc.xml").exists()
+    assert "compressed_input" not in _latexml_codes(unchecked)
+
+
+@requires_tool("latexml")
+def test_latexml_refuses_a_source_that_itself_starts_with_bzip2_magic(dirs):
+    """A document can name its own processed copy as a graphic, so a source
+    whose first bytes are a bzip2 magic is refused too. A real document never
+    starts with these three letters; this is the only text-file case."""
+    work, source, _ = dirs
+    (source / "doc.tex").write_text("BZh9 " + _document("Text."))
+    attempt = work / "attempt"
+    attempt.mkdir()
+    assert (
+        LaTeXConverter()._convert_with_latexml(str(source / "doc.tex"), attempt) is None
+    )
+    assert _latexml_codes(attempt) == ["compressed_input"]
