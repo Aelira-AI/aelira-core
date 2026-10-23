@@ -1,4 +1,4 @@
-# Rebuilt Debian libxml2, libX11 and libXrender for 0.9.14
+# Rebuilt Debian libxml2, libX11, libXrender and brotli for 0.9.14
 
 The API and development images run on Debian 13 (trixie). Debian has no fixed
 trixie packages for the advisories below. Upstream projects and Ubuntu have
@@ -12,6 +12,7 @@ libraries.
 | `libxml2` | `2.12.7+dfsg+really2.9.14-2.1+deb13u3` | `...+deb13u3+aelira2` | CVE-2026-6653, CVE-2026-74860, CVE-2026-86138, CVE-2026-86140, CVE-2026-86142, CVE-2026-86143, CVE-2026-86144 |
 | `libx11` | `2:1.8.12-1` | `2:1.8.12-1+aelira1` | CVE-2026-88806, CVE-2026-94283, CVE-2026-94284, CVE-2026-94285 |
 | `libxrender` | `1:0.9.12-1` | `1:0.9.12-1+aelira1` | CVE-2026-88807 |
+| `brotli` | `1.1.0-2` (binaries `1.1.0-2+b7`) | `1.1.0-2+b7+aelira1` | CVE-2026-111497 ([details](#brotli-cve-2026-111497)) |
 
 CVE-2026-86139 is listed against trixie's `libxml2`, but the vulnerable code
 is not present in it; see [below](#cve-2026-86139-not-affected).
@@ -157,8 +158,87 @@ public header. libX11 commit `f263bbca` renames a private field in the
 internal `XimintP.h` without changing its size. The consumer checks cover the
 image's own native consumers; they are not a general ABI claim.
 
+**brotli.** CVE-2026-111497 is covered by patch review and brotli's own test
+suite, not by a behavioural test; see [its section](#brotli-cve-2026-111497).
+
 **Architectures.** Builds, controls and image checks have been run on native
 arm64. amd64 runs in CI.
+
+## brotli: CVE-2026-111497
+
+CVE-2026-111497 is a buffer overflow in the Brotli decoder (`c/dec/decode.c`)
+in brotli 1.0.3 to 1.2.0. Debian trixie ships `brotli` 1.1.0-2 and has no
+fixed package
+([tracker](https://security-tracker.debian.org/tracker/CVE-2026-111497), bug
+1151690). Upstream fixed it in 1.0.10, 1.1.1 and 1.2.1. The rebuild applies
+the 1.1.1 commit
+[`da98063`](https://github.com/google/brotli/commit/da9806362874b9bd4b552a3af360b5d6347beb12),
+a cherry-pick of `0ed4268a`, "Detect and report invalid stream earlier".
+
+**Source and patch.**
+
+- **Debian source:** `brotli_1.1.0-2.dsc`, the upstream tarball and the
+  packaging were authenticated through Debian's signed trixie index, and the
+  `.dsc` carries a valid signature from its uploader (Gianfranco Costamagna).
+  The orig tarball is 512,036 bytes and is checked in.
+- **Patch:** the upstream commit applies with no fuzz and no offset after
+  Debian's one packaging patch. Its GitHub `.patch` has SHA-256
+  `3c1e4587947e4c61dd9c7c4619b1ae12d6bedbfd3c33c23981bf31269e18d52c`. Like
+  the libX11 and libXrender commits, it is unsigned and trusted through the
+  GitHub project over HTTPS and review of the diff.
+
+**The flaw in Debian's code.** In 1.1.0 the block-switch decoder
+`DecodeBlockTypeAndLength` returns `BROTLI_FALSE` when a stream switches
+block types in a category that has at most one block type. The three
+non-incremental wrappers (`DecodeLiteralBlockSwitch`,
+`DecodeCommandBlockSwitch` and `DecodeDistanceBlockSwitch`) discard that
+result, so decoding continues with block state the stream never set up. The
+fix makes these functions return a decoder error code. It reports the
+invalid stream as the new `BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH` (-17,
+previously reserved) and stops decoding. The only public header change is
+that new error code, so the library ABI is unchanged.
+
+**What the tests prove.** There is no behavioural control for this
+advisory. The fix adds no upstream test, and the project does not build
+crafted malformed streams to demonstrate decoder flaws. The evidence is:
+
+- **Patch review:** the fix applied with no fuzz and its diff reviewed.
+- **Upstream test suite:** brotli's own build-time suite runs on every
+  rebuild (the recipe's `tests` directive) and must report 100% passed. It
+  has 14 tests: round trips through the rebuilt encoder and decoder, and
+  decoding of upstream's compatibility test vectors.
+- **Image check:** `verify_debian_backports.ts` requires libcurl and
+  FreeType to resolve the rebuilt `libbrotlidec` and `libbrotlicommon`, and
+  requires `curl --version` to still report brotli support. It also has the
+  rebuilt `libbrotlidec` decode an ordinary text that the image's own Python
+  `brotli` 1.2.1 encoder compressed.
+
+**Version.** Debian's installed binaries are the binNMU `1.1.0-2+b7` on both
+architectures. The rebuild is `1.1.0-2+b7+aelira1`, so it sorts above them.
+A Debian security update, `1.1.0-2+deb13u1` or later, would sort above the
+rebuild, so the scanner would then report a fixed version and the gate would
+stop accepting the row until the recipe is rebased or removed.
+
+**Consumers.** These are the files in the API image that link a `libbrotli`
+library directly (ELF `DT_NEEDED`):
+
+| Package | File | Links |
+| --- | --- | --- |
+| `libcurl4t64` | `libcurl.so.4` | `libbrotlidec` (HTTP `Content-Encoding: br`) |
+| `libcurl3t64-gnutls` | `libcurl-gnutls.so.4` | `libbrotlidec` |
+| `libfreetype6` | `libfreetype.so.6` | `libbrotlidec` (WOFF2 fonts) |
+| `libheif1` | `libheif.so.1` | `libbrotlidec`, `libbrotlienc` |
+
+The application's Python `brotli` package is the separate 1.2.1 wheel, which
+already contains the fix. Node.js, which runs Pa11y, carries its own
+compiled-in Brotli, not the system library. Neither is covered by this
+rebuild.
+
+**Inventory gate.** The scanner still reports CVE-2026-111497 against
+`libbrotli1`, because Debian has no fixed version. The gate accepts that row
+only as patched, for the exact package version `1.1.0-2+b7+aelira1`, and only
+after the image receipt is verified against this recipe. Stock `1.1.0-2+b7`
+stays unresolved.
 
 ## CVE-2026-86139: not affected
 

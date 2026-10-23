@@ -7,7 +7,10 @@
 # backport.conf has one whitespace-separated directive per line:
 #   source NAME                     Debian source package name
 #   source_version VERSION          the pinned Debian version
-#   rebuilt_version VERSION         the version this build produces
+#   rebuilt_version VERSION         the version this build produces: the source
+#                                   version, optionally Debian's binNMU suffix
+#                                   (+bN, so it sorts above the installed
+#                                   binaries), then +aeliraN
 #   changelog_date RFC2822-DATE     date of the generated changelog entry
 #   disclosure PATH                 repository document naming every CVE
 #   dsc FILE SHA256                 the Debian source control file
@@ -17,6 +20,8 @@
 #                                   CVES is a comma list
 #   assert CVE FILE TEXT            TEXT must occur in FILE after patching
 #   control NAME                    run controls/NAME/run.sh after patching
+#   tests                           run the package's own build-time test
+#                                   suite instead of building with nocheck
 #   check NAME                      run controls/NAME/run.sh after the build,
 #                                   with the built packages as fourth argument
 #   profile NAME                    Debian build profile (repeatable)
@@ -45,7 +50,7 @@ version=$(value rebuilt_version)
 changelog_date=$(value changelog_date)
 build_type=$(value build)
 case "$build_type" in arch) build_flag=-B ;; full) build_flag=-b ;; *) exit 1 ;; esac
-case "$version" in "$source_version"+aelira[0-9]*) ;; *) echo 'rebuilt_version must extend source_version' >&2; exit 1 ;; esac
+case "$version" in "$source_version"+aelira[0-9]*|"$source_version"+b[0-9]*+aelira[0-9]*) ;; *) echo 'rebuilt_version must extend source_version' >&2; exit 1 ;; esac
 
 # Every pinned file must match before anything is unpacked.
 awk '$1 == "dsc" || $1 == "input" { print $3 "  " $2 } $1 == "patch" { print $3 "  patches/" $2 }' "$conf" \
@@ -144,9 +149,16 @@ else
 fi
 # Debian's own rules keep its configure options, hardening and symbols files.
 # -nc keeps the reviewed patches applied; the tree is fresh from the .dsc.
-DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" SOURCE_DATE_EPOCH=0 \
+nocheck=nocheck
+grep -qx tests "$conf" && nocheck=""
+DEB_BUILD_OPTIONS="$nocheck parallel=$(nproc)" SOURCE_DATE_EPOCH=0 \
     dpkg-buildpackage "$build_flag" -nc -us -uc "$@" > "$work/build.log" 2>&1 || {
     tail -c 16384 "$work/build.log" >&2; exit 1; }
+if test -z "$nocheck"; then
+    grep -E 'tests passed|Test #|PASS|FAIL' "$work/build.log" | tail -n 40
+    grep -q '100% tests passed' "$work/build.log" || {
+        echo 'the package test suite did not report 100% passed' >&2; exit 1; }
+fi
 
 arch=$(dpkg --print-architecture)
 multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
@@ -183,7 +195,7 @@ mkdir "$work/extracted"
     awk '$1 == "patch" { print "patch_sha256=" $2 " " $3 " " $5 }' "$conf"
     printf '%s\n' "$fixed" | tr ',' '\n' | sed 's/^/fixed=/'
     awk '$1 == "assert" { print "assertion=" $2 " " $3 }' "$conf"
-    awk '$1 == "control" || $1 == "check" { print "control=" $2 }' "$conf"
+    awk '$1 == "control" || $1 == "check" { print "control=" $2 } $1 == "tests" { print "control=package-test-suite" }' "$conf"
     (cd "$out" && sha256sum ./*.deb) | awk '{ sub(/^\.\//, "", $2); print "package_sha256=" $2 " " $1 }'
     awk '$1 == "library" { print $2, $3 }' "$conf" | while read -r package file; do
         rm -rf "$work/extracted/$package"

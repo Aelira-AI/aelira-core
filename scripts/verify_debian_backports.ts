@@ -96,6 +96,10 @@ export function parseBackportConf(raw: string): Backport {
         if (fields.length !== 1) fail(`invalid ${key} in backport recipe`);
         backport.controls.push(fields[0]);
         break;
+      case 'tests':
+        if (fields.length || backport.controls.includes('package-test-suite')) fail('invalid tests in backport recipe');
+        backport.controls.push('package-test-suite');
+        break;
       case 'profile':
         if (fields.length !== 1) fail('invalid profile in backport recipe');
         break;
@@ -120,8 +124,9 @@ export function parseBackportConf(raw: string): Backport {
   }
   const sourceVersion = single.get('source_version')!;
   const rebuiltVersion = single.get('rebuilt_version')!;
-  if (!rebuiltVersion.startsWith(`${sourceVersion}+aelira`) || !/\+aelira\d+$/.test(rebuiltVersion)) {
-    fail('rebuilt_version must extend source_version with +aeliraN');
+  const suffix = rebuiltVersion.startsWith(`${sourceVersion}+`) ? rebuiltVersion.slice(sourceVersion.length) : '';
+  if (!/^(\+b\d+)?\+aelira\d+$/.test(suffix)) {
+    fail('rebuilt_version must extend source_version with an optional +bN and +aeliraN');
   }
   if (dsc !== 1 || backport.patches.length === 0) fail('backport recipe needs a .dsc and at least one patch');
   for (const library of backport.libraries) {
@@ -244,18 +249,25 @@ const sh = (image: string, script: string, extra: string[] = []) =>
 /** Require installed packages, receipts and loaded-library files to match the recipes. */
 export function checkInstalled(image: string, backports: Backport[], mode: 'runtime' | 'dev'): Map<string, Receipt> {
   const rows = new Map<string, string>();
+  const sources = new Map<string, string>();
   for (const line of run('docker', [...base, '--entrypoint', 'dpkg-query', image, '-W',
-    '-f=${Package}\t${Version}\t${db:Status-Abbrev}\n']).trim().split('\n')) {
-    const [name, version, status] = line.split('\t');
-    if (status?.startsWith('ii')) rows.set(name, version);
+    '-f=${Package}\t${Version}\t${db:Status-Abbrev}\t${source:Package}\n']).trim().split('\n')) {
+    const [name, version, status, source] = line.split('\t');
+    if (status?.startsWith('ii')) {
+      rows.set(name, version);
+      sources.set(name, source);
+    }
   }
   const receipts = new Map<string, Receipt>();
   for (const backport of backports) {
     for (const name of backport[mode]) {
       if (rows.get(name) !== backport.rebuiltVersion) throw new Error(`${name} package version mismatch`);
     }
-    for (const name of backport.binaries) {
-      if (rows.has(name) && rows.get(name) !== backport.rebuiltVersion) {
+    // Every installed package built from this source, listed or not, must
+    // come from the rebuild.
+    for (const [name, source] of sources) {
+      if ((source === backport.source || backport.binaries.includes(name)) &&
+          rows.get(name) !== backport.rebuiltVersion) {
         throw new Error(`${name} is installed at ${rows.get(name)}, not the rebuilt ${backport.rebuiltVersion}`);
       }
     }
@@ -433,6 +445,52 @@ function checkXConsumers(image: string, receipts: Map<string, Receipt>): void {
   if (!out.includes('x-consumers-ok')) throw new Error('X consumer probe gave no success marker');
 }
 
+/**
+ * libbrotli1 is loaded by libcurl (HTTP content encoding) and FreeType
+ * (WOFF2 fonts). Both must resolve the rebuilt libraries, and the rebuilt
+ * decoder must decode a valid stream produced by the image's own Python
+ * brotli encoder. The input is ordinary text, not a crafted stream.
+ */
+function checkBrotliConsumers(image: string, receipts: Map<string, Receipt>): void {
+  const dec = libraryPath(receipts, 'brotli', 'libbrotlidec.so.1.1.0');
+  const common = libraryPath(receipts, 'brotli', 'libbrotlicommon.so.1.1.0');
+  const script = String.raw`
+    dec=$1 common=$2
+    for binary in /usr/lib/*/libcurl.so.4 /usr/lib/*/libfreetype.so.6; do
+      ldd "$binary" > /tmp/ldd.txt
+      if grep -q 'not found' /tmp/ldd.txt; then cat /tmp/ldd.txt >&2; exit 1; fi
+      test "$(readlink -f "$(awk '$1 == "libbrotlidec.so.1" { print $3 }' /tmp/ldd.txt)")" = "$dec"
+      test "$(readlink -f "$(awk '$1 == "libbrotlicommon.so.1" { print $3 }' /tmp/ldd.txt)")" = "$common"
+    done
+    curl --version | grep -qw brotli
+    # The runtime image's application Python is /opt/venv; the developer
+    # image installs into /usr/local. Use whichever has the brotli encoder.
+    python=""
+    for candidate in /opt/venv/bin/python /usr/local/bin/python; do
+      if test -x "$candidate" && "$candidate" -c 'import brotli' 2>/dev/null; then python=$candidate; break; fi
+    done
+    test -n "$python"
+    BROTLI_DEC="$dec" "$python" - <<'PY'
+import ctypes, os, brotli
+text = ("Accessible equation: x^2 + y^2 = z^2. " * 400).encode()
+stream = brotli.compress(text, quality=11)
+library = ctypes.CDLL(os.environ["BROTLI_DEC"])
+library.BrotliDecoderDecompress.argtypes = [ctypes.c_size_t, ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_size_t), ctypes.c_char_p]
+size = ctypes.c_size_t(len(text) + 16)
+out = ctypes.create_string_buffer(size.value)
+assert library.BrotliDecoderDecompress(len(stream), stream, ctypes.byref(size), out) == 1
+assert out.raw[:size.value] == text
+with open("/proc/self/maps") as maps:
+    assert any(line.rstrip().endswith(os.environ["BROTLI_DEC"]) for line in maps)
+PY
+    echo brotli-consumers-ok
+  `;
+  const out = run('docker', [...base, '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m,mode=1777',
+    '--entrypoint', '/bin/sh', image, '-ec', script, 'probe', dec, common]);
+  if (!out.includes('brotli-consumers-ok')) throw new Error('brotli consumer probe gave no success marker');
+}
+
 function checkLayers(image: string, receipts: Map<string, Receipt>): void {
   const expected = new Map<string, string>();
   for (const receipt of receipts.values()) {
@@ -486,6 +544,7 @@ if (import.meta.main) {
     if (!flags.includes('--package-smoke')) {
       checkLibxml2Consumers(image, receipts);
       if (!flags.includes('--dev')) checkXConsumers(image, receipts);
+      checkBrotliConsumers(image, receipts);
     }
     checkLayers(image, receipts);
     console.log(`Rebuilt Debian packages verified: ${backports.map((backport) =>

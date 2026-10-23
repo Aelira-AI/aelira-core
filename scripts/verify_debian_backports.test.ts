@@ -29,12 +29,17 @@ function receiptFor(backport: Backport, arch = 'arm64'): string {
 
 describe('backport recipes', () => {
   test('the repository recipes cover the reviewed CVEs and nothing else', () => {
-    expect(backports.map((item) => item.source)).toEqual(['libx11', 'libxml2', 'libxrender']);
+    expect(backports.map((item) => item.source)).toEqual(['brotli', 'libx11', 'libxml2', 'libxrender']);
     expect(libxml2.fixed).toEqual(['CVE-2026-6653', 'CVE-2026-74860', 'CVE-2026-86138', 'CVE-2026-86140',
       'CVE-2026-86142', 'CVE-2026-86143', 'CVE-2026-86144']);
     expect(libxml2.assertions).toEqual([['CVE-2026-86139', 'uri.c']]);
     expect(libx11.fixed).toEqual(['CVE-2026-88806', 'CVE-2026-94283', 'CVE-2026-94284', 'CVE-2026-94285']);
     expect(backports.find((item) => item.source === 'libxrender')!.fixed).toEqual(['CVE-2026-88807']);
+    const brotli = backports.find((item) => item.source === 'brotli')!;
+    expect(brotli.fixed).toEqual(['CVE-2026-111497']);
+    expect(brotli.rebuiltVersion).toBe('1.1.0-2+b7+aelira1');
+    expect(brotli.controls).toEqual(['package-test-suite']);
+    expect(brotli.binaries).toEqual(['libbrotli1', 'libbrotli-dev', 'brotli']);
     for (const backport of backports) expect(backport.disclosure).toBe('docs/security/debian-backports-0.9.14.md');
   });
 
@@ -43,8 +48,16 @@ describe('backport recipes', () => {
       `changelog_date Fri, 23 Oct 2026 00:00:00 +0000\ndsc x.dsc ${hash}\npatch p.patch ${hash} 0 CVE-2026-1234\n` +
       'binary x1\nlibrary x1 libx.so.1.0.0\nruntime x1\ndev x1\n';
     expect(parseBackportConf(raw).fixed).toEqual(['CVE-2026-1234']);
+    expect(parseBackportConf(raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-1+b7+aelira1')).rebuiltVersion)
+      .toBe('1-1+b7+aelira1');
+    expect(parseBackportConf(`${raw}tests\n`).controls).toEqual(['package-test-suite']);
     for (const bad of [
       raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-2'),
+      raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-1+deb13u1+aelira1'),
+      raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-1+b7'),
+      raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-10+aelira1'),
+      `${raw}tests\ntests\n`,
+      `${raw}tests extra\n`,
       raw.replace(`dsc x.dsc ${hash}`, `dsc x.dsc ${'g'.repeat(64)}`),
       raw.replace(' 0 CVE-2026-1234', ' fuzz CVE-2026-1234'),
       raw.replace(' 0 CVE-2026-1234', ' 0 GHSA-1234'),
