@@ -4,6 +4,8 @@ import * as fs from 'node:fs/promises'
 
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
+import { pollForCompletion } from '../../utils/poll-progress.js'
+import { numberOrNull, scoreAndCountLines, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanWeb extends Command {
   static args = {
@@ -62,11 +64,11 @@ static flags = {
 
     try {
       if (flags.sitemap) {
-        await this.scanSitemap(args.url, flags, startTime)
+        await this.runScan('sitemap', args.url, flags, startTime)
       } else if (flags.batch) {
-        await this.batchScan(args.url, flags, startTime)
+        await this.runScan('batch', args.url, flags, startTime)
       } else {
-        await this.singleScan(args.url, flags, startTime)
+        await this.runScan('single', args.url, flags, startTime)
       }
     } catch (error: any) {
       outro(`Error: ${error.message}`)
@@ -74,188 +76,120 @@ static flags = {
     }
   }
 
-  private async batchScan(url: string, flags: any, startTime: number): Promise<void> {
-    const api = new ApiClient({ apiUrl: flags['api-url'] })
-    const s = spinner()
-    s.start(`Starting batch scan of ${url} (max ${flags['max-pages']} pages)...`)
+  private displayAggregateResult(detail: any, scanTime: number, kind: 'batch' | 'sitemap'): void {
+    const summary = summarizeScanDetail(detail)
+    const { structure } = summary
 
-    const response = await api.post('/education/web/batch-scan', {
-      max_pages: flags['max-pages'],
-      start_url: url,
-    }, {
-      timeout: 300_000, // 5 minute timeout for batch scan
-    })
-
-    const result = await response.json()
-    const scanDuration = Date.now() - startTime
-    s.stop('Batch scan complete')
-
-    if (flags.format === 'csv') {
-      const allIssues = result.violations || result.issues_list || result.issues || []
-      const csv = formatIssuesToCsv(allIssues, url)
-      if (flags.output) {
-        await fs.writeFile(flags.output, csv)
-        outro(`Batch scan complete. CSV saved to ${flags.output}`)
-      } else {
-        this.log(csv)
-      }
-    } else if (flags.format === 'json') {
-      const output = { ...result, performance: { scan_time: scanDuration } }
-      if (flags.output) {
-        await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`Batch scan complete. Report saved to ${flags.output}`)
-      } else {
-        this.log(JSON.stringify(output, null, 2))
-      }
-    } else {
-      this.displayBatchResult(result, scanDuration)
-      outro('Batch web scan complete.')
-    }
-
-    if (flags.timer) {
-      this.log(`\nTotal execution time: ${scanDuration}ms`)
-    }
-  }
-
-  private displayBatchResult(result: any, scanTime: number): void {
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-    this.log(`  Batch Web Scan Results`)
+    this.log(kind === 'sitemap' ? '  Sitemap Web Scan Results' : '  Batch Web Scan Results')
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  Pages Scanned: ${result.pages_scanned || 0}`)
-    this.log(`  Pages Failed: ${result.pages_failed || 0}`)
-
-    if (result.average_score !== undefined) {
-      this.log(`  Average scanner score: ${result.average_score?.toFixed(1) || 'N/A'}/100`)
+    if (kind === 'sitemap') {
+      this.log(`  Sitemap: ${structure.sitemap_url ?? summary.fileName ?? 'Unknown'}`)
+      this.log(`  URLs Discovered: ${numberOrNull(structure.total_urls_discovered) ?? 'N/A'}`)
     }
 
-    if (result.total_issues) {
-      this.log(`\n  Total Issues: ${result.total_issues}`)
-      this.log(`  - Critical: ${result.issues_by_severity?.critical || 0}`)
-      this.log(`  - High: ${result.issues_by_severity?.high || 0}`)
-      this.log(`  - Medium: ${result.issues_by_severity?.medium || 0}`)
-      this.log(`  - Low: ${result.issues_by_severity?.low || 0}`)
-    }
+    this.log(`  URLs Scanned: ${numberOrNull(structure.total_urls_scanned) ?? 'N/A'}`)
+    this.log(`  Pages Scanned: ${numberOrNull(structure.total_pages_scanned) ?? 'N/A'}\n`)
+
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    // Show worst pages
-    if (result.pages && result.pages.length > 0) {
-      this.log('Pages with Most Issues:\n')
-      result.pages
-        .sort((a: any, b: any) => (b.issue_count || 0) - (a.issue_count || 0))
-        .slice(0, 5)
-        .forEach((page: any, index: number) => {
-          this.log(`${index + 1}. ${page.url}`)
-          this.log(`   Scanner score: ${page.compliance_score || 'N/A'}/100, Issues: ${page.issue_count || 0}`)
-        })
-      this.log('')
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}\n`)
     }
 
-    this.log('Tip: Use --format json for detailed per-page breakdown')
+    this.log('Tip: Use --format json or --format csv to list each finding with its page')
   }
 
-  private displaySingleResult(result: any, scanTime: number): void {
+  private displaySingleResult(detail: any, scanTime: number): void {
+    const summary = summarizeScanDetail(detail)
+
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
     this.log(`  Web Accessibility Report`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  URL: ${result.url || 'Unknown'}`)
-    this.log(`  Page Title: ${result.page_title || 'N/A'}`)
+    this.log(`  URL: ${summary.structure.root_url ?? summary.fileName ?? 'Unknown'}`)
+    this.log(`  Pages Scanned: ${numberOrNull(summary.structure.pages_scanned) ?? 'N/A'}\n`)
 
-    if (result.compliance_score !== undefined) {
-      this.log(`\n  Scanner score: ${result.compliance_score}/100`)
-    }
-
-    if (result.issues) {
-      const total = Object.values(result.issues).reduce((a: number, b: any) => a + (b || 0), 0)
-      this.log(`\n  Issues Found: ${total}`)
-      this.log(`  - Critical: ${result.issues.critical || 0}`)
-      this.log(`  - High: ${result.issues.high || 0}`)
-      this.log(`  - Medium: ${result.issues.medium || 0}`)
-      this.log(`  - Low: ${result.issues.low || 0}`)
-    }
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}\n`)
+    }
   }
 
-  private async scanSitemap(url: string, flags: any, startTime: number): Promise<void> {
+  /**
+   * Queue a scan, wait for the worker, and return GET /education/scans/{id}.
+   * The three routes in src/api/education/web_scan_routes.py only acknowledge
+   * the queued job; single and sitemap scans return scan_id, batch scans
+   * return batch_scan_id.
+   */
+  private async queueAndWait(kind: 'batch' | 'single' | 'sitemap', url: string, flags: any, s: ReturnType<typeof spinner>): Promise<any> {
     const api = new ApiClient({ apiUrl: flags['api-url'] })
-    const s = spinner()
-    s.start(`Scanning sitemap at ${url} (max ${flags['max-pages']} pages)...`)
-
-    const response = await api.post('/education/web/scan-sitemap', {
-      max_pages: flags['max-pages'],
-      sitemap_url: url,
-    }, {
-      timeout: 300_000,
-    })
-
-    const result = await response.json()
-    const scanDuration = Date.now() - startTime
-    s.stop('Sitemap scan complete')
-
-    if (flags.format === 'csv') {
-      const allIssues = result.violations || result.issues_list || result.issues || []
-      const csv = formatIssuesToCsv(allIssues, url)
-      if (flags.output) {
-        await fs.writeFile(flags.output, csv)
-        outro(`Sitemap scan complete. CSV saved to ${flags.output}`)
-      } else {
-        this.log(csv)
-      }
-    } else if (flags.format === 'json') {
-      const output = { ...result, performance: { scan_time: scanDuration } }
-      if (flags.output) {
-        await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`Sitemap scan complete. Report saved to ${flags.output}`)
-      } else {
-        this.log(JSON.stringify(output, null, 2))
-      }
+    let response: Response
+    if (kind === 'sitemap') {
+      response = await api.post('/education/web/scan-sitemap', { max_pages: flags['max-pages'], sitemap_url: url }, { timeout: 60_000 })
+    } else if (kind === 'batch') {
+      response = await api.post('/education/web/batch-scan', { max_pages: flags['max-pages'], start_url: url }, { timeout: 60_000 })
     } else {
-      this.displayBatchResult(result, scanDuration)
-      outro('Sitemap scan complete.')
+      response = await api.post('/education/web/scan', { url }, { timeout: 60_000 })
     }
 
-    if (flags.timer) {
-      this.log(`\nTotal execution time: ${scanDuration}ms`)
-    }
+    const queued = await response.json()
+    const scanId = queued.scan_id ?? queued.batch_scan_id
+    if (!scanId) throw new Error('Unexpected response: no scan_id returned')
+
+    return pollForCompletion(api, scanId, s, { timeout: kind === 'single' ? 300_000 : 1_800_000 })
   }
 
-  private async singleScan(url: string, flags: any, startTime: number): Promise<void> {
-    const api = new ApiClient({ apiUrl: flags['api-url'] })
+  private async runScan(kind: 'batch' | 'single' | 'sitemap', url: string, flags: any, startTime: number): Promise<void> {
     const s = spinner()
-    s.start(`Scanning ${url}...`)
+    s.start(
+      kind === 'sitemap'
+        ? `Scanning sitemap at ${url} (max ${flags['max-pages']} pages)...`
+        : kind === 'batch'
+          ? `Starting batch scan of ${url} (max ${flags['max-pages']} pages)...`
+          : `Scanning ${url}...`,
+    )
 
-    const response = await api.post('/education/web/scan', { url }, {
-      timeout: 120_000,
-    })
+    let detail: any
+    try {
+      detail = await this.queueAndWait(kind, url, flags, s)
+    } catch (error) {
+      s.stop('Scan failed')
+      throw error
+    }
 
-    const result = await response.json()
     const scanDuration = Date.now() - startTime
     s.stop('Scan complete')
+    const label = kind === 'sitemap' ? 'Sitemap scan' : kind === 'batch' ? 'Batch scan' : 'Web scan'
 
     if (flags.format === 'csv') {
-      const csv = formatIssuesToCsv(result.violations || result.issues_list || result.issues || [], url)
+      const csv = formatIssuesToCsv(summarizeScanDetail(detail).issues, url)
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        this.log(`CSV report saved to ${flags.output}`)
+        outro(`${label} complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
     } else if (flags.format === 'json') {
-      const output = { ...result, performance: { scan_time: scanDuration } }
+      const output = { ...detail, performance: { scan_time: scanDuration } }
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`Web scan complete. Report saved to ${flags.output}`)
+        outro(`${label} complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
-      this.displaySingleResult(result, scanDuration)
-      outro('Web scan complete.')
+      if (kind === 'single') this.displaySingleResult(detail, scanDuration)
+      else this.displayAggregateResult(detail, scanDuration, kind)
+      outro(`${label} complete.`)
     }
 
     if (flags.timer) {

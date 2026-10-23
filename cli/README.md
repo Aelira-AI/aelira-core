@@ -250,6 +250,8 @@ aelira scan latex ./math-dept/
 
 Watch a directory for file changes and automatically scan new or modified files.
 
+Each changed file is uploaded to the API, and its line shows the issue counts and scanner score once that scan finishes. HTML files are checked locally with axe-core instead, so their line shows issue counts by impact and no score.
+
 ```bash
 aelira scan watch <directory>
   --extensions <list>             # File extensions to watch (default: .pdf,.docx,.pptx,.xlsx,.html,.htm,.tex,.css,.js)
@@ -349,6 +351,10 @@ aelira scan web <URL>
   --output <file>           # Output file (for JSON or CSV)
   --timer
 ```
+
+The API queues each web scan and the command waits for it to finish before printing the result. The API only scans public HTTP or HTTPS addresses.
+
+> **Known limitation:** the API's batch endpoint expects a list of `urls`, and `--batch` currently sends a single start URL, so the API rejects `aelira scan web --batch` with a validation error. Single-page and sitemap scans are not affected.
 
 Examples:
 
