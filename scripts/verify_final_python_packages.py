@@ -23,7 +23,7 @@ EXPECTED = {
     # pi-heif bundles libheif and libde265 and nothing in the image uses it.
     # pybind11 is only a build requirement of the source-built Pillow.
     "venv": {
-        "setuptools": "84.0.0",
+        "setuptools": "84.2.1",
         "pip": None,
         "pi-heif": None,
         "pybind11": None,
@@ -31,7 +31,7 @@ EXPECTED = {
     },
     # The developer image keeps pip for its supported interactive workflow.
     "quickstart": {
-        "setuptools": "84.0.0",
+        "setuptools": "84.2.1",
         "pip": "26.2.2",
         "pi-heif": None,
         "pybind11": None,

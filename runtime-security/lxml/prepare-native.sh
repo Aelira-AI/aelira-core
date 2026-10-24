@@ -64,7 +64,7 @@ while read -r hash filename; do
   case "$filename" in
     lxml-6.1.3.tar.gz) url='https://files.pythonhosted.org/packages/23/ad/28ecd7cb894d172f3c9c80a075eeeb2017ac62e3632cee05a5f9493547eb/lxml-6.1.3.tar.gz';;
     pip-26.2.1-py3-none-any.whl) url='https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl';;
-    setuptools-84.0.0-py3-none-any.whl) url='https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl';;
+    setuptools-84.2.1-py3-none-any.whl) url='https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl';;
     *) echo "unexpected Python input" >&2; exit 1;;
   esac
   curl --fail --location --silent --show-error --retry 3 --retry-all-errors \

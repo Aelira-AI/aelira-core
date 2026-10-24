@@ -25,7 +25,7 @@ printf '%s\n' "$SOURCE_DATE_EPOCH" > /out/source-date-epoch.txt
 python3 -m venv /work/venv
 /work/venv/bin/python -m pip install --no-index --no-deps \
   /inputs/python/pip-26.2.1-py3-none-any.whl \
-  /inputs/python/setuptools-84.0.0-py3-none-any.whl > /out/python-install.log
+  /inputs/python/setuptools-84.2.1-py3-none-any.whl > /out/python-install.log
 mkdir -p /work/source /work/wheels
 tar -xf /inputs/python/lxml-6.1.3.tar.gz -C /work/source
 test ! -e /work/venv/lib/python3.14/site-packages/Cython

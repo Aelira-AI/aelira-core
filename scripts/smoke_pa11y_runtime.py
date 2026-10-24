@@ -171,6 +171,18 @@ def main() -> None:
                     f"Playwright launched Chromium {launched_version}, "
                     f"expected {_pinned_chrome_version()}"
                 )
+            # Pa11y must run over CDP with chromium-bidi never loaded, and
+            # chromium-bidi's parser must still work with the zod override.
+            for check in (
+                ["verify_pa11y_protocol.cjs", str(config_path), url],
+                ["verify_pa11y_bidi_parser.cjs", str(PA11Y_MODULES.parent)],
+            ):
+                subprocess.run(
+                    ["node", str(ROOT / "scripts" / check[0]), *check[1:]],
+                    check=True,
+                    timeout=120,
+                    env=smoke_env,
+                )
         if completed.returncode not in {0, 2}:
             raise RuntimeError(
                 f"Pa11y browser launch failed ({completed.returncode}): "
