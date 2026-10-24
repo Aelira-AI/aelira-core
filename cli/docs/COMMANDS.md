@@ -94,6 +94,12 @@ Canvas commands accept `--department` and otherwise use the configured departmen
 
 `aelira interactive` opens the [interactive menu](../src/commands/interactive.ts). Use direct commands for automation and for commands not offered by the menu.
 
+It prints the tool name and version as plain text and never clears the terminal. The decorative logo is shown only on an interactive terminal, and is skipped when `NO_COLOR`, `TERM=dumb`, `CI` or `AELIRA_NO_BANNER` is set, or when you pass `--no-banner`. See [Start-up banner and screen readers](../README.md#start-up-banner-and-screen-readers).
+
+```bash
+aelira interactive --no-banner
+```
+
 ## Keeping this guide current
 
 The [guide regression test](../test/docs/operator-guides.test.ts) parses every fenced `aelira` example in these three guides against the current command definitions without running commands, launching browsers, or making API calls. It checks syntax and accepted options, not server availability or successful processing. Keep executable examples on separate lines in `bash` fences; put placeholder usage syntax in prose and link to command help for exhaustive flags.
