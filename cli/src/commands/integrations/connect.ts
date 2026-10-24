@@ -37,27 +37,27 @@ const LMS_PROVIDERS: Record<string, LmsProvider | undefined> = {
 
 const PROVIDER_OPTIONS = [
   {
-    label: '📁 Google Workspace (Drive, Docs, Slides, Sheets)',
+    label: 'Google Workspace (Drive, Docs, Slides, Sheets)',
     value: 'google',
   },
   {
-    label: '📁 Microsoft 365 (OneDrive, SharePoint)',
+    label: 'Microsoft 365 (OneDrive, SharePoint)',
     value: 'microsoft',
   },
   {
-    label: '📚 Canvas LMS',
+    label: 'Canvas LMS',
     value: 'canvas',
   },
   {
-    label: '📚 Blackboard Learn',
+    label: 'Blackboard Learn',
     value: 'blackboard',
   },
   {
-    label: '🌏 Moodle LMS (World\'s most-used LMS)',
+    label: 'Moodle LMS (World\'s most-used LMS)',
     value: 'moodle',
   },
   {
-    label: '🎓 D2L Brightspace (Community colleges)',
+    label: 'D2L Brightspace (Community colleges)',
     value: 'brightspace',
   },
 ]
@@ -157,13 +157,13 @@ static flags = {
       if (shouldOpen === true) {
         const { default: open } = await import('open')
         await open(authUrl)
-        outro(`✨ Browser opened! Complete the authorization flow to continue.`)
+        outro(`Browser opened! Complete the authorization flow to continue.`)
       } else {
-        outro(`✨ Copy the URL above and open it in your browser to continue.`)
+        outro(`Copy the URL above and open it in your browser to continue.`)
       }
     } catch (error: any) {
       s.stop('Connection failed')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }

@@ -93,7 +93,7 @@ static flags = {
           const html = this.toHTML(diff, flags)
           if (flags.output) {
             await fs.writeFile(flags.output, html)
-            this.log(`\n📄 HTML report saved to: ${flags.output}`)
+            this.log(`\nHTML report saved to: ${flags.output}`)
           } else {
             this.log(html)
           }
@@ -105,7 +105,7 @@ static flags = {
           const json = JSON.stringify(diff, null, 2)
           if (flags.output) {
             await fs.writeFile(flags.output, json)
-            this.log(`\n📄 JSON report saved to: ${flags.output}`)
+            this.log(`\nJSON report saved to: ${flags.output}`)
           } else {
             this.log(json)
           }
@@ -117,7 +117,7 @@ static flags = {
           const md = this.toMarkdown(diff, flags)
           if (flags.output) {
             await fs.writeFile(flags.output, md)
-            this.log(`\n📄 Markdown report saved to: ${flags.output}`)
+            this.log(`\nMarkdown report saved to: ${flags.output}`)
           } else {
             this.log(md)
           }
@@ -132,11 +132,11 @@ static flags = {
 
       // Summary
       if (diff.scoreChange > 0) {
-        outro(`✅ Score improved by ${diff.scoreChange} points!`)
+        outro(`Score improved by ${diff.scoreChange} points!`)
       } else if (diff.scoreChange < 0) {
-        outro(`⚠️  Score decreased by ${Math.abs(diff.scoreChange)} points`)
+        outro(`Score decreased by ${Math.abs(diff.scoreChange)} points`)
       } else {
-        outro('ℹ️  Score unchanged')
+        outro('Score unchanged')
       }
     } catch (error: any) {
       s.stop('Error loading scan results')
@@ -220,27 +220,26 @@ static flags = {
     this.log(`  New Score: ${newScoreColor(`${diff.newScore}%`)}`)
 
     if (diff.scoreChange > 0) {
-      this.log(`  Change:    ${pc.green(`+${diff.scoreChange}`)} ⬆️`)
+      this.log(`  Change:    ${pc.green(`+${diff.scoreChange}`)}`)
     } else if (diff.scoreChange < 0) {
-      this.log(`  Change:    ${pc.red(`${diff.scoreChange}`)} ⬇️`)
+      this.log(`  Change:    ${pc.red(`${diff.scoreChange}`)}`)
     } else {
-      this.log(`  Change:    ${pc.dim('0')} ➡️`)
+      this.log(`  Change:    ${pc.dim('0')}`)
     }
 
     // Issue summary
     this.log('\n' + pc.bold('Issue Summary'))
     this.log('─'.repeat(60))
-    this.log(`  🔴 New Issues (Regressions): ${pc.red(String(diff.addedIssues.length))}`)
-    this.log(`  🟢 Fixed Issues:             ${pc.green(String(diff.fixedIssues.length))}`)
-    this.log(`  ⚪ Unchanged Issues:         ${pc.dim(String(diff.unchangedIssues.length))}`)
+    this.log(`  New Issues (Regressions): ${pc.red(String(diff.addedIssues.length))}`)
+    this.log(`  Fixed Issues:             ${pc.green(String(diff.fixedIssues.length))}`)
+    this.log(`  Unchanged Issues:         ${pc.dim(String(diff.unchangedIssues.length))}`)
 
     // Show regressions (always)
     if (diff.addedIssues.length > 0) {
       this.log('\n' + pc.bold(pc.red('New Issues (Regressions)')))
       this.log('─'.repeat(60))
       for (const issue of diff.addedIssues) {
-        const impact = this.getImpactIcon(issue.impact)
-        this.log(`  ${impact} ${pc.bold(issue.id)}`)
+        this.log(`  [${(issue.impact || 'unknown').toUpperCase()}] ${pc.bold(issue.id)}`)
         this.log(`     ${pc.dim(issue.description || '')}`)
       }
     }
@@ -250,7 +249,7 @@ static flags = {
       this.log('\n' + pc.bold(pc.green('Fixed Issues')))
       this.log('─'.repeat(60))
       for (const issue of diff.fixedIssues) {
-        this.log(`  ✅ ${pc.strikethrough(issue.id)}`)
+        this.log(`  ${pc.strikethrough(issue.id)}`)
         this.log(`     ${pc.dim(issue.description || '')}`)
       }
     }
@@ -260,36 +259,11 @@ static flags = {
       this.log('\n' + pc.bold('Unchanged Issues'))
       this.log('─'.repeat(60))
       for (const issue of diff.unchangedIssues) {
-        const impact = this.getImpactIcon(issue.impact)
-        this.log(`  ${impact} ${issue.id}`)
+        this.log(`  [${(issue.impact || 'unknown').toUpperCase()}] ${issue.id}`)
       }
     }
 
     this.log('\n' + '━'.repeat(60))
-  }
-
-  private getImpactIcon(impact: string): string {
-    switch (impact) {
-      case 'critical': {
-        return '🔴'
-      }
-
-      case 'minor': {
-        return '🟡'
-      }
-
-      case 'moderate': {
-        return '🟠'
-      }
-
-      case 'serious': {
-        return '🟠'
-      }
-
-      default: {
-        return '⚪'
-      }
-    }
   }
 
   private async loadScanResult(filePath: string): Promise<ScanResult> {
@@ -332,7 +306,6 @@ static flags = {
     flags: { 'show-fixed': boolean; 'show-unchanged': boolean },
   ): string {
     const timestamp = new Date().toISOString()
-    const changeIcon = diff.scoreChange > 0 ? '⬆️' : diff.scoreChange < 0 ? '⬇️' : '➡️'
     const changeClass =
       diff.scoreChange > 0 ? 'positive' : diff.scoreChange < 0 ? 'negative' : 'neutral'
 
@@ -446,7 +419,7 @@ static flags = {
         <div class="score-label">Current Score</div>
       </div>
       <div class="change ${changeClass}">
-        ${diff.scoreChange > 0 ? '+' : ''}${diff.scoreChange} ${changeIcon}
+        ${diff.scoreChange > 0 ? '+' : ''}${diff.scoreChange}
       </div>
     </div>
 
@@ -469,7 +442,7 @@ static flags = {
       diff.addedIssues.length > 0
         ? `
     <div class="section">
-      <h2>🔴 New Issues (Regressions)</h2>
+      <h2>New Issues (Regressions)</h2>
       ${diff.addedIssues
         .map(
           (issue) => `
@@ -489,12 +462,12 @@ static flags = {
       flags['show-fixed'] && diff.fixedIssues.length > 0
         ? `
     <div class="section">
-      <h2>🟢 Fixed Issues</h2>
+      <h2>Fixed Issues</h2>
       ${diff.fixedIssues
         .map(
           (issue) => `
         <div class="issue fixed">
-          <div class="issue-id">✅ ${issue.id}</div>
+          <div class="issue-id">${issue.id}</div>
           <div class="issue-desc">${issue.description || ''}</div>
         </div>
       `,
@@ -509,7 +482,7 @@ static flags = {
       flags['show-unchanged'] && diff.unchangedIssues.length > 0
         ? `
     <div class="section">
-      <h2>⚪ Unchanged Issues</h2>
+      <h2>Unchanged Issues</h2>
       ${diff.unchangedIssues
         .map(
           (issue) => `
@@ -537,7 +510,6 @@ static flags = {
     diff: DiffSummary,
     flags: { 'show-fixed': boolean; 'show-unchanged': boolean },
   ): string {
-    const changeEmoji = diff.scoreChange > 0 ? '⬆️' : diff.scoreChange < 0 ? '⬇️' : '➡️'
 
     let md = `# Accessibility Diff Report
 
@@ -551,18 +523,18 @@ static flags = {
 |--------|-------|
 | Previous Score | ${diff.oldScore}% |
 | Current Score | ${diff.newScore}% |
-| Change | ${diff.scoreChange > 0 ? '+' : ''}${diff.scoreChange} ${changeEmoji} |
+| Change | ${diff.scoreChange > 0 ? '+' : ''}${diff.scoreChange} |
 
 ## Summary
 
-- 🔴 **New Issues (Regressions):** ${diff.addedIssues.length}
-- 🟢 **Fixed Issues:** ${diff.fixedIssues.length}
-- ⚪ **Unchanged Issues:** ${diff.unchangedIssues.length}
+- **New Issues (Regressions):** ${diff.addedIssues.length}
+- **Fixed Issues:** ${diff.fixedIssues.length}
+- **Unchanged Issues:** ${diff.unchangedIssues.length}
 
 `
 
     if (diff.addedIssues.length > 0) {
-      md += `## 🔴 New Issues (Regressions)
+      md += `## New Issues (Regressions)
 
 | ID | Impact | Description |
 |----|--------|-------------|
@@ -572,7 +544,7 @@ ${diff.addedIssues.map((i) => `| ${i.id} | ${i.impact || '-'} | ${i.description 
     }
 
     if (flags['show-fixed'] && diff.fixedIssues.length > 0) {
-      md += `## 🟢 Fixed Issues
+      md += `## Fixed Issues
 
 | ID | Impact | Description |
 |----|--------|-------------|
@@ -582,7 +554,7 @@ ${diff.fixedIssues.map((i) => `| ~~${i.id}~~ | ${i.impact || '-'} | ${i.descript
     }
 
     if (flags['show-unchanged'] && diff.unchangedIssues.length > 0) {
-      md += `## ⚪ Unchanged Issues
+      md += `## Unchanged Issues
 
 | ID | Impact | Description |
 |----|--------|-------------|

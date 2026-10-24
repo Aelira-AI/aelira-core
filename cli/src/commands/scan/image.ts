@@ -62,7 +62,7 @@ static flags = {
         await this.processFile(targetPath, flags, startTime)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -102,13 +102,13 @@ static flags = {
       this.log('Failed:\n')
       for (const result of results
         .filter((r) => r.error || !r.alt_text)) {
-          this.log(`  ✗ ${result.file || result.filename}: ${result.error || 'No alt text generated'}`)
+          this.log(`  - ${result.file || result.filename}: ${result.error || 'No alt text generated'}`)
         }
 
       this.log('')
     }
 
-    this.log('💡 Tip: Use --format json --output results.json for full output')
+    this.log('Tip: Use --format json --output results.json for full output')
   }
 
   private displaySingleResult(result: any, processTime: number): void {
@@ -133,8 +133,8 @@ static flags = {
     this.log(`  Processing Time: ${(processTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log('💡 Tip: Use --format json for structured output')
-    this.log('💡 Tip: Use --batch flag for faster processing of multiple images')
+    this.log('Tip: Use --format json for structured output')
+    this.log('Tip: Use --batch flag for faster processing of multiple images')
   }
 
   private async findImageFiles(dirPath: string): Promise<string[]> {
@@ -200,7 +200,7 @@ static flags = {
 
     if (files.length === 0) {
       s.stop('No image files found')
-      outro('⚠️  No images to process')
+      outro('No images to process')
       return
     }
 
@@ -214,9 +214,9 @@ static flags = {
       try {
         const batchResult = await this.processBatch(files, flags['api-url'])
         results.push(...batchResult)
-        s.stop(`✓ Batch processing complete`)
+        s.stop('Batch processing complete')
       } catch (error: any) {
-        s.stop(`✗ Batch processing failed: ${error.message}`)
+        s.stop(`Batch processing failed: ${error.message}`)
       }
     } else {
       // Process one by one
@@ -227,9 +227,9 @@ static flags = {
         try {
           const result = await this.generateAltText(file, flags['api-url'])
           results.push({ file: path.basename(file), ...result })
-          s.stop(`✓ ${path.basename(file)}`)
+          s.stop(`Done: ${path.basename(file)}`)
         } catch (error: any) {
-          s.stop(`✗ ${path.basename(file)}: ${error.message}`)
+          s.stop(`Failed: ${path.basename(file)}: ${error.message}`)
           results.push({ error: error.message, file: path.basename(file) })
         }
       }
@@ -247,17 +247,17 @@ static flags = {
 
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch processing complete. Report saved to ${flags.output}`)
+        outro(`Batch processing complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResults(results, Date.now() - startTime)
-      outro(`✨ Batch processing complete! Generated alt text for ${files.length} images`)
+      outro(`Batch processing complete! Generated alt text for ${files.length} images`)
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+      this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
     }
   }
 
@@ -285,17 +285,17 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ Alt text generation complete. Report saved to ${flags.output}`)
+          outro(`Alt text generation complete. Report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displaySingleResult(result, processDuration)
-        outro('✨ Alt text generation complete!')
+        outro('Alt text generation complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${processDuration}ms`)
+        this.log(`\nTotal execution time: ${processDuration}ms`)
       }
     } catch (error: any) {
       s.stop('Generation failed')

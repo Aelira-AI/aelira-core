@@ -100,20 +100,20 @@ static flags = {
         const output = { ...result, performance: { execution_time: scanDuration } }
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ Analytics saved to ${flags.output}`)
+          outro(`Analytics saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displayResults(result, scanDuration)
-        outro('✨ Analytics report complete!')
+        outro('Analytics report complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+        this.log(`\nTotal execution time: ${scanDuration}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -133,14 +133,14 @@ static flags = {
     this.log(`  Processing Time: ${(processTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log('💡 Tip: Use --projection for April 2027 ADA Title II deadline analysis')
-    this.log('💡 Tip: Use --days 90 for longer historical trend')
+    this.log('Tip: Use --projection for April 2027 ADA Title II deadline analysis')
+    this.log('Tip: Use --days 90 for longer historical trend')
   }
 
   private renderHistoricalTrend(trend: any[]): void {
     if (trend.length === 0) return
 
-    this.log('  📈 Historical Trend:')
+    this.log('  Historical Trend:')
     this.log(`  - Data Points: ${trend.length}`)
 
     const assessed = trend.filter((point) =>
@@ -163,19 +163,19 @@ static flags = {
     }
 
     const change = lastScore - firstScore
-    const arrow = change >= 0 ? '↑' : '↓'
-    this.log(`  - Change: ${arrow} ${Math.abs(change).toFixed(1)} points\n`)
+    const direction = change >= 0 ? 'up' : 'down'
+    this.log(`  - Change: ${direction} ${Math.abs(change).toFixed(1)} points\n`)
   }
 
   private renderProjection(proj: any): void {
     if (!proj) return
 
-    this.log('  🎯 ADA Title II Deadline Projection (April 26, 2027):')
+    this.log('  ADA Title II Deadline Projection (April 26, 2027):')
     this.log(`  - Days Until Deadline: ${proj.days_until_deadline || 'N/A'}`)
     this.log(`  - Current Score: ${proj.current_score?.toFixed(1) || 'N/A'}/100`)
     this.log(`  - Target Score: ${proj.target_score || 90}/100`)
     this.log(`  - Projected Score: ${proj.projected_score?.toFixed(1) || 'N/A'}/100`)
-    this.log(`  - On Track: ${proj.on_track ? '✅ Yes' : '❌ No'}`)
+    this.log(`  - On Track: ${proj.on_track ? 'Yes' : 'No'}`)
 
     if (!proj.on_track && proj.improvement_needed) {
       this.log(`  - Points Needed: ${proj.improvement_needed.toFixed(1)}`)
@@ -188,39 +188,19 @@ static flags = {
   private renderWeekOverWeek(analysis: any): void {
     if (!analysis) return
 
-    this.log('  📊 Week-over-Week Analysis:')
+    this.log('  Week-over-Week Analysis:')
     this.log(`  - Current Avg Score: ${analysis.current_avg_score?.toFixed(1) || 'N/A'}/100`)
     this.log(`  - Previous Avg Score: ${analysis.previous_avg_score?.toFixed(1) || 'N/A'}/100`)
 
     const scoreChange = analysis.score_change || 0
-    const scoreArrow = scoreChange >= 0 ? '↑' : '↓'
-    this.log(`  - Score Change: ${scoreArrow} ${Math.abs(scoreChange).toFixed(1)} (${analysis.score_change_pct?.toFixed(1) || 0}%)`)
+    const scoreDirection = scoreChange >= 0 ? 'up' : 'down'
+    this.log(`  - Score Change: ${scoreDirection} ${Math.abs(scoreChange).toFixed(1)} (${analysis.score_change_pct?.toFixed(1) || 0}%)`)
 
     const issueChange = analysis.issues_change || 0
-    const issueArrow = issueChange <= 0 ? '↓' : '↑'
-    this.log(`  - Issues Change: ${issueArrow} ${Math.abs(issueChange)}`)
+    const issueDirection = issueChange <= 0 ? 'down' : 'up'
+    this.log(`  - Issues Change: ${issueDirection} ${Math.abs(issueChange)}`)
 
-    this.log(`  - Trend Direction: ${this.getTrendEmoji(analysis.trend_direction)} ${analysis.trend_direction || 'stable'}`)
+    this.log(`  - Trend Direction: ${analysis.trend_direction || 'stable'}`)
     this.log('')
-  }
-
-  private getTrendEmoji(direction: string): string {
-    switch (direction?.toLowerCase()) {
-      case 'declining': {
-        return '📉'
-      }
-
-      case 'improving': {
-        return '📈'
-      }
-
-      case 'stable': {
-        return '➡️'
-      }
-
-      default: {
-        return '📊'
-      }
-    }
   }
 }

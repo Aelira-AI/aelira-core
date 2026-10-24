@@ -78,7 +78,7 @@ export default class CanvasFiles extends Command {
       outro('Done')
     } catch (error: any) {
       s.stop('Failed to fetch Canvas files')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
