@@ -96,6 +96,13 @@ export function parseBackportConf(raw: string): Backport {
         if (fields.length !== 1) fail(`invalid ${key} in backport recipe`);
         backport.controls.push(fields[0]);
         break;
+      case 'reproducible':
+        if (fields.length) fail('invalid reproducible in backport recipe');
+        break;
+      case 'tests':
+        if (fields.length || backport.controls.includes('package-test-suite')) fail('invalid tests in backport recipe');
+        backport.controls.push('package-test-suite');
+        break;
       case 'profile':
         if (fields.length !== 1) fail('invalid profile in backport recipe');
         break;
@@ -120,8 +127,9 @@ export function parseBackportConf(raw: string): Backport {
   }
   const sourceVersion = single.get('source_version')!;
   const rebuiltVersion = single.get('rebuilt_version')!;
-  if (!rebuiltVersion.startsWith(`${sourceVersion}+aelira`) || !/\+aelira\d+$/.test(rebuiltVersion)) {
-    fail('rebuilt_version must extend source_version with +aeliraN');
+  const suffix = rebuiltVersion.startsWith(`${sourceVersion}+`) ? rebuiltVersion.slice(sourceVersion.length) : '';
+  if (!/^(\+b\d+)?\+aelira\d+$/.test(suffix)) {
+    fail('rebuilt_version must extend source_version with an optional +bN and +aeliraN');
   }
   if (dsc !== 1 || backport.patches.length === 0) fail('backport recipe needs a .dsc and at least one patch');
   for (const library of backport.libraries) {
@@ -244,18 +252,25 @@ const sh = (image: string, script: string, extra: string[] = []) =>
 /** Require installed packages, receipts and loaded-library files to match the recipes. */
 export function checkInstalled(image: string, backports: Backport[], mode: 'runtime' | 'dev'): Map<string, Receipt> {
   const rows = new Map<string, string>();
+  const sources = new Map<string, string>();
   for (const line of run('docker', [...base, '--entrypoint', 'dpkg-query', image, '-W',
-    '-f=${Package}\t${Version}\t${db:Status-Abbrev}\n']).trim().split('\n')) {
-    const [name, version, status] = line.split('\t');
-    if (status?.startsWith('ii')) rows.set(name, version);
+    '-f=${Package}\t${Version}\t${db:Status-Abbrev}\t${source:Package}\n']).trim().split('\n')) {
+    const [name, version, status, source] = line.split('\t');
+    if (status?.startsWith('ii')) {
+      rows.set(name, version);
+      sources.set(name, source);
+    }
   }
   const receipts = new Map<string, Receipt>();
   for (const backport of backports) {
     for (const name of backport[mode]) {
       if (rows.get(name) !== backport.rebuiltVersion) throw new Error(`${name} package version mismatch`);
     }
-    for (const name of backport.binaries) {
-      if (rows.has(name) && rows.get(name) !== backport.rebuiltVersion) {
+    // Every installed package built from this source, listed or not, must
+    // come from the rebuild.
+    for (const [name, source] of sources) {
+      if ((source === backport.source || backport.binaries.includes(name)) &&
+          rows.get(name) !== backport.rebuiltVersion) {
         throw new Error(`${name} is installed at ${rows.get(name)}, not the rebuilt ${backport.rebuiltVersion}`);
       }
     }

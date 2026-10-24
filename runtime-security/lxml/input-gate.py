@@ -27,7 +27,7 @@ SOURCE = frozenset(
 )
 PYTHON = frozenset(
     "lxml-6.1.3.tar.gz pip-26.2.1-py3-none-any.whl "
-    "setuptools-84.0.0-py3-none-any.whl".split()
+    "setuptools-84.2.1-py3-none-any.whl".split()
 )
 FIXED = frozenset(
     {"architecture.txt", "source-commit.txt", "source-tree.txt"}
@@ -43,7 +43,7 @@ PINNED = {
     "python-pptx": "1.0.2",
     "openpyxl": "3.1.5",
     "pillow": "13.0.0",
-    "setuptools": "84.0.0",
+    "setuptools": "84.2.1",
 }
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 GIT_ID = re.compile(r"[0-9a-f]{40}\Z")

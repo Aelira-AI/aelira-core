@@ -35,7 +35,7 @@ SOURCE = frozenset(
     "requirements.txt src/education/docx_processor.py src/education/pptx_processor.py src/education/xlsx_processor.py src/education/remediation/pptx_reading_order.py".split()
 )
 PYTHON = frozenset(
-    "lxml-6.1.3.tar.gz pip-26.2.1-py3-none-any.whl setuptools-84.0.0-py3-none-any.whl".split()
+    "lxml-6.1.3.tar.gz pip-26.2.1-py3-none-any.whl setuptools-84.2.1-py3-none-any.whl".split()
 )
 STRUCTURED = frozenset(
     {
