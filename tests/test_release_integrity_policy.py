@@ -422,6 +422,7 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
     assert '"--no-sandbox"' in config
     assert '"--disable-setuid-sandbox"' in config
     assert '"--disable-dev-shm-usage"' in config
+    assert json.loads(config)["chromeLaunchConfig"]["protocol"] == "cdp"
 
     smoke = (ROOT / "scripts" / "smoke_pa11y_runtime.py").read_text()
     assert "os.geteuid() == 0" in smoke
@@ -443,7 +444,10 @@ def test_pa11y_lock_omits_the_vulnerable_ftp_and_extractor_chain() -> None:
     lock = json.loads((ROOT / "pa11y-runtime" / "package-lock.json").read_text())
 
     assert manifest["dependencies"] == {"pa11y": "9.0.1"}
-    assert manifest["overrides"] == {"@puppeteer/browsers": "3.2.4"}
+    # zod is forced past GHSA-mrhx-c7xc-m3w5; chromium-bidi 14 asks for zod 3.
+    assert manifest["overrides"] == {"@puppeteer/browsers": "3.2.4", "zod": "4.6.7"}
+    zod = [entry for path, entry in lock["packages"].items() if path.endswith("/zod")]
+    assert [entry["version"] for entry in zod] == ["4.6.7"]
     assert lock["packages"]["node_modules/pa11y"]["version"] == "9.0.1"
     browsers = lock["packages"]["node_modules/@puppeteer/browsers"]
     assert browsers["version"] == "3.2.4"

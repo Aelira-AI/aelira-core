@@ -1,6 +1,6 @@
 # Use the same repaired official CPython tree and system Expat as production.
 
-# Rebuild Debian's libxml2, libX11, libXrender and brotli from their pinned trixie
+# Rebuild Debian's libxml2, libX11 and libXrender from their pinned trixie
 # source packages with reviewed security patches. See
 # docs/security/debian-backports-0.9.14.md. These stages never ship.
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
@@ -24,11 +24,6 @@ FROM debian-backport-builder AS libxrender-backport
 COPY docker/debian-backports/libxrender/ /tmp/debian-backports/libxrender/
 RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
     /tmp/debian-backports/libxrender /out/libxrender
-
-FROM debian-backport-builder AS brotli-backport
-COPY docker/debian-backports/brotli/ /tmp/debian-backports/brotli/
-RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
-    /tmp/debian-backports/brotli /out/brotli
 
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-clean
 RUN rm /usr/local/lib/python3.14/lib-dynload/pyexpat.cpython-314-*.so \
@@ -85,7 +80,6 @@ ARG SOURCE_DATE_EPOCH=0
 COPY --from=libxml2-backport /out/ /tmp/debian-backports/
 COPY --from=libx11-backport /out/ /tmp/debian-backports/
 COPY --from=libxrender-backport /out/ /tmp/debian-backports/
-COPY --from=brotli-backport /out/ /tmp/debian-backports/
 COPY docker/debian-backports/install-backports.sh /tmp/debian-backports/
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
@@ -160,7 +154,7 @@ RUN apt-get update && apt-get install -y \
     texlive-lang-german \
     # Pandoc for LaTeX to HTML conversion
     pandoc \
-    # Replace every installed libxml2, libX11, libXrender and brotli package, including
+    # Replace every installed libxml2, libX11 and libXrender package, including
     # the libxml2 development headers and utilities, with the rebuilt backports
     # before this apt RUN commits.
     && sh /tmp/debian-backports/install-backports.sh dev \
@@ -209,7 +203,7 @@ COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir "pip==26.2.2" && \
     python -m pip uninstall --yes setuptools && \
-    pip install --no-cache-dir "setuptools==84.0.0" && \
+    pip install --no-cache-dir "setuptools==84.2.1" && \
     sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
     pip install --no-cache-dir --no-deps /tmp/lxml-wheel/lxml-6.1.3-*.whl && \
     rm -rf /tmp/lxml-wheel /tmp/build-lxml-wheel.sh && \

@@ -1,6 +1,7 @@
 {
   "chromeLaunchConfig": {
     "executablePath": "/home/aelira/.local/bin/aelira-chromium",
+    "protocol": "cdp",
     "args": [
       "--no-sandbox",
       "--disable-setuid-sandbox",

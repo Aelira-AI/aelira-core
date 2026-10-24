@@ -30,7 +30,7 @@ encutils==1.0.0
 et_xmlfile==2.0.0
 fastapi==0.143.0
 faster-whisper==1.2.1
-filelock==4.1.1
+filelock==4.2.4
 flatbuffers==25.12.19
 fonttools==4.66.1
 fpdf2==2.8.9
@@ -124,7 +124,7 @@ rlPyCairo==0.4.0
 rpds-py==2026.9.1
 rsa==4.9.1
 sentry-sdk==2.72.0
-setuptools==84.0.0
+setuptools==84.2.1
 shellingham==1.5.4
 six==1.17.0
 soupsieve==3.0.3
