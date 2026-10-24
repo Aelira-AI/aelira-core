@@ -203,7 +203,7 @@ COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir "pip==26.2.2" && \
     python -m pip uninstall --yes setuptools && \
-    pip install --no-cache-dir "setuptools==84.0.0" && \
+    pip install --no-cache-dir "setuptools==84.2.1" && \
     sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel && \
     pip install --no-cache-dir --no-deps /tmp/lxml-wheel/lxml-6.1.3-*.whl && \
     rm -rf /tmp/lxml-wheel /tmp/build-lxml-wheel.sh && \
