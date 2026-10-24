@@ -1,5 +1,9 @@
 # CVE-2026-6653 system libxml2 backport for 0.9.13
 
+> Superseded in 0.9.14 by the [rebuilt Debian libxml2, libX11 and libXrender
+> packages](debian-backports-0.9.14.md), which carry this patch and six more
+> libxml2 fixes. This page records the 0.9.13 rebuild.
+
 The API and development images build Debian trixie's `libxml2` source package
 `2.12.7+dfsg+really2.9.14-2.1+deb13u3` with the reviewed Canonical entity
 amplification patch. The resulting `+aelira1` Debian packages replace the

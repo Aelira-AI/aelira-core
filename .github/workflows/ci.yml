@@ -1521,6 +1521,9 @@ jobs:
           JOURNEY_LTI_DEPLOYMENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
           JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
           JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
+          # Optional: basic auth in front of the Canvas instance (unset = no gate).
+          JOURNEY_CANVAS_GATE_USERNAME: ${{ secrets.AELIRA_JOURNEY_CANVAS_GATE_USERNAME }}
+          JOURNEY_CANVAS_GATE_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_GATE_PASSWORD }}
         run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=lms
       - name: Show the scan lines of the worker log for a failed run
         if: failure()
@@ -1615,7 +1618,7 @@ jobs:
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
           bun run scripts/verify_opencv_layers.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)"
-          bun run scripts/verify_libxml2_6653.ts \
+          bun run scripts/verify_debian_backports.ts \
             "$(docker compose -f docker-compose.quickstart.yml images -q api)" --dev
       - name: Verify quickstart scene codec decoding
         run: |
@@ -1719,7 +1722,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       - name: Verify candidate bundle refusal controls
-        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts scripts/verify_libxml2_6653.test.ts
+        run: bun test --timeout 30000 scripts/candidate_image_bundle.test.ts scripts/cleanup_candidate_smoke.test.ts scripts/verify_debian_backports.test.ts
       - name: Load the reproducible API candidate for runtime checks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_native_images }}
         run: |
@@ -1789,7 +1792,7 @@ jobs:
           docker run --rm --network none --user 0 --entrypoint apt-get aelira-worker-isolation:test check
           bun run scripts/verify_python_expat_layers.ts aelira-worker-isolation:test
           bun run scripts/verify_opencv_layers.ts aelira-worker-isolation:test
-          bun run scripts/verify_libxml2_6653.ts aelira-worker-isolation:test
+          bun run scripts/verify_debian_backports.ts aelira-worker-isolation:test
           docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
       - name: Verify PyAV decodes and resamples the transcription WAV
         run: |

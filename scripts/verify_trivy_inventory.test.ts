@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import type { VerifiedBackport } from './verify_debian_backports';
 import { absentDispositionPackages, inspectInventory, verifyDispositions, verifyInventory } from './verify_trivy_inventory';
 
 const image = `ghcr.io/example/api@sha256:${'1'.repeat(64)}`;
@@ -235,35 +236,56 @@ describe('reviewed dispositions for unfixed distribution findings', () => {
   });
 });
 
-describe('CVE-2026-6653 repaired package gate', () => {
-  const rebuilt = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira1';
-  const entry = {
-    id: 'CVE-2026-6653', osFamily: 'debian',
+describe('rebuilt Debian package gate', () => {
+  const rebuilt = '2.12.7+dfsg+really2.9.14-2.1+deb13u3+aelira2';
+  const stock = '2.12.7+dfsg+really2.9.14-2.1+deb13u3';
+  const libxml2: VerifiedBackport = {
+    source: 'libxml2', version: rebuilt, binaries: new Set(['libxml2', 'libxml2-dev', 'libxml2-utils']),
+    fixed: new Set(['CVE-2026-6653', 'CVE-2026-86144']), disclosure: 'docs/security/debian-backports-0.9.14.md',
+  };
+  const notPresent = {
+    id: 'CVE-2026-86139', osFamily: 'debian',
     packages: [{ name: 'libxml2', installedVersion: rebuilt }],
     status: 'not_affected' as const, justification: 'vulnerable_code_not_present',
-    reason: 'Exact backport and loaded-library receipt are required',
-    reviewed: '2026-10-18', expires: '2027-01-12',
-    disclosure: 'docs/security/libxml2-6653-backport-0.9.13.md',
+    reason: 'The length guard already exists in the rebuilt source',
+    reviewed: '2026-10-22', expires: '2027-01-12',
+    disclosure: 'docs/security/debian-backports-0.9.14.md',
   };
-  const inventory = (installedVersion: string) => {
+  const inventory = (rows: Array<[string, string, string, string?]>) => {
     const base = clean();
     return { ...base,
       Metadata: { ...base.Metadata, OS: { Family: 'debian', Name: '13' } },
-      Results: [{ ...base.Results[0], Type: 'debian', Vulnerabilities: [{
-        VulnerabilityID: 'CVE-2026-6653', PkgName: 'libxml2', InstalledVersion: installedVersion,
-        Severity: 'CRITICAL',
-      }] }],
+      Results: [{ ...base.Results[0], Type: 'debian', Vulnerabilities: rows.map(([id, pkg, version, fixed]) => ({
+        VulnerabilityID: id, PkgName: pkg, InstalledVersion: version, Severity: 'CRITICAL',
+        ...(fixed ? { FixedVersion: fixed } : {}),
+      })) }],
     };
   };
-  test('requires native package and loaded-library proof for the exact rebuilt version', () => {
-    const value = inventory(rebuilt);
-    expect(verifyInventory(value, image, 'arm64', [entry])).toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
-    expect(verifyInventory(value, image, 'arm64', [entry], true)).toEqual([]);
-    expect(verifyInventory(inventory('2.12.7+dfsg+really2.9.14-2.1+deb13u3'), image, 'arm64', [entry], true))
-      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
-    const stockEntry = { ...entry, packages: [{ name: 'libxml2', installedVersion: '2.12.7+dfsg+really2.9.14-2.1+deb13u3' }] };
-    expect(verifyInventory(inventory(stockEntry.packages[0].installedVersion), image, 'arm64', [stockEntry], true))
-      .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+  test('accepts a CVE only when a verified rebuild of that exact package version fixes it', () => {
+    const value = inventory([['CVE-2026-6653', 'libxml2', rebuilt], ['CVE-2026-86144', 'libxml2-dev', rebuilt]]);
+    expect(verifyInventory(value, image, 'arm64')).toContain('Unresolved image findings: 0 HIGH, 2 CRITICAL');
+    const report = inspectInventory(value, image, 'arm64', [], [libxml2]);
+    expect(report.errors).toEqual([]);
+    expect(report.patched.map((item) => `${item.id} ${item.pkg} ${item.source}`))
+      .toEqual(['CVE-2026-6653 libxml2 libxml2', 'CVE-2026-86144 libxml2-dev libxml2']);
+  });
+  test('refuses stock versions, other packages, unlisted CVEs and rows with a distribution fix', () => {
+    for (const row of [
+      ['CVE-2026-6653', 'libxml2', stock],
+      ['CVE-2026-6653', 'libxslt1.1', rebuilt],
+      ['CVE-2026-76781', 'libxml2', rebuilt],
+      ['CVE-2026-6653', 'libxml2', rebuilt, '2.12.7+dfsg+really2.9.14-2.1+deb13u4'],
+    ] as Array<[string, string, string, string?]>) {
+      expect(verifyInventory(inventory([row]), image, 'arm64', [], [libxml2]))
+        .toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+    }
+  });
+  test('a disposition for a rebuilt version requires the verified rebuild', () => {
+    const value = inventory([['CVE-2026-86139', 'libxml2', rebuilt]]);
+    expect(verifyInventory(value, image, 'arm64', [notPresent])).toContain('Unresolved image findings: 0 HIGH, 1 CRITICAL');
+    expect(verifyInventory(value, image, 'arm64', [notPresent], [libxml2])).toEqual([]);
+    const stockEntry = { ...notPresent, packages: [{ name: 'libxml2', installedVersion: stock }] };
+    expect(verifyInventory(inventory([['CVE-2026-86139', 'libxml2', stock]]), image, 'arm64', [stockEntry])).toEqual([]);
   });
 });
 

@@ -285,7 +285,7 @@ The [official FFmpeg archive](https://ffmpeg.org/download.html) has SHA-256
 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`;
 its official release signature was verified against FFmpeg release signer
 `FCF986EA15E6E293A5644F10B4322F04D67658D8`. The PyAV build pins Cython
-3.2.9 and the existing setuptools 84.0.0, disables build isolation, and checks
+3.2.9 and the existing setuptools 84.2.1, disables build isolation, and checks
 both archive hashes before unpacking. The final image carries the FFmpeg and
 PyAV license texts with the seven required shared libraries and the `ffmpeg`
 and `ffprobe` programs. PyAV's extension
@@ -297,7 +297,7 @@ has SHA-256 `ee7c145e51c7988325296ea2cc1dc70b42ecd6e27b49386370b926c2211ff6f4`.
 Both hashes are checked before the OpenCV build. Its temporary build environment
 pins NumPy 2.3.2, setuptools 69.5.1 and wheel 0.45.1 as required by the
 sdist's legacy build backend on Python
-3.14; the final application keeps NumPy 2.5.4 and setuptools 84.0.0. FFmpeg's
+3.14; the final application keeps NumPy 2.5.4 and setuptools 84.2.1. FFmpeg's
 development headers and linker symlinks are removed after both wheels exist.
 The final-image verifier checks the installed PyAV version, native FFmpeg
 version tuples, every resolved FFmpeg SONAME and path, and the absence of
