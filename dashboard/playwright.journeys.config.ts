@@ -1,5 +1,6 @@
 /* global process */
 import { defineConfig, devices } from '@playwright/test';
+import { canvasHttpCredentials } from './tests/journeys/support/canvas-gate';
 
 // CI runs the hash-pinned Chrome for Testing build named in
 // scripts/chrome-for-testing.json; elsewhere Playwright's own Chromium is used.
@@ -58,6 +59,7 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         launchOptions: chromiumLaunchOptions,
         storageState: 'journey-results/.auth/admin.json',
+        httpCredentials: canvasHttpCredentials(),
       },
     },
   ],
