@@ -379,10 +379,12 @@ def test_pinned_renderer_calibration_separates_supported_math_near_misses():
 
 
 def _hanging_renderer_worker(mathml, font_data, connection, max_width, max_height):
-    time.sleep(10)
+    time.sleep(60)
 
 
 def test_renderer_has_killable_end_to_end_deadline():
+    import multiprocessing
+
     from src.education.remediation.equation_verifier import OfflineMathMLRenderer
 
     renderer = OfflineMathMLRenderer(
@@ -391,7 +393,11 @@ def test_renderer_has_killable_end_to_end_deadline():
     started = time.monotonic()
     with pytest.raises(RuntimeError, match="renderer_timeout"):
         renderer.render("<math><mi>x</mi></math>")
-    assert time.monotonic() - started < 2
+    # The worker would sleep for 60 seconds. Starting a spawned interpreter
+    # and the one-second terminate grace vary with runner load, so the bound
+    # proves the deadline cut the worker short without timing the runner.
+    assert time.monotonic() - started < 15
+    assert multiprocessing.active_children() == []
 
 
 def _worker_that_crashes(mathml, font_data, connection, max_width, max_height):
