@@ -341,6 +341,10 @@ Aelira Core is free and open source, and maintaining it takes steady work: depen
 - **Run a pilot** at your institution and tell us what works and what doesn't, through [Discussions](https://github.com/Aelira-AI/aelira-core/discussions).
 - **Star and share** the repository so other accessibility teams can find it.
 
+### Sponsors
+
+Institutions sponsoring at the Institution tier are shown here. None yet; see [SUPPORTERS.md](SUPPORTERS.md) for everyone who supports the project.
+
 ## Security
 
 Please do not report vulnerabilities in public issues. Follow the private reporting process in the [security policy](SECURITY.md), which also lists the supported versions. Known unfixed advisories and security backports are documented under [`docs/security/`](docs/security/).
