@@ -10,6 +10,8 @@ import { type Browser, chromium } from 'playwright'
 import { ApiClient } from '../../utils/api-client.js'
 import { chromiumLaunchOptions } from '../../utils/browser.js'
 import { getApiUrl } from '../../utils/config.js'
+import { pollForCompletion } from '../../utils/poll-progress.js'
+import { summarizeScanDetail } from '../../utils/scan-detail.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -29,21 +31,13 @@ const EXTENSION_MAP: Record<string, { endpoint: string; transport: 'form' | 'loc
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB
 
-/** Backends may return issues as an array or as a map of severity counts. */
-function normalizeIssues(result: any): Array<{ impact?: string; severity?: string }> {
-  if (Array.isArray(result.issues)) return result.issues
-
-  const issues: Array<{ impact?: string; severity?: string }> = []
-  if (result.issues && typeof result.issues === 'object') {
-    for (const [sev, count] of Object.entries(result.issues)) {
-      for (let i = 0; i < (count as number); i++) {
-        issues.push({ severity: sev })
-      }
-    }
-  }
-
-  return issues
+interface WatchResult {
+  counts: Array<[string, number]>
+  score: null | number
+  total: number
 }
+
+const quietProgress = { message() {}, stop() {} }
 
 export default class ScanWatch extends Command {
   static args = {
@@ -211,23 +205,27 @@ export default class ScanWatch extends Command {
     this.log(`[${ts}] ${pc.blue('Changed:')} ${relativePath}`)
 
     try {
-      let issues: Array<{ impact?: string; severity?: string }> = []
+      let result: WatchResult
 
       if (mapping.transport === 'local-html') {
-        // HTML scan with persistent Playwright browser
+        // HTML scan with persistent Playwright browser. axe reports
+        // violations only, so there is no scanner score for this path.
         const axeResults = await this.scanHtml(filePath)
-        issues = axeResults.violations.map((v: any) => ({
-          impact: v.impact,
-          severity: v.impact,
-        }))
+        const counts: Record<string, number> = {}
+        for (const violation of axeResults.violations) {
+          const impact = violation.impact ?? 'unknown'
+          counts[impact] = (counts[impact] ?? 0) + 1
+        }
+
+        result = { counts: Object.entries(counts), score: null, total: axeResults.violations.length }
       } else {
-        issues = await this.scanViaApi(api, mapping.endpoint, filePath)
+        result = await this.scanViaApi(api, mapping.endpoint, filePath)
       }
 
       this.totalScans++
-      this.totalIssues += issues.length
+      this.totalIssues += result.total
 
-      this.log(`[${ts}] ${this.formatResult(issues)} — ${relativePath}`)
+      this.log(`[${ts}] ${this.formatResult(result)} — ${relativePath}`)
     } catch (error: any) {
       this.log(`[${ts}] ${pc.red('Error:')} ${relativePath} — ${error.message}`)
     }
@@ -242,14 +240,15 @@ export default class ScanWatch extends Command {
       this.browserRef.browser = await chromium.launch(chromiumLaunchOptions())
     }
 
-    const page = await this.browserRef.browser.newPage()
+    // @axe-core/playwright needs a page from an explicit browser context.
+    const context = await this.browserRef.browser.newContext()
     try {
+      const page = await context.newPage()
       const html = await fsPromises.readFile(filePath, 'utf8')
       await page.setContent(html)
-      const results = await new AxeBuilder({ page }).analyze()
-      return results
+      return await new AxeBuilder({ page }).analyze()
     } finally {
-      await page.close()
+      await context.close()
     }
   }
 
@@ -257,50 +256,45 @@ export default class ScanWatch extends Command {
   // Upload to API
   // ---------------------------------------------------------------------------
 
-  private async scanViaApi(
-    api: ApiClient,
-    endpoint: string,
-    filePath: string,
-  ): Promise<Array<{ impact?: string; severity?: string }>> {
+  /**
+   * Upload a file, wait for the queued scan, and read its counts and score
+   * from GET /education/scans/{scan_id}. The upload routes only acknowledge
+   * the job with a scan_id.
+   */
+  private async scanViaApi(api: ApiClient, endpoint: string, filePath: string): Promise<WatchResult> {
     const formData = new FormData()
     formData.append('file', await fsPromises.readFile(filePath), path.basename(filePath))
 
     const response = await api.postForm(endpoint, formData as any, {
       timeout: 120_000,
     })
+    const queued = await response.json()
+    if (!queued.scan_id) throw new Error('Unexpected response: no scan_id returned')
 
-    return normalizeIssues(await response.json())
+    const summary = summarizeScanDetail(await pollForCompletion(api, queued.scan_id, quietProgress, { timeout: 300_000 }))
+    const counts = summary.issueCounts
+    if (!counts) throw new Error('Scan finished without issue counts')
+
+    return {
+      counts: (['critical', 'high', 'medium', 'low'] as const).map((severity) => [severity, counts[severity]]),
+      score: summary.complianceScore,
+      total: counts.total,
+    }
   }
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private formatResult(issues: Array<{ impact?: string; severity?: string }>): string {
-    if (issues.length === 0) return pc.green('\u2713 0 issues \u2014 Score: 100')
-
-    const counts: Record<string, number> = {}
-    for (const issue of issues) {
-      const sev = this.normalizeSeverity(issue.severity ?? issue.impact ?? 'unknown')
-      counts[sev] = (counts[sev] ?? 0) + 1
-    }
-
-    const parts = Object.entries(counts).map(([sev, count]) => `${count} ${sev}`)
-    const score = Math.max(0, 100 - issues.length * 5)
-    return `\u2713 ${issues.length} issue${issues.length === 1 ? '' : 's'} (${parts.join(', ')}) \u2014 Score: ${score}`
+  private formatResult(result: WatchResult): string {
+    const parts = result.counts.filter(([, count]) => count > 0).map(([severity, count]) => `${count} ${severity}`)
+    const issues = `${result.total} issue${result.total === 1 ? '' : 's'}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}`
+    const text = result.score === null ? issues : `${issues} \u2014 Scanner score: ${result.score}/100`
+    return result.total === 0 ? pc.green(text) : text
   }
 
   private formatTimestamp(): string {
     const now = new Date()
     return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
-  }
-
-  private normalizeSeverity(severity: string): string {
-    const map: Record<string, string> = {
-      high: 'serious',
-      low: 'minor',
-      medium: 'moderate',
-    }
-    return map[severity] ?? severity
   }
 }

@@ -61,10 +61,10 @@ static flags = {
         this.displaySyncResult(data)
       }
 
-      outro('✨ File sync initiated!')
+      outro('File sync initiated.')
     } catch (error: any) {
       s.stop('Sync failed')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -80,8 +80,7 @@ static flags = {
     if (data.jobs && data.jobs.length > 0) {
       this.log('  Sync Jobs:')
       for (const job of data.jobs) {
-        const icon = job.provider === 'google' ? '📁' : '📂'
-        this.log(`    ${icon} ${pc.bold(job.provider.toUpperCase())}`)
+        this.log(`    ${pc.bold(job.provider.toUpperCase())}`)
         this.log(`       Job ID: ${job.job_id}`)
         this.log(`       Status: ${job.status}\n`)
       }

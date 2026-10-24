@@ -103,7 +103,7 @@ static flags = {
         await this.processFile(targetPath, flags, startTime)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -146,13 +146,13 @@ static flags = {
       this.log('Failed Transcriptions:\n')
       for (const result of results
         .filter((r) => r.error)) {
-          this.log(`  ✗ ${result.file}: ${result.error}`)
+          this.log(`  - ${result.file}: ${result.error}`)
         }
 
       this.log('')
     }
 
-    this.log('💡 Tip: Use --format json --output report.json for full results')
+    this.log('Tip: Use --format json --output report.json for full results')
   }
 
   private displaySingleResult(result: any, processTime: number): void {
@@ -174,11 +174,11 @@ static flags = {
     if (result.caption_formats) {
       this.log(`  Generated Captions:`)
       if (result.caption_formats.webvtt) {
-        this.log(`  ✓ WebVTT format`)
+        this.log(`  - WebVTT format`)
       }
 
       if (result.caption_formats.srt) {
-        this.log(`  ✓ SRT format`)
+        this.log(`  - SRT format`)
       }
 
       this.log('')
@@ -204,8 +204,8 @@ static flags = {
       this.log(`  View scan details: ${result.report_url || 'N/A'}\n`)
     }
 
-    this.log('💡 Tip: Use --format json for complete transcription and caption files')
-    this.log('💡 Tip: Use directory path to batch transcribe multiple files')
+    this.log('Tip: Use --format json for complete transcription and caption files')
+    this.log('Tip: Use directory path to batch transcribe multiple files')
   }
 
   private async findMediaFiles(dirPath: string): Promise<string[]> {
@@ -243,7 +243,7 @@ static flags = {
 
     if (files.length === 0) {
       s.stop('No video/audio files found')
-      outro('⚠️  No media files to transcribe')
+      outro('No media files to transcribe')
       return
     }
 
@@ -258,9 +258,9 @@ static flags = {
       try {
         const result = await this.transcribeMedia(file, flags['api-url'], s)
         results.push({ file: path.basename(file), ...result })
-        s.stop(`✓ ${path.basename(file)}`)
+        s.stop(`Done: ${path.basename(file)}`)
       } catch (error: any) {
-        s.stop(`✗ ${path.basename(file)}: ${error.message}`)
+        s.stop(`Failed: ${path.basename(file)}: ${error.message}`)
         results.push({ error: error.message, file: path.basename(file) })
       }
     }
@@ -277,17 +277,17 @@ static flags = {
 
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch transcription complete. Report saved to ${flags.output}`)
+        outro(`Batch transcription complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResults(results, Date.now() - startTime)
-      outro(`✨ Batch transcription complete! Processed ${files.length} files`)
+      outro(`Batch transcription complete! Processed ${files.length} files`)
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+      this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
     }
   }
 
@@ -315,17 +315,17 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ Transcription complete. Report saved to ${flags.output}`)
+          outro(`Transcription complete. Report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displaySingleResult(result, processDuration)
-        outro('✨ Transcription complete!')
+        outro('Transcription complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${processDuration}ms`)
+        this.log(`\nTotal execution time: ${processDuration}ms`)
       }
     } catch (error: any) {
       s.stop('Transcription failed')

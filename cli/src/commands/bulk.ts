@@ -405,7 +405,7 @@ static flags = {
       const outputPath = flags.output || `bulk-export-${Date.now()}${ext}`
       await fs.writeFile(outputPath, output)
 
-      outro(`✅ Exported to ${outputPath}`)
+      outro(`Exported to ${outputPath}`)
     } catch (error: any) {
       s.stop('Export failed')
       this.error(error.message)
@@ -429,9 +429,9 @@ static flags = {
     }
 
     // Show files that would be processed
-    this.log('\n📁 Files to remediate:\n')
+    this.log('\nFiles to remediate:\n')
     for (const file of files.slice(0, 10)) {
-      this.log(`  ${pc.dim('•')} ${path.relative(process.cwd(), file)}`)
+      this.log(`  ${pc.dim('-')} ${path.relative(process.cwd(), file)}`)
     }
 
     if (files.length > 10) {
@@ -471,10 +471,10 @@ static flags = {
 
     s.stop('Remediation complete')
 
-    this.log('\n⚠️  Note: Full auto-remediation requires backend API connection.')
+    this.log('\nNote: Full auto-remediation requires backend API connection.')
     this.log('   Run `aelira config init` to configure backend connection.\n')
 
-    outro(`✅ Processed ${files.length} files`)
+    outro(`Processed ${files.length} files`)
   }
 
   private async runReport(
@@ -527,7 +527,7 @@ static flags = {
     this.log(`  Serious Issues: ${results.totalSerious}`)
     this.log('━'.repeat(50))
 
-    outro(`✅ Report saved to ${outputPath}`)
+    outro(`Report saved to ${outputPath}`)
   }
 
   private async runScan(
@@ -557,9 +557,9 @@ static flags = {
     }
 
     // Show what will be scanned
-    this.log('\n📁 Files to scan:\n')
+    this.log('\nFiles to scan:\n')
     for (const file of files.slice(0, 10)) {
-      this.log(`  ${pc.dim('•')} ${path.relative(process.cwd(), file)}`)
+      this.log(`  ${pc.dim('-')} ${path.relative(process.cwd(), file)}`)
     }
 
     if (files.length > 10) {
@@ -582,7 +582,7 @@ static flags = {
         const resumeData = JSON.parse(await fs.readFile(flags.resume, 'utf8'))
         previousResults = resumeData.results || []
         startIndex = previousResults.length
-        this.log(`📂 Resuming from file ${startIndex + 1}/${files.length}\n`)
+        this.log(`Resuming from file ${startIndex + 1}/${files.length}\n`)
       } catch {
         this.warn(`Cannot load resume file: ${flags.resume}`)
       }
@@ -644,10 +644,10 @@ static flags = {
     const statePath = `bulk-scan-state-${Date.now()}.json`
     await fs.writeFile(statePath, JSON.stringify({ files, results: results.results }, null, 2))
 
-    this.log(`\n📄 Results saved to: ${outputPath}`)
-    this.log(`📄 State saved to: ${statePath} (use --resume to continue)`)
+    this.log(`\nResults saved to: ${outputPath}`)
+    this.log(`State saved to: ${statePath} (use --resume to continue)`)
 
-    outro(results.failedFiles.length === 0 ? '✅ All files passed!' : '⚠️  Some files need attention')
+    outro(results.failedFiles.length === 0 ? 'All files passed!' : 'Some files need attention')
   }
 
   private async scanFiles(

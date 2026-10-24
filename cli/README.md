@@ -32,6 +32,47 @@
 
 Authentication supports magic-link, browser, or API-key login with multi-profile config, and the CLI retries transient API errors automatically with backoff.
 
+## What it looks like
+
+This is real output from `aelira scan pdf` in the default console format, run against a local Aelira Core API:
+
+```text
+┌  Aelira CLI - PDF Accessibility Scanner
+│
+◇  Scan complete
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PDF Accessibility Report
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File: sample-handout.pdf
+  Pages: 1
+  Size: 4.4 KB
+  OCR: No
+
+  Scanner score: 49/100
+
+  Issues Found:
+  - Critical: 1
+  - High: 2
+  - Medium: 3
+  - Low: 0
+  Total: 6
+
+  Processing Time: 6.2s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Scan ID: e227efe8-42ee-4301-9dd0-064f957cebb9
+
+Tip: Use --format json for detailed issue breakdown
+Tip: Use directory path to batch scan multiple PDFs
+│
+└  PDF scan complete.
+```
+
+`sample-handout.pdf` is a one-page synthetic PDF made for this example. It is untagged, has no title or language set, and contains one chart image with no alternative text. The report shows the file details, a scanner score of 49 out of 100, and six findings grouped by severity; `--format json` or `--format csv` lists each finding with its rule.
+
+The command was `NO_COLOR=1 aelira scan pdf sample-handout.pdf`, with `AELIRA_API_URL` set to the local API. It was captured with a 0.9.14 development build (`main` at `ceb3c78` plus the CLI output fixes that accompany this sample), against an API started from `docker-compose.quickstart.yml` with AI providers left disabled. The progress spinner is shown in its final state, and the scan ID and processing time will differ on every run.
+
 ## Installation
 
 ```bash
@@ -209,6 +250,8 @@ aelira scan latex ./math-dept/
 
 Watch a directory for file changes and automatically scan new or modified files.
 
+Each changed file is uploaded to the API, and its line shows the issue counts and scanner score once that scan finishes. HTML files are checked locally with axe-core instead, so their line shows issue counts by impact and no score.
+
 ```bash
 aelira scan watch <directory>
   --extensions <list>             # File extensions to watch (default: .pdf,.docx,.pptx,.xlsx,.html,.htm,.tex,.css,.js)
@@ -299,15 +342,21 @@ aelira scan <URL or HTML file>
 Advanced web scanner with batch and sitemap support.
 
 ```bash
-aelira scan web <URL>
+aelira scan web <URL> [URL...]
   --api-url <url>
-  --batch                   # Crawl linked pages
-  --sitemap                 # Treat URL as sitemap.xml
-  --max-pages <n>           # Max pages to scan (default: 20)
+  --batch                   # Scan one or more URLs as one batch (up to 50)
+  --urls-file <file>        # With --batch: one URL per line (blank lines and # comments ignored)
+  --depth <n>               # With --batch: levels of links to follow from each URL (default: 1; 0 scans only the given URLs)
+  --sitemap                 # Treat the URL as a sitemap.xml
+  --max-pages <n>           # With --sitemap: max sitemap URLs to scan (default: 20)
   --format console|json|csv
   --output <file>           # Output file (for JSON or CSV)
   --timer
 ```
+
+The API queues each web scan and the command waits for it to finish before printing the result. The API only scans public HTTP or HTTPS addresses.
+
+A batch with the default `--depth 1` also scans pages each URL links to, up to the API's per-URL page limit; use `--depth 0` to scan only the URLs you give.
 
 Examples:
 
@@ -315,11 +364,14 @@ Examples:
 # Single page scan
 aelira scan web https://example.com
 
-# Batch scan (crawl linked pages)
-aelira scan web https://example.com --batch --max-pages 50
+# Batch scan of two pages
+aelira scan web https://example.com https://example.com/about --batch
+
+# Batch scan of only the pages listed in a file
+aelira scan web --batch --urls-file urls.txt --depth 0
 
 # Sitemap scan
-aelira scan web https://example.com/sitemap.xml --sitemap
+aelira scan web https://example.com/sitemap.xml --sitemap --max-pages 10
 ```
 
 ### `aelira analyze`
@@ -1017,6 +1069,8 @@ aelira auth logout
 ### `aelira export`
 
 Export scan history to CSV or JSON.
+
+The CSV has one row per finding. Its `date_utc` column is the date each scan was created, in UTC.
 
 ```bash
 aelira export

@@ -93,14 +93,14 @@ static flags = {
         this.log(JSON.stringify(output, null, 2))
       } else {
         this.displayResult(result, scanDuration)
-        outro('✨ Remediation complete!')
+        outro('Remediation complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+        this.log(`\nTotal execution time: ${scanDuration}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -114,13 +114,13 @@ static flags = {
     this.log(`  File: ${result.filename || 'Unknown'}`)
     this.log(`  File Type: ${result.file_type || 'Unknown'}\n`)
 
-    this.log('  📊 Remediation Results:')
+    this.log('  Remediation Results:')
     this.log(`  - Issues Fixed: ${result.issues_fixed || 0}`)
     this.log(`  - Issues Remaining: ${result.issues_remaining || 0}`)
     this.log(`  - Auto-Fix Rate: ${result.fix_rate ? result.fix_rate.toFixed(1) + '%' : 'N/A'}\n`)
 
     if (result.fixes_applied && result.fixes_applied.length > 0) {
-      this.log('  ✅ Fixes Applied:')
+      this.log('  Fixes Applied:')
       result.fixes_applied.slice(0, 5).forEach((fix: any, idx: number) => {
         this.log(`    ${idx + 1}. ${fix.issue_type}: ${fix.description || 'Fixed'}`)
       })
@@ -133,7 +133,7 @@ static flags = {
 
     if (result.original_score !== undefined && result.new_score !== undefined) {
       const improvement = result.new_score - result.original_score
-      this.log('  📈 Score Improvement:')
+      this.log('  Score Improvement:')
       this.log(`  - Before: ${result.original_score}/100`)
       this.log(`  - After: ${result.new_score}/100`)
       this.log(`  - Improvement: +${improvement.toFixed(1)} points\n`)
@@ -142,8 +142,8 @@ static flags = {
     this.log(`  Processing Time: ${(processTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log('💡 Tip: Use --download to get the remediated file')
-    this.log('💡 Tip: Use --format json for complete remediation details')
+    this.log('Tip: Use --download to get the remediated file')
+    this.log('Tip: Use --format json for complete remediation details')
   }
 
 }

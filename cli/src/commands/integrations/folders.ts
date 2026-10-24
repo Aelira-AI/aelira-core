@@ -89,7 +89,7 @@ static flags = {
       }
 
       if (data.folders.length === 0) {
-        outro('⚠️  No folders selected for sync.\n\n' + pc.dim('Use `aelira integrations folders` to select folders.'))
+        outro('No folders selected for sync.\n\n' + pc.dim('Use `aelira integrations folders` to select folders.'))
         return
       }
 
@@ -98,8 +98,7 @@ static flags = {
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
       for (const folder of data.folders) {
-        const icon = folder.provider === 'google' ? '📁' : '📂'
-        this.log(`  ${icon} ${pc.bold(folder.folder_name)}`)
+        this.log(`  ${pc.bold(folder.folder_name)}`)
         this.log(`     Provider: ${folder.provider}`)
         this.log(`     Subfolders: ${folder.sync_subfolders ? 'Yes' : 'No'}`)
         this.log(`     Added: ${new Date(folder.created_at).toLocaleDateString()}\n`)
@@ -107,10 +106,10 @@ static flags = {
 
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 
-      outro('✨ Folder list complete!')
+      outro('Folder list complete.')
     } catch (error: any) {
       s.stop('Failed to fetch folders')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -127,7 +126,7 @@ static flags = {
       s.stop('Folders retrieved')
 
       if (data.folders.length === 0) {
-        outro('⚠️  No folders selected for sync.')
+        outro('No folders selected for sync.')
         return
       }
 
@@ -152,10 +151,10 @@ static flags = {
       }
 
       s.stop(`Removed ${foldersToRemove.length} folder(s)`)
-      outro(`✨ Successfully removed ${foldersToRemove.length} folder(s) from sync!`)
+      outro(`Successfully removed ${foldersToRemove.length} folder(s) from sync.`)
     } catch (error: any) {
       s.stop('Failed to remove folders')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -186,7 +185,7 @@ static flags = {
       s.stop('Folders retrieved')
 
       if (data.folders.length === 0) {
-        outro(`⚠️  No folders found in your ${provider} account.`)
+        outro(`No folders found in your ${provider} account.`)
         return
       }
 
@@ -220,12 +219,12 @@ static flags = {
 
       s.stop(`Added ${selectedFolders.length} folder(s)`)
       outro(
-        `✨ Successfully added ${selectedFolders.length} folder(s) to sync!\n\n` +
+        `Successfully added ${selectedFolders.length} folder(s) to sync!\n\n` +
           pc.dim('Run `aelira integrations sync` to start syncing files.')
       )
     } catch (error: any) {
       s.stop('Failed to select folders')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }

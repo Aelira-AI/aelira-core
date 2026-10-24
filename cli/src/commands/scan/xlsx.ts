@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
 import { pollForCompletion } from '../../utils/poll-progress.js'
+import { batchResultLines, numberOrNull, scoreAndCountLines, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanXlsx extends Command {
   static args = {
@@ -54,7 +55,7 @@ static flags = {
 
       await (stats.isDirectory() ? this.scanDirectory(targetPath, flags, startTime) : this.scanFile(targetPath, flags, startTime));
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -74,22 +75,13 @@ static flags = {
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    const successfulScans = results.filter((r) => !r.error && r.compliance_score !== undefined)
-
-    if (successfulScans.length > 0) {
-      this.log('Top Results:\n')
-      for (const [index, result] of successfulScans.slice(0, 5).entries()) {
-        this.log(`${index + 1}. ${result.file}`)
-        this.log(`   Score: ${result.compliance_score}/100`)
-        this.log('')
-      }
-    }
+    for (const line of batchResultLines(results)) this.log(line)
 
     if (failed > 0) {
       this.log('Failed Scans:\n')
       for (const result of results
         .filter((r) => r.error)) {
-          this.log(`  ✗ ${result.file}: ${result.error}`)
+          this.log(`  - ${result.file}: ${result.error}`)
         }
 
       this.log('')
@@ -97,36 +89,29 @@ static flags = {
   }
 
   private displaySingleResult(result: any, scanTime: number): void {
+    const summary = summarizeScanDetail(result)
+    const { structure } = summary
+
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
     this.log(`  Excel Spreadsheet Accessibility Report`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  File: ${result.filename || 'Unknown'}`)
-    this.log(`  Sheets: ${result.sheet_count || 'N/A'}`)
-    this.log(`  Total Cells: ${result.total_cells || 'N/A'}`)
-    this.log(`  Charts: ${result.chart_count || 0}`)
-    this.log(`  Images: ${result.image_count || 0}\n`)
+    this.log(`  File: ${summary.fileName ?? 'Unknown'}`)
+    this.log(`  Sheets: ${numberOrNull(structure.total_sheets) ?? 'N/A'}`)
+    this.log(`  Rows: ${numberOrNull(structure.total_rows) ?? 'N/A'}`)
+    this.log(`  Charts: ${numberOrNull(structure.total_charts) ?? 'N/A'}`)
+    this.log(`  Images: ${numberOrNull(structure.total_images) ?? 'N/A'}\n`)
 
-    if (result.compliance_score !== undefined) {
-      this.log(`  Compliance Score: ${result.compliance_score}/100`)
-    }
-
-    if (result.issues) {
-      this.log(`\n  Issues Found:`)
-      this.log(`  - Critical: ${result.issues.critical || 0}`)
-      this.log(`  - High: ${result.issues.high || 0}`)
-      this.log(`  - Medium: ${result.issues.medium || 0}`)
-      this.log(`  - Low: ${result.issues.low || 0}`)
-    }
+    for (const line of scoreAndCountLines(summary)) this.log(line)
 
     this.log(`\n  Processing Time: ${(scanTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    if (result.scan_id) {
-      this.log(`  Scan ID: ${result.scan_id}`)
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}`)
     }
 
-    this.log('💡 Tip: Use --format json for detailed issue breakdown')
+    this.log('Tip: Use --format json for detailed issue breakdown')
   }
 
   private async findXlsxFiles(dirPath: string): Promise<string[]> {
@@ -158,7 +143,7 @@ static flags = {
 
     if (files.length === 0) {
       s.stop('No Excel spreadsheets found')
-      outro('⚠️  No .xlsx files to scan')
+      outro('No .xlsx files to scan')
       return
     }
 
@@ -173,19 +158,19 @@ static flags = {
       try {
         const result = await this.uploadAndScan(file, flags['api-url'], s)
         results.push({ file: path.basename(file), ...result })
-        s.stop(`✓ ${path.basename(file)}`)
+        s.stop(`Done: ${path.basename(file)}`)
       } catch (error: any) {
-        s.stop(`✗ ${path.basename(file)}: ${error.message}`)
+        s.stop(`Failed: ${path.basename(file)}: ${error.message}`)
         results.push({ error: error.message, file: path.basename(file) })
       }
     }
 
     if (flags.format === 'csv') {
-      const allIssues = results.flatMap((r) => r.issues_list || r.issues || [])
+      const allIssues = results.flatMap((r) => summarizeScanDetail(r).issues)
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        outro(`✅ Batch scan complete. CSV saved to ${flags.output}`)
+        outro(`Batch scan complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
@@ -200,17 +185,17 @@ static flags = {
 
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch scan complete. Report saved to ${flags.output}`)
+        outro(`Batch scan complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResults(results, Date.now() - startTime)
-      outro(`✨ Batch scan complete! Scanned ${files.length} spreadsheets`)
+      outro(`Batch scan complete! Scanned ${files.length} spreadsheets`)
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+      this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
     }
   }
 
@@ -229,7 +214,7 @@ static flags = {
       s.stop('Scan complete')
 
       if (flags.format === 'csv') {
-        const csv = formatIssuesToCsv(result.issues_list || result.issues || [], path.basename(filePath))
+        const csv = formatIssuesToCsv(summarizeScanDetail(result).issues, path.basename(filePath))
         if (flags.output) {
           await fs.writeFile(flags.output, csv)
           this.log(`CSV report saved to ${flags.output}`)
@@ -244,17 +229,17 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ Excel scan complete. Report saved to ${flags.output}`)
+          outro(`Excel scan complete. Report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displaySingleResult(result, scanDuration)
-        outro('✨ Excel spreadsheet scan complete!')
+        outro('Excel spreadsheet scan complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${scanDuration}ms`)
+        this.log(`\nTotal execution time: ${scanDuration}ms`)
       }
     } catch (error: any) {
       s.stop('Upload failed')
