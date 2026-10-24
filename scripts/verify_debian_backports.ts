@@ -448,52 +448,6 @@ function checkXConsumers(image: string, receipts: Map<string, Receipt>): void {
   if (!out.includes('x-consumers-ok')) throw new Error('X consumer probe gave no success marker');
 }
 
-/**
- * libbrotli1 is loaded by libcurl (HTTP content encoding) and FreeType
- * (WOFF2 fonts). Both must resolve the rebuilt libraries, and the rebuilt
- * decoder must decode a valid stream produced by the image's own Python
- * brotli encoder. The input is ordinary text, not a crafted stream.
- */
-function checkBrotliConsumers(image: string, receipts: Map<string, Receipt>): void {
-  const dec = libraryPath(receipts, 'brotli', 'libbrotlidec.so.1.1.0');
-  const common = libraryPath(receipts, 'brotli', 'libbrotlicommon.so.1.1.0');
-  const script = String.raw`
-    dec=$1 common=$2
-    for binary in /usr/lib/*/libcurl.so.4 /usr/lib/*/libfreetype.so.6; do
-      ldd "$binary" > /tmp/ldd.txt
-      if grep -q 'not found' /tmp/ldd.txt; then cat /tmp/ldd.txt >&2; exit 1; fi
-      test "$(readlink -f "$(awk '$1 == "libbrotlidec.so.1" { print $3 }' /tmp/ldd.txt)")" = "$dec"
-      test "$(readlink -f "$(awk '$1 == "libbrotlicommon.so.1" { print $3 }' /tmp/ldd.txt)")" = "$common"
-    done
-    curl --version | grep -qw brotli
-    # The runtime image's application Python is /opt/venv; the developer
-    # image installs into /usr/local. Use whichever has the brotli encoder.
-    python=""
-    for candidate in /opt/venv/bin/python /usr/local/bin/python; do
-      if test -x "$candidate" && "$candidate" -c 'import brotli' 2>/dev/null; then python=$candidate; break; fi
-    done
-    test -n "$python"
-    BROTLI_DEC="$dec" "$python" - <<'PY'
-import ctypes, os, brotli
-text = ("Accessible equation: x^2 + y^2 = z^2. " * 400).encode()
-stream = brotli.compress(text, quality=11)
-library = ctypes.CDLL(os.environ["BROTLI_DEC"])
-library.BrotliDecoderDecompress.argtypes = [ctypes.c_size_t, ctypes.c_char_p,
-    ctypes.POINTER(ctypes.c_size_t), ctypes.c_char_p]
-size = ctypes.c_size_t(len(text) + 16)
-out = ctypes.create_string_buffer(size.value)
-assert library.BrotliDecoderDecompress(len(stream), stream, ctypes.byref(size), out) == 1
-assert out.raw[:size.value] == text
-with open("/proc/self/maps") as maps:
-    assert any(line.rstrip().endswith(os.environ["BROTLI_DEC"]) for line in maps)
-PY
-    echo brotli-consumers-ok
-  `;
-  const out = run('docker', [...base, '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m,mode=1777',
-    '--entrypoint', '/bin/sh', image, '-ec', script, 'probe', dec, common]);
-  if (!out.includes('brotli-consumers-ok')) throw new Error('brotli consumer probe gave no success marker');
-}
-
 function checkLayers(image: string, receipts: Map<string, Receipt>): void {
   const expected = new Map<string, string>();
   for (const receipt of receipts.values()) {
@@ -547,7 +501,6 @@ if (import.meta.main) {
     if (!flags.includes('--package-smoke')) {
       checkLibxml2Consumers(image, receipts);
       if (!flags.includes('--dev')) checkXConsumers(image, receipts);
-      checkBrotliConsumers(image, receipts);
     }
     checkLayers(image, receipts);
     console.log(`Rebuilt Debian packages verified: ${backports.map((backport) =>

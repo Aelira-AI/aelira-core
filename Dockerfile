@@ -1,7 +1,7 @@
 # Production Dockerfile for Aelira Backend
 # Multi-stage build for smaller image size
 
-# Rebuild Debian's libxml2, libX11, libXrender and brotli from their pinned trixie
+# Rebuild Debian's libxml2, libX11 and libXrender from their pinned trixie
 # source packages with reviewed security patches. See
 # docs/security/debian-backports-0.9.14.md. These stages never ship.
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
@@ -25,11 +25,6 @@ FROM debian-backport-builder AS libxrender-backport
 COPY docker/debian-backports/libxrender/ /tmp/debian-backports/libxrender/
 RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
     /tmp/debian-backports/libxrender /out/libxrender
-
-FROM debian-backport-builder AS brotli-backport
-COPY docker/debian-backports/brotli/ /tmp/debian-backports/brotli/
-RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
-    /tmp/debian-backports/brotli /out/brotli
 
 # Stage 1: Builder
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
@@ -188,7 +183,6 @@ FROM python-expat-base AS runtime
 COPY --from=libxml2-backport /out/ /tmp/debian-backports/
 COPY --from=libx11-backport /out/ /tmp/debian-backports/
 COPY --from=libxrender-backport /out/ /tmp/debian-backports/
-COPY --from=brotli-backport /out/ /tmp/debian-backports/
 COPY docker/debian-backports/install-backports.sh /tmp/debian-backports/
 COPY requirements.txt /app/requirements.txt
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
@@ -262,8 +256,8 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     texlive-lang-german \
     pandoc \
     && update-language \
-    # Replace the just-installed stock libxml2, libX11, libXrender and brotli
-    # with the rebuilt backports before this RUN commits a layer. No image layer
+    # Replace the just-installed stock libxml2, libX11 and libXrender with the
+    # rebuilt backports before this RUN commits a layer. No image layer
     # therefore contains the unpatched libraries.
     && sh /tmp/debian-backports/install-backports.sh runtime \
     # xdg-utils is a hard Depends of texlive-base, so apt cannot remove it
