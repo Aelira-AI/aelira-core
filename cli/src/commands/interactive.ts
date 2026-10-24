@@ -1,31 +1,47 @@
 import { cancel, intro, isCancel, outro, select, spinner } from '@clack/prompts'
-import { Command } from '@oclif/core'
+import { Command, Flags } from '@oclif/core'
 import pc from 'picocolors'
+
+import { shouldShowBanner } from '../utils/terminal.js'
+
+// Decorative only. Printed solely on an interactive terminal with no opt-out,
+// because screen readers announce every block and box-drawing glyph.
+const LOGO = [
+  '   █████╗ ███████╗██╗     ██╗██████╗  █████╗ ',
+  '  ██╔══██╗██╔════╝██║     ██║██╔══██╗██╔══██╗',
+  '  ███████║█████╗  ██║     ██║██████╔╝███████║',
+  '  ██╔══██║██╔══╝  ██║     ██║██╔══██╗██╔══██║',
+  '  ██║  ██║███████╗███████╗██║██║  ██║██║  ██║',
+  '  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝',
+]
+
+const TAGLINE =
+  'Accessibility scanning and supported remediation for course content (documents, LMS, web and media). Open source and self-hostable.'
 
 export default class AeliraInteractive extends Command {
   static description = 'Launch Aelira interactive CLI'
-static examples = ['<%= config.bin %>']
+static examples = ['<%= config.bin %> interactive', '<%= config.bin %> interactive --no-banner']
+static flags = {
+    'no-banner': Flags.boolean({
+      default: false,
+      description: 'Skip the decorative logo (also skipped when output is not a terminal, or NO_COLOR, TERM=dumb, CI or AELIRA_NO_BANNER is set)',
+    }),
+  }
 
   async run(): Promise<void> {
-    console.clear()
+    const { flags } = await this.parse(AeliraInteractive)
+    const { version } = this.config
 
-    // Get version from package.json via OCLIF config
-    const {version} = this.config
+    // The screen is never cleared: clearing discards scrollback and disorients
+    // screen reader users. The plain-text name line is always printed so
+    // assistive technology announces the tool by name.
+    if (shouldShowBanner({ noBanner: flags['no-banner'] })) {
+      console.log(`\n${LOGO.map((line) => pc.cyan(line)).join('\n')}\n`)
+    }
 
-    // ASCII Art Logo
-    const logo = `
-${pc.cyan('   █████╗ ███████╗██╗     ██╗██████╗  █████╗ ')}
-${pc.cyan('  ██╔══██╗██╔════╝██║     ██║██╔══██╗██╔══██╗')}
-${pc.cyan('  ███████║█████╗  ██║     ██║██████╔╝███████║')}
-${pc.cyan('  ██╔══██║██╔══╝  ██║     ██║██╔══██╗██╔══██║')}
-${pc.cyan('  ██║  ██║███████╗███████╗██║██║  ██║██║  ██║')}
-${pc.cyan('  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝')}
-
-${pc.dim('  AI-Powered Accessibility Testing for WCAG 2.1')}
-${pc.dim(`  Version ${version} - Higher Education MVP`)}
-`
-
-    console.log(logo)
+    console.log(`Aelira CLI ${version}`)
+    console.log(pc.dim(TAGLINE))
+    console.log('')
 
     intro(pc.cyan('Welcome to Aelira CLI'))
 
