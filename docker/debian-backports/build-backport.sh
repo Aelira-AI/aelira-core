@@ -7,7 +7,10 @@
 # backport.conf has one whitespace-separated directive per line:
 #   source NAME                     Debian source package name
 #   source_version VERSION          the pinned Debian version
-#   rebuilt_version VERSION         the version this build produces
+#   rebuilt_version VERSION         the version this build produces: the source
+#                                   version, optionally Debian's binNMU suffix
+#                                   (+bN, so it sorts above the installed
+#                                   binaries), then +aeliraN
 #   changelog_date RFC2822-DATE     date of the generated changelog entry
 #   disclosure PATH                 repository document naming every CVE
 #   dsc FILE SHA256                 the Debian source control file
@@ -17,6 +20,10 @@
 #                                   CVES is a comma list
 #   assert CVE FILE TEXT            TEXT must occur in FILE after patching
 #   control NAME                    run controls/NAME/run.sh after patching
+#   tests                           run the package's own build-time test
+#                                   suite instead of building with nocheck
+#   reproducible                    build a second time and require every
+#                                   .deb and the receipt to be byte-identical
 #   check NAME                      run controls/NAME/run.sh after the build,
 #                                   with the built packages as fourth argument
 #   profile NAME                    Debian build profile (repeatable)
@@ -33,19 +40,25 @@ set -eu
 input=$1
 out=$2
 conf="$input/backport.conf"
-work=$(mktemp -d /tmp/debian-backport.XXXXXX)
 test -f "$conf"
 test ! -e "$out"
 mkdir -p "$out"
 
 value() { awk -v k="$1" '$1 == k { $1 = ""; sub(/^ +/, ""); print; n++ } END { exit n != 1 }' "$conf"; }
 source_name=$(value source)
+# A fixed scratch path, not mktemp: compilers record build paths in debug
+# information, and the GNU build-id is hashed over the unstripped objects, so
+# a random path changes the shipped libraries between otherwise equal builds.
+# Each builder stage is a fresh container, so the path is never shared.
+work="/tmp/debian-backport-$source_name"
+test ! -e "$work"
+mkdir "$work"
 source_version=$(value source_version)
 version=$(value rebuilt_version)
 changelog_date=$(value changelog_date)
 build_type=$(value build)
 case "$build_type" in arch) build_flag=-B ;; full) build_flag=-b ;; *) exit 1 ;; esac
-case "$version" in "$source_version"+aelira[0-9]*) ;; *) echo 'rebuilt_version must extend source_version' >&2; exit 1 ;; esac
+case "$version" in "$source_version"+aelira[0-9]*|"$source_version"+b[0-9]*+aelira[0-9]*) ;; *) echo 'rebuilt_version must extend source_version' >&2; exit 1 ;; esac
 
 # Every pinned file must match before anything is unpacked.
 awk '$1 == "dsc" || $1 == "input" { print $3 "  " $2 } $1 == "patch" { print $3 "  patches/" $2 }' "$conf" \
@@ -144,9 +157,25 @@ else
 fi
 # Debian's own rules keep its configure options, hardening and symbols files.
 # -nc keeps the reviewed patches applied; the tree is fresh from the .dsc.
-DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" SOURCE_DATE_EPOCH=0 \
+nocheck=nocheck
+grep -qx tests "$conf" && nocheck=""
+# SOURCE_DATE_EPOCH is the generated changelog entry's date, fixed by the
+# recipe. dpkg-deb clamps package file times to it; a value of 0 left the
+# times of files written during the build unclamped, so .deb bytes varied.
+# dpkg-deb only lowers times later than it, so a date still in the future
+# would leave build times in the packages; refuse that.
+source_date_epoch=$(dpkg-parsechangelog -S Timestamp)
+test "$source_date_epoch" -gt 0
+test "$source_date_epoch" -le "$(date +%s)" || {
+    echo 'changelog_date is in the future, so package times would not be clamped' >&2; exit 1; }
+DEB_BUILD_OPTIONS="$nocheck parallel=$(nproc)" SOURCE_DATE_EPOCH="$source_date_epoch" \
     dpkg-buildpackage "$build_flag" -nc -us -uc "$@" > "$work/build.log" 2>&1 || {
     tail -c 16384 "$work/build.log" >&2; exit 1; }
+if test -z "$nocheck"; then
+    grep -E 'tests passed|Test #|PASS|FAIL' "$work/build.log" | tail -n 40
+    grep -q '100% tests passed' "$work/build.log" || {
+        echo 'the package test suite did not report 100% passed' >&2; exit 1; }
+fi
 
 arch=$(dpkg --print-architecture)
 multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
@@ -183,7 +212,7 @@ mkdir "$work/extracted"
     awk '$1 == "patch" { print "patch_sha256=" $2 " " $3 " " $5 }' "$conf"
     printf '%s\n' "$fixed" | tr ',' '\n' | sed 's/^/fixed=/'
     awk '$1 == "assert" { print "assertion=" $2 " " $3 }' "$conf"
-    awk '$1 == "control" || $1 == "check" { print "control=" $2 }' "$conf"
+    awk '$1 == "control" || $1 == "check" { print "control=" $2 } $1 == "tests" { print "control=package-test-suite" }' "$conf"
     (cd "$out" && sha256sum ./*.deb) | awk '{ sub(/^\.\//, "", $2); print "package_sha256=" $2 " " $1 }'
     awk '$1 == "library" { print $2, $3 }' "$conf" | while read -r package file; do
         rm -rf "$work/extracted/$package"
@@ -197,3 +226,21 @@ mkdir "$work/extracted"
 cp "$conf" "$out/backport.conf"
 cat "$out/receipt.txt"
 rm -rf "$work"
+
+# Reproducibility check: rebuild from scratch at the same path and require
+# identical packages. Image builds compare manifest digests, so a package
+# that differs between builds makes the whole image irreproducible.
+if grep -qx reproducible "$conf" && test "${BACKPORT_REPRODUCIBILITY_PASS:-0}" != 1; then
+    BACKPORT_REPRODUCIBILITY_PASS=1 sh "$0" "$input" "$out.second" > "$out.second.log" 2>&1 || {
+        tail -c 8192 "$out.second.log" >&2; echo 'second build failed' >&2; exit 1; }
+    if ! cmp -s "$out/receipt.txt" "$out.second/receipt.txt"; then
+        diff "$out/receipt.txt" "$out.second/receipt.txt" >&2 || true
+        echo "$source_name is not reproducible: a second build produced different packages" >&2
+        exit 1
+    fi
+    (cd "$out" && sha256sum ./*.deb) > "$out.first.sha256"
+    (cd "$out.second" && sha256sum ./*.deb) | cmp -s - "$out.first.sha256" || {
+        echo "$source_name is not reproducible: package bytes differ" >&2; exit 1; }
+    rm -rf "$out.second" "$out.second.log" "$out.first.sha256"
+    echo "reproducible: $source_name second build matched every package"
+fi

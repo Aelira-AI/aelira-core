@@ -43,8 +43,16 @@ describe('backport recipes', () => {
       `changelog_date Fri, 23 Oct 2026 00:00:00 +0000\ndsc x.dsc ${hash}\npatch p.patch ${hash} 0 CVE-2026-1234\n` +
       'binary x1\nlibrary x1 libx.so.1.0.0\nruntime x1\ndev x1\n';
     expect(parseBackportConf(raw).fixed).toEqual(['CVE-2026-1234']);
+    expect(parseBackportConf(raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-1+b7+aelira1')).rebuiltVersion)
+      .toBe('1-1+b7+aelira1');
+    expect(parseBackportConf(`${raw}tests\n`).controls).toEqual(['package-test-suite']);
     for (const bad of [
       raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-2'),
+      raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-1+deb13u1+aelira1'),
+      raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-1+b7'),
+      raw.replace('rebuilt_version 1-1+aelira1', 'rebuilt_version 1-10+aelira1'),
+      `${raw}tests\ntests\n`,
+      `${raw}tests extra\n`,
       raw.replace(`dsc x.dsc ${hash}`, `dsc x.dsc ${'g'.repeat(64)}`),
       raw.replace(' 0 CVE-2026-1234', ' fuzz CVE-2026-1234'),
       raw.replace(' 0 CVE-2026-1234', ' 0 GHSA-1234'),

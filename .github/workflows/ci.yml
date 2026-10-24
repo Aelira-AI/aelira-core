@@ -1521,6 +1521,9 @@ jobs:
           JOURNEY_LTI_DEPLOYMENT_ID: ${{ secrets.AELIRA_JOURNEY_LTI_DEPLOYMENT_ID }}
           JOURNEY_CANVAS_TEACHER_LOGIN: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_LOGIN }}
           JOURNEY_CANVAS_TEACHER_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_TEACHER_PASSWORD }}
+          # Optional: basic auth in front of the Canvas instance (unset = no gate).
+          JOURNEY_CANVAS_GATE_USERNAME: ${{ secrets.AELIRA_JOURNEY_CANVAS_GATE_USERNAME }}
+          JOURNEY_CANVAS_GATE_PASSWORD: ${{ secrets.AELIRA_JOURNEY_CANVAS_GATE_PASSWORD }}
         run: npx playwright test -c playwright.journeys.config.ts --project=setup --project=lms
       - name: Show the scan lines of the worker log for a failed run
         if: failure()

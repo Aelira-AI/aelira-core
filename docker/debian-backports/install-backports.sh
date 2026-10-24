@@ -59,6 +59,11 @@ for dir in $sources; do
                 printf '%s  %s\n' "$hash" "$path" | sha256sum --check --strict --quiet
             fi
         done
+    # A binary package of this source that the recipe does not ship would
+    # otherwise stay at the stock version unnoticed.
+    dpkg-query -W -f='${Package}\t${source:Package}\t${Version}\t${db:Status-Abbrev}\n' | \
+        awk -F'\t' -v s="$source" -v v="$version" '$2 == s && $4 ~ /^ii/ && $3 != v { print; bad=1 } END { exit bad }' || {
+        echo "packages from source $source are installed at another version" >&2; exit 1; }
     mkdir -p "/usr/share/doc/aelira-debian-backports/$source"
     cp "$dir/receipt.txt" "/usr/share/doc/aelira-debian-backports/$source/"
 done

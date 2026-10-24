@@ -96,7 +96,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
             version=_versions(
                 {
                     "msgpack": MSGPACK_VERSION,
-                    "setuptools": "84.0.0",
+                    "setuptools": "84.2.1",
                     "piper-tts": PIPER_VERSION,
                     "urllib3": URLLIB3_VERSION,
                 }
@@ -116,7 +116,7 @@ def test_final_package_verifier_accepts_quickstart_with_pip(tmp_path: Path) -> N
             version=_versions(
                 {
                     "msgpack": MSGPACK_VERSION,
-                    "setuptools": "84.0.0",
+                    "setuptools": "84.2.1",
                     "pip": "26.2.2",
                     "piper-tts": PIPER_VERSION,
                     "urllib3": URLLIB3_VERSION,
@@ -136,7 +136,7 @@ def test_final_package_verifier_rejects_wrong_quickstart_pip(tmp_path: Path) -> 
         version=_versions(
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "pip": "26.2.1",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
@@ -189,7 +189,7 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
         version=_versions(
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "pip": "26.2.2",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
@@ -221,7 +221,7 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
         ),
         (
             "venv",
-            {"msgpack": "1.1.2", "setuptools": "84.0.0"},
+            {"msgpack": "1.1.2", "setuptools": "84.2.1"},
             "venv: msgpack is 1.1.2",
         ),
         (
@@ -233,7 +233,7 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
             "venv",
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "urllib3": "2.7.0",
                 "piper-tts": PIPER_VERSION,
             },
@@ -243,7 +243,7 @@ def test_quickstart_refuses_unreviewed_pip_vendor_tree(
             "venv",
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "urllib3": URLLIB3_VERSION,
                 "piper-tts": PIPER_VERSION,
                 "pip": "26.2.2",
@@ -286,7 +286,7 @@ def test_final_package_verifier_rejects_stale_metadata_names(
         version=_versions(
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
             }
@@ -307,7 +307,7 @@ def test_final_package_verifier_rejects_pip_vendor_tree(
     if scope == "venv":
         installed.update(
             {
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
             }
@@ -329,7 +329,7 @@ def test_quickstart_keeps_top_level_urllib3_guards(tmp_path: Path) -> None:
         version=_versions(
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "pip": "26.2.2",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": "2.7.0",
@@ -350,7 +350,7 @@ def test_final_package_verifier_follows_canonical_urllib3_pin(tmp_path: Path) ->
     )
     installed = {
         "msgpack": MSGPACK_VERSION,
-        "setuptools": "84.0.0",
+        "setuptools": "84.2.1",
         "piper-tts": PIPER_VERSION,
         "urllib3": "2.8.1",
     }
@@ -383,7 +383,7 @@ def test_final_package_verifier_rejects_missing_or_overridden_piper(
 ) -> None:
     installed = {
         "msgpack": MSGPACK_VERSION,
-        "setuptools": "84.0.0",
+        "setuptools": "84.2.1",
         "urllib3": URLLIB3_VERSION,
     }
     if piper_version is not None:
@@ -407,7 +407,7 @@ def test_final_package_verifier_follows_canonical_piper_pin(tmp_path: Path) -> N
             version=_versions(
                 {
                     "msgpack": MSGPACK_VERSION,
-                    "setuptools": "84.0.0",
+                    "setuptools": "84.2.1",
                     "piper-tts": "2.0.0",
                     "urllib3": URLLIB3_VERSION,
                 }
@@ -436,7 +436,7 @@ def test_final_package_verifier_rejects_ambiguous_piper_requirement(
         version=_versions(
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "urllib3": URLLIB3_VERSION,
             }
         ),
@@ -600,7 +600,7 @@ def test_final_package_verifier_rejects_packages_the_image_must_not_ship(
         version=_versions(
             {
                 "msgpack": MSGPACK_VERSION,
-                "setuptools": "84.0.0",
+                "setuptools": "84.2.1",
                 "piper-tts": PIPER_VERSION,
                 "urllib3": URLLIB3_VERSION,
                 package: "1.0.0",

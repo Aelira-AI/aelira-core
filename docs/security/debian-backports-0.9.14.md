@@ -85,6 +85,21 @@ ships. For each package it:
    patches fix, the assertions and controls run, and the hash of each shared
    library.
 
+Builds are reproducible, because the image check compares two no-cache builds
+by manifest digest:
+
+- **Fixed build path:** each package builds under a fixed path,
+  `/tmp/debian-backport-SOURCE`. Compilers record the build path in debug
+  information, and the GNU build-id is computed before stripping. A random
+  path therefore changed shipped libraries between builds; the retired
+  brotli rebuild showed it.
+- **Fixed file times:** `SOURCE_DATE_EPOCH` is the generated changelog entry's
+  date, so `dpkg-deb` clamps package file times to it. The builder refuses a
+  `changelog_date` in the future, because `dpkg-deb` only lowers later times.
+- **Second build check:** a recipe with `reproducible` is built
+  a second time from scratch. The build fails unless every package and the
+  receipt are byte-identical.
+
 `install-backports.sh` installs the rebuilt packages in the same `RUN` as the
 first `apt-get install`. It replaces every installed binary package from the
 three sources, refuses mixed versions, checks the library hashes and keeps
@@ -159,6 +174,51 @@ image's own native consumers; they are not a general ABI claim.
 
 **Architectures.** Builds, controls and image checks have been run on native
 arm64. amd64 runs in CI.
+
+## brotli: fixed by Debian, rebuild retired
+
+CVE-2026-111497 is a buffer overflow in the Brotli decoder (`c/dec/decode.c`)
+in brotli 1.0.3 to 1.2.0. Debian fixed it in trixie on 23 October 2026 with
+[DSA-6582-1](https://lists.debian.org/debian-security-announce/2026/msg00498.html),
+`brotli` `1.1.0-2+deb13u1`, which carries the same upstream fix,
+[`da98063`](https://github.com/google/brotli/commit/da9806362874b9bd4b552a3af360b5d6347beb12).
+
+**Retired the same day.** A rebuild of Debian's `1.1.0-2` source with that
+commit (`1.1.0-2+b7+aelira1`, [#774](https://github.com/Aelira-AI/aelira-core/issues/774))
+was merged to main in [#777](https://github.com/Aelira-AI/aelira-core/pull/777). Debian's update sorts above it, so
+the image build then failed installing the rebuild as a downgrade, as the
+recipe format intends. The brotli recipe is removed. The image now installs
+`libbrotli1` `1.1.0-2+deb13u1` from trixie-security, and the scanner reports
+CVE-2026-111497 as fixed, so it no longer appears in the inventory. The
+builder improvements made for brotli still apply to the other recipes:
+
+- the fixed build path
+- `SOURCE_DATE_EPOCH` taken from the recipe's changelog date
+- the `reproducible` and `tests` directives
+- the binNMU version rule
+
+**Consumers.** These are the files in the API image that link a `libbrotli`
+library directly (ELF `DT_NEEDED`). All now load Debian's fixed library:
+
+| Package | File | Links |
+| --- | --- | --- |
+| `libcurl4t64` | `libcurl.so.4` | `libbrotlidec` (HTTP `Content-Encoding: br`) |
+| `libcurl3t64-gnutls` | `libcurl-gnutls.so.4` | `libbrotlidec` |
+| `libfreetype6` | `libfreetype.so.6` | `libbrotlidec` (WOFF2 fonts) |
+| `libheif1` | `libheif.so.1` | `libbrotlidec`, `libbrotlienc` |
+
+**Other Brotli copies.** Two copies of Brotli in the image are not the Debian
+library:
+
+- The application's Python `brotli` package is the 1.2.1 wheel, which
+  contains the upstream fix.
+- Node.js, which runs the Pa11y scanner, compiles in its own Brotli. The image
+  pins Node.js v24.22.1. Its
+  [release notes](https://nodejs.org/en/blog/release/v24.22.1) (21 October
+  2026) list "(CVE-2026-111497) deps: brotli: cherry-pick
+  0ed4268a4401abcb44720963". That is the upstream change that `da98063`
+  cherry-picks to brotli 1.1.1. So v24.22.1 includes the fix, even though
+  its `process.versions.brotli` still reads 1.2.0.
 
 ## CVE-2026-86139: not affected
 
