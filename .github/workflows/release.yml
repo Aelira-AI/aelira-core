@@ -85,6 +85,7 @@ jobs:
             echo "Version mismatch: tag=$TAG_VERSION package=$PACKAGE_VERSION lock=$LOCK_VERSION lock-root=$LOCK_ROOT_VERSION" >&2
             exit 1
           fi
+          python scripts/verify_semver_bump.py --version "$TAG_VERSION"
           python scripts/verify_release_safety.py \
             --strict-policy \
             --denylist "$POLICY_PATH"

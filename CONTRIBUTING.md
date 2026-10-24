@@ -144,6 +144,18 @@ refactor(api): simplify quota middleware
 
 Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`
 
+## Changelog entries and version bumps
+
+User-visible changes go under `## [Unreleased]` in `CHANGELOG.md`, in a `###` subsection. The subsection decides the smallest version bump a release can have:
+
+| Subsection | Smallest bump |
+| --- | --- |
+| `### Fixed`, `### Security`, `### Dependencies` | patch |
+| `### Added`, `### Changed`, `### Removed`, `### Deprecated`, `### Operator action required` | minor |
+| any entry that starts with `**Breaking:**` | minor while the major version is 0, major from 1.0.0 |
+
+A new file under `alembic/versions/` also requires at least a minor release. Mark a breaking change by starting its bullet with `**Breaking:**`, for example `- **Breaking:** the scan response no longer includes a field.`; use that marker only for a change that makes existing API, CLI or configuration use stop working. `scripts/verify_semver_bump.py` applies these rules when a release tag is pushed, and `python scripts/verify_semver_bump.py --preview` shows what the Unreleased section requires now. See [Versioning](README.md#versioning).
+
 ## Pull Request Process
 
 ### Issue traceability

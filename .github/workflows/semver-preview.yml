@@ -1,0 +1,28 @@
+name: Semantic version preview
+
+# Non-blocking. Prints the smallest version bump the Unreleased CHANGELOG
+# section and any new migration require, so contributors see it before a
+# release is cut. The release workflow enforces the same rules.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Next release bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Report the bump the Unreleased section requires
+        run: python3 scripts/verify_semver_bump.py --preview
