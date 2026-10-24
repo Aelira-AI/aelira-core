@@ -117,9 +117,9 @@ static flags = {
           })
         }
 
-        outro('✅ No accessibility issues found!')
+        outro('No accessibility issues found!')
         if (flags.timer) {
-          this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+          this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
         }
 
         return
@@ -214,7 +214,7 @@ static flags = {
               flags.output,
               JSON.stringify(output, null, 2)
             )
-            outro(`✅ AI-enhanced report saved to ${flags.output}`)
+            outro(`AI-enhanced report saved to ${flags.output}`)
           } else {
             this.log(JSON.stringify(output, null, 2))
           }
@@ -226,11 +226,11 @@ static flags = {
             scanDuration,
             aiDuration
           )
-          outro('✨ AI-enhanced scan complete!')
+          outro('AI-enhanced scan complete.')
         }
 
         if (flags.timer) {
-          this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+          this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
         }
 
         // Generate PDF report if requested
@@ -247,7 +247,7 @@ static flags = {
         if (aiError instanceof ReportArtifactError) throw aiError
         s.stop('AI analysis failed')
         this.warn(`Could not connect to AI API: ${aiError.message}`)
-        this.log('\nℹ️  Falling back to standard axe-core results...\n')
+        this.log('\nFalling back to standard axe-core results...\n')
 
         // Fallback to standard scan output
         this.displayStandardResults(axeResults, scanDuration)
@@ -261,10 +261,10 @@ static flags = {
           })
         }
 
-        outro('⚠️  Scan complete (without AI enhancement)')
+        outro('Scan complete (without AI enhancement)')
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     } finally {
       if (page) await page.close()
@@ -319,7 +319,7 @@ static flags = {
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
     // Display ALL AI-analyzed issues
-    this.log('🤖 AI-Powered Insights:\n')
+    this.log('AI-Powered Insights:\n')
 
     aiAnalyzed.forEach((result: any, idx: number) => {
       const classification = result.classification || {}
@@ -327,7 +327,7 @@ static flags = {
       this.log(`   ${classification.explanation || 'No explanation available'}\n`)
 
       if (result.fix && ['Critical', 'High'].includes(classification.severity)) {
-        this.log(`   💡 Suggested Fix:`)
+        this.log(`   Suggested Fix:`)
         const fixPreview = result.fix.fix_recommendation
           .split('\n')
           .slice(0, 5)
@@ -338,7 +338,7 @@ static flags = {
       this.log(`   Business Impact: ${classification.business_impact || 'N/A'}\n`)
     })
 
-    this.log('\n💡 Tip: Use --format json to get complete fixes with full code (not truncated)')
+    this.log('\nTip: Use --format json to get complete fixes with full code (not truncated)')
   }
 
   private displayStandardResults(axeResults: any, scanTime: number): void {
@@ -383,7 +383,7 @@ static flags = {
         }),
       })
 
-      s.stop(`✅ PDF report saved to ${pdfPath}`)
+      s.stop(`PDF report saved to ${pdfPath}`)
     } catch (error: any) {
       s.stop('PDF generation failed')
       throw error

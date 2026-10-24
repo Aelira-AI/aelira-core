@@ -111,10 +111,10 @@ static flags = {
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+        this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -129,8 +129,8 @@ static flags = {
     await api.post(`/analytics/issues/${issueId}/note`, { note: flags.message })
 
     s.stop('Note added')
-    this.log(`\n✅ Note added to issue ${issueId}`)
-    outro('✨ Note added!')
+    this.log(`\nNote added to issue ${issueId}`)
+    outro('Note added.')
   }
 
   private async assignIssue(issueId: string, flags: any, _startTime: number): Promise<void> {
@@ -144,8 +144,8 @@ static flags = {
     const result = await response.json()
     s.stop('Issue assigned')
 
-    this.log(`\n✅ Issue ${issueId} assigned to: ${result.assigned_to}`)
-    outro('✨ Assignment complete!')
+    this.log(`\nIssue ${issueId} assigned to: ${result.assigned_to}`)
+    outro('Assignment complete.')
   }
 
   private displayIssueList(result: any): void {
@@ -162,14 +162,12 @@ static flags = {
     }
 
     issues.slice(0, 20).forEach((issue: any, idx: number) => {
-      const severityEmoji = this.getSeverityEmoji(issue.severity)
-      const statusEmoji = this.getStatusEmoji(issue.status)
 
-      this.log(`  ${idx + 1}. ${severityEmoji} [${issue.severity?.toUpperCase() || 'UNKNOWN'}] ${issue.issue_type}`)
-      this.log(`     ${statusEmoji} Status: ${issue.status || 'open'}`)
-      this.log(`     📄 File: ${issue.file_name || 'Unknown'}`)
+      this.log(`  ${idx + 1}. [${issue.severity?.toUpperCase() || 'UNKNOWN'}] ${issue.issue_type}`)
+      this.log(`     Status: ${issue.status || 'open'}`)
+      this.log(`     File: ${issue.file_name || 'Unknown'}`)
       if (issue.assigned_to_name) {
-        this.log(`     👤 Assigned: ${issue.assigned_to_name}`)
+        this.log(`     Assigned: ${issue.assigned_to_name}`)
       }
 
       this.log('')
@@ -180,8 +178,8 @@ static flags = {
     }
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
-    this.log('💡 Tip: Use --status open to filter by status')
-    this.log('💡 Tip: Use --format json for full details')
+    this.log('Tip: Use --status open to filter by status')
+    this.log('Tip: Use --format json for full details')
   }
 
   private displayStats(result: any): void {
@@ -191,63 +189,22 @@ static flags = {
     this.log(`  Issue Statistics - ${result.department_id || 'default'}`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  📊 Overview:`)
+    this.log(`  Overview:`)
     this.log(`  - Total Issues: ${stats.total_issues || 0}`)
     this.log(`  - Resolution Rate: ${stats.resolution_rate ? stats.resolution_rate.toFixed(1) + '%' : 'N/A'}\n`)
 
-    this.log(`  📋 By Status:`)
+    this.log(`  By Status:`)
     this.log(`  - Open: ${stats.open_issues || 0}`)
     this.log(`  - In Progress: ${stats.in_progress_issues || 0}`)
     this.log(`  - Resolved: ${stats.resolved_issues || 0}`)
     this.log(`  - Won't Fix: ${stats.wont_fix_issues || 0}`)
     this.log(`  - False Positive: ${stats.false_positive_issues || 0}\n`)
 
-    this.log(`  🤖 Auto-Remediation:`)
+    this.log(`  Auto-Remediation:`)
     this.log(`  - Auto-Fixable: ${stats.auto_fixable_issues || 0}`)
     this.log(`  - Auto-Fixed: ${stats.auto_fixed_issues || 0}\n`)
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
-  }
-
-  private getSeverityEmoji(severity: string): string {
-    switch (severity?.toLowerCase()) {
-      case 'critical': { return '🔴'
-      }
-
-      case 'high': { return '🟠'
-      }
-
-      case 'low': { return '🟢'
-      }
-
-      case 'medium': { return '🟡'
-      }
-
-      default: { return '⚪'
-      }
-    }
-  }
-
-  private getStatusEmoji(status: string): string {
-    switch (status?.toLowerCase()) {
-      case 'false_positive': { return '❌'
-      }
-
-      case 'in_progress': { return '🔧'
-      }
-
-      case 'open': { return '📭'
-      }
-
-      case 'resolved': { return '✅'
-      }
-
-      case 'wont_fix': { return '🚫'
-      }
-
-      default: { return '❓'
-      }
-    }
   }
 
   private async listIssues(flags: any, startTime: number): Promise<void> {
@@ -267,13 +224,13 @@ static flags = {
       const output = { ...result, performance: { execution_time: Date.now() - startTime } }
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Issues saved to ${flags.output}`)
+        outro(`Issues saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayIssueList(result)
-      outro('✨ Issue list complete!')
+      outro('Issue list complete.')
     }
   }
 
@@ -290,7 +247,7 @@ static flags = {
       this.log(JSON.stringify(result, null, 2))
     } else {
       this.displayStats(result)
-      outro('✨ Stats complete!')
+      outro('Stats complete.')
     }
   }
 
@@ -305,7 +262,7 @@ static flags = {
     const result = await response.json()
     s.stop('Issue updated')
 
-    this.log(`\n✅ Issue ${issueId} updated to status: ${result.new_status}`)
-    outro('✨ Update complete!')
+    this.log(`\nIssue ${issueId} updated to status: ${result.new_status}`)
+    outro('Update complete.')
   }
 }

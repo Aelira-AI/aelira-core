@@ -78,7 +78,7 @@ export default class CanvasScan extends Command {
       outro('Done')
     } catch (error: any) {
       s.stop('Failed to submit scan')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }

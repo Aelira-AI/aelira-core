@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises'
 
 import { ApiClient } from '../utils/api-client.js'
 import { formatScanHistoryToCsv } from '../utils/csv-formatter.js'
+import { summarizeScanDetail } from '../utils/scan-detail.js'
 
 export default class Export extends Command {
   static description = 'Export scan history to CSV or JSON'
@@ -74,7 +75,7 @@ export default class Export extends Command {
           const detailData = await detail.json()
           detailedScans.push({
             ...scan,
-            issues: detailData.issues || detailData.result?.issues || [],
+            issues: summarizeScanDetail(detailData).issues,
           })
         } catch {
           // Skip scans that fail to fetch — continue with remaining
@@ -101,7 +102,7 @@ export default class Export extends Command {
       }
     } catch (error: any) {
       s.stop('Export failed')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }

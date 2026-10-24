@@ -88,8 +88,8 @@ describe('scan video queued transcription journey', () => {
 
     const output = lines.join('\n')
     expect(output).to.include('"Hello from the terminal journey"')
-    expect(output).to.include('✓ WebVTT format')
-    expect(output).to.include('✓ SRT format')
+    expect(output).to.include('- WebVTT format')
+    expect(output).to.include('- SRT format')
     expect(output).to.include('Overall video compliance: unassessed')
   })
 

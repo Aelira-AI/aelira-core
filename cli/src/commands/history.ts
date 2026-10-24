@@ -142,7 +142,7 @@ static flags = {
     s.stop(`Found ${history.entries.length} scan entries`)
 
     if (history.entries.length === 0) {
-      this.log('\n📭 No scan history found.')
+      this.log('\nNo scan history found.')
       this.log('   Run `aelira scan <url>` to start building your history.\n')
       outro('Ready to scan')
       return
@@ -168,7 +168,7 @@ static flags = {
     entries = entries.slice(0, flags.limit)
 
     if (entries.length === 0) {
-      this.log('\n📭 No matching entries found.')
+      this.log('\nNo matching entries found.')
       outro('Try different filters')
       return
     }
@@ -219,7 +219,7 @@ static flags = {
       }
 
       s.stop('History cleared')
-      outro('✅ All scan history has been cleared')
+      outro('All scan history has been cleared')
     } catch (error: any) {
       s.stop('Error clearing history')
       this.error(error.message)
@@ -331,7 +331,7 @@ static flags = {
     await fs.writeFile(outputPath, content)
     s.stop('Export complete')
 
-    outro(`✅ History exported to ${outputPath}`)
+    outro(`History exported to ${outputPath}`)
   }
 
   private async loadHistory(): Promise<HistoryIndex> {
@@ -388,9 +388,7 @@ static flags = {
       if (fullResult.violations && fullResult.violations.length > 0) {
         this.log('\n' + pc.bold('Violations:'))
         for (const v of fullResult.violations.slice(0, 10)) {
-          const icon =
-            v.impact === 'critical' ? '🔴' : v.impact === 'serious' ? '🟠' : '🟡'
-          this.log(`  ${icon} [${v.impact}] ${v.id}`)
+          this.log(`  [${v.impact}] ${v.id}`)
           this.log(`     ${pc.dim(v.description || '')}`)
         }
 
@@ -401,7 +399,7 @@ static flags = {
 
       outro('Done')
     } catch {
-      this.log('\n' + pc.yellow('⚠️  Full scan details not available'))
+      this.log('\n' + pc.yellow('Full scan details not available'))
       outro('Done')
     }
   }

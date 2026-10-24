@@ -85,10 +85,10 @@ static flags = {
     const docType = await select({
       message: 'Choose document type:',
       options: [
-        { label: '📕 PDF Documents', value: 'pdf' },
-        { label: '📊 PowerPoint Presentations', value: 'ppt' },
-        { label: '🔬 LaTeX Equations', value: 'latex' },
-        { label: '← Back to Main Menu', value: 'back' },
+        { label: 'PDF Documents', value: 'pdf' },
+        { label: 'PowerPoint Presentations', value: 'ppt' },
+        { label: 'LaTeX Equations', value: 'latex' },
+        { label: 'Back to Main Menu', value: 'back' },
       ],
     })
 
@@ -115,9 +115,9 @@ static flags = {
     const mediaType = await select({
       message: 'Choose media type:',
       options: [
-        { label: '🖼️  Images (AI Alt Text)', value: 'image' },
-        { label: '🎬 Videos/Audio (Transcription)', value: 'video' },
-        { label: '← Back to Main Menu', value: 'back' },
+        { label: 'Images (AI Alt Text)', value: 'image' },
+        { label: 'Videos/Audio (Transcription)', value: 'video' },
+        { label: 'Back to Main Menu', value: 'back' },
       ],
     })
 
@@ -144,11 +144,11 @@ static flags = {
     const profileAction = await select({
       message: 'Profile Management:',
       options: [
-        { label: '📋 List All Profiles', value: 'list' },
-        { label: '➕ Create New Profile', value: 'create' },
-        { label: '🔄 Switch Profile', value: 'use' },
-        { label: '🗑️  Delete Profile', value: 'delete' },
-        { label: '← Back', value: 'back' },
+        { label: 'List All Profiles', value: 'list' },
+        { label: 'Create New Profile', value: 'create' },
+        { label: 'Switch Profile', value: 'use' },
+        { label: 'Delete Profile', value: 'delete' },
+        { label: 'Back', value: 'back' },
       ],
     })
 
@@ -202,14 +202,14 @@ static flags = {
     const settingsAction = await select({
       message: 'Settings & Configuration:',
       options: [
-        { label: '📋 Show Current Configuration', value: 'show' },
-        { label: '🔧 Run Setup Wizard', value: 'init' },
-        { label: '🔗 Set API URL', value: 'set-api-url' },
-        { label: '🔑 Set API Key', value: 'set-api-key' },
-        { label: '🏢 Set Department', value: 'set-department' },
-        { label: '✅ Test API Connection', value: 'validate' },
-        { label: '👥 Manage Profiles', value: 'profiles' },
-        { label: '← Back to Main Menu', value: 'back' },
+        { label: 'Show Current Configuration', value: 'show' },
+        { label: 'Run Setup Wizard', value: 'init' },
+        { label: 'Set API URL', value: 'set-api-url' },
+        { label: 'Set API Key', value: 'set-api-key' },
+        { label: 'Set Department', value: 'set-department' },
+        { label: 'Test API Connection', value: 'validate' },
+        { label: 'Manage Profiles', value: 'profiles' },
+        { label: 'Back to Main Menu', value: 'back' },
       ],
     })
 
@@ -286,9 +286,9 @@ static flags = {
     const scanType = await select({
       message: 'Choose website scan type:',
       options: [
-        { label: '⚡ Basic Scan (Fast, axe-core only)', value: 'basic' },
-        { label: '🤖 AI-Enhanced Scan (Classification + Fixes)', value: 'ai' },
-        { label: '← Back to Main Menu', value: 'back' },
+        { label: 'Basic Scan (Fast, axe-core only)', value: 'basic' },
+        { label: 'AI-Enhanced Scan (Classification + Fixes)', value: 'ai' },
+        { label: 'Back to Main Menu', value: 'back' },
       ],
     })
 
@@ -332,7 +332,7 @@ static flags = {
 
   private async showHelp(): Promise<void> {
     console.log(`
-${pc.cyan('📚 Aelira CLI Documentation')}
+${pc.cyan('Aelira CLI Documentation')}
 
 ${pc.bold('Website Scanning:')}
   aelira scan <url>              Basic website scan
@@ -377,14 +377,14 @@ ${pc.dim('For more info: https://github.com/Aelira-AI/aelira-core/tree/main/cli/
       const action = await select({
         message: 'What would you like to do?',
         options: [
-          { label: '🌐 Scan Website', value: 'scan_website' },
-          { label: '📄 Scan Documents (PDF, PPT, LaTeX)', value: 'scan_documents' },
-          { label: '🎥 Scan Media (Images, Videos)', value: 'scan_media' },
-          { label: '💻 Scan Source Code', value: 'scan_code' },
-          { label: '📊 Download Accessibility Evidence Report', value: 'evidence_report' },
-          { label: '⚙️  Settings & Configuration', value: 'settings' },
-          { label: '❓ Help & Documentation', value: 'help' },
-          { label: '👋 Exit', value: 'exit' },
+          { label: 'Scan Website', value: 'scan_website' },
+          { label: 'Scan Documents (PDF, PPT, LaTeX)', value: 'scan_documents' },
+          { label: 'Scan Media (Images, Videos)', value: 'scan_media' },
+          { label: 'Scan Source Code', value: 'scan_code' },
+          { label: 'Download Accessibility Evidence Report', value: 'evidence_report' },
+          { label: 'Settings & Configuration', value: 'settings' },
+          { label: 'Help & Documentation', value: 'help' },
+          { label: 'Exit', value: 'exit' },
         ],
       })
 
@@ -430,7 +430,7 @@ ${pc.dim('For more info: https://github.com/Aelira-AI/aelira-core/tree/main/cli/
         }
 
         case 'exit': {
-          outro(pc.cyan('Thank you for using Aelira! 💜'))
+          outro(pc.cyan('Thank you for using Aelira.'))
           process.exit(0)
         }
       }

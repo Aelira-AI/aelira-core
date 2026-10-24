@@ -118,10 +118,10 @@ static flags = {
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+        this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -153,7 +153,7 @@ static flags = {
   private renderFileTypes(fileTypes: any): void {
     if (!fileTypes) return
 
-    this.log('  📁 File Type Breakdown:')
+    this.log('  File Type Breakdown:')
     for (const [type, count] of Object.entries(fileTypes)) {
       this.log(`  - ${type}: ${count}`)
     }
@@ -223,7 +223,7 @@ static flags = {
   private renderTrend(trend: any): void {
     if (!trend) return
 
-    this.log('  📈 Trend Analysis:')
+    this.log('  Trend Analysis:')
     this.log(
       `  - Last Week Scan Score: ${trend.last_week_scan_score === null ? 'N/A' : `${trend.last_week_scan_score.toFixed(1)}/100`}`,
     )
@@ -232,8 +232,8 @@ static flags = {
     )
 
     if (trend.change_points !== null) {
-      const arrow = trend.change_points >= 0 ? '↑' : '↓'
-      this.log(`  - Change: ${arrow} ${Math.abs(trend.change_points).toFixed(1)} points`)
+      const direction = trend.change_points >= 0 ? 'up' : 'down'
+      this.log(`  - Change: ${direction} ${Math.abs(trend.change_points).toFixed(1)} points`)
     }
 
     this.log('')

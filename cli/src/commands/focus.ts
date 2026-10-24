@@ -144,20 +144,20 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ Focus order report saved to ${flags.output}`)
+          outro(`Focus order report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displayResults(result, analysisDuration)
-        outro(wcagCompliant ? '✅ WCAG 2.4.3 Focus Order: Compliant' : '⚠️  WCAG 2.4.3 Focus Order: Needs Improvement')
+        outro(wcagCompliant ? 'WCAG 2.4.3 Focus Order: Compliant' : 'WCAG 2.4.3 Focus Order: Needs Improvement')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+        this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     } finally {
       if (page) await page.close()
@@ -324,13 +324,13 @@ static flags = {
 
     this.log(`  URL: ${result.url}`)
     this.log(`  Focusable Elements: ${result.totalFocusableElements}`)
-    this.log(`  Compliance Score: ${this.getScoreDisplay(result.complianceScore)}`)
+    this.log(`  Scanner score: ${this.getScoreDisplay(result.complianceScore)}`)
     this.log(`  WCAG 2.4.3 Status: ${result.wcagCompliant ? pc.green('Compliant') : pc.yellow('Needs Work')}`)
     this.log(`  Analysis Time: ${analysisTime}ms\n`)
 
     // Focus Sequence
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-    this.log('  ⌨️  Focus Sequence (Tab Order)')
+    this.log('  Focus Sequence (Tab Order)')
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
     const maxDisplay = 20
@@ -350,28 +350,27 @@ static flags = {
     // Issues
     if (result.issues.length > 0) {
       this.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-      this.log(`  ⚠️  Issues Found (${result.issues.length})`)
+      this.log(`  Issues Found (${result.issues.length})`)
       this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
       for (const issue of result.issues) {
-        const severityIcon = this.getSeverityIcon(issue.severity)
         const severityColor = this.getSeverityColor(issue.severity)
 
-        this.log(`  ${severityIcon} ${severityColor(`[${issue.severity.toUpperCase()}]`)} ${issue.description}`)
+        this.log(`  ${severityColor(`[${issue.severity.toUpperCase()}]`)} ${issue.description}`)
         this.log(`     WCAG: ${issue.wcagCriterion}`)
         if (issue.suggestedFix) {
-          this.log(`     💡 Fix: ${issue.suggestedFix}`)
+          this.log(`     Fix: ${issue.suggestedFix}`)
         }
 
         this.log('')
       }
     } else {
-      this.log('\n  ✅ No focus order issues detected!\n')
+      this.log('\n  No focus order issues detected!\n')
     }
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
-    this.log('💡 Tip: Use --format json for detailed element data')
-    this.log('💡 Tip: Use --max-tabs 200 for pages with many elements\n')
+    this.log('Tip: Use --format json for detailed element data')
+    this.log('Tip: Use --max-tabs 200 for pages with many elements\n')
   }
 
   private getScoreDisplay(score: number): string {
@@ -402,30 +401,6 @@ static flags = {
 
       default: {
         return pc.dim
-      }
-    }
-  }
-
-  private getSeverityIcon(severity: string): string {
-    switch (severity) {
-      case 'critical': {
-        return '🔴'
-      }
-
-      case 'minor': {
-        return '⚪'
-      }
-
-      case 'moderate': {
-        return '🟡'
-      }
-
-      case 'serious': {
-        return '🟠'
-      }
-
-      default: {
-        return '⚪'
       }
     }
   }

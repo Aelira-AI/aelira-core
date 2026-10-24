@@ -61,7 +61,7 @@ export default class CanvasStatus extends Command {
       outro('Done')
     } catch (error: any) {
       s.stop('Failed to check Canvas status')
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }

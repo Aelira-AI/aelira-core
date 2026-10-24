@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { ApiClient } from '../../utils/api-client.js'
 import { formatIssuesToCsv } from '../../utils/csv-formatter.js'
 import { pollForCompletion } from '../../utils/poll-progress.js'
+import { numberOrNull, summarizeScanDetail } from '../../utils/scan-detail.js'
 
 export default class ScanLatex extends Command {
   static args = {
@@ -75,7 +76,7 @@ static flags = {
         await this.processFile(targetPath, flags, startTime)
       }
     } catch (error: any) {
-      outro(`❌ Error: ${error.message}`)
+      outro(`Error: ${error.message}`)
       this.error(error)
     }
   }
@@ -112,9 +113,10 @@ static flags = {
     const successful = results.filter((r) => !r.error).length
     const failed = results.filter((r) => r.error).length
 
-    const totalEquations = results
+    const conversions = results
       .filter((r) => !r.error)
-      .reduce((sum, r) => sum + (r.equations_converted || 0), 0)
+      .map((r) => ({ file: r.file, stats: this.conversionStats(r) }))
+    const totalEquations = conversions.reduce((sum, { stats }) => sum + (stats.converted ?? 0), 0)
 
     this.log(`  Total Files: ${results.length}`)
     this.log(`  Successful: ${successful}`)
@@ -125,14 +127,14 @@ static flags = {
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
     // Show top conversions
-    const successfulConversions = results.filter((r) => !r.error && r.equations_converted)
+    const successfulConversions = conversions.filter(({ stats }) => stats.converted)
 
     if (successfulConversions.length > 0) {
       this.log('Top Results:\n')
-      for (const [index, result] of successfulConversions.slice(0, 5).entries()) {
-        this.log(`${index + 1}. ${result.file}`)
-        this.log(`   Equations: ${result.equations_converted || 0}`)
-        this.log(`   Success Rate: ${result.success_rate ? result.success_rate.toFixed(1) + '%' : 'N/A'}`)
+      for (const [index, { file, stats }] of successfulConversions.slice(0, 5).entries()) {
+        this.log(`${index + 1}. ${file}`)
+        this.log(`   Equations: ${stats.converted}`)
+        this.log(`   Success Rate: ${stats.rate}`)
         this.log('')
       }
     }
@@ -141,65 +143,37 @@ static flags = {
       this.log('Failed Conversions:\n')
       for (const result of results
         .filter((r) => r.error)) {
-          this.log(`  ✗ ${result.file}: ${result.error}`)
+          this.log(`  - ${result.file}: ${result.error}`)
         }
 
       this.log('')
     }
 
-    this.log('💡 Tip: Use --format json --output report.json for full results')
+    this.log('Tip: Use --format json --output report.json for full results')
   }
 
   private displaySingleResult(result: any, processTime: number): void {
+    const summary = summarizeScanDetail(result)
+    const stats = this.conversionStats(result)
+
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
     this.log(`  LaTeX to MathML Conversion Report`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.log(`  File: ${result.filename || 'Unknown'}`)
-    this.log(`  Equations Found: ${result.equations_converted || 0}`)
-    this.log(`  Success Rate: ${result.success_rate ? result.success_rate.toFixed(1) + '%' : 'N/A'}\n`)
-
-    // Show content types detected
-    if (result.content_types_detected && result.content_types_detected.length > 0) {
-      this.log('  📊 Content Types Detected:')
-      result.content_types_detected.forEach((type: string) => {
-        const emoji = this.getContentTypeEmoji(type)
-        this.log(`    ${emoji} ${type}`)
-      })
-      this.log('')
-    }
-
-    // Show specialized content counts
-    if (result.chemistry_formulas > 0 || result.physics_notation > 0 || result.tikz_diagrams > 0) {
-      this.log('  🔬 Specialized Content:')
-      if (result.chemistry_formulas > 0) this.log(`    ⚗️  Chemistry formulas: ${result.chemistry_formulas}`)
-      if (result.physics_notation > 0) this.log(`    ⚛️  Physics notation: ${result.physics_notation}`)
-      if (result.tikz_diagrams > 0) this.log(`    📐 TikZ diagrams: ${result.tikz_diagrams}`)
-      this.log('')
-    }
-
-    if (result.mathml_content) {
-      this.log(`  ✓ MathML generated successfully`)
-    }
-
-    if (result.errors && result.errors.length > 0) {
-      this.log(`\n  ⚠️  Errors: ${result.errors.length}`)
-      result.errors.slice(0, 3).forEach((error: any, idx: number) => {
-        this.log(`    ${idx + 1}. ${error}`)
-      })
-      if (result.errors.length > 3) {
-        this.log(`    ... and ${result.errors.length - 3} more`)
-      }
-    }
+    this.log(`  File: ${summary.fileName ?? 'Unknown'}`)
+    this.log(`  Equations Found: ${stats.found ?? 'N/A'}`)
+    this.log(`  Converted: ${stats.converted ?? 'N/A'}`)
+    this.log(`  Failed: ${stats.failed ?? 'N/A'}`)
+    this.log(`  Success Rate: ${stats.rate}`)
 
     this.log(`\n  Processing Time: ${(processTime / 1000).toFixed(1)}s`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    if (result.scan_id) {
-      this.log(`  Scan ID: ${result.scan_id}`)
+    if (summary.scanId) {
+      this.log(`  Scan ID: ${summary.scanId}`)
     }
 
-    this.log('💡 Tip: Use --format json for complete MathML output')
+    this.log('Tip: Use --format json for complete MathML output')
   }
 
   private async findLatexFiles(dirPath: string): Promise<string[]> {
@@ -224,27 +198,18 @@ static flags = {
     return files
   }
 
-  private getContentTypeEmoji(type: string): string {
-    switch (type?.toLowerCase()) {
-      case 'chemistry': { return '⚗️'
-      }
-
-      case 'diagram': { return '📐'
-      }
-
-      case 'math': { return '📐'
-      }
-
-      case 'physics': { return '⚛️'
-      }
-
-      case 'table': { return '📊'
-      }
-
-      default: { return '📄'
-      }
+  /** Conversion counts from scan_structure() in src/education/latex_evidence.py. */
+  private conversionStats(result: any): { converted: null | number; failed: null | number; found: null | number; rate: string } {
+    const { structure } = summarizeScanDetail(result)
+    const rate = numberOrNull(structure.conversion_success_rate)
+    return {
+      converted: numberOrNull(structure.successful_conversions),
+      failed: numberOrNull(structure.failed_conversions),
+      found: numberOrNull(structure.total_equations),
+      rate: rate === null ? 'N/A' : `${rate.toFixed(1)}%`,
     }
   }
+
 
   private async processDirectory(
     dirPath: string,
@@ -258,7 +223,7 @@ static flags = {
 
     if (files.length === 0) {
       s.stop('No LaTeX files found')
-      outro('⚠️  No LaTeX files to process')
+      outro('No LaTeX files to process')
       return
     }
 
@@ -273,20 +238,20 @@ static flags = {
       try {
         const result = await this.convertLatex(file, flags['api-url'], s)
         results.push({ file: path.basename(file), ...result })
-        s.stop(`✓ ${path.basename(file)}`)
+        s.stop(`Done: ${path.basename(file)}`)
       } catch (error: any) {
-        s.stop(`✗ ${path.basename(file)}: ${error.message}`)
+        s.stop(`Failed: ${path.basename(file)}: ${error.message}`)
         results.push({ error: error.message, file: path.basename(file) })
       }
     }
 
     // Output results
     if (flags.format === 'csv') {
-      const allIssues = results.flatMap((r) => r.issues_list || r.issues || r.errors || [])
+      const allIssues = results.flatMap((r) => summarizeScanDetail(r).issues)
       const csv = formatIssuesToCsv(allIssues, 'batch')
       if (flags.output) {
         await fs.writeFile(flags.output, csv)
-        outro(`✅ Batch conversion complete. CSV saved to ${flags.output}`)
+        outro(`Batch conversion complete. CSV saved to ${flags.output}`)
       } else {
         this.log(csv)
       }
@@ -301,17 +266,17 @@ static flags = {
 
       if (flags.output) {
         await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-        outro(`✅ Batch conversion complete. Report saved to ${flags.output}`)
+        outro(`Batch conversion complete. Report saved to ${flags.output}`)
       } else {
         this.log(JSON.stringify(output, null, 2))
       }
     } else {
       this.displayBatchResults(results, Date.now() - startTime)
-      outro(`✨ Batch conversion complete! Processed ${files.length} files`)
+      outro(`Batch conversion complete! Processed ${files.length} files`)
     }
 
     if (flags.timer) {
-      this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
+      this.log(`\nTotal execution time: ${Date.now() - startTime}ms`)
     }
   }
 
@@ -330,7 +295,7 @@ static flags = {
       s.stop('Conversion complete')
 
       if (flags.format === 'csv') {
-        const csv = formatIssuesToCsv(result.issues_list || result.issues || result.errors || [], path.basename(filePath))
+        const csv = formatIssuesToCsv(summarizeScanDetail(result).issues, path.basename(filePath))
         if (flags.output) {
           await fs.writeFile(flags.output, csv)
           this.log(`CSV report saved to ${flags.output}`)
@@ -347,17 +312,17 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ LaTeX conversion complete. Report saved to ${flags.output}`)
+          outro(`LaTeX conversion complete. Report saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displaySingleResult(result, processDuration)
-        outro('✨ LaTeX conversion complete!')
+        outro('LaTeX conversion complete.')
       }
 
       if (flags.timer) {
-        this.log(`\n⏱️  Total execution time: ${processDuration}ms`)
+        this.log(`\nTotal execution time: ${processDuration}ms`)
       }
     } catch (error: any) {
       s.stop('Conversion failed')
