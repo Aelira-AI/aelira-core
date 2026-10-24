@@ -3,6 +3,7 @@ import { test, expect, type Browser, type BrowserContext, type Page, type TestIn
 import { assertNoBlockingViolations } from './support/a11y';
 import { apiGet } from './support/scans';
 import { apiUrl, dismissCookieBanner, sha256 } from './support/stack';
+import { canvasHttpCredentials } from './support/canvas-gate';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 /**
@@ -133,7 +134,8 @@ interface CanvasFile {
 let teacherSession: BrowserContext | undefined;
 async function canvasSession(browser: Browser): Promise<BrowserContext> {
   if (teacherSession) return teacherSession;
-  teacherSession = await browser.newContext();
+  // A context made here does not inherit the project's options, so pass the gate on.
+  teacherSession = await browser.newContext({ httpCredentials: canvasHttpCredentials() });
   const page = await teacherSession.newPage();
   await page.goto(`${canvas}/login/canvas`);
   await signInToCanvas(page);

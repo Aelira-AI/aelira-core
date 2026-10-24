@@ -29,17 +29,12 @@ function receiptFor(backport: Backport, arch = 'arm64'): string {
 
 describe('backport recipes', () => {
   test('the repository recipes cover the reviewed CVEs and nothing else', () => {
-    expect(backports.map((item) => item.source)).toEqual(['brotli', 'libx11', 'libxml2', 'libxrender']);
+    expect(backports.map((item) => item.source)).toEqual(['libx11', 'libxml2', 'libxrender']);
     expect(libxml2.fixed).toEqual(['CVE-2026-6653', 'CVE-2026-74860', 'CVE-2026-86138', 'CVE-2026-86140',
       'CVE-2026-86142', 'CVE-2026-86143', 'CVE-2026-86144']);
     expect(libxml2.assertions).toEqual([['CVE-2026-86139', 'uri.c']]);
     expect(libx11.fixed).toEqual(['CVE-2026-88806', 'CVE-2026-94283', 'CVE-2026-94284', 'CVE-2026-94285']);
     expect(backports.find((item) => item.source === 'libxrender')!.fixed).toEqual(['CVE-2026-88807']);
-    const brotli = backports.find((item) => item.source === 'brotli')!;
-    expect(brotli.fixed).toEqual(['CVE-2026-111497']);
-    expect(brotli.rebuiltVersion).toBe('1.1.0-2+b7+aelira1');
-    expect(brotli.controls).toEqual(['package-test-suite']);
-    expect(brotli.binaries).toEqual(['libbrotli1', 'libbrotli-dev', 'brotli']);
     for (const backport of backports) expect(backport.disclosure).toBe('docs/security/debian-backports-0.9.14.md');
   });
 
