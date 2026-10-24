@@ -1,7 +1,7 @@
 # CVE-2026-6653 system libxml2 backport for 0.9.13
 
-> Superseded in 0.9.14 by the [rebuilt Debian libxml2, libX11 and libXrender
-> packages](debian-backports-0.9.14.md), which carry this patch and six more
+> Superseded in 0.10.0 by the [rebuilt Debian libxml2, libX11 and libXrender
+> packages](debian-backports-0.10.0.md), which carry this patch and six more
 > libxml2 fixes. This page records the 0.9.13 rebuild.
 
 The API and development images build Debian trixie's `libxml2` source package
@@ -39,7 +39,7 @@ checks the installed library hash and real path loaded by Perl XML::LibXML,
 and checks every shipped image layer for a single matching system library
 payload. Native checks also require ordinary XML parsing, XSLT, LaTeXML
 MathML conversion, and ImageMagick's use of the rebuilt library, to work. Releases
-up to 0.9.14 also checked FFmpeg DASH XML parsing. From 0.9.15 the API image
+up to 0.9.13 also checked FFmpeg DASH XML parsing. From 0.10.0 the API image
 runs ffmpeg and ffprobe from its own FFmpeg 9.0.2 build, which does not link
 libxml2 and has no DASH demuxer, so FFmpeg is no longer a libxml2 consumer.
 Up to the image's own ImageMagick policy ([#749](https://github.com/Aelira-AI/aelira-core/issues/749)),

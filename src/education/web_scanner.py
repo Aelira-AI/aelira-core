@@ -368,7 +368,8 @@ class WebScanner:
             validate_alt_text: Whether to validate existing alt text accuracy using AI vision
             scan_focus_order: Whether to analyze keyboard focus order (WCAG 2.4.3)
             scan_cvd: Whether to analyze colors for color vision deficiency accessibility
-            max_depth: Maximum depth to crawl (1 = only provided URL)
+            max_depth: Levels of links to follow (0 = only the provided URL,
+                1 = it and the pages it links to)
             max_pages: Maximum number of pages to scan
             api_base_url: Base URL for image/multimedia scanner APIs
             use_ai_analysis: Whether to use Ollama for AI-powered content analysis

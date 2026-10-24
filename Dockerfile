@@ -3,7 +3,7 @@
 
 # Rebuild Debian's libxml2, libX11 and libXrender from their pinned trixie
 # source packages with reviewed security patches. See
-# docs/security/debian-backports-0.9.14.md. These stages never ship.
+# docs/security/debian-backports-0.10.0.md. These stages never ship.
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential dpkg-dev perl quilt \

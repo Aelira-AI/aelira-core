@@ -19,7 +19,7 @@
 
 > **AELIRA**: **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
 
-**Version:** 0.9.13
+**Version:** 0.10.0
 
 ## What it does
 

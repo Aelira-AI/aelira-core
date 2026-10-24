@@ -1,6 +1,6 @@
 # Aelira CLI troubleshooting
 
-**Version:** v0.9.13 · **CLI Version:** v0.9.13
+**Version:** v0.10.0 · **CLI Version:** v0.10.0
 
 Check the installed command's help before adding flags: `aelira scan pdf --help`, for example. See the [command reference](COMMANDS.md) and [tested example syntax](EXAMPLES.md).
 

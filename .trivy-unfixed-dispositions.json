@@ -582,7 +582,7 @@
       "reason": "The flaw is a missing zero-length check in xmlURIEscapeStr, introduced upstream in 2.13.0. The 2.9.14 source that Debian trixie ships already rejects that length in uri.c (`if (!(len > 0)) return(NULL);`), and the rebuild fails if that line is missing. Debian's tracker lists trixie as vulnerable, which the source does not support.",
       "reviewed": "2026-10-22",
       "expires": "2027-01-12",
-      "disclosure": "docs/security/debian-backports-0.9.14.md"
+      "disclosure": "docs/security/debian-backports-0.10.0.md"
     },
     {
       "id": "CVE-2026-86420",

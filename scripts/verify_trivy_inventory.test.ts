@@ -241,7 +241,7 @@ describe('rebuilt Debian package gate', () => {
   const stock = '2.12.7+dfsg+really2.9.14-2.1+deb13u3';
   const libxml2: VerifiedBackport = {
     source: 'libxml2', version: rebuilt, binaries: new Set(['libxml2', 'libxml2-dev', 'libxml2-utils']),
-    fixed: new Set(['CVE-2026-6653', 'CVE-2026-86144']), disclosure: 'docs/security/debian-backports-0.9.14.md',
+    fixed: new Set(['CVE-2026-6653', 'CVE-2026-86144']), disclosure: 'docs/security/debian-backports-0.10.0.md',
   };
   const notPresent = {
     id: 'CVE-2026-86139', osFamily: 'debian',
@@ -249,7 +249,7 @@ describe('rebuilt Debian package gate', () => {
     status: 'not_affected' as const, justification: 'vulnerable_code_not_present',
     reason: 'The length guard already exists in the rebuilt source',
     reviewed: '2026-10-22', expires: '2027-01-12',
-    disclosure: 'docs/security/debian-backports-0.9.14.md',
+    disclosure: 'docs/security/debian-backports-0.10.0.md',
   };
   const inventory = (rows: Array<[string, string, string, string?]>) => {
     const base = clean();
