@@ -22,12 +22,12 @@
   <a href="https://aelira.ai/docs">Docs</a> ·
   <a href="#try-it-in-one-command">Quickstart</a> ·
   <a href="docs/deployment/self-hosting.md">Self-hosting</a> ·
-  <a href="docs/releases/v0.9.13.md">Release notes</a> ·
+  <a href="docs/releases/v0.10.0.md">Release notes</a> ·
   <a href="SECURITY.md">Security policy</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-> **Status: 0.9.13 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. A verified improved PDF can remain downloadable as a working file while manual work remains; unsupported or unsafe cases can still have no downloadable candidate. Publication requires separate review and approval. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.9.13 release notes](docs/releases/v0.9.13.md) for upgrade actions, verification limits and a known issue with printed equation alt text.
+> **Status: 0.10.0 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. A verified improved PDF can remain downloadable as a working file while manual work remains; unsupported or unsafe cases can still have no downloadable candidate. Publication requires separate review and approval. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.10.0 release notes](docs/releases/v0.10.0.md) for upgrade actions and verification limits.
 
 Aelira can apply eligible fixes and return a saved candidate with a report of recorded outcomes. Supported changes differ by format and source structure, and unsupported or ambiguous cases remain unresolved. Review the actual saved file and remaining findings before approving publication.
 
@@ -111,7 +111,7 @@ If you run one of the experimental integrations, we would value the feedback: op
 ## Screenshots
 
 <!--
-  Screenshot placeholders. Capture these from a real v0.9.14 deployment with
+  Screenshot placeholders. Capture these from a real deployment with
   generic demo data only (no real institution, prospect, staff or student
   names), in light mode at 1440px wide, then replace this comment and the line
   below with <picture>/<img> elements that carry descriptive alt text.
@@ -128,7 +128,7 @@ If you run one of the experimental integrations, we would value the feedback: op
      docs/assets/readme/screenshots/canvas-course.png
 -->
 
-Screenshots coming with v0.9.14.
+Screenshots are coming in a later release.
 
 ## Architecture
 
@@ -265,6 +265,18 @@ Read next: the [self-hosting guide](docs/deployment/self-hosting.md) (backups, T
 **A note on analytics.** The dashboard ships with an optional, off-by-default [Umami](https://umami.is/) integration (Umami is open-source, self-hostable web analytics). It activates when you configure `VITE_UMAMI_WEBSITE_ID` and `VITE_UMAMI_URL`, and loads after analytics consent. Review the configured destination and the deployment's network behaviour before making a telemetry or data-residency claim.
 
 </details>
+
+## Versioning
+
+Aelira Core follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) from 0.10.0. While the major version is 0:
+
+- Minor releases (0.MINOR.0) carry new features or breaking changes, and each one is listed under Operator action required in its release notes.
+- Patch releases (0.x.PATCH) carry only backwards-compatible fixes and security updates.
+- 1.0.0 comes when the API and CLI contracts are declared stable.
+
+Releases 0.9.1 to 0.9.13 were published as patch releases but included new features, database migrations and breaking changes. Read the release notes for each version before you upgrade across them.
+
+This policy is enforced by tooling. The release workflow runs `scripts/verify_semver_bump.py` and refuses a tag that does not increase the version, skips a number, or is a patch whose CHANGELOG section has any heading other than Fixed, Security or Dependencies, or that adds an Alembic migration. A non-blocking check on pull requests prints the smallest bump the Unreleased section already requires. See [CONTRIBUTING.md](CONTRIBUTING.md#changelog-entries-and-version-bumps) for how to write entries.
 
 ## Development
 

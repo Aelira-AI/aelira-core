@@ -1,8 +1,8 @@
-# Rebuilt Debian libxml2, libX11 and libXrender for 0.9.14
+# Rebuilt Debian libxml2, libX11 and libXrender for 0.10.0
 
 The API and development images run on Debian 13 (trixie). Debian has no fixed
 trixie packages for the advisories below. Upstream projects and Ubuntu have
-published fixes. From 0.9.14 the image build rebuilds Debian's own source
+published fixes. From 0.10.0 the image build rebuilds Debian's own source
 packages with those fixes and installs the result in the same build step that
 first installs the stock packages, so no image layer holds the unpatched
 libraries.

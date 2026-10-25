@@ -173,7 +173,8 @@ async def scan_website(
         scan_images: Enable image alt text scanning
         scan_multimedia: Enable multimedia caption checking
         scan_math: Enable LaTeX/MathML scanning
-        max_depth: Maximum crawl depth (1 = single page)
+        max_depth: Levels of links to follow (0 = single page, 1 = the page
+            and the pages it links to)
         max_pages: Maximum pages to scan
         generate_code_fixes: Generate AI code fixes for issues
 

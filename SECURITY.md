@@ -4,10 +4,10 @@
 
 We release patches for security vulnerabilities in the following versions:
 
-| Version  | Supported          |
-| -------- | ------------------ |
-| 0.9.13    | :white_check_mark: |
-| <= 0.9.12 | :x:                |
+| Version   | Supported          |
+| --------- | ------------------ |
+| 0.10.0    | :white_check_mark: |
+| <= 0.9.13 | :x:                |
 
 As a pre-1.0 project, only the current security patch is supported. Earlier 0.x releases are not maintained.
 

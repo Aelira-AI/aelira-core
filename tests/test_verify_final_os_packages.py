@@ -98,7 +98,7 @@ def test_each_reintroduced_package_is_reported() -> None:
 
 @pytest.mark.parametrize("package", DEBIAN_FFMPEG_PACKAGES)
 def test_each_reintroduced_debian_ffmpeg_package_is_reported(package: str) -> None:
-    # The 0.9.14 image carried every one of these through Debian's ffmpeg.
+    # The 0.9.13 image carried every one of these through Debian's ffmpeg.
     assert _validate(installed={package}) == [f"package must be absent: {package}"]
 
 

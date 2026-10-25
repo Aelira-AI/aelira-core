@@ -52,13 +52,13 @@ handled directly:
 | Advisory | Packages | Assessment |
 | --- | --- | --- |
 | CVE-2026-36849 | libtiff6 | libtiff may decode TIFF graphics referenced by submitted LaTeX documents. Denial of service only; Debian will not fix it in this release. |
-| CVE-2026-74860 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-86138 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-86139 | libxml2 | Listed as affected at publication. Source review for 0.9.14 found the vulnerable code is not present in this libxml2 version ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-86140 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-86142 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-86143 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-86144 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.9.14 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-74860 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.10.0 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-86138 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.10.0 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-86139 | libxml2 | Listed as affected at publication. Source review for 0.10.0 found the vulnerable code is not present in this libxml2 version ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-86140 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.10.0 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-86142 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.10.0 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-86143 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.10.0 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-86144 | libxml2 | libxml2 is used by LaTeX conversion (LaTeXML) on documents users submit. Debian trixie has no fixed package; upstream libxml2 and Ubuntu 24.04 have fixes. Repaired in 0.10.0 by a rebuilt package ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
 | CVE-2026-86420 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists. |
 | CVE-2026-86421 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | ImageMagick may process graphics referenced by submitted LaTeX documents. Denial of service only; no distribution fix exists. |
 
@@ -116,8 +116,8 @@ handled directly:
 | CVE-2026-88051 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract model (.traineddata) parsing. OCR uses only the distribution-installed English model; users cannot supply model files. |
 | CVE-2026-88052 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract unicharset loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files. |
 | CVE-2026-88053 | libtesseract5, tesseract-ocr | `vulnerable_code_cannot_be_controlled_by_adversary` | Tesseract int-template loading from model files. OCR uses only the distribution-installed English model; users cannot supply model files. |
-| CVE-2026-88806 | libx11-6, libx11-data, libx11-xcb1 | `vulnerable_code_not_in_execute_path` | libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.9.14 by a rebuilt libX11 ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
-| CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.9.14 by a rebuilt libXrender ([correction](#libxml2-libx11-and-libxrender-repaired-in-0914)). |
+| CVE-2026-88806 | libx11-6, libx11-data, libx11-xcb1 | `vulnerable_code_not_in_execute_path` | libX11 responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.10.0 by a rebuilt libX11 ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
+| CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.10.0 by a rebuilt libXrender ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
 | CVE-2026-93990 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses a separate bundled Expat 2.8.5; its advisory status is assessed independently below. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-9538 | libperl5.40, perl, perl-base, perl-modules-5.40 | `vulnerable_code_not_in_execute_path` | Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar. |
 
@@ -356,25 +356,25 @@ machine-readable exception was removed, and stock Debian `libxml2` remains
 blocked by the CRITICAL Trivy inventory gate. The subsequent `+aelira1`
 backport has a [conditional repair disposition](libxml2-6653-backport-0.9.13.md):
 acceptance requires the rebuilt package, native consumer checks and shipped
-layer checks to pass for the exact image. In 0.9.14 the same rebuild carries
+layer checks to pass for the exact image. In 0.10.0 the same rebuild carries
 the fixes for the other `libxml2` advisories; see the next section.
 
-### libxml2, libX11 and libXrender repaired in 0.9.14
+### libxml2, libX11 and libXrender repaired in 0.10.0
 
 The `libxml2` rows above said "No distribution fix exists". That was true of
 Debian trixie, and it is still true there, but it read as if no fix existed
 anywhere. Upstream libxml2 2.15.3 and 2.15.4 fix these advisories, and
 Canonical published fixes for its 2.9.14 package in Ubuntu 24.04 (USN-8910-1).
 Upstream libX11 1.8.14 and libXrender 0.9.13 fix CVE-2026-88806 and
-CVE-2026-88807. From 0.9.14 the API and development images rebuild Debian's
+CVE-2026-88807. From 0.10.0 the API and development images rebuild Debian's
 own `libxml2`, `libx11` and `libxrender` source packages with those fixes, as
-described in the [0.9.14 backport record](debian-backports-0.9.14.md).
+described in the [0.10.0 backport record](debian-backports-0.10.0.md).
 CVE-2026-86139 was listed as affected, but the vulnerable code is not present
 in the 2.9.14 source Debian ships.
 
 ### Debian FFmpeg is removed; 22 dispositions are retired
 
-From 0.9.15 the API image no longer installs Debian's `ffmpeg` package. The
+From 0.10.0 the API image no longer installs Debian's `ffmpeg` package. The
 `ffmpeg` and `ffprobe` programs come from the image's own build of the
 hash-verified FFmpeg 9.0.2 release under `/opt/ffmpeg9`, the build PyAV and
 OpenCV already used. It compiles in only the `file` and `pipe` protocols, so no

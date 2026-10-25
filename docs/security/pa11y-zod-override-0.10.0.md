@@ -1,4 +1,4 @@
-# Pa11y runtime: zod forced to 4.6.7 for 0.9.14
+# Pa11y runtime: zod forced to 4.6.7 for 0.10.0
 
 The Pa11y runtime in the API and development images (`pa11y-runtime/`) pins
 pa11y 9.0.1, which brings Puppeteer 24.43.1 and `chromium-bidi` 14.0.0.
@@ -57,5 +57,5 @@ It fails if zod cannot be resolved, or if zod 3 is installed.
 ## The clean fix
 
 pa11y 10 uses Puppeteer 25 and a `chromium-bidi` that depends on zod 4. Moving
-to it and dropping the override is tracked for 0.9.15 in
+to it and dropping the override is tracked for a later release in
 [#786](https://github.com/Aelira-AI/aelira-core/issues/786).
