@@ -5,6 +5,7 @@ import pc from 'picocolors'
 
 import { ApiClient, ApiConnectionError, ApiError } from '../utils/api-client.js'
 import { getApiKey, getApiUrl, initializeConfig, setConfigValue } from '../utils/config.js'
+import { createApiKeyFromSession } from '../utils/session-api-key.js'
 
 export default class Auth extends Command {
   static args = {
@@ -184,14 +185,7 @@ export default class Auth extends Command {
     s.start('Creating API key...')
 
     try {
-      const keyResponse = await fetch(`${flags['api-url']}/auth/keys`, {
-        body: JSON.stringify({ name: `CLI — ${os.hostname()}` }),
-        headers: {
-          'Content-Type': 'application/json',
-          'Cookie': `aelira_access=${cookieValue}`,
-        },
-        method: 'POST',
-      })
+      const keyResponse = await createApiKeyFromSession(flags['api-url'], cookieValue, `CLI — ${os.hostname()}`)
 
       if (!keyResponse.ok) {
         s.stop('Failed to create API key.')
