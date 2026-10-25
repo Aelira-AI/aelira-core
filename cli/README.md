@@ -71,7 +71,7 @@ Tip: Use directory path to batch scan multiple PDFs
 
 `sample-handout.pdf` is a one-page synthetic PDF made for this example. It is untagged, has no title or language set, and contains one chart image with no alternative text. The report shows the file details, a scanner score of 49 out of 100, and six findings grouped by severity; `--format json` or `--format csv` lists each finding with its rule.
 
-The command was `NO_COLOR=1 aelira scan pdf sample-handout.pdf`, with `AELIRA_API_URL` set to the local API. It was captured with a 0.9.14 development build (`main` at `ceb3c78` plus the CLI output fixes that accompany this sample), against an API started from `docker-compose.quickstart.yml` with AI providers left disabled. The progress spinner is shown in its final state, and the scan ID and processing time will differ on every run.
+The command was `NO_COLOR=1 aelira scan pdf sample-handout.pdf`, with `AELIRA_API_URL` set to the local API. It was captured with a development build made before the 0.10.0 release (`main` at `ceb3c78` plus the CLI output fixes that shipped in 0.10.0), against an API started from `docker-compose.quickstart.yml` with AI providers left disabled. The progress spinner is shown in its final state, and the scan ID and processing time will differ on every run.
 
 ## Installation
 
@@ -109,7 +109,7 @@ Navigation:
 
 #### Start-up banner and screen readers
 
-Interactive mode starts with a plain-text line naming the tool and its version, for example `Aelira CLI 0.9.13`, followed by a one-line description. It does not clear your terminal, so earlier output stays in your scrollback.
+Interactive mode starts with a plain-text line naming the tool and its version, for example `Aelira CLI 0.10.0`, followed by a one-line description. It does not clear your terminal, so earlier output stays in your scrollback.
 
 On an interactive terminal it also shows a decorative logo drawn with block characters. Screen readers read those characters out one by one, so the logo is skipped when any of these apply:
 
