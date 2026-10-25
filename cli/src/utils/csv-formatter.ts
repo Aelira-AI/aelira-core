@@ -34,7 +34,7 @@ export function normalizeIssue(item: any): {
 }
 
 const ISSUE_HEADERS = ['file', 'issue', 'severity', 'rule', 'element']
-const HISTORY_HEADERS = ['scan_id', 'date', 'file', 'issue', 'severity', 'rule', 'element']
+const HISTORY_HEADERS = ['scan_id', 'date_utc', 'file', 'issue', 'severity', 'rule', 'element']
 
 /**
  * Format individual scan issues to CSV (for scan commands).
@@ -56,6 +56,19 @@ export function formatIssuesToCsv(issues: any[], filename: string): string {
 }
 
 /**
+ * The UTC calendar date of an API timestamp. Scan timestamps are stored as
+ * DateTime(timezone=True) and serialised with an offset; a timestamp without
+ * one is read as UTC rather than as the local time of the machine running
+ * the CLI.
+ */
+export function utcDate(value: unknown): string {
+  if (typeof value !== 'string' || value === '') return ''
+  const hasZone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value)
+  const parsed = new Date(hasZone || !value.includes('T') ? value : `${value}Z`)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
+}
+
+/**
  * Format scan history to CSV (for export command).
  * Each scan object should have: scan_id, created_at, filename, issues[]
  */
@@ -63,7 +76,7 @@ export function formatScanHistoryToCsv(scans: any[]): string {
   const rows = [HISTORY_HEADERS.join(',')]
   for (const scan of scans) {
     const scanId = scan.scan_id || scan.id || ''
-    const date = scan.created_at ? new Date(scan.created_at).toISOString().split('T')[0] : ''
+    const date = utcDate(scan.created_at)
     const filename = scan.filename || scan.file_name || ''
     const issues = scan.issues || []
     for (const item of issues) {

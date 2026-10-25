@@ -269,6 +269,8 @@ aelira scan latex ./math-dept/
 
 Watch a directory for file changes and automatically scan new or modified files.
 
+Each changed file is uploaded to the API, and its line shows the issue counts and scanner score once that scan finishes. HTML files are checked locally with axe-core instead, so their line shows issue counts by impact and no score.
+
 ```bash
 aelira scan watch <directory>
   --extensions <list>             # File extensions to watch (default: .pdf,.docx,.pptx,.xlsx,.html,.htm,.tex,.css,.js)
@@ -359,15 +361,21 @@ aelira scan <URL or HTML file>
 Advanced web scanner with batch and sitemap support.
 
 ```bash
-aelira scan web <URL>
+aelira scan web <URL> [URL...]
   --api-url <url>
-  --batch                   # Crawl linked pages
-  --sitemap                 # Treat URL as sitemap.xml
-  --max-pages <n>           # Max pages to scan (default: 20)
+  --batch                   # Scan one or more URLs as one batch (up to 50)
+  --urls-file <file>        # With --batch: one URL per line (blank lines and # comments ignored)
+  --depth <n>               # With --batch: levels of links to follow from each URL (default: 1; 0 scans only the given URLs)
+  --sitemap                 # Treat the URL as a sitemap.xml
+  --max-pages <n>           # With --sitemap: max sitemap URLs to scan (default: 20)
   --format console|json|csv
   --output <file>           # Output file (for JSON or CSV)
   --timer
 ```
+
+The API queues each web scan and the command waits for it to finish before printing the result. The API only scans public HTTP or HTTPS addresses.
+
+A batch with the default `--depth 1` also scans pages each URL links to, up to the API's per-URL page limit; use `--depth 0` to scan only the URLs you give.
 
 Examples:
 
@@ -375,11 +383,14 @@ Examples:
 # Single page scan
 aelira scan web https://example.com
 
-# Batch scan (crawl linked pages)
-aelira scan web https://example.com --batch --max-pages 50
+# Batch scan of two pages
+aelira scan web https://example.com https://example.com/about --batch
+
+# Batch scan of only the pages listed in a file
+aelira scan web --batch --urls-file urls.txt --depth 0
 
 # Sitemap scan
-aelira scan web https://example.com/sitemap.xml --sitemap
+aelira scan web https://example.com/sitemap.xml --sitemap --max-pages 10
 ```
 
 ### `aelira analyze`
@@ -1077,6 +1088,8 @@ aelira auth logout
 ### `aelira export`
 
 Export scan history to CSV or JSON.
+
+The CSV has one row per finding. Its `date_utc` column is the date each scan was created, in UTC.
 
 ```bash
 aelira export
