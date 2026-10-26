@@ -347,6 +347,45 @@ policy allowing PostScript in a conversion directory and runs LaTeXML through
 the application's launcher: the PostScript `.png` file stays refused, and the
 same run with `$HOME` set to the conversion directory renders it.
 
+### ImageMagick bzip2 advisory published on 2026-10-25
+
+One further ImageMagick advisory affects the reviewed
+`8:7.1.1.43+dfsg1-1+deb13u12` packages on both architectures. Upstream fixed it
+in 7.1.2-33; Debian has no fixed package for this release. The disposition was
+reviewed on 2026-10-26 and expires on 2027-01-24. The scanner findings remain
+visible.
+
+| Advisory | Scanner packages | Status | Assessment |
+| --- | --- | --- | --- |
+| [CVE-2026-116149](https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-pwpf-8799-94cj) | `imagemagick`, `imagemagick-7-common`, `imagemagick-7.q16`, `libimage-magick-perl`, `libimage-magick-q16-perl`, `libmagickcore-7.q16-10`, `libmagickwand-7.q16-10` | Not affected, `vulnerable_code_cannot_be_controlled_by_adversary` | Stack buffer over-write reading bzip2-compressed image data. It is reached through the same transparent bzip2 decompression as CVE-2026-106565, and compression-wrapped files are refused before LaTeXML starts, so submitted documents cannot reach it. See the note below; the library fix is tracked in [#750](https://github.com/Aelira-AI/aelira-core/issues/750). |
+
+**bzip2 note (CVE-2026-116149).** The upstream fix, commit
+`cf40ce974c3f780b7f6913bcff7bec27087c9104` in 7.1.2-33, changes one place: the
+`BZipStream` branch of `ReadBlob` in `MagickCore/blob.c`, which now stops
+reading once the blob has recorded an error instead of calling `BZ2_bzread`
+again. In ImageMagick 7.1.1-43 a blob is a `BZipStream` for reading only when
+`OpenBlob` finds the bzip2 magic bytes `BZh` at the start of a file and opens it
+with `BZ2_bzopen`; the only other `BZipStream` is opened for writing a `.bz2`
+file name. This happens before any coder is chosen or any policy rule applies,
+so the policy cannot refuse it, as for CVE-2026-106565. Coders that carry
+bzip2-compressed data in their own body, such as MIFF, decompress it with
+`BZ2_bzDecompress` on their own buffers and do not use this branch; the policy
+denies MIFF in any case.
+
+Submitted documents cannot reach it. No application code calls ImageMagick; it
+runs only inside the `latexml` and `latexmlpost` stages, and each of those
+stages starts only after every file it can read has been checked for a gzip,
+bzip2, xz or zstd magic and the stage refused with `compressed_input` if one is
+found (`src/education/latex_sandbox.py`,
+`src/education/remediation/latex_converter.py`). The check runs again before
+`latexmlpost`, so a file the `latexml` stage writes is covered too. Uploaded
+LaTeX projects refuse such a member with `compressed_member`
+(`src/education/latex_project.py`). The runtime readiness probe converts only
+a fixed document without graphics, and the LuaLaTeX, pdfLaTeX and Pandoc lanes
+do not start ImageMagick, since shell escape is disabled. The native-image
+check already asserts that the converter refuses a bzip2-wrapped PNG before
+LaTeXML runs, while the bare launcher without the check still renders it.
+
 ### CVE-2026-6653 remains open
 
 The historical table's `not_affected` claim for distribution `libxml2` is

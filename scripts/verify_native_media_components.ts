@@ -207,7 +207,7 @@ export function checkPolicyProbe(output: string): void {
   }
   for (const name of ['bzpng', 'gzpng']) {
     if (converter.get(name) !== 'compressed-input yes parsed no converted no') {
-      throw new Error(`the converter did not refuse the ${name === 'bzpng' ? 'bzip2' : 'gzip'}-wrapped PNG before LaTeXML ran (CVE-2026-106565)`);
+      throw new Error(`the converter did not refuse the ${name === 'bzpng' ? 'bzip2' : 'gzip'}-wrapped PNG before LaTeXML ran (CVE-2026-106565, CVE-2026-116149)`);
     }
   }
   if (converter.get('png') !== 'compressed-input no parsed yes converted yes') {
