@@ -51,7 +51,13 @@ it retains the executable, option, input recipient and encoded separator.
 
 `test-installed-client.py` checks the actual installed `/usr/bin/xdg-email`
 hash and package version, native architecture, pinned Debian Thunderbird
-`1:153.5.1esr-1~deb13u1`, and the actual packaged compose parser hash. Run it
+`1:140.17.0esr-1~deb13u1`, and the actual packaged compose parser hash. Debian
+trixie-security has since moved to a newer Thunderbird, so `prepare-client.sh`
+installs that exact build from the fixed trixie-security snapshot
+`snapshot.debian.org/archive/debian-security/20261025T035125Z`. Its signed
+InRelease is verified against the pinned Debian archive keyring like the live
+sources, only its Valid-Until expiry is waived, and APT preferences forbid
+installing any other package from it. Run it
 inside an isolated native Debian client image with that exact candidate DEB
 installed, an empty writable `/work`, Xvfb, and a session bus. Set
 `AELIRA_XDG_HOST_ARCH` to the actual native `arm64` or `amd64` architecture.

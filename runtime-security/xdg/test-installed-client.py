@@ -219,7 +219,7 @@ def main():
         subprocess.check_output(
             ["dpkg-query", "-W", "-f=${Version}", "thunderbird"], text=True
         )
-        == "1:153.5.1esr-1~deb13u1"
+        == "1:140.17.0esr-1~deb13u1"
     )
     with zipfile.ZipFile("/usr/lib/thunderbird/omni.ja") as archive:
         name = (
@@ -228,7 +228,7 @@ def main():
         assert archive.getinfo(name).file_size < 2 * 1024 * 1024
         assert (
             hashlib.sha256(archive.read(name)).hexdigest()
-            == "5f214a349071c685d35095362202e1d44e1094955c7c1cc23521f6350f30da66"
+            == "93e47f20301dcce6f5c05ff36965cbe35378c67fe68022fda5e26bc4bed7acfc"
         )
 
     binary = ROOT / "bin"
@@ -507,7 +507,7 @@ def main():
         "script_sha256": actual,
         "architecture": arch,
         "package_version": "1.2.1-2ubuntu2+aelira2",
-        "client_version": "1:153.5.1esr-1~deb13u1",
+        "client_version": "1:140.17.0esr-1~deb13u1",
         "scope": "Native installed xdg/Thunderbird component with isolated desktop selection; final runtime copies and other clients remain separate",
     }
     (ROOT / "frontend-controls.json").write_text(
