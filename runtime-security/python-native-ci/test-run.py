@@ -484,10 +484,10 @@ class BoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             archive = root / "accepted.zip"
-            names = [
-                f"build-a/{p}_4.7.2-0aelira1_arm64.deb"
-                for p in ("libtiff6", "libtiffxx6", "libtiff-dev")
-            ]
+            packages = ("libtiff6", "libtiffxx6", "libtiff-dev")
+            names = [f"build-a/{p}_4.7.2-0aelira1_arm64.deb" for p in packages]
+            benign = hashlib.sha256(b"benign").hexdigest()
+            accepted = {"arm64": {p: benign for p in packages}}
 
             def member(name: str, mode: int = stat.S_IFREG | 0o644) -> zipfile.ZipInfo:
                 info = zipfile.ZipInfo(name)
@@ -495,37 +495,66 @@ class BoundaryTests(unittest.TestCase):
                 info.external_attr = mode << 16
                 return info
 
-            def make(extra: tuple[str, int] | None = None) -> None:
+            def make(
+                extra: tuple[str, int] | None = None, payload: bytes = b"benign"
+            ) -> None:
                 with zipfile.ZipFile(archive, "w") as output:
                     for name in names:
-                        output.writestr(member(name), b"benign")
+                        output.writestr(member(name), payload)
+                    # Unconsumed evidence differs on every run and is ignored.
+                    output.writestr(member("build-a/build-console.log"), b"log")
                     if extra:
                         output.writestr(member(*extra), b"benign")
 
-            make()
-            with patch.dict(
-                runner.ZIP_SHA256,
-                {"arm64": hashlib.sha256(archive.read_bytes()).hexdigest()},
-            ):
+            with patch.dict(runner.ACCEPTED_TIFF_DEB_SHA256, accepted):
+                make()
+                runner.verify_tiff_zip(archive, "arm64")
                 runner.extract_tiff(archive, root / "selected", "arm64")
-            self.assertEqual(
-                {p.name for p in (root / "selected").iterdir()},
-                {Path(n).name for n in names},
-            )
-            make(("./" + names[0], stat.S_IFREG | 0o644))
-            with patch.dict(
-                runner.ZIP_SHA256,
-                {"arm64": hashlib.sha256(archive.read_bytes()).hexdigest()},
-            ):
+                self.assertEqual(
+                    {p.name for p in (root / "selected").iterdir()},
+                    {Path(n).name for n in names},
+                )
+                for path in (root / "selected").iterdir():
+                    self.assertEqual(path.read_bytes(), b"benign")
+                make(payload=b"altered")
+                with self.assertRaisesRegex(ValueError, "digest differs"):
+                    runner.verify_tiff_zip(archive, "arm64")
+                with self.assertRaisesRegex(ValueError, "digest differs"):
+                    runner.extract_tiff(archive, root / "altered", "arm64")
+                self.assertEqual(list((root / "altered").iterdir()), [])
+                make(("./" + names[0], stat.S_IFREG | 0o644))
+                with self.assertRaisesRegex(ValueError, "unsafe or duplicated"):
+                    runner.verify_tiff_zip(archive, "arm64")
                 with self.assertRaisesRegex(ValueError, "unsafe or duplicated"):
                     runner.extract_tiff(archive, root / "duplicate", "arm64")
-            make((names[0], stat.S_IFLNK | 0o777))
-            with patch.dict(
-                runner.ZIP_SHA256,
-                {"arm64": hashlib.sha256(archive.read_bytes()).hexdigest()},
-            ):
+                make((names[0], stat.S_IFLNK | 0o777))
                 with self.assertRaisesRegex(ValueError, "unsafe or duplicated"):
                     runner.extract_tiff(archive, root / "symlink", "arm64")
+                with zipfile.ZipFile(archive, "w") as output:
+                    for name in names[:2]:
+                        output.writestr(member(name), b"benign")
+                with self.assertRaisesRegex(ValueError, "incomplete"):
+                    runner.verify_tiff_zip(archive, "arm64")
+            # The real accepted digests never match benign bytes.
+            make()
+            with self.assertRaisesRegex(ValueError, "digest differs"):
+                runner.verify_tiff_zip(archive, "arm64")
+
+    def test_accepted_digests_match_pillow_tiff_verifier(self) -> None:
+        verifier = MODULE.parent.parent / "media" / "pillow" / "verify-tiff-input.py"
+        tree = ast.parse(verifier.read_text())
+        assigned = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "accepted" for t in node.targets
+            )
+        ]
+        self.assertEqual(len(assigned), 1)
+        self.assertEqual(
+            ast.literal_eval(assigned[0]), runner.ACCEPTED_TIFF_DEB_SHA256
+        )
 
     def test_source_and_baseline_schema_refusals(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -729,13 +758,8 @@ class OrchestrationTests(unittest.TestCase):
             with (
                 patch.object(runner, "identity", return_value=ident),
                 patch.object(runner, "canonical_file"),
-                patch.object(
-                    runner,
-                    "digest",
-                    side_effect=lambda path: (
-                        runner.ZIP_SHA256["arm64"] if path == tiff else H64
-                    ),
-                ),
+                patch.object(runner, "digest", return_value=H64),
+                patch.object(runner, "verify_tiff_zip") as verify_zip,
                 patch.object(runner, "run_stage", side_effect=fake_stage),
                 patch.object(runner, "prepare_receipt", return_value=source),
                 patch.object(runner, "baseline_receipt", return_value=baseline),
@@ -745,6 +769,7 @@ class OrchestrationTests(unittest.TestCase):
                 ),
             ):
                 rc = runner.execute(repo, "arm64", H40, scratch, tiff, dest)
+            verify_zip.assert_called_once_with(tiff, "arm64")
             return (
                 rc,
                 json.loads((dest / "summary.json").read_text()),

@@ -392,6 +392,12 @@ jobs:
 
   python-native-components:
     name: Native Python component consumers (${{ matrix.arch }})
+    # The TIFF packages come from this run's native TIFF build. Workflow
+    # artifacts expire, so a pinned artifact ID from an older run cannot be
+    # a durable input. Acceptance rests on the per-package SHA-256 values in
+    # runtime-security/python-native-ci/run.py, which the reproducible TIFF
+    # build must match byte for byte.
+    needs: tiff-native-package
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -404,10 +410,8 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
-            tiff_artifact_id: 11711217496
           - arch: arm64
             runner: ubuntu-24.04-arm
-            tiff_artifact_id: 11711427167
     steps:
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -415,14 +419,22 @@ jobs:
         id: utilities
         run: |
           scripts/ci_apt_install.sh --no-install-recommends binutils gpgv
-      - name: Fetch the accepted native TIFF artifact
+      - name: Fetch this run's native TIFF artifact
         id: tiff
         env:
           GH_TOKEN: ${{ github.token }}
-          TIFF_ARTIFACT_ID: ${{ matrix.tiff_artifact_id }}
+          TIFF_PREFIX: tiff-native-${{ matrix.arch }}-${{ github.sha }}-
         run: |
           set -euo pipefail
-          gh api "repos/Aelira-AI/aelira-core/actions/artifacts/$TIFF_ARTIFACT_ID/zip" \
+          # A rerun of failed jobs keeps the TIFF artifact of the attempt that
+          # built it, so take the newest attempt's artifact from this run.
+          artifact_id="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false and (.name | startswith(env.TIFF_PREFIX)))
+              | [(.name | ltrimstr(env.TIFF_PREFIX) | tonumber), .id] | @tsv' \
+            | sort -n -k1,1 | tail -n 1 | cut -f2)"
+          [[ "$artifact_id" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
             > "$RUNNER_TEMP/python-native-tiff.zip"
       - name: Check native evidence control tests
         id: controls
