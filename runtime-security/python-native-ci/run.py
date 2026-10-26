@@ -15,13 +15,23 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from typing import BinaryIO
 
 ORIGIN = "https://github.com/Aelira-AI/aelira-core.git"
 ORIGINS = {ORIGIN, "https://github.com/Aelira-AI/aelira-core"}
 BASE = "ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
-ZIP_SHA256 = {
-    "amd64": "53909f0ff4bacb69e497b63620562f8f9bd28b9070505c42124125123451c58d",
-    "arm64": "bda119ff252cc18c16a73b0e6b6a48a775f052b2796db3fdd2cdba7784b818a5",
+TIFF_VERSION = "4.7.2-0aelira1"
+ACCEPTED_TIFF_DEB_SHA256 = {
+    "amd64": {
+        "libtiff6": "222b765e38f7a8db036b3f2fc3c3f14cab5226587c9dbba84f3f66c142661b29",
+        "libtiffxx6": "e83fa20d9b30aaa3c31723e8b56c3b561fea1a9471aec429139907f8f74500c2",
+        "libtiff-dev": "5853d0040198a31298ecb22e78440889de7b51bf5bcbf855989a11aca2079172",
+    },
+    "arm64": {
+        "libtiff6": "64cbba6dd3595f477b3005618693f392a860e7810f269fd929f69e529a0ca719",
+        "libtiffxx6": "18f86a6a7b10748e13b2ecb864554a18b4843563b4e08f2c56c83fe3a76d6a9b",
+        "libtiff-dev": "b57d7300f4b5f10f4d450c92a4cab24b18f241374ae1ff3b899850ba6a4ff37e",
+    },
 }
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -216,7 +226,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 def identity(repo: Path, arch: str, revision: str) -> dict[str, str]:
-    if arch not in ZIP_SHA256 or not HEX40.fullmatch(revision):
+    if arch not in ACCEPTED_TIFF_DEB_SHA256 or not HEX40.fullmatch(revision):
         raise ValueError("architecture or revision invalid")
     if os.getuid() == 0 or platform.system() != "Linux":
         raise ValueError("nonroot native Linux required")
@@ -275,46 +285,75 @@ def identity(repo: Path, arch: str, revision: str) -> dict[str, str]:
     }
 
 
-def extract_tiff(zip_path: Path, output: Path, arch: str) -> None:
-    if digest(zip_path) != ZIP_SHA256[arch]:
-        raise ValueError("accepted TIFF artifact digest differs")
-    names = {
-        f"build-a/{name}_4.7.2-0aelira1_{arch}.deb"
-        for name in ("libtiff6", "libtiffxx6", "libtiff-dev")
+def accepted_tiff_members(
+    archive: zipfile.ZipFile, arch: str
+) -> dict[str, tuple[zipfile.ZipInfo, str]]:
+    """Select the three consumed DEBs and pair each with its accepted digest."""
+    accepted = {
+        f"build-a/{package}_{TIFF_VERSION}_{arch}.deb": expected
+        for package, expected in ACCEPTED_TIFF_DEB_SHA256[arch].items()
     }
-    selected: dict[str, zipfile.ZipInfo] = {}
+    selected: dict[str, tuple[zipfile.ZipInfo, str]] = {}
+    entries = archive.infolist()
+    if len(entries) > 10000:
+        raise ValueError("TIFF artifact inventory excessive")
+    for entry in entries:
+        logical = posixpath.normpath(entry.filename.replace("\\", "/"))
+        if logical not in accepted:
+            continue
+        mode = entry.external_attr >> 16
+        if (
+            logical in selected
+            or entry.filename != logical
+            or entry.is_dir()
+            or not stat.S_ISREG(mode)
+            or not 0 < entry.file_size <= MAX_DEB
+        ):
+            raise ValueError("required TIFF member unsafe or duplicated")
+        selected[logical] = (entry, accepted[logical])
+    if set(selected) != set(accepted):
+        raise ValueError("accepted TIFF artifact incomplete")
+    return selected
+
+
+def copy_accepted_member(
+    archive: zipfile.ZipFile, entry: zipfile.ZipInfo, expected: str, sink: BinaryIO | None
+) -> None:
+    value = hashlib.sha256()
+    size = 0
+    with archive.open(entry) as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            size += len(block)
+            if size > MAX_DEB:
+                raise ValueError("TIFF member expansion exceeded limit")
+            value.update(block)
+            if sink is not None:
+                sink.write(block)
+    if size != entry.file_size:
+        raise ValueError("TIFF member size differs")
+    if value.hexdigest() != expected:
+        raise ValueError("accepted TIFF artifact digest differs")
+
+
+def verify_tiff_zip(zip_path: Path, arch: str) -> None:
+    """Refuse the ZIP unless every consumed DEB has its accepted SHA-256."""
     with zipfile.ZipFile(zip_path) as archive:
-        entries = archive.infolist()
-        if len(entries) > 10000:
-            raise ValueError("TIFF artifact inventory excessive")
-        for entry in entries:
-            logical = posixpath.normpath(entry.filename.replace("\\", "/"))
-            if logical not in names:
-                continue
-            mode = entry.external_attr >> 16
-            if (
-                logical in selected
-                or entry.filename != logical
-                or entry.is_dir()
-                or not stat.S_ISREG(mode)
-                or not 0 < entry.file_size <= MAX_DEB
-            ):
-                raise ValueError("required TIFF member unsafe or duplicated")
-            selected[logical] = entry
-        if set(selected) != names:
-            raise ValueError("accepted TIFF artifact incomplete")
+        for entry, expected in accepted_tiff_members(archive, arch).values():
+            copy_accepted_member(archive, entry, expected, None)
+
+
+def extract_tiff(zip_path: Path, output: Path, arch: str) -> None:
+    with zipfile.ZipFile(zip_path) as archive:
+        selected = accepted_tiff_members(archive, arch)
         output.mkdir(mode=0o700)
-        for name, entry in selected.items():
+        for name, (entry, expected) in selected.items():
             target = output / Path(name).name
-            size = 0
-            with archive.open(entry) as source, target.open("xb") as sink:
-                for block in iter(lambda: source.read(1024 * 1024), b""):
-                    size += len(block)
-                    if size > MAX_DEB:
-                        raise ValueError("TIFF member expansion exceeded limit")
-                    sink.write(block)
-            if size != entry.file_size:
-                raise ValueError("TIFF member size differs")
+            try:
+                with target.open("xb") as sink:
+                    copy_accepted_member(archive, entry, expected, sink)
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
 
 
 def run_stage(
@@ -819,8 +858,7 @@ def execute(
         )
     ):
         raise ValueError("input and output roots overlap")
-    if digest(tiff_zip) != ZIP_SHA256[arch]:
-        raise ValueError("accepted TIFF artifact digest differs")
+    verify_tiff_zip(tiff_zip, arch)
     scratch.mkdir(mode=0o700)
     (scratch / "logs").mkdir(mode=0o700)
     dest.mkdir(mode=0o700)
@@ -1192,7 +1230,7 @@ def execute(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
-    parser.add_argument("--arch", choices=sorted(ZIP_SHA256), required=True)
+    parser.add_argument("--arch", choices=sorted(ACCEPTED_TIFF_DEB_SHA256), required=True)
     parser.add_argument("--expected-ref", required=True)
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--tiff-zip", type=Path, required=True)

@@ -5,10 +5,15 @@ reviewed Pillow and psycopg2 source-wheel replacements. It is for native,
 nonroot Linux `amd64` and `arm64` CI hosts with a matching Docker daemon.
 The checkout must be a clean, exact public Git commit of this repository.
 
-The CI job supplies a previously accepted, exact-architecture TIFF artifact
-ZIP as a local file. The runner authenticates the complete ZIP SHA-256, safely
-selects the three `build-a` TIFF DEBs, and invokes the Pillow recipe's pinned
-DEB/control verifier. It then exports a Git-bound fixture context, checks the
+The CI job supplies the exact-architecture TIFF artifact ZIP built earlier in
+the same workflow run by the native TIFF package job, as a local file. Workflow
+artifacts expire, so the job never depends on an artifact from an older run.
+The ZIP itself is not reproducible (it carries logs and timestamps), but the
+TIFF recipe builds its packages byte for byte reproducibly. Before creating any
+output, the runner safely selects the three consumed `build-a` TIFF DEBs and
+refuses the ZIP unless each one matches its accepted SHA-256. It checks the
+bytes again as it extracts them, then invokes the Pillow recipe's pinned
+DEB/control verifier, which holds the same accepted values. It then exports a Git-bound fixture context, checks the
 fixture's source/archive controls, pulls the pinned native Ubuntu base,
 authenticates the external bootstrap code, and runs the official-wheel
 before-replacement fixture. The exact resulting image ID is passed to both
