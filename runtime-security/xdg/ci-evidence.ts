@@ -45,7 +45,7 @@ export const EXPORT_CONTROLS = ['real-native-complete-export', 'all-exported-byt
   'exporter-apt-capture-comment', 'exporter-deb-capture-comment'];
 const SCRIPT = '61f66c933cf71ab2786ded6d7038c748406bea5e309af0cd6b737f93fa1cdc26';
 const VERSION = '1.2.1-2ubuntu2+aelira2';
-const CLIENT_VERSION = '1:140.17.0esr-1~deb13u1';
+const CLIENT_VERSION = '1:153.5.1esr-1~deb13u1';
 const PATCHED = { 'scripts/xdg-email.in': 'ebff44d09d67d423cdb3408528b073fe624fd06e0cf373579c0bd41454a84399',
   'autotests/t-xdg-email.sh': 'b4b2a584c7d676ae37f4b39ace131f8433db13b59c834fab3acd86dec460277f' };
 type Options = { source: string; dest: string; repo: string; arch: string; revision: string; tree: string; buildExit: number };

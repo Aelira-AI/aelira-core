@@ -6,7 +6,7 @@ test "$AELIRA_XDG_HOST_ARCH" = "$arch"
 export DEBIAN_FRONTEND=noninteractive LC_ALL=C TZ=UTC
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/base-packages.tsv
 apt-get update -o APT::Update::Error-Mode=any > /provenance/apt-update.log 2>&1
-apt-get install -y --no-install-recommends thunderbird=1:140.17.0esr-1~deb13u1 \
+apt-get install -y --no-install-recommends thunderbird=1:153.5.1esr-1~deb13u1 \
   xvfb python3 ca-certificates xdg-utils > /provenance/tool-install.log 2>&1
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/toolchain-packages.tsv
 awk -F '\t' 'NR==FNR {base[$1]=$2 FS $3; next} !($1 in base) || base[$1]!=$2 FS $3' \

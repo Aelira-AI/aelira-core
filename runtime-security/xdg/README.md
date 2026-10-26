@@ -51,7 +51,7 @@ it retains the executable, option, input recipient and encoded separator.
 
 `test-installed-client.py` checks the actual installed `/usr/bin/xdg-email`
 hash and package version, native architecture, pinned Debian Thunderbird
-`1:140.17.0esr-1~deb13u1`, and the actual packaged compose parser hash. Run it
+`1:153.5.1esr-1~deb13u1`, and the actual packaged compose parser hash. Run it
 inside an isolated native Debian client image with that exact candidate DEB
 installed, an empty writable `/work`, Xvfb, and a session bus. Set
 `AELIRA_XDG_HOST_ARCH` to the actual native `arm64` or `amd64` architecture.
