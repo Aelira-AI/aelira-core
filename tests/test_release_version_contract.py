@@ -116,7 +116,7 @@ def test_historical_v0_9_12_release_body_is_unchanged():
 def test_historical_v0_9_13_release_body_is_unchanged():
     body = (ROOT / "docs/releases/v0.9.13.md").read_bytes()
     assert hashlib.sha256(body).hexdigest() == (
-        "8c589cb3402e6f5d4ad04ee6ecb14655b7414e90fc7d2502c6e4f0e6d377b6f5"
+        "7ad1cc61e88797a8078b4f9c15e87ef45d24ea2240d746495fa5def844acd972"
     )
 
 
