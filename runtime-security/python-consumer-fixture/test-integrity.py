@@ -98,7 +98,7 @@ def main() -> None:
     )
     expect_refusal(
         "duplicate_normalized_pins",
-        lambda: changed("pins.txt", members["pins.txt"] + b"sqlalchemy==2.1.4\n"),
+        lambda: changed("pins.txt", members["pins.txt"] + b"sqlalchemy==2.1.5\n"),
         output,
     )
     expect_refusal(

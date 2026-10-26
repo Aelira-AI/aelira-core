@@ -219,7 +219,7 @@ def validate_members(
     if (
         public.get("pillow") != "13.0.0"
         or public.get("psycopg2-binary") != "2.9.13"
-        or selected.get("sqlalchemy") != "2.1.4"
+        or selected.get("sqlalchemy") != "2.1.5"
     ):
         raise ValueError("required baseline pins missing")
     system = members["system-packages.txt"].decode("ascii").splitlines()
