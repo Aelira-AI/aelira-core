@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Dependencies
 
 - Python runtime packages: cachetools 7.2.4, chardet 7.7.0, fonttools 4.67.0, httpx2 and httpcore2 2.16.0, more-itertools 11.2.1, platformdirs 4.13.5, pluggy 1.7.0, pydantic-settings 2.16.1, SQLAlchemy 2.1.5 and websockets 17.3. Development tools: ruff 0.17.1 and zope.interface 8.7.
+- FastAPI 0.156.8 and Starlette 1.9.0.
 
 ## [0.10.0] - 2026-10-25
 
