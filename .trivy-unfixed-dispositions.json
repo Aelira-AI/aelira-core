@@ -1162,6 +1162,46 @@
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     },
     {
+      "id": "CVE-2026-116149",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "Stack buffer over-write reading bzip2-compressed image data. The upstream fix, commit cf40ce974c3f780b7f6913bcff7bec27087c9104 in 7.1.2-33, changes only the BZipStream branch of ReadBlob in MagickCore/blob.c. When reading, ImageMagick 7.1.1-43 creates a BZipStream only in OpenBlob, for a file that begins with the bzip2 magic bytes, before any coder or policy check, so the image's ImageMagick policy cannot refuse it; coders that decompress bzip2 data in their own body do not use that branch. Submitted documents cannot reach it: before latexml or latexmlpost starts, every file either tool can read is checked and the stage is refused with compressed_input if any file begins with a gzip, bzip2, xz or zstd magic, whatever its name (src/education/latex_sandbox.py, src/education/remediation/latex_converter.py). The confined LaTeXML stages can read only their own attempt directory and system files, which documents cannot write, uploaded LaTeX projects reject such members with compressed_member, and no application code calls ImageMagick. The native image check refuses a bzip2-wrapped PNG through the real conversion entry point. The library fix is tracked in #750.",
+      "reviewed": "2026-10-26",
+      "expires": "2027-01-24",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
       "id": "CVE-2026-9538",
       "osFamily": "debian",
       "packages": [
