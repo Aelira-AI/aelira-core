@@ -39,7 +39,7 @@ PINNED = {
     "pdfminer.six": "20260107",
     "pikepdf": "10.17.0",
     "PyMuPDF": "2.0",
-    "fonttools": "4.66.1",
+    "fonttools": "4.67.0",
 }
 
 
