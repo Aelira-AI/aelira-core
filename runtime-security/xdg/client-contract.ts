@@ -26,7 +26,7 @@ export function clientCase(name: string, result: any): any {
   const expected = CLIENT_ORACLES[name]; assert(expected, 'Unknown client case');
   keys(result, ['case', 'frontend_arguments', 'desktop', 'windows', 'application', 'hello']);
   assert(result.case === name && same(result.frontend_arguments, expected.args) && result.desktop === expected.desktop, 'Changed client invocation');
-  assert(result.application?.browserName === 'thunderbird' && result.application.browserVersion === '140.17.0' && result.application.platformName === 'linux' && result.application.acceptInsecureCerts === false && result.application['moz:headless'] === false, 'Unexpected real client');
+  assert(result.application?.browserName === 'thunderbird' && result.application.browserVersion === '153.5.1' && result.application.platformName === 'linux' && result.application.acceptInsecureCerts === false && result.application['moz:headless'] === false, 'Unexpected real client');
   assert(same(result.hello, { applicationType: 'gecko', marionetteProtocol: 3 }), 'Unexpected client protocol');
   assert(Array.isArray(result.windows), 'Invalid client windows');
   for (const row of result.windows) keys(row, ['fields', 'parsed', 'subjectInput', 'type', 'url']);
