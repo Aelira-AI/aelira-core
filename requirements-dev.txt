@@ -2,7 +2,7 @@
 -r requirements.txt
 
 # Tests and coverage
-coverage==7.16.2
+coverage==7.17.0
 iniconfig==2.3.1
 pytest==9.1.1
 pytest-asyncio==1.4.0
@@ -13,7 +13,7 @@ black==26.10.1
 mypy_extensions==1.1.0
 pathspec==1.1.1
 pytokens==0.4.1
-ruff==0.17.1
+ruff==0.17.2
 
 # Load testing and its exclusive dependency closure
 bidict==0.24.1
@@ -26,7 +26,7 @@ gevent==26.9.0
 geventhttpclient==2.6.1
 itsdangerous==2.2.0
 Jinja2==3.1.6
-locust==2.46.7
+locust==2.47.0
 python-engineio==4.14.0
 python-socketio==5.17.0
 pyzmq==27.2.0
