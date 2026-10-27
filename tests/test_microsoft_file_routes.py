@@ -104,6 +104,8 @@ def microsoft_route(monkeypatch):
         requests=[],
         integrations=[],
         failure=None,
+        # An optional nextLink returned with folder children.
+        next_link=None,
     )
 
     def handler(request):
@@ -173,7 +175,10 @@ def microsoft_route(monkeypatch):
                 },
             )
         if path.endswith("/children") or "/search(" in path:
-            return httpx.Response(200, json={"value": [FOLDER, FILE]})
+            body = {"value": [FOLDER, FILE]}
+            if fixture.next_link:
+                body["@odata.nextLink"] = fixture.next_link
+            return httpx.Response(200, json=body)
         raise AssertionError(f"Unexpected Graph request: {request.method} {path}")
 
     transport = httpx.MockTransport(handler)
@@ -893,3 +898,48 @@ def test_typed_provider_failures_keep_provider_status(
     response = microsoft_route.client.get("/microsoft/onedrive/files")
     assert response.status_code == expected
     assert response.json() == {"detail": "Microsoft operation unavailable"}
+
+
+NON_GRAPH_LINKS = [
+    "http://graph.microsoft.com/v1.0/me/drive/root/children",
+    "https://other.example/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com@other.example/v1.0/me/drive/root/children",
+    "https://user:pass@graph.microsoft.com/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com.other.example/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com:8443/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com/beta/me/drive/root/children",
+    "https://graph.microsoft.com/v1.0/../me",
+    "https://graph.microsoft.com\\@other.example/v1.0/me",
+    "//other.example/v1.0/me",
+    "not a url",
+    "",
+]
+
+
+@pytest.mark.parametrize("link", NON_GRAPH_LINKS)
+def test_page_token_off_graph_is_refused_before_any_request(microsoft_route, link):
+    f = microsoft_route
+    response = f.client.get("/microsoft/onedrive/files", params={"page_token": link})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid page token"}
+    assert not f.requests
+    assert f.rows(CloudFile).count() == 0
+
+
+def test_graph_next_link_still_pages(microsoft_route):
+    f = microsoft_route
+    link = "https://graph.microsoft.com/v1.0/me/drive/items/folder-1/children?$skiptoken=page2"
+    response = f.client.get("/microsoft/onedrive/files", params={"page_token": link})
+    assert response.status_code == 200
+    assert [item["provider_file_id"] for item in response.json()["files"]] == ["file-1"]
+    assert len(f.requests) == 1
+    assert str(f.requests[0].url) == link
+
+
+def test_folder_scan_does_not_follow_a_next_link_off_graph(microsoft_route):
+    f = microsoft_route
+    f.next_link = "https://other.example/v1.0/next"
+    response = f.client.post("/microsoft/scan/folder", json={"folder_id": "folder-1"})
+    assert response.status_code == 400
+    assert len(f.requests) == 1
+    assert f.rows(CloudJobQueue).count() == 0

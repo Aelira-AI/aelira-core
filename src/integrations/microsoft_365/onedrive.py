@@ -14,6 +14,7 @@ import logging
 from typing import Optional, List, Dict, Any, Tuple, AsyncIterator
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from ..cloud_base import (
     BaseCloudIntegration,
@@ -28,6 +29,44 @@ from ..cloud_base import (
 from .models import MicrosoftDriveInfo, MicrosoftSiteInfo
 
 logger = logging.getLogger(__name__)
+
+GRAPH_HOST = "graph.microsoft.com"
+GRAPH_PATH_PREFIX = "/v1.0/"
+
+
+class GraphLinkRejected(CloudIntegrationError):
+    """A paging or delta link that is not a Microsoft Graph v1.0 URL."""
+
+
+def require_graph_link(link: object) -> str:
+    """Return ``link`` only if it is an https Microsoft Graph v1.0 URL.
+
+    Paging and delta links are full URLs that come back from the client or
+    from storage. They are requested with the Graph bearer token, so any other
+    scheme, host, port or embedded credential is refused before a request.
+    """
+    if not isinstance(link, str) or not link or len(link) > 8192:
+        raise GraphLinkRejected("invalid_graph_link")
+    if any(ch in link for ch in "\\ \t\r\n") or not link.isprintable():
+        raise GraphLinkRejected("invalid_graph_link")
+    try:
+        parts = urlsplit(link)
+        port = parts.port
+    except ValueError:
+        raise GraphLinkRejected("invalid_graph_link") from None
+    if (
+        parts.scheme != "https"
+        or "@" in parts.netloc
+        or parts.username is not None
+        or parts.password is not None
+        or parts.hostname != GRAPH_HOST
+        or port not in (None, 443)
+        or not parts.path.startswith(GRAPH_PATH_PREFIX)
+        or {".", ".."} & set(parts.path.split("/"))
+        or parts.fragment
+    ):
+        raise GraphLinkRejected("invalid_graph_link")
+    return link
 
 
 class OneDriveIntegration(BaseCloudIntegration):
@@ -211,8 +250,9 @@ class OneDriveIntegration(BaseCloudIntegration):
 
         # Build URL
         if page_token:
-            # page_token is the full nextLink URL
-            url = page_token
+            # page_token is the full nextLink URL; it is sent with the bearer
+            # token, so only a Graph v1.0 URL is followed.
+            url = require_graph_link(page_token)
         else:
             base_url = self._get_drive_base_url()
             if folder_id:
@@ -780,8 +820,8 @@ class OneDriveIntegration(BaseCloudIntegration):
         base_url = self._get_drive_base_url()
 
         if delta_token:
-            # Use existing delta link
-            url = delta_token
+            # A stored delta link is a full URL sent with the bearer token.
+            url = require_graph_link(delta_token)
         else:
             # Start fresh delta
             if folder_id:
@@ -793,7 +833,7 @@ class OneDriveIntegration(BaseCloudIntegration):
         next_link = url
 
         while next_link:
-            response = await client.get(next_link)
+            response = await client.get(require_graph_link(next_link))
             response.raise_for_status()
             data = response.json()
 

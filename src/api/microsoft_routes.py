@@ -43,7 +43,11 @@ from ..db.models import (
 from ..api.auth_routes import get_current_api_key
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
-from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from ..integrations.microsoft_365.onedrive import (
+    GraphLinkRejected,
+    OneDriveIntegration,
+    require_graph_link,
+)
 from ..integrations.microsoft_365.microsoft_oauth import MicrosoftOAuthService
 from ..config.settings import Settings, get_settings
 from .oauth_routes import integration_callback_redirect, trusted_http_origin
@@ -308,6 +312,8 @@ def microsoft_errors(handler):
             return await handler(*args, **kwargs)
         except HTTPException:
             raise
+        except GraphLinkRejected:
+            raise HTTPException(400, "Invalid page token") from None
         except Exception as exc:
             db = kwargs.get("db")
             if db is not None:
@@ -750,6 +756,10 @@ async def list_onedrive_files(
     Returns files that can be scanned (Word, PowerPoint, Excel, PDFs).
     Files are automatically tracked in our database for change detection.
     """
+    if page_token is not None:
+        # Refuse a page token that is not a Graph link before any credential
+        # or Graph request.
+        require_graph_link(page_token)
     credential = await get_microsoft_credential(api_key, db)
     integration = await get_microsoft_integration(credential, drive_id, site_id)
 
