@@ -14,12 +14,19 @@ export const MISSING_ALT_NOTICE = 'Image with no alternative text in the origina
  * is not touched, so a remediation that still lacks alt text remains visible.
  */
 export function sanitizeOriginalHtml(html: string): string {
-  const clean = DOMPurify.sanitize(html);
-  if (typeof document === 'undefined') return clean;
-  const template = document.createElement('template');
-  template.innerHTML = clean;
-  template.content.querySelectorAll('img:not([alt])').forEach((image) => {
-    image.setAttribute('alt', MISSING_ALT_NOTICE);
-  });
-  return template.innerHTML;
+  // The notice is added inside DOMPurify's own pass, so the sanitized output is
+  // returned exactly as DOMPurify produced it and is never parsed or serialized
+  // a second time. The hook is registered only for this call and always removed
+  // so it cannot run for other callers of the shared DOMPurify instance.
+  const addMissingAltNotice = (node: Element): void => {
+    if (node.nodeName === 'IMG' && !node.hasAttribute('alt')) {
+      node.setAttribute('alt', MISSING_ALT_NOTICE);
+    }
+  };
+  DOMPurify.addHook('afterSanitizeAttributes', addMissingAltNotice);
+  try {
+    return DOMPurify.sanitize(html);
+  } finally {
+    DOMPurify.removeHook('afterSanitizeAttributes', addMissingAltNotice);
+  }
 }

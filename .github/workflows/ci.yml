@@ -1502,6 +1502,8 @@ jobs:
         env:
           VITE_API_URL: http://localhost:8000
         run: ./node_modules/.bin/playwright test tests/a11y-audit.spec.ts --project=chromium --workers=2
+      - name: Run original HTML preview regression
+        run: ./node_modules/.bin/playwright test tests/original-html-preview.spec.ts --project=chromium
 
   user-journeys:
     name: Browser user journeys (documents, web, media)
