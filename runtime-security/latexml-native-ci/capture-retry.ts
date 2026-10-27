@@ -11,6 +11,13 @@ const runnerHash = '7c930a6d81d83c873358ba52757ab6d9dcf1647184ee528c17df9448566b
 export const refusalClasses = ['upstream_http_auth', 'upstream_http_5xx', 'upstream_http_4xx',
   'upstream_http_other', 'transport', 'timeout', 'tls', 'integrity', 'unknown'] as const;
 type Identity = { revision: string; tree: string; architecture: string; remote: string; runner_sha256: string };
+// Reviewed authenticated input locks (#840). A cached input is supplied only with its
+// architecture's lock, so the cache can replace the snapshot read but never the inputs.
+export const cachedInputLocks: Record<string, string> = {
+  arm64: 'e59ed0151c570dc38e0f95bc75aac5fe3a8dbec66d8f31d086337d1379721e08',
+  amd64: 'f907ee0d7b36590c7726dd6dbba0318cd3da2a8a77c96919de6c22b1ea811541' };
+// Only an unavailable snapshot falls back. Integrity, TLS, 4xx and unlabelled refusals never do.
+export const fallbackClasses = ['upstream_http_5xx', 'transport', 'timeout'] as const;
 
 // A retry never includes a pin, preparation, build or evidence failure.
 export function captureRefused(row: any, exit: number, id: Identity, captureProcess: any = null): boolean {
@@ -97,6 +104,22 @@ export function attemptRefusalClass(exit: number, row: any, record: any): string
   return 'unknown';
 }
 
+// The cached input is read only after every snapshot attempt was a retryable refusal
+// with an upstream availability class.
+export function cacheFallbackEligible(attempts: any): boolean {
+  return Array.isArray(attempts) && attempts.length === 3 && attempts.every((row: any, i: number) =>
+    row?.attempt === i + 1 && row.source === 'snapshot' && row.exit === 2 && row.capture_refusal === true &&
+    (fallbackClasses as readonly string[]).includes(row.refusal_class));
+}
+
+// The runner's own arguments with the snapshot capture replaced by the cached input.
+export function cachedInputArgs(args: string[], input: string, lock: string): string[] {
+  const at = args.indexOf('--capture-input');
+  if (at < 0 || args.lastIndexOf('--capture-input') !== at || args.includes('--apt-input') ||
+    !/^[0-9a-f]{64}$/.test(lock)) throw new Error('Capture arguments required');
+  return [...args.slice(0, at), '--apt-input', input, '--apt-lock-sha256', lock, ...args.slice(at + 1)];
+}
+
 export function parseCaptureProcess(bytes: Uint8Array): any {
   const row = JSON.parse(Buffer.from(bytes).toString('utf8'));
   if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new Error('Capture process record required');
@@ -106,6 +129,10 @@ export function parseCaptureProcess(bytes: Uint8Array): any {
 async function absent(path: string) {
   try { await lstat(path); throw new Error('New output required'); }
   catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+}
+async function ownedDirectory(path: string) {
+  try { const stat = await lstat(path); return stat.isDirectory() && stat.uid === process.getuid!(); }
+  catch (e: any) { if (e.code === 'ENOENT') return false; throw e; }
 }
 async function regular(path: string) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -118,15 +145,17 @@ async function regular(path: string) {
 
 async function main() {
   if (process.platform !== 'linux' || process.getuid!() === 0 || Bun.version !== '1.3.14') throw new Error('Pinned nonroot native runner required');
-  const args = process.argv.slice(2), values = new Map<string, string>();
+  const args = process.argv.slice(2), values = new Map<string, string>(), runnerArgs: string[] = [];
   const allowed = new Set(['--operator-repo', '--operator-ref', '--operator-tree', '--source-kind',
-    '--remote-ref', '--architecture', '--upstream-repo', '--scratch', '--out']);
+    '--remote-ref', '--architecture', '--upstream-repo', '--scratch', '--out', '--cached-input']);
   let capture = false;
   for (let i = 0; i < args.length; i++) {
     const key = args[i];
-    if (key === '--capture-input' && !capture) { capture = true; continue; }
+    if (key === '--capture-input' && !capture) { capture = true; runnerArgs.push(key); continue; }
     if (!allowed.has(key) || values.has(key) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Fixed capture arguments required');
     values.set(key, args[++i]);
+    // The cached input is the coordinator's own fallback; the runner never sees it.
+    if (key !== '--cached-input') runnerArgs.push(key, args[i]);
   }
   if (!capture || values.size !== allowed.size || values.get('--source-kind') !== 'public') throw new Error('Public capture required');
   const id: Identity = { revision: values.get('--operator-ref')!, tree: values.get('--operator-tree')!,
@@ -134,24 +163,25 @@ async function main() {
   if (!/^[0-9a-f]{40}$/.test(id.revision) || !/^[0-9a-f]{40}$/.test(id.tree) ||
     !['arm64', 'amd64'].includes(id.architecture) || !/^refs\/(heads\/[A-Za-z0-9._/-]+|pull\/[0-9]+\/merge)$/.test(id.remote)) throw new Error('Source identity refused');
   const temp = process.env.RUNNER_TEMP, repo = values.get('--operator-repo')!, scratch = values.get('--scratch')!, out = values.get('--out')!;
+  const cached = values.get('--cached-input')!;
   if (!temp || resolve(temp) !== temp || await realpath(temp) !== temp ||
     repo !== process.env.GITHUB_WORKSPACE || process.env.GITHUB_REPOSITORY !== 'Aelira-AI/aelira-core' ||
     id.revision !== process.env.GITHUB_SHA || id.remote !== process.env.GITHUB_REF ||
     scratch !== join(temp, 'latexml-native-private') || out !== join(temp, 'latexml-native-validated') ||
-    dirname(scratch) !== temp) throw new Error('Workflow paths refused');
+    cached !== join(temp, 'latexml-apt-input') || dirname(scratch) !== temp) throw new Error('Workflow paths refused');
   await absent(scratch); await absent(out);
   const runner = join(repo, 'runtime-security/latexml-native-ci/run.py');
   if (createHash('sha256').update(await regular(runner)).digest('hex') !== runnerHash) throw new Error('Reviewed runner required');
   const receiptPath = join(temp, 'latexml-capture-attempts.json'); await absent(receiptPath);
-  const receipt: any = { schema: 'aelira-latexml-capture-attempts-v4', ...id,
+  const receipt: any = { schema: 'aelira-latexml-capture-attempts-v5', ...id,
     coordinator_sha256: createHash('sha256').update(await readFile(import.meta.path)).digest('hex'),
-    runner_sha256: runnerHash, status: 'fail', attempts: [] };
-  for (let attempt = 1; attempt <= 3; attempt++) {
+    runner_sha256: runnerHash, status: 'fail', cache_fallback: 'not_used', attempts: [] };
+  const runAttempt = async (attempt: number, source: string, argv: string[]) => {
     const log = await open(join(temp, `latexml-native-runner-attempt-${attempt}.log`), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     let exit: number;
     try {
       exit = await new Promise<number>((accept, reject) => {
-        const child = spawn('/usr/bin/python3', ['-B', runner, ...args], {
+        const child = spawn('/usr/bin/python3', ['-B', runner, ...argv], {
           env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }, stdio: ['ignore', log.fd, log.fd] });
         child.once('error', reject); child.once('exit', (code, signal) => accept(signal || code === null ? 1 : code));
       });
@@ -162,16 +192,35 @@ async function main() {
     catch (e: any) { if (e.code !== 'ENOENT') captureProcess = {}; }
     let record: any = null;
     try { record = JSON.parse((await regular(join(scratch, 'capture-refusal-class.json'))).toString('utf8')); } catch {}
-    const eligible = captureRefused(row, exit, id, captureProcess);
-    receipt.attempts.push({ attempt, exit, outer_sha256: outerHash, capture_process_sha256: captureHash,
+    // A cached-input attempt is the last one, so it is never a retryable capture refusal.
+    const eligible = source === 'snapshot' && captureRefused(row, exit, id, captureProcess);
+    receipt.attempts.push({ attempt, source, exit, outer_sha256: outerHash, capture_process_sha256: captureHash,
       capture_refusal: eligible, refusal_class: attemptRefusalClass(exit, row, record) });
     receipt.status = exit === 0 ? 'complete' : 'fail';
     await writeFile(receiptPath, JSON.stringify(receipt) + '\n', { flag: attempt === 1 ? 'wx' : 'w', mode: 0o644 });
-    if (exit === 0 || !eligible || attempt === 3) { process.exitCode = exit; break; }
-    // Preserve the entire failed capture, then start with a new empty scratch.
+    process.exitCode = exit;
+    return eligible;
+  };
+  // Preserve the entire failed capture, then start with a new empty scratch.
+  const preserve = async (attempt: number) => {
     const preserved = `${scratch}-capture-refusal-${attempt}`; await absent(preserved); await absent(out);
     await rename(scratch, preserved);
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const eligible = await runAttempt(attempt, 'snapshot', runnerArgs);
+    if (process.exitCode === 0 || !eligible || attempt === 3) break;
+    await preserve(attempt);
     await Bun.sleep(attempt * 30_000);
   }
+  if (process.exitCode === 0 || !cacheFallbackEligible(receipt.attempts)) return;
+  if (!await ownedDirectory(cached)) {
+    receipt.cache_fallback = 'unavailable';
+    await writeFile(receiptPath, JSON.stringify(receipt) + '\n', { flag: 'w', mode: 0o644 });
+    return;
+  }
+  // The runner and the pinned caller re-authenticate every cached file against the lock.
+  receipt.cache_fallback = 'used';
+  await preserve(3);
+  await runAttempt(4, 'cache', cachedInputArgs(runnerArgs, cached, cachedInputLocks[id.architecture]));
 }
 if (import.meta.main) await main().catch(() => { console.error('Native capture coordinator refused'); process.exitCode = 1; });
