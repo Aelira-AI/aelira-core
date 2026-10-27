@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Python runtime packages: cachetools 7.2.4, chardet 7.7.0, fonttools 4.67.0, httpx2 and httpcore2 2.16.0, more-itertools 11.2.1, platformdirs 4.13.5, pluggy 1.7.0, pydantic-settings 2.16.1, SQLAlchemy 2.1.5 and websockets 17.3. Development tools: ruff 0.17.1 and zope.interface 8.7.
 - FastAPI 0.156.8 and Starlette 1.9.0.
+- Python runtime packages: alembic 1.20.1, certifi 2026.10.23, FastAPI 0.161.1, google-api-core 2.43.0, googleapis-common-protos 1.76.0, huggingface_hub 2.3.0, pycparser 3.12, reportlab 5.1.0, sentry-sdk 2.73.0, soupsieve 3.0.4, SQLAlchemy 2.1.6, uharfbuzz 0.56.4 and xlsxwriter 3.3.0, with the consumer fixture pins kept in step. Development tools: coverage 7.17.0, ruff 0.17.2 and locust 2.47.0.
 
 ## [0.10.0] - 2026-10-25
 
