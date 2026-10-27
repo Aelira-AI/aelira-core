@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { attemptRefusalClass, captureRefused, parseCaptureProcess, refusalClasses } from './capture-retry.ts';
+import { attemptRefusalClass, cacheFallbackEligible, cachedInputArgs, cachedInputLocks, captureRefused,
+  fallbackClasses, parseCaptureProcess, refusalClasses } from './capture-retry.ts';
 
 const bytes = await readFile(new URL('./fixtures/capture-refusal.json', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== '67096ed230fca4689edad03c649045c5a94e83a821095c26afe5f98e8f9a4f64') throw new Error('Frozen public receipt changed');
@@ -171,8 +172,54 @@ classRefuse('array-record-unknown', 2, original, ['upstream_http_auth'], 'unknow
 classRefuse('string-record-unknown', 2, original, 'upstream_http_auth', 'unknown');
 const unavailable = structuredClone(original); unavailable.stages['input-capture'] = { state: 'unavailable', exit: null };
 classRefuse('unavailable-capture-keeps-timeout', 2, unavailable, record('timeout'), 'timeout');
-console.log(JSON.stringify({ schema: 'aelira-latexml-capture-retry-controls-v3',
+// Cached input (#840): only three retryable snapshot refusals, each an upstream
+// availability class, fall back, and the runner then receives the reviewed lock.
+const fallbackControls: string[] = [];
+const refusedAttempt = (attempt: number, refusal_class = 'upstream_http_5xx') => ({ attempt, source: 'snapshot',
+  exit: 2, outer_sha256: '0'.repeat(64), capture_process_sha256: null, capture_refusal: true, refusal_class });
+const three = () => [1, 2, 3].map(n => refusedAttempt(n));
+for (const name of fallbackClasses) {
+  if (!cacheFallbackEligible([1, 2, 3].map(n => refusedAttempt(n, name)))) throw new Error('Cache fallback class refused: ' + name);
+  fallbackControls.push('falls-back-on-' + name);
+}
+if (!cacheFallbackEligible([refusedAttempt(1, 'transport'), refusedAttempt(2), refusedAttempt(3, 'timeout')])) throw new Error('Mixed upstream classes refused');
+function fallbackRefuse(name: string, attempts: any) {
+  if (cacheFallbackEligible(attempts)) throw new Error('Cache fallback boundary failed: ' + name);
+  fallbackControls.push(name);
+}
+for (const name of refusalClasses.filter(c => !(fallbackClasses as readonly string[]).includes(c))) {
+  fallbackRefuse('never-on-' + name, three().map((r, i) => i === 1 ? { ...r, refusal_class: name } : r));
+}
+fallbackRefuse('null-class', three().map((r, i) => i === 2 ? { ...r, refusal_class: null } : r));
+fallbackRefuse('two-attempts', three().slice(0, 2));
+fallbackRefuse('four-attempts', [...three(), refusedAttempt(4)]);
+fallbackRefuse('not-retry-eligible', three().map((r, i) => i === 2 ? { ...r, capture_refusal: false } : r));
+fallbackRefuse('later-success', three().map((r, i) => i === 2 ? { ...r, exit: 0, refusal_class: null } : r));
+fallbackRefuse('other-exit', three().map((r, i) => i === 0 ? { ...r, exit: 1 } : r));
+fallbackRefuse('cache-source', three().map((r, i) => i === 0 ? { ...r, source: 'cache' } : r));
+fallbackRefuse('misnumbered', three().map((r, i) => i === 0 ? { ...r, attempt: 2 } : r));
+fallbackRefuse('missing-receipt', null);
+fallbackRefuse('array-like', { 0: refusedAttempt(1), 1: refusedAttempt(2), 2: refusedAttempt(3), length: 3 });
+if (Object.keys(cachedInputLocks).sort().join(',') !== 'amd64,arm64' ||
+  !Object.values(cachedInputLocks).every(v => /^[0-9a-f]{64}$/.test(v))) throw new Error('Reviewed input locks malformed');
+const captureArgs = ['--operator-repo', '/w', '--capture-input', '--scratch', '/t/latexml-native-private'];
+const cachedArgs = cachedInputArgs(captureArgs, '/t/latexml-apt-input', cachedInputLocks.arm64);
+if (JSON.stringify(cachedArgs) !== JSON.stringify(['--operator-repo', '/w', '--apt-input', '/t/latexml-apt-input',
+  '--apt-lock-sha256', cachedInputLocks.arm64, '--scratch', '/t/latexml-native-private'])) throw new Error('Cached input arguments differ');
+fallbackControls.push('cached-input-arguments');
+for (const [name, argv, lock] of [
+  ['without-capture-flag', captureArgs.filter(a => a !== '--capture-input'), cachedInputLocks.arm64],
+  ['two-capture-flags', [...captureArgs, '--capture-input'], cachedInputLocks.arm64],
+  ['supplied-input-present', [...captureArgs, '--apt-input', '/x'], cachedInputLocks.arm64],
+  ['malformed-lock', captureArgs, 'F'.repeat(64)],
+] as [string, string[], string][]) {
+  let refusedArgs = false;
+  try { cachedInputArgs(argv, '/t/latexml-apt-input', lock); } catch { refusedArgs = true; }
+  if (!refusedArgs) throw new Error('Cached input arguments accepted: ' + name);
+  fallbackControls.push('arguments-' + name);
+}
+console.log(JSON.stringify({ schema: 'aelira-latexml-capture-retry-controls-v4',
   positive: 'actual-public-capture-refusal', controls, apt_positive: 'actual-native-apt-update-refusal',
   legacy_v2_download_positive: true, apt_controls: aptControls, parallel_positive: 'synthetic-original-worker-statuses',
   v3_update_and_plan_positives: true, parallel_controls: v3Controls, missing_receipts_refused: true,
-  refusal_class_controls: classControls, status: 'pass' }));
+  refusal_class_controls: classControls, cache_fallback_controls: fallbackControls, status: 'pass' }));

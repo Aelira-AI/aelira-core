@@ -570,6 +570,31 @@ def main():
         ),
         0,
     )
+
+    def cached_input_locks_agree():
+        coordinator = re.findall(
+            r"(arm64|amd64): '([0-9a-f]{64})'",
+            re.search(
+                r"cachedInputLocks: Record<string, string> = \{(.*?)\};",
+                Path(common.__file__).with_name("capture-retry.ts").read_text(),
+                re.S,
+            ).group(1),
+        )
+        workflow = re.findall(
+            r"- arch: (amd64|arm64)\n +runner: [^\n]+\n +input_lock: ([0-9a-f]{64})\n",
+            (Path(common.__file__).parents[2] / ".github/workflows/ci.yml").read_text(),
+        )
+        common.require(
+            len(coordinator) == len(workflow) == 2
+            and dict(coordinator) == dict(workflow)
+            and set(dict(coordinator)) == {"arm64", "amd64"}
+            and dict(coordinator)["arm64"] == common.ARM_LOCK,
+            "cached input locks differ",
+        )
+
+    control(
+        "cached-input-locks-match-coordinator-and-workflow", cached_input_locks_agree, 0
+    )
     control("source-selector-without-capture-state", lambda: common.selector(a), 0)
     # Exercise cleanup's success path before any protocol/refusal fixture.
     cid = a.scratch / "synthetic-container.cid"
