@@ -2428,6 +2428,19 @@
           ]
         },
         {
+          "id": "webhook-client-state-migration-cycle",
+          "classification": "environment-gated",
+          "owner": "CI and database maintainers",
+          "reason": "The real PostgreSQL upgrade, repeated upgrade and column-keeping downgrade check needs an explicit TEST_MIGRATION_DATABASE_URL. Static revision and column-contract tests still execute.",
+          "issue": "https://github.com/Aelira-AI/aelira-core/issues/377",
+          "nodeids": [
+            "tests/test_webhook_client_state_migration.py::test_upgrade_is_additive_and_idempotent_and_downgrade_keeps_the_column"
+          ],
+          "evidence": [
+            "tests/test_webhook_client_state_migration.py"
+          ]
+        },
+        {
           "id": "wcag-bootstrap-postgres-concurrency",
           "classification": "environment-gated",
           "owner": "CI and database maintainers",
