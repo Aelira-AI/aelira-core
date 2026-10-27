@@ -12,19 +12,13 @@
 set -eu
 
 out="$1"
+. "$(dirname -- "$0")/fetch-pinned.sh"
 # A fixed build path keeps the compiled output reproducible.
 work=/tmp/pillow-build
 rm -rf "$work"
 mkdir "$work"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-
-fetch() {
-    url="$1" sha="$2" dest="$3"
-    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --retry 3 --retry-all-errors --output "$dest" "$url"
-    echo "$sha  $dest" | sha256sum --check --strict --quiet
-}
 
 # A system libtiff development package would be found before the static build
 # below. The wheel must not link it, so refuse to build when one is present.

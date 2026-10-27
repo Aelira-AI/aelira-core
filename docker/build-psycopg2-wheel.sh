@@ -12,19 +12,13 @@
 set -eu
 
 out="$1"
+. "$(dirname -- "$0")/fetch-pinned.sh"
 # A fixed build path keeps the compiled output reproducible.
 work=/tmp/psycopg2-build
 rm -rf "$work"
 mkdir "$work"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-
-fetch() {
-    url="$1" sha="$2" dest="$3"
-    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --retry 3 --retry-all-errors --output "$dest" "$url"
-    echo "$sha  $dest" | sha256sum --check --strict --quiet
-}
 
 fetch https://files.pythonhosted.org/packages/ed/76/7b4383014be0fcc6c1c0e24292845a14e1672cf17fca62ca0a2bd5f4563d/psycopg2_binary-2.9.13.tar.gz \
     e324ecf60f952d21dd11413b8bbed0951bbd99579a06fd06f28bfc37737cd373 \

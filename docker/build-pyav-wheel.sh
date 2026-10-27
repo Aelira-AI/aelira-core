@@ -5,6 +5,7 @@
 set -eu
 
 out="$1"
+. "$(dirname -- "$0")/fetch-pinned.sh"
 work=/tmp/pyav-build
 prefix=/opt/ffmpeg9
 if [ -e "$work" ] || [ -e "$prefix" ]; then
@@ -14,13 +15,6 @@ fi
 mkdir -p "$work" "$out"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-
-fetch() {
-    url="$1" sha="$2" dest="$3"
-    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --retry 3 --retry-all-errors --output "$dest" "$url"
-    echo "$sha  $dest" | sha256sum --check --strict --quiet
-}
 
 # Official FFmpeg release archive and the PyPI source distribution. The
 # FFmpeg release signature and signer are recorded in docs/DEPENDENCIES.md.

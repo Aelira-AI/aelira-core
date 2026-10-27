@@ -1,0 +1,11 @@
+# CI only: pass the runner's cache of pinned build inputs to both quickstart
+# image builds. Dockerfile.dev verifies every cached file against its pin.
+services:
+  api:
+    build:
+      additional_contexts:
+        build-inputs: ${AELIRA_BUILD_INPUTS:?set by .github/actions/build-inputs}
+  worker:
+    build:
+      additional_contexts:
+        build-inputs: ${AELIRA_BUILD_INPUTS:?set by .github/actions/build-inputs}

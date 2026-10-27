@@ -8,57 +8,13 @@
 set -eu
 
 out="$1"
+. "$(dirname -- "$0")/fetch-pinned.sh"
 # A fixed build path keeps the compiled output reproducible.
 work=/tmp/lxml-build
 rm -rf "$work"
 mkdir "$work"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-
-fetch() (
-    # fetch URL SHA256 DEST [FALLBACK_URL...]
-    # Fallback addresses are tried in order only after every attempt at the
-    # previous address failed, and each must deliver the same pinned bytes.
-    sha="$2" dest="$3"
-    first="$1"
-    shift 3
-    fallbacks=$#
-    # Only a completed, verified attempt may become an archive. Discard any
-    # previous destination and isolate partial responses from later attempts.
-    rm -f "$dest"
-    partial=$(mktemp "${dest}.partial.XXXXXX")
-    trap 'rm -f "$partial"' EXIT
-    trap 'exit 1' HUP INT TERM
-    index=0
-    for url in "$first" "$@"; do
-        # Name fallbacks by position only: addresses can carry credentials.
-        label=
-        if [ "$index" -gt 0 ]; then label=" fallback=$index/$fallbacks"; fi
-        attempt=1
-        while [ "$attempt" -le 3 ]; do
-            : > "$partial"
-            status=0
-            # Three attempts, each capped at 60 seconds, plus two one-second waits.
-            # Suppress response/error text: it can contain proxy credentials or URLs.
-            curl --fail --silent --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-                --connect-timeout 10 --max-time 60 --output "$partial" "$url" 2>/dev/null || status=$?
-            if [ "$status" -eq 0 ] &&
-                printf '%s  %s\n' "$sha" "$partial" | sha256sum --check --strict --quiet >/dev/null 2>&1; then
-                mv "$partial" "$dest"
-                exit 0
-            fi
-            observed=$(sha256sum < "$partial")
-            observed=${observed%% *}
-            bytes=$(wc -c < "$partial" | tr -d '[:space:]')
-            printf 'lxml source %s%s attempt=%s/3 curl_status=%s bytes=%s sha256=%s expected=%s\n' \
-                "${dest##*/}" "$label" "$attempt" "$status" "$bytes" "$observed" "$sha" >&2
-            if [ "$attempt" -lt 3 ]; then sleep 1; fi
-            attempt=$((attempt + 1))
-        done
-        index=$((index + 1))
-    done
-    exit 1
-)
 
 fetch https://files.pythonhosted.org/packages/23/ad/28ecd7cb894d172f3c9c80a075eeeb2017ac62e3632cee05a5f9493547eb/lxml-6.1.3.tar.gz \
     45222d94ddd511536f3b2f7d9deae3b2339b4ce0f075f1ca25703b07cad9dd21 lxml-6.1.3.tar.gz

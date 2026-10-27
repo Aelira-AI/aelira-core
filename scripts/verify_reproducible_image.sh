@@ -31,6 +31,12 @@ build_archive() {
   if [ -n "${AELIRA_RETAIN_IMAGE_NAME:-}" ]; then
     tag_args=(--tag "$AELIRA_RETAIN_IMAGE_NAME")
   fi
+  # The API Dockerfiles take CI's cache of pinned downloads as a named context.
+  # Builders verify every cached file, so both builds still see the same bytes.
+  local input_args=()
+  if [ -n "${AELIRA_BUILD_INPUTS_CONTEXT:-}" ]; then
+    input_args=(--build-context "build-inputs=$AELIRA_BUILD_INPUTS_CONTEXT")
+  fi
   docker buildx build \
     --no-cache \
     --pull=false \
@@ -40,6 +46,7 @@ build_archive() {
     --platform "$platform" \
     --file "$dockerfile" \
     "${tag_args[@]}" \
+    "${input_args[@]}" \
     --output "type=oci,dest=$destination,rewrite-timestamp=true" \
     "$context"
 }

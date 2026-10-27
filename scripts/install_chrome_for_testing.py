@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -24,6 +25,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -31,6 +33,8 @@ from pathlib import Path
 MANIFEST = Path(__file__).with_name("chrome-for-testing.json")
 CHUNK = 1024 * 1024
 EXECUTABLE = "chrome"
+# Waits between the three download attempts.
+RETRY_DELAYS = (1, 2)
 
 
 def load_manifest(path: Path = MANIFEST) -> dict:
@@ -58,23 +62,56 @@ def archive_url(manifest: dict, platform_name: str, entry: dict) -> str:
     )
 
 
-def download_verified(url: str, entry: dict, target: Path) -> None:
-    """Download url to target, failing unless size and SHA-256 both match."""
+def build_inputs_dir() -> Path:
+    """The CI cache of pinned build inputs, when the build was given one."""
+    return Path(os.environ.get("AELIRA_BUILD_INPUTS", "/build-inputs"))
+
+
+def _copy_verified(source, target: Path, entry: dict) -> str | None:
+    """Copy source to target; describe the mismatch unless size and SHA-256 match."""
     digest = hashlib.sha256()
     size = 0
-    request = urllib.request.Request(url, headers={"User-Agent": "aelira-core"})
-    with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
-        with target.open("wb") as handle:
-            while chunk := response.read(CHUNK):
-                digest.update(chunk)
-                size += len(chunk)
-                handle.write(chunk)
-    if size != entry["size"] or digest.hexdigest() != entry["sha256"]:
-        raise RuntimeError(
-            f"Chrome for Testing archive does not match the pin: "
-            f"got {size} bytes, sha256 {digest.hexdigest()}; "
-            f"expected {entry['size']} bytes, sha256 {entry['sha256']}"
-        )
+    with target.open("wb") as handle:
+        while chunk := source.read(CHUNK):
+            digest.update(chunk)
+            size += len(chunk)
+            handle.write(chunk)
+    if size == entry["size"] and digest.hexdigest() == entry["sha256"]:
+        return None
+    return (
+        f"Chrome for Testing archive does not match the pin: "
+        f"got {size} bytes, sha256 {digest.hexdigest()}; "
+        f"expected {entry['size']} bytes, sha256 {entry['sha256']}"
+    )
+
+
+def download_verified(url: str, entry: dict, target: Path) -> None:
+    """Write the pinned archive to target, failing unless size and SHA-256 match.
+
+    A copy named by its SHA-256 in the build-inputs cache is used first and
+    must pass the same check. Otherwise url gets three attempts.
+    """
+    cached = build_inputs_dir() / "sha256" / entry["sha256"]
+    if cached.is_file():
+        with cached.open("rb") as source:
+            problem = _copy_verified(source, target, entry)
+        if problem is None:
+            print(f"{target.name} cache=hit", file=sys.stderr)
+            return
+        print(f"{target.name} cache=mismatch: {problem}", file=sys.stderr)
+    for attempt, delay in enumerate((*RETRY_DELAYS, None), start=1):
+        request = urllib.request.Request(url, headers={"User-Agent": "aelira-core"})
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
+                problem = _copy_verified(response, target, entry)
+        except (OSError, http.client.HTTPException) as error:
+            problem = f"Chrome for Testing download failed: {type(error).__name__}"
+        if problem is None:
+            return
+        if delay is None:
+            raise RuntimeError(problem)
+        print(f"{problem} (attempt {attempt}/3)", file=sys.stderr)
+        time.sleep(delay)
 
 
 def extract(archive: Path, dest: Path) -> None:
