@@ -34,6 +34,10 @@ platform = sys.argv[sys.argv.index("--platform") + 1]
 dockerfile = sys.argv[sys.argv.index("--file") + 1]
 if platform != os.environ["EXPECTED_PLATFORM"] or dockerfile != os.environ["EXPECTED_DOCKERFILE"]:
     raise SystemExit(65)
+contexts = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == "--build-context"]
+inputs = os.environ.get("EXPECTED_BUILD_INPUTS")
+if contexts != ([f"build-inputs={inputs}"] if inputs else []):
+    raise SystemExit(69)
 output = sys.argv[sys.argv.index("--output") + 1]
 options = dict(item.split("=", 1) for item in output.split(","))
 if options.get("type") != "oci" or options.get("rewrite-timestamp") != "true":
@@ -54,7 +58,7 @@ with tarfile.open(destination, "w") as archive:
 
 
 def _run_verifier(
-    tmp_path: Path, digests: tuple[str, str]
+    tmp_path: Path, digests: tuple[str, str], build_inputs: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     _fake_docker(tmp_path)
     context = tmp_path / "context"
@@ -69,6 +73,11 @@ def _run_verifier(
         "EXPECTED_PLATFORM": "linux/arm64",
         "EXPECTED_DOCKERFILE": str(dockerfile),
     }
+    env.pop("AELIRA_BUILD_INPUTS_CONTEXT", None)
+    env.pop("EXPECTED_BUILD_INPUTS", None)
+    if build_inputs is not None:
+        env["AELIRA_BUILD_INPUTS_CONTEXT"] = str(build_inputs)
+        env["EXPECTED_BUILD_INPUTS"] = str(build_inputs)
     return subprocess.run(
         [str(SCRIPT), str(context), str(dockerfile), "linux/arm64"],
         text=True,
@@ -91,3 +100,19 @@ def test_verifier_accepts_equal_manifests_and_rejects_mismatch(tmp_path: Path) -
     assert "not reproducible" in mismatch.stderr.lower()
     assert digest_a in mismatch.stderr
     assert digest_b in mismatch.stderr
+
+
+def test_both_builds_receive_the_build_inputs_context_only_when_given(
+    tmp_path: Path,
+) -> None:
+    digest = f"sha256:{'c' * 64}"
+    inputs = tmp_path / "inputs"
+
+    # The fake builder refuses any --build-context it was not told to expect,
+    # so the plain run also proves none is passed by default.
+    with_inputs = _run_verifier(tmp_path / "with", (digest, digest), inputs)
+    without = _run_verifier(tmp_path / "without", (digest, digest))
+
+    assert with_inputs.returncode == 0, with_inputs.stderr
+    assert without.returncode == 0, without.stderr
+    assert (tmp_path / "with" / "state").read_text() == "2"

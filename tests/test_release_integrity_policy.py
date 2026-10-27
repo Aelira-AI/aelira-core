@@ -62,13 +62,59 @@ def test_dependency_gates_audit_only_the_four_shipped_surfaces_and_block() -> No
     assert "allow-licenses:" not in workflow
 
 
+FETCH_HELPER = ROOT / "docker" / "fetch-pinned.sh"
+BUILD_INPUTS_MOUNT = "--mount=type=bind,from=build-inputs,target=/build-inputs"
+
+
+def assert_downloads_through_verifying_helper(script: str) -> None:
+    """The script fetches only through docker/fetch-pinned.sh, which checks pins."""
+    helper = FETCH_HELPER.read_text()
+    assert '. "$(dirname -- "$0")/fetch-pinned.sh"' in script
+    assert "curl " not in script
+    assert "sha256sum --check --strict" in helper
+    assert helper.count("curl ") == 1
+
+
+def test_pinned_downloads_may_come_only_from_a_verified_build_inputs_cache() -> None:
+    helper = FETCH_HELPER.read_text()
+    action = (ROOT / ".github" / "actions" / "build-inputs" / "action.yml").read_text()
+    ci = (WORKFLOWS / "ci.yml").read_text()
+    publish = (WORKFLOWS / "publish-docker.yml").read_text()
+
+    # The cache is looked up by the pinned digest alone, and a cached file must
+    # pass the same SHA-256 check as a download before it can be used.
+    assert 'cached="${AELIRA_BUILD_INPUTS:-/build-inputs}/sha256/$sha"' in helper
+    assert "*[!0-9a-f]*) cached= ;;" in helper
+    cache_branch = helper.split('if [ "${#sha}" -eq 64 ]', 1)[1].split("index=0", 1)[0]
+    assert "sha256sum --check --strict" in cache_branch
+    for name in ("Dockerfile", "Dockerfile.dev"):
+        dockerfile = (ROOT / name).read_text()
+        # Without CI's named context the stage is empty, so builds still work.
+        assert "FROM scratch AS build-inputs" in dockerfile
+        # A read-only bind mount: cached files never become part of a layer.
+        assert dockerfile.count(f"RUN {BUILD_INPUTS_MOUNT}") == 4
+        assert "from=build-inputs" not in dockerfile.replace(BUILD_INPUTS_MOUNT, "")
+        assert "COPY --from=build-inputs" not in dockerfile
+    # CI fills and saves the cache; a release restores it but never saves one.
+    assert 'save: "true"' in ci
+    assert "uses: ./.github/actions/build-inputs" in publish
+    assert (
+        "save:"
+        not in publish.split("uses: ./.github/actions/build-inputs", 1)[1].split(
+            "- name:", 1
+        )[0]
+    )
+    assert "steps.restore.outputs.cache-hit != 'true'" in action
+    assert "steps.prefetch.outputs.complete == 'true'" in action
+
+
 def test_api_image_builds_lxml_from_hash_verified_sources() -> None:
     api = (ROOT / "Dockerfile").read_text()
     script = (ROOT / "docker" / "build-lxml-wheel.sh").read_text()
 
     assert "sh /tmp/build-lxml-wheel.sh /tmp/lxml-wheel" in api
     assert "e.LIBXML_VERSION >= (2, 15, 4)" in api
-    assert "sha256sum --check --strict" in script
+    assert_downloads_through_verifying_helper(script)
     sources = {
         "lxml-6.1.3.tar.gz": (
             "45222d94ddd511536f3b2f7d9deae3b2339b4ce0f075f1ca25703b07cad9dd21"
@@ -103,7 +149,6 @@ def test_api_image_builds_lxml_from_hash_verified_sources() -> None:
     )
     # Every download goes through the verifying helper.
     assert script.count("fetch https://") == len(sources)
-    assert script.count("curl ") == 1
 
 
 def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
@@ -133,7 +178,7 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     assert "pip uninstall --yes pybind11" in builder
 
     # Every archive is verified against a pinned digest before use.
-    assert "sha256sum --check --strict" in script
+    assert_downloads_through_verifying_helper(script)
     sources = {
         "tiff-4.7.2.tar.xz": (
             "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88"
@@ -145,7 +190,6 @@ def test_api_image_builds_pillow_from_hash_verified_sources() -> None:
     for name, digest in sources.items():
         assert name in script and digest in script
     assert script.count("fetch https://") == len(sources)
-    assert script.count("curl ") == 1
 
     # libtiff is linked statically from that build, never from the system, and
     # the published wheel's codec and text-shaping features are required.
@@ -217,7 +261,7 @@ def test_api_and_quickstart_build_pyav_from_verified_sources() -> None:
         assert "LD_LIBRARY_PATH" not in dockerfile
 
     assert "COPY --from=builder /opt/ffmpeg9/lib /opt/ffmpeg9/lib" in api
-    assert "sha256sum --check --strict" in script
+    assert_downloads_through_verifying_helper(script)
     assert "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" in script
     assert "47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28" in script
     assert "--enable-shared --disable-static" in script
@@ -271,11 +315,10 @@ def test_api_image_builds_psycopg2_from_the_hash_verified_source_archive() -> No
     # The image build and the frozen native recipe pin the same source bytes.
     assert f"{digest}  {archive}" in frozen_inputs
     assert archive in script and digest in script
-    assert "sha256sum --check --strict" in script
+    assert_downloads_through_verifying_helper(script)
     # Every download goes through the verifying helper, and the wheel is built
     # from that archive against the system libpq rather than fetched from PyPI.
     assert script.count("fetch https://") == 1
-    assert script.count("curl ") == 1
     assert "--no-build-isolation" in script and "--no-deps" in script
     assert "static_libpq" not in script and "PSYCOPG" not in script
 
@@ -299,7 +342,9 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
             "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
         ),
     }
-    voice_download = "RUN python scripts/download_piper_voice.py"
+    voice_download = (
+        f"RUN {BUILD_INPUTS_MOUNT} \\\n    python scripts/download_piper_voice.py"
+    )
     for dockerfile in (api, (ROOT / "Dockerfile.dev").read_text()):
         assert dockerfile.count(voice_download) == 1
         assert dockerfile.index(voice_download) < dockerfile.index("USER aelira")
@@ -356,7 +401,7 @@ def test_api_images_replace_only_the_matching_python_expat_extensions() -> None:
         "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73"
         in build_script
     )
-    assert "sha256sum --check --strict" in build_script
+    assert_downloads_through_verifying_helper(build_script)
     assert "--with-system-expat" in build_script
     assert 'make -j2 "Modules/pyexpat' in build_script
     assert '"Modules/_elementtree' in build_script

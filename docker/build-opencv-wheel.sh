@@ -5,6 +5,7 @@ set -eu
 
 out="$1"
 patch_file="$2"
+. "$(dirname -- "$0")/fetch-pinned.sh"
 work=/tmp/opencv-build
 prefix=/opt/ffmpeg9
 build_venv=/tmp/opencv-build-venv
@@ -16,10 +17,9 @@ mkdir -p "$work" "$out"
 trap 'rm -rf "$work" "$build_venv"' EXIT
 cd "$work"
 
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-    --retry 3 --retry-all-errors --output opencv_python-5.0.0.93.tar.gz \
-    https://files.pythonhosted.org/packages/79/4c/a438d23e09ce2033c09f7b784ad2fbdb0adf529e434101ed28f142226f98/opencv_python-5.0.0.93.tar.gz
-echo '66aac3e5b5faa48d4025816592f3af19e4bfc2c68dec067bae2dbb4ca10aa9e2  opencv_python-5.0.0.93.tar.gz' | sha256sum --check --strict --quiet
+fetch https://files.pythonhosted.org/packages/79/4c/a438d23e09ce2033c09f7b784ad2fbdb0adf529e434101ed28f142226f98/opencv_python-5.0.0.93.tar.gz \
+    66aac3e5b5faa48d4025816592f3af19e4bfc2c68dec067bae2dbb4ca10aa9e2 \
+    opencv_python-5.0.0.93.tar.gz
 echo 'ee7c145e51c7988325296ea2cc1dc70b42ecd6e27b49386370b926c2211ff6f4  '"$patch_file" | sha256sum --check --strict --quiet
 tar -xzf opencv_python-5.0.0.93.tar.gz
 (

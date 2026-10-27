@@ -5,6 +5,7 @@
 set -eu
 
 out="$1"
+. "$(dirname -- "$0")/fetch-pinned.sh"
 work=/tmp/python-expat-build
 archive="$work/Python-3.14.8.tar.xz"
 if [ -e "$work" ] || [ -e "$out" ]; then
@@ -14,11 +15,9 @@ fi
 mkdir -p "$work" "$out"
 trap 'rm -rf "$work"' EXIT
 
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-    --retry 3 --retry-all-errors --output "$archive" \
-    https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz
-echo "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73  $archive" \
-    | sha256sum --check --strict --quiet
+fetch https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz \
+    c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73 \
+    "$archive"
 tar -xJf "$archive" -C "$work"
 cd "$work/Python-3.14.8"
 

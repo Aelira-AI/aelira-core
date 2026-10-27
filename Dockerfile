@@ -1,6 +1,12 @@
 # Production Dockerfile for Aelira Backend
 # Multi-stage build for smaller image size
 
+# CI passes its cache of pinned build inputs as this named context
+# (--build-context build-inputs=DIR). Without it the stage is empty and each
+# pinned file comes from its upstream address. Either way the downloaders
+# accept only bytes that match the pinned SHA-256; see docs/RELEASE_INTEGRITY.md.
+FROM scratch AS build-inputs
+
 # Rebuild Debian's libxml2, libX11 and libXrender from their pinned trixie
 # source packages with reviewed security patches. See
 # docs/security/debian-backports-0.10.0.md. These stages never ship.
@@ -77,13 +83,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Debian's libpq, and PyAV/OpenCV share the FFmpeg 9.0.2 prefix. Their pinned
 # requirements are then satisfied.
 COPY requirements.txt .
+COPY docker/fetch-pinned.sh /tmp/fetch-pinned.sh
 COPY docker/build-lxml-wheel.sh /tmp/build-lxml-wheel.sh
 COPY docker/build-pillow-wheel.sh /tmp/build-pillow-wheel.sh
 COPY docker/build-psycopg2-wheel.sh /tmp/build-psycopg2-wheel.sh
 COPY docker/build-pyav-wheel.sh /tmp/build-pyav-wheel.sh
 COPY docker/build-opencv-wheel.sh /tmp/build-opencv-wheel.sh
 COPY docker/opencv-ffmpeg9-pr29533.diff /tmp/opencv-ffmpeg9-pr29533.diff
-RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
+RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
+    export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir "pip==26.2.2" && \
     python -m pip uninstall --yes setuptools && \
     pip install --no-cache-dir "setuptools==84.2.1" && \
@@ -105,7 +113,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     python -m pip uninstall --yes Cython && \
     sh /tmp/build-opencv-wheel.sh /tmp/opencv-wheel /tmp/opencv-ffmpeg9-pr29533.diff && \
     pip install --no-cache-dir --no-deps /tmp/opencv-wheel/opencv_python-5.0.0.93-*.whl && \
-    rm -rf /tmp/opencv-wheel /tmp/build-opencv-wheel.sh /tmp/opencv-ffmpeg9-pr29533.diff && \
+    rm -rf /tmp/opencv-wheel /tmp/build-opencv-wheel.sh /tmp/opencv-ffmpeg9-pr29533.diff /tmp/fetch-pinned.sh && \
     pip install --no-cache-dir -r requirements.txt && \
     python -c "import lxml.etree as e; assert e.LIBXML_VERSION >= (2, 15, 4), e.LIBXML_VERSION; assert e.LIBXSLT_VERSION >= (1, 1, 45), e.LIBXSLT_VERSION" && \
     python -c "from PIL import features; v = features.version('libtiff'); assert v == '4.7.2', v" && \
@@ -127,8 +135,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc make libc6-dev libexpat1=${EXPAT_DEB_VERSION} \
     libexpat1-dev=${EXPAT_DEB_VERSION} pkgconf xz-utils curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY docker/fetch-pinned.sh /tmp/fetch-pinned.sh
 COPY docker/build-python-expat-modules.sh /tmp/build-python-expat-modules.sh
-RUN sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
+RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
+    sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
 
 # The scanner drives Chromium at pages that visitors choose, and Playwright's
 # bundled build can trail Chrome stable by weeks. Use the exact Chrome for
@@ -137,7 +147,8 @@ RUN sh /tmp/build-python-expat-modules.sh /tmp/python-expat-modules
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS chrome-for-testing
 ARG TARGETARCH
 COPY scripts/chrome-for-testing.json scripts/install_chrome_for_testing.py /opt/cft-installer/
-RUN python -I /opt/cft-installer/install_chrome_for_testing.py \
+RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
+    python -I /opt/cft-installer/install_chrome_for_testing.py \
         --dest /opt/chrome-for-testing --arch "${TARGETARCH:-$(uname -m)}"
 
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
@@ -347,7 +358,8 @@ COPY . .
 # Dashboard should be pre-built: cd dashboard && npm run build
 
 # Download Piper voice model for TTS accessibility (as root, before user switch)
-RUN python scripts/download_piper_voice.py
+RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
+    python scripts/download_piper_voice.py
 
 # Create non-root user for security
 RUN useradd -m -u 1000 aelira && \

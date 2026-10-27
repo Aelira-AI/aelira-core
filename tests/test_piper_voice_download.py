@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+from scripts import download_piper_voice as piper
 from scripts.download_piper_voice import VOICE_ASSETS, download_voice
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,22 @@ ROOT = Path(__file__).resolve().parents[1]
 def setup_test_database():
     """This standalone build helper needs no application settings or database."""
     yield
+
+
+@pytest.fixture(autouse=True)
+def build_inputs_dir(monkeypatch, tmp_path_factory):
+    """An empty cache, so a real /build-inputs never affects these tests."""
+    path = tmp_path_factory.mktemp("build-inputs")
+    monkeypatch.setenv("AELIRA_BUILD_INPUTS", str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch):
+    """Record the retry waits instead of sleeping."""
+    waits = []
+    monkeypatch.setattr(piper.time, "sleep", waits.append)
+    return waits
 
 
 @pytest.fixture
@@ -115,6 +132,129 @@ def test_failed_second_asset_leaves_no_partial_pair(
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == expected
 
 
+def cache(build_inputs_dir, body):
+    store = build_inputs_dir / "sha256"
+    store.mkdir(exist_ok=True)
+    return store / hashlib.sha256(body).hexdigest()
+
+
+def test_http_error_is_retried_twice_before_it_is_raised(
+    http_fixture, tmp_path, sleeps
+):
+    base_url, routes = http_fixture
+    body = b"fixture: HTTP error"
+    routes["/voice.onnx"] = (503, body, {})
+
+    with pytest.raises(HTTPError) as error:
+        download_voice(tmp_path, assets=(asset(base_url, "voice.onnx", body),))
+
+    assert error.value.code == 503
+    assert sleeps == [1, 2]
+
+
+def test_wrong_bytes_on_every_attempt_fail_after_two_waits(
+    http_fixture, tmp_path, sleeps
+):
+    base_url, routes = http_fixture
+    routes["/voice.onnx"] = (200, b"tampered", {})
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        download_voice(
+            tmp_path, assets=(asset(base_url, "voice.onnx", b"pinned bytes"),)
+        )
+
+    assert sleeps == [1, 2]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_transient_failure_then_good_response_succeeds_after_one_wait(
+    http_fixture, tmp_path, sleeps, monkeypatch
+):
+    base_url, routes = http_fixture
+    body = b"model fixture"
+    routes["/voice.onnx"] = (503, b"busy", {})
+    monkeypatch.setattr(
+        piper.time,
+        "sleep",
+        lambda delay: (
+            sleeps.append(delay),
+            routes.update({"/voice.onnx": (200, body, {})}),
+        ),
+    )
+
+    download_voice(tmp_path, assets=(asset(base_url, "voice.onnx", body),))
+
+    assert (tmp_path / "voice.onnx").read_bytes() == body
+    assert sleeps == [1]
+
+
+def test_cached_file_matching_the_pin_is_used_without_the_network(
+    build_inputs_dir, tmp_path, sleeps, monkeypatch
+):
+    body = b"cached model fixture"
+    cache(build_inputs_dir, body).write_bytes(body)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a valid cache hit must not touch the network")
+
+    monkeypatch.setattr(piper, "urlopen", refuse)
+    assets = (
+        (
+            "voice.onnx",
+            "https://example.invalid/voice.onnx",
+            hashlib.sha256(body).hexdigest(),
+        ),
+    )
+    output = tmp_path / "voices"
+
+    download_voice(output, assets=assets, epoch=1234567890)
+
+    assert (output / "voice.onnx").read_bytes() == body
+    assert (output / "voice.onnx").stat().st_mode & 0o777 == 0o644
+    assert sleeps == []
+
+
+def test_cached_file_with_wrong_bytes_is_ignored_for_the_network_copy(
+    http_fixture, build_inputs_dir, tmp_path, sleeps, capsys
+):
+    base_url, routes = http_fixture
+    body = b"genuine model fixture"
+    cache(build_inputs_dir, body).write_bytes(b"corrupted cache entry")
+    routes["/voice.onnx"] = (200, body, {})
+
+    download_voice(tmp_path, assets=(asset(base_url, "voice.onnx", body),))
+
+    assert (tmp_path / "voice.onnx").read_bytes() == body
+    assert sleeps == []
+    assert "cache=mismatch" in capsys.readouterr().err
+
+
+def test_default_cache_directory_is_build_inputs(monkeypatch, tmp_path):
+    monkeypatch.delenv("AELIRA_BUILD_INPUTS")
+    seen = []
+    real_is_file = Path.is_file
+
+    def is_file(path):
+        seen.append(str(path))
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    body = b"x"
+    monkeypatch.setattr(
+        piper, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(OSError("offline"))
+    )
+
+    with pytest.raises(OSError):
+        piper.fetch_asset(
+            "f",
+            "https://example.invalid/f",
+            hashlib.sha256(body).hexdigest(),
+            tmp_path / "f",
+        )
+
+    assert f"/build-inputs/sha256/{hashlib.sha256(body).hexdigest()}" in seen
+
+
 def test_voice_manifest_retains_approved_production_assets():
     assert VOICE_ASSETS == (
         (
@@ -131,9 +271,14 @@ def test_voice_manifest_retains_approved_production_assets():
 
 
 def test_both_images_execute_shared_downloader_after_copying_it():
-    invocation = "RUN python scripts/download_piper_voice.py"
+    invocation = (
+        "RUN --mount=type=bind,from=build-inputs,target=/build-inputs \\\n"
+        "    python scripts/download_piper_voice.py"
+    )
     production = (ROOT / "Dockerfile").read_text()
     development = (ROOT / "Dockerfile.dev").read_text()
+    assert production.count(invocation) == 1
+    assert development.count(invocation) == 1
     assert production.index("COPY . .") < production.index(invocation)
     assert (
         development.index(

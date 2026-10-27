@@ -20,6 +20,14 @@ shipped dependency surface or part of the release SBOM.
 
 External GitHub Actions are pinned to reviewed 40-character commit SHAs, with the reviewed release recorded in a comment. Production Docker base images are pinned by `sha256` digest. Release and audit tools installed during workflows use exact versions, not floating tags. Files downloaded into the API image have fixed SHA-256 checksums that are verified before the image changes to its unprivileged user. Changing any action, base, tool, or checksum requires review of the immutable replacement.
 
+### Cached build inputs
+
+The API image's builders download pinned source archives, the Chrome for Testing archive and the Piper voice files. Every one of those downloads goes through a verifier that accepts only bytes matching the SHA-256 pinned in the repository. The verifiers are `docker/fetch-pinned.sh` for the source builders, and `scripts/install_chrome_for_testing.py` and `scripts/download_piper_voice.py` for the archive and voice files. Each verifier first looks for a file named by that digest under `/build-inputs/sha256/`. If it finds one, the file must pass the same check before it is used. Otherwise the verifier goes to the pinned upstream address with bounded attempts and timeouts.
+
+CI keeps those files in a GitHub Actions cache. The `.github/actions/build-inputs` action restores the cache, which is keyed by the architecture and the digests that `scripts/build_inputs.py` reads from the pins themselves. The action then fills in any missing files and passes the directory to the build as the `build-inputs` named context, through a read-only bind mount. Cached files never enter an image layer, and both reproducibility builds see the same verified bytes.
+
+A new cache entry is saved only from CI, and only when every pin was fetched. The release workflow restores the default branch's entry but never saves one. Without the named context, as in a local or quickstart build, the `build-inputs` stage is an empty `scratch` stage and every file comes from upstream. A missing, stale or altered cache entry therefore changes only where the bytes come from, never which bytes are accepted.
+
 ## SBOMs and release assets
 
 The preflight creates three dependency SBOMs in **CycloneDX JSON**:

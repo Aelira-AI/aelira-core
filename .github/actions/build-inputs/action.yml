@@ -1,0 +1,73 @@
+name: Pinned build inputs
+description: >-
+  Restore this runner architecture's cache of the pinned files the API image
+  build downloads, optionally fill and save it, and export its location as
+  AELIRA_BUILD_INPUTS. Every consumer checks each cached file against its
+  pinned SHA-256, so the cache can only save a download, never change bytes.
+inputs:
+  prefetch:
+    description: Fetch pins missing from the restored cache.
+    default: "false"
+  save:
+    description: Save a new cache entry when prefetch completed and the pins changed.
+    default: "false"
+outputs:
+  directory:
+    description: The cache directory, for --build-context build-inputs=DIR.
+    value: ${{ steps.key.outputs.directory }}
+runs:
+  using: composite
+  steps:
+    - name: Compute the build-inputs cache key
+      id: key
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "Unsupported runner architecture: $RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        directory="$RUNNER_TEMP/build-inputs"
+        mkdir -p "$directory/sha256"
+        {
+          printf 'arch=%s\n' "$arch"
+          printf 'directory=%s\n' "$directory"
+          printf 'key=%s\n' "$(python3 scripts/build_inputs.py key --arch "$arch")"
+        } >> "$GITHUB_OUTPUT"
+        printf 'AELIRA_BUILD_INPUTS=%s\n' "$directory" >> "$GITHUB_ENV"
+    - name: Restore pinned build inputs
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.directory }}
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: |
+          build-inputs-v1-${{ steps.key.outputs.arch }}-
+    - name: Fetch missing pinned build inputs
+      id: prefetch
+      if: inputs.prefetch == 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        ARCH: ${{ steps.key.outputs.arch }}
+        DIRECTORY: ${{ steps.key.outputs.directory }}
+      run: |
+        status=0
+        python3 scripts/build_inputs.py prefetch --require-complete \
+          --arch "$ARCH" --dest "$DIRECTORY" || status=$?
+        case "$status" in
+          0) echo complete=true >> "$GITHUB_OUTPUT" ;;
+          # Missing files are fetched again by the build itself.
+          3) echo complete=false >> "$GITHUB_OUTPUT" ;;
+          *) exit "$status" ;;
+        esac
+    - name: Save pinned build inputs
+      # Only a complete set is saved, so an exact key always restores every pin.
+      if: >-
+        inputs.save == 'true' && steps.prefetch.outputs.complete == 'true' &&
+        steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.directory }}
+        key: ${{ steps.key.outputs.key }}

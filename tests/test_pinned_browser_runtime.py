@@ -7,6 +7,7 @@ import io
 import json
 import re
 import stat
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -87,8 +88,25 @@ def _entry(payload: bytes) -> dict:
     return {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
+@pytest.fixture
+def build_inputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """An empty cache, so a real /build-inputs never affects the download tests."""
+    path = tmp_path / "build-inputs"
+    (path / "sha256").mkdir(parents=True)
+    monkeypatch.setenv("AELIRA_BUILD_INPUTS", str(path))
+    return path
+
+
+@pytest.fixture
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the retry waits instead of sleeping."""
+    waits: list[float] = []
+    monkeypatch.setattr(cft.time, "sleep", waits.append)
+    return waits
+
+
 def test_download_that_matches_the_pin_is_accepted(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, build_inputs: Path
 ) -> None:
     payload = b"archive bytes"
     monkeypatch.setattr(
@@ -103,7 +121,11 @@ def test_download_that_matches_the_pin_is_accepted(
 
 @pytest.mark.parametrize("served", [b"tampered bytes", b"archive byte", b""])
 def test_download_that_differs_from_the_pin_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, served: bytes
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    served: bytes,
+    build_inputs: Path,
+    sleeps: list[float],
 ) -> None:
     monkeypatch.setattr(
         cft.urllib.request, "urlopen", lambda *_a, **_k: _Response(served)
@@ -113,6 +135,113 @@ def test_download_that_differs_from_the_pin_is_rejected(
         cft.download_verified(
             "https://example.invalid/c.zip", _entry(b"archive bytes"), tmp_path / "x"
         )
+    assert sleeps == [1, 2]
+
+
+def _cache(build_inputs: Path, payload: bytes) -> Path:
+    return build_inputs / "sha256" / hashlib.sha256(payload).hexdigest()
+
+
+def test_cached_archive_matching_the_pin_is_used_without_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    build_inputs: Path,
+    sleeps: list[float],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = b"cached archive bytes"
+    _cache(build_inputs, payload).write_bytes(payload)
+
+    def refuse(*_a: object, **_k: object) -> None:
+        raise AssertionError("a valid cache hit must not touch the network")
+
+    monkeypatch.setattr(cft.urllib.request, "urlopen", refuse)
+    target = tmp_path / "chrome.zip"
+
+    cft.download_verified("https://example.invalid/c.zip", _entry(payload), target)
+
+    assert target.read_bytes() == payload
+    assert sleeps == []
+    assert "cache=hit" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("cached", [b"corrupted entry", b"cached archive bytes!", b""])
+def test_cached_archive_with_wrong_bytes_is_ignored_for_the_network_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    build_inputs: Path,
+    sleeps: list[float],
+    capsys: pytest.CaptureFixture[str],
+    cached: bytes,
+) -> None:
+    payload = b"cached archive bytes"
+    _cache(build_inputs, payload).write_bytes(cached)
+    monkeypatch.setattr(
+        cft.urllib.request, "urlopen", lambda *_a, **_k: _Response(payload)
+    )
+    target = tmp_path / "chrome.zip"
+
+    cft.download_verified("https://example.invalid/c.zip", _entry(payload), target)
+
+    assert target.read_bytes() == payload
+    assert sleeps == []
+    assert "cache=mismatch" in capsys.readouterr().err
+
+
+def test_default_cache_directory_is_build_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AELIRA_BUILD_INPUTS", raising=False)
+
+    assert cft.build_inputs_dir() == Path("/build-inputs")
+
+
+def test_transient_network_error_is_retried_after_one_second(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    build_inputs: Path,
+    sleeps: list[float],
+) -> None:
+    payload = b"archive bytes"
+    outcomes = [urllib.error.URLError("connection reset"), _Response(payload)]
+
+    def urlopen(*_a: object, **_k: object) -> _Response:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(cft.urllib.request, "urlopen", urlopen)
+    target = tmp_path / "chrome.zip"
+
+    cft.download_verified("https://example.invalid/c.zip", _entry(payload), target)
+
+    assert target.read_bytes() == payload
+    assert sleeps == [1]
+    assert outcomes == []
+
+
+def test_persistent_network_error_is_raised_after_three_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    build_inputs: Path,
+    sleeps: list[float],
+) -> None:
+    attempts: list[int] = []
+
+    def urlopen(*_a: object, **_k: object) -> None:
+        attempts.append(1)
+        raise urllib.error.URLError("unreachable")
+
+    monkeypatch.setattr(cft.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError, match="download failed: URLError"):
+        cft.download_verified(
+            "https://example.invalid/c.zip", _entry(b"x"), tmp_path / "x"
+        )
+
+    assert len(attempts) == 3
+    assert sleeps == [1, 2]
 
 
 def _zip(tmp_path: Path, files: dict[str, tuple[bytes, int]]) -> Path:

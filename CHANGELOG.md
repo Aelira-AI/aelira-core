@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every pinned download in the API image build now goes through one verifier. The verifier makes three bounded attempts with stall timeouts and tries any fallback addresses. This covers the source archives, the Chrome for Testing archive and the Piper voice files. CI and the release workflow first use a cache of those files, keyed by their pinned SHA-256 digests, so a brief upstream outage no longer fails an otherwise healthy build. Every cached file passes the same SHA-256 check as a download, and builds without the cache fetch upstream as before ([#687](https://github.com/Aelira-AI/aelira-core/issues/687)).
+
 ### Security
 
 - A new ImageMagick advisory with no Debian fix is reviewed and disclosed in [known unfixed advisories](docs/security/known-unfixed-advisories-0.9.12.md#imagemagick-bzip2-advisory-published-on-2026-10-25). CVE-2026-116149, a stack buffer over-write reading bzip2-compressed image data, is not affected: the upstream fix changes only the bzip2 branch of `ReadBlob`, which ImageMagick uses only for a file that begins with the bzip2 magic bytes, and the converter refuses any such file before the `latexml` and `latexmlpost` stages start, as for CVE-2026-106565. The library fix is tracked in [#750](https://github.com/Aelira-AI/aelira-core/issues/750) ([#826](https://github.com/Aelira-AI/aelira-core/issues/826)).
