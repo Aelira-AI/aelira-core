@@ -11,10 +11,12 @@ Reference: https://learn.microsoft.com/en-us/graph/api/overview
 
 import httpx
 import logging
+import re
+import unicodedata
 from typing import Optional, List, Dict, Any, Tuple, AsyncIterator
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from ..cloud_base import (
     BaseCloudIntegration,
@@ -67,6 +69,62 @@ def require_graph_link(link: object) -> str:
     ):
         raise GraphLinkRejected("invalid_graph_link")
     return link
+
+
+class GraphPathRejected(CloudIntegrationError):
+    """An ID, path or item name that cannot be placed in a Graph URL."""
+
+
+# Graph IDs are opaque, but every shape Graph issues uses only these
+# characters: base32 business item IDs, "<hex>!<n>" personal item IDs,
+# "b!"-prefixed base64url drive IDs, "<host>,<guid>,<guid>" site IDs and GUID
+# subscription IDs. A "/", "?", "#", "%" or dot segment in a caller-supplied
+# ID would address another Graph resource with the same delegated token.
+_GRAPH_ID = re.compile(r"[A-Za-z0-9!_.,-]{1,512}")
+
+
+def graph_id(value: object) -> str:
+    """Return ``value`` only if it is a single Graph ID path segment."""
+    if (
+        not isinstance(value, str)
+        or not _GRAPH_ID.fullmatch(value)
+        or ".." in value
+        or value == "."
+    ):
+        raise GraphPathRejected("invalid_graph_id")
+    return value
+
+
+def _graph_segment(segment: str) -> str:
+    # A segment made only of dots and spaces could become a dot segment once
+    # trimmed or normalised, and a backslash may act as a separator. Control
+    # characters and lone surrogates are refused; everything else, including
+    # non-ASCII spaces and emoji in real file names, is percent-encoded.
+    bare = unicodedata.normalize("NFKC", segment).replace(".", "")
+    if (
+        not bare.strip()
+        or "\\" in segment
+        or any(unicodedata.category(ch) in ("Cc", "Cs") for ch in segment)
+    ):
+        raise GraphPathRejected("invalid_graph_path")
+    return quote(segment, safe="")
+
+
+def graph_drive_path(path: str) -> str:
+    """Percent-encode a drive-relative path for ``root:/{path}:`` addressing.
+
+    Empty segments are dropped, dot segments are refused rather than resolved,
+    and ``:``, ``?``, ``#`` and ``%`` inside a segment are encoded so they
+    cannot end the path. An empty result means the drive root.
+    """
+    return "/".join(_graph_segment(part) for part in path.split("/") if part)
+
+
+def graph_name(name: str) -> str:
+    """Percent-encode one item name for ``:/{name}:`` addressing."""
+    if not isinstance(name, str) or not name or "/" in name:
+        raise GraphPathRejected("invalid_graph_name")
+    return _graph_segment(name)
 
 
 class OneDriveIntegration(BaseCloudIntegration):
@@ -163,9 +221,9 @@ class OneDriveIntegration(BaseCloudIntegration):
     def _get_drive_base_url(self) -> str:
         """Get the base URL for drive operations."""
         if self._site_id:
-            return f"{self.GRAPH_API_BASE}/sites/{self._site_id}/drive"
+            return f"{self.GRAPH_API_BASE}/sites/{graph_id(self._site_id)}/drive"
         elif self._drive_id:
-            return f"{self.GRAPH_API_BASE}/drives/{self._drive_id}"
+            return f"{self.GRAPH_API_BASE}/drives/{graph_id(self._drive_id)}"
         else:
             return f"{self.GRAPH_API_BASE}/me/drive"
 
@@ -256,7 +314,7 @@ class OneDriveIntegration(BaseCloudIntegration):
         else:
             base_url = self._get_drive_base_url()
             if folder_id:
-                url = f"{base_url}/items/{folder_id}/children"
+                url = f"{base_url}/items/{graph_id(folder_id)}/children"
             else:
                 url = f"{base_url}/root/children"
             url += f"?$top={page_size}"
@@ -349,7 +407,9 @@ class OneDriveIntegration(BaseCloudIntegration):
 
     async def get_file_info(self, file_id: str) -> Optional[CloudFileInfo]:
         client = await self._get_client()
-        response = await client.get(f"{self._get_drive_base_url()}/items/{file_id}")
+        response = await client.get(
+            f"{self._get_drive_base_url()}/items/{graph_id(file_id)}"
+        )
         if response.status_code == 404:
             return None
         self._raise_provider_error(response)
@@ -402,7 +462,7 @@ class OneDriveIntegration(BaseCloudIntegration):
 
         # Build URL
         if parent_folder_id:
-            url = f"{base_url}/items/{parent_folder_id}/children"
+            url = f"{base_url}/items/{graph_id(parent_folder_id)}/children"
         else:
             url = f"{base_url}/root/children"
 
@@ -455,7 +515,7 @@ class OneDriveIntegration(BaseCloudIntegration):
         try:
             # Get file metadata first
             base_url = self._get_drive_base_url()
-            meta_url = f"{base_url}/items/{file_id}"
+            meta_url = f"{base_url}/items/{graph_id(file_id)}"
             meta_response = await client.get(meta_url)
             meta_response.raise_for_status()
             metadata = meta_response.json()
@@ -469,7 +529,7 @@ class OneDriveIntegration(BaseCloudIntegration):
 
             if not download_url:
                 # Request download URL directly
-                content_url = f"{base_url}/items/{file_id}/content"
+                content_url = f"{base_url}/items/{graph_id(file_id)}/content"
                 # Follow redirect to get actual content
                 download_response = await client.get(content_url, follow_redirects=True)
                 download_response.raise_for_status()
@@ -546,6 +606,17 @@ class OneDriveIntegration(BaseCloudIntegration):
         if file_name is None:
             file_name = file_path.name
 
+        try:
+            self._get_drive_base_url()
+            graph_name(file_name)
+            if folder_id:
+                graph_id(folder_id)
+        except GraphPathRejected:
+            # Refused before any request, so the outcome is known.
+            return CloudUploadResult(
+                False, error="invalid_graph_reference", failure_kind="deterministic"
+            )
+
         file_size = file_path.stat().st_size
 
         # Use simple upload for files < 4MB
@@ -570,9 +641,12 @@ class OneDriveIntegration(BaseCloudIntegration):
 
             # Build upload URL
             if folder_id:
-                url = f"{base_url}/items/{folder_id}:/{file_name}:/content"
+                url = (
+                    f"{base_url}/items/{graph_id(folder_id)}:/"
+                    f"{graph_name(file_name)}:/content"
+                )
             else:
-                url = f"{base_url}/root:/{file_name}:/content"
+                url = f"{base_url}/root:/{graph_name(file_name)}:/content"
 
             # Determine content type
             ext = Path(file_name).suffix.lower()
@@ -618,10 +692,13 @@ class OneDriveIntegration(BaseCloudIntegration):
             # Create upload session
             if folder_id:
                 session_url = (
-                    f"{base_url}/items/{folder_id}:/{file_name}:/createUploadSession"
+                    f"{base_url}/items/{graph_id(folder_id)}:/"
+                    f"{graph_name(file_name)}:/createUploadSession"
                 )
             else:
-                session_url = f"{base_url}/root:/{file_name}:/createUploadSession"
+                session_url = (
+                    f"{base_url}/root:/{graph_name(file_name)}:/createUploadSession"
+                )
 
             session_response = await client.post(
                 session_url,
@@ -700,9 +777,9 @@ class OneDriveIntegration(BaseCloudIntegration):
 
         # Build resource path
         if self._site_id:
-            resource = f"/sites/{self._site_id}/drive/root"
+            resource = f"/sites/{graph_id(self._site_id)}/drive/root"
         elif self._drive_id:
-            resource = f"/drives/{self._drive_id}/root"
+            resource = f"/drives/{graph_id(self._drive_id)}/root"
         else:
             resource = "/me/drive/root"
 
@@ -758,7 +835,7 @@ class OneDriveIntegration(BaseCloudIntegration):
 
         try:
             response = await client.patch(
-                f"{self.GRAPH_API_BASE}/subscriptions/{subscription_id}",
+                f"{self.GRAPH_API_BASE}/subscriptions/{graph_id(subscription_id)}",
                 json={
                     "expirationDateTime": expiration.isoformat().replace("+00:00", "Z"),
                 },
@@ -787,11 +864,13 @@ class OneDriveIntegration(BaseCloudIntegration):
         Returns:
             True if deletion succeeded
         """
+        # Checked outside the try below, which reports any failure as False.
+        subscription = graph_id(subscription_id)
         client = await self._get_client()
 
         try:
             response = await client.delete(
-                f"{self.GRAPH_API_BASE}/subscriptions/{subscription_id}"
+                f"{self.GRAPH_API_BASE}/subscriptions/{subscription}"
             )
             return response.status_code == 204
         except Exception as e:
@@ -825,7 +904,7 @@ class OneDriveIntegration(BaseCloudIntegration):
         else:
             # Start fresh delta
             if folder_id:
-                url = f"{base_url}/items/{folder_id}/delta"
+                url = f"{base_url}/items/{graph_id(folder_id)}/delta"
             else:
                 url = f"{base_url}/root/delta"
 

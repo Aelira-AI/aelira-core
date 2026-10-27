@@ -10,6 +10,7 @@ This ensures:
 These tests validate the privacy-conscious design of the cloud sync feature.
 """
 
+import httpx
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from src.db.models import (
     CloudProvider,
     CloudJobQueue,
 )
+from src.integrations.microsoft_365.onedrive import OneDriveIntegration
 from src.jobs.cloud_sync_job import CloudSyncJob, handle_sync_job
 from src.jobs.contracts import FailureKind, JobFailure
 
@@ -439,6 +441,61 @@ class TestSyncJobPrivacyLogging:
 
 class TestMicrosoftSyncPrivacy:
     """Test privacy for Microsoft OneDrive sync."""
+
+    @pytest.mark.asyncio
+    async def test_folder_id_graph_cannot_address_is_not_retried(
+        self, mock_db_session, mock_token_manager
+    ):
+        credential = MagicMock(spec=CloudOAuthCredentials)
+        credential.id = str(uuid.uuid4())
+        credential.department_id = "test-dept-456"
+        credential.provider = CloudProvider.MICROSOFT.value
+        credential.is_active = True
+        credential.last_sync_at = None
+        folder = MagicMock(spec=CloudSyncFolder)
+        folder.id = str(uuid.uuid4())
+        folder.credential_id = credential.id
+        folder.provider = "microsoft"
+        folder.provider_folder_id = "../other"
+        folder.folder_name = "Course"
+        folder.sync_subfolders = True
+        folder.is_active = True
+        mock_db_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        mock_db_session.query.return_value.filter.return_value.all.return_value = [
+            folder
+        ]
+        mock_token_manager.refresh_if_expired = AsyncMock(return_value="graph-token")
+        job = MagicMock(spec=CloudJobQueue)
+        job.credential_id = credential.id
+        job.department_id = credential.department_id
+        job.provider = credential.provider
+        job.payload = {"credential_id": credential.id, "provider": credential.provider}
+        requests = []
+
+        def adapter(*args, **kwargs):
+            # The real adapter, with every Graph request recorded.
+            integration = OneDriveIntegration(*args, **kwargs)
+            integration._http_client = httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: requests.append(request) or httpx.Response(500)
+                )
+            )
+            return integration
+
+        with patch("src.jobs.cloud_sync_job.OneDriveIntegration", adapter):
+            result = await handle_sync_job(
+                job=job,
+                db=mock_db_session,
+                token_manager=mock_token_manager,
+            )
+
+        assert isinstance(result, JobFailure)
+        assert result.kind == FailureKind.DETERMINISTIC
+        assert result.code == "cloud_sync_invalid_folder"
+        assert result.details == {"processed": 0, "invalid_sync_folders": [folder.id]}
+        assert requests == []
 
     @pytest.mark.asyncio
     async def test_microsoft_respects_folder_selection(

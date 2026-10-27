@@ -451,6 +451,8 @@ def test_queue_failure_rolls_back_and_does_not_return_success(
         ("subscriptions", {}),
         ("subscriptions", {**SUB, "change_types": ["created"]}),
         ("subscriptions", {**SUB, "resource": "/unsupported"}),
+        ("subscriptions", {**SUB, "resource": "/drives/../root"}),
+        ("subscriptions", {**SUB, "resource": "/drives/%2E%2E/root"}),
         ("subscriptions", {**SUB, "notification_url": "http://example.test/hook"}),
     ],
 )
@@ -478,6 +480,69 @@ def test_invalid_bodies_are_rejected_before_provider_requests(
 def test_invalid_queries_are_rejected(microsoft_route, path):
     assert microsoft_route.client.get("/microsoft" + path).status_code == 422
     assert not microsoft_route.requests
+
+
+# Each decodes to an ID or path that would leave its Graph resource: a dot
+# segment, an added query, a fragment or a nested path.
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/onedrive/folders/%2E%2E/children",
+        "/onedrive/files/%2E%2E",
+        "/onedrive/files/file-1%3F%24select%3Did",
+        "/onedrive/files/file-1%23x/content",
+        "/sharepoint/sites/site-1%3Fx%3D1/drives",
+        "/sharepoint/drives/%2E%2E/items",
+        "/sharepoint/drives/drive-1/items?folder_path=Course/../../other",
+        "/onedrive/files?folder_id=..%2Fother",
+        "/onedrive/files?drive_id=drive-1%2F..",
+        "/onedrive/files?site_id=site-1%3Fx",
+        "/onedrive/folders?parent_id=folder-1%2Fchildren%3F",
+    ],
+)
+def test_unsafe_graph_references_are_refused_before_provider_requests(
+    microsoft_route, path
+):
+    response = microsoft_route.client.get("/microsoft" + path)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Microsoft item reference"}
+    assert not microsoft_route.requests
+
+
+def test_sharepoint_folder_path_is_sent_as_encoded_segments(microsoft_route):
+    f = microsoft_route
+    response = f.client.get(
+        "/microsoft/sharepoint/drives/drive-1/items",
+        params={"folder_path": "/Course A/Week 1: notes?#100%/"},
+    )
+    assert response.status_code == 200
+    (request,) = f.requests
+    assert request.url.raw_path == (
+        b"/v1.0/drives/drive-1/root:/Course%20A/Week%201%3A%20notes%3F%23100%25"
+        b":/children"
+    )
+
+
+def test_sharepoint_search_term_stays_inside_the_odata_literal(microsoft_route):
+    f = microsoft_route
+    response = f.client.get(
+        "/microsoft/sharepoint/search", params={"query": "it's ?$top=1#x/y"}
+    )
+    assert response.status_code == 200
+    (request,) = f.requests
+    assert request.url.raw_path == (
+        b"/v1.0/me/drive/search(q='it''s%20%3F%24top%3D1%23x%2Fy')"
+    )
+
+
+@pytest.mark.parametrize("method", ["patch", "delete"])
+def test_unsafe_subscription_id_is_refused_before_any_mutation(microsoft_route, method):
+    f = microsoft_route
+    response = getattr(f.client, method)("/microsoft/subscriptions/%2E%2E")
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Microsoft item reference"}
+    assert not f.requests
+    assert not f.rows(CloudWebhookSubscription).all()
 
 
 @pytest.mark.parametrize(

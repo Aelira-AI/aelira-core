@@ -20,7 +20,7 @@ import uuid
 import re
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from ..integrations.cloud_base import (
@@ -45,7 +45,10 @@ from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
 from ..integrations.microsoft_365.onedrive import (
     GraphLinkRejected,
+    GraphPathRejected,
     OneDriveIntegration,
+    graph_drive_path,
+    graph_id,
     require_graph_link,
 )
 from ..integrations.microsoft_365.microsoft_oauth import MicrosoftOAuthService
@@ -314,6 +317,8 @@ def microsoft_errors(handler):
             raise
         except GraphLinkRejected:
             raise HTTPException(400, "Invalid page token") from None
+        except GraphPathRejected:
+            raise HTTPException(400, "Invalid Microsoft item reference") from None
         except Exception as exc:
             db = kwargs.get("db")
             if db is not None:
@@ -1253,7 +1258,7 @@ async def list_folder_children(
     endpoint = (
         "/me/drive/root/children"
         if folder_id == "root"
-        else f"/me/drive/items/{folder_id}/children"
+        else f"/me/drive/items/{graph_id(folder_id)}/children"
     )
     data = await microsoft_graph_get(api_key, db, endpoint)
     return {"items": data.get("value", []), "folder_id": folder_id}
@@ -1266,7 +1271,9 @@ async def get_onedrive_file_metadata(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    return await microsoft_graph_get(api_key, db, f"/me/drive/items/{file_id}")
+    return await microsoft_graph_get(
+        api_key, db, f"/me/drive/items/{graph_id(file_id)}"
+    )
 
 
 @router.get("/onedrive/files/{file_id}/content")
@@ -1276,6 +1283,7 @@ async def download_onedrive_file(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    graph_id(file_id)
     credential = await get_microsoft_credential(api_key, db)
     integration = await get_microsoft_integration(credential)
     try:
@@ -1320,7 +1328,7 @@ async def get_sharepoint_drives(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    data = await microsoft_graph_get(api_key, db, f"/sites/{site_id}/drives")
+    data = await microsoft_graph_get(api_key, db, f"/sites/{graph_id(site_id)}/drives")
     return {"drives": data.get("value", []), "site_id": site_id}
 
 
@@ -1332,10 +1340,12 @@ async def list_sharepoint_drive_items(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    drive = graph_id(drive_id)
+    path = graph_drive_path(folder_path or "")
     endpoint = (
-        f"/drives/{drive_id}/root/children"
-        if not folder_path
-        else f"/drives/{drive_id}/root:/{folder_path}:/children"
+        f"/drives/{drive}/root:/{path}:/children"
+        if path
+        else f"/drives/{drive}/root/children"
     )
     data = await microsoft_graph_get(api_key, db, endpoint)
     return {"items": data.get("value", []), "drive_id": drive_id}
@@ -1348,9 +1358,10 @@ async def search_sharepoint(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    data = await microsoft_graph_get(
-        api_key, db, f"/me/drive/search(q='{query.replace(chr(39), chr(39) * 2)}')"
-    )
+    # OData doubles a quote inside the literal; everything else is encoded so
+    # "?", "#" or "/" stay part of the search text.
+    term = quote(query.replace("'", "''"), safe="'")
+    data = await microsoft_graph_get(api_key, db, f"/me/drive/search(q='{term}')")
     return {"results": data.get("value", []), "query": query}
 
 
@@ -1430,10 +1441,17 @@ class CreateSubscriptionRequest(BaseModel):
     @field_validator("resource")
     @classmethod
     def supported_resource(cls, value):
-        if not re.fullmatch(
-            r"/me/drive/root|/drives/[^/?#]+/root|/sites/[^/?#]+/drive/root", value
-        ):
+        match = re.fullmatch(
+            r"/me/drive/root|/drives/([^/]+)/root|/sites/([^/]+)/drive/root", value
+        )
+        if not match:
             raise ValueError("unsupported drive-root resource")
+        resource_id = match.group(1) or match.group(2)
+        if resource_id is not None:
+            try:
+                graph_id(resource_id)
+            except GraphPathRejected:
+                raise ValueError("unsupported drive-root resource") from None
         return value
 
     @field_validator("change_types")
@@ -1589,6 +1607,7 @@ async def renew_webhook_subscription(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    graph_id(subscription_id)
     # Refresh may commit: resolve credentials before taking the subscription lock.
     credential = await get_microsoft_credential(api_key, db)
     row = scoped_subscription(db, api_key.department_id, subscription_id)
@@ -1618,6 +1637,7 @@ async def delete_webhook_subscription(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    graph_id(subscription_id)
     # Refresh may commit: resolve credentials before taking the subscription lock.
     credential = await get_microsoft_credential(api_key, db)
     row = scoped_subscription(db, api_key.department_id, subscription_id)
