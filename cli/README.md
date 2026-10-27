@@ -19,7 +19,7 @@
 
 > **AELIRA**: **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
 
-**Version:** 0.10.0
+**Version:** 0.11.0
 
 ## What it does
 
@@ -109,7 +109,7 @@ Navigation:
 
 #### Start-up banner and screen readers
 
-Interactive mode starts with a plain-text line naming the tool and its version, for example `Aelira CLI 0.10.0`, followed by a one-line description. It does not clear your terminal, so earlier output stays in your scrollback.
+Interactive mode starts with a plain-text line naming the tool and its version, for example `Aelira CLI 0.11.0`, followed by a one-line description. It does not clear your terminal, so earlier output stays in your scrollback.
 
 On an interactive terminal it also shows a decorative logo drawn with block characters. Screen readers read those characters out one by one, so the logo is skipped when any of these apply:
 

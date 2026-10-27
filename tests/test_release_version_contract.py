@@ -1,4 +1,4 @@
-"""Release metadata and operator notices must agree for v0.10.0."""
+"""Release metadata and operator notices must agree for v0.11.0."""
 
 import ast
 import hashlib
@@ -8,14 +8,15 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.10.0"
-RELEASE_HEADING = "## [0.10.0] - 2026-10-25"
-RELEASE_BODY = ROOT / "docs/releases/v0.10.0.md"
-PREVIOUS_HEADING = "## [0.9.13] - 2026-10-20"
+VERSION = "0.11.0"
+RELEASE_HEADING = "## [0.11.0] - 2026-10-28"
+RELEASE_BODY = ROOT / "docs/releases/v0.11.0.md"
+PREVIOUS_HEADING = "## [0.10.0] - 2026-10-25"
+V0913_HEADING = "## [0.9.13] - 2026-10-20"
 V0912_HEADING = "## [0.9.12] - 2026-10-15"
 
 
-def test_authoritative_release_versions_are_0_10_0():
+def test_authoritative_release_versions_are_0_11_0():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -53,8 +54,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.10\.0\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.9\.13\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.11\.0\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.10\.0\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -65,7 +66,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_dates_v0_10_0_and_preserves_history():
+def test_changelog_dates_v0_11_0_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
@@ -79,24 +80,30 @@ def test_changelog_dates_v0_10_0_and_preserves_history():
     # Unreleased is empty or holds only Keep a Changelog subsections.
     assert pending == "" or pending.startswith("### ")
     previous = changelog.index(PREVIOUS_HEADING)
+    v0913 = changelog.index(V0913_HEADING)
     v0912 = changelog.index(V0912_HEADING)
     v0911 = changelog.index("## [0.9.11] - 2026-09-12")
     historical = changelog.index("## [0.9.8] - 2026-09-08")
-    assert unreleased < release < previous < v0912 < v0911 < historical
+    assert unreleased < release < previous < v0913 < v0912 < v0911 < historical
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
     for phrase in (
-        "adds no database migration",
-        "20261020_media_captions",
-        "20261018_media_truth",
-        "20261017_canvas_scope",
-        "20260928_pdf_edit_pub",
+        "adds one database migration, `20261028_webhook_secret`",
+        "single Alembic head after `20261020_media_captions`",
+        "Its downgrade drops nothing",
         "coordinated backup",
         "alembic upgrade head",
         "human approval",
         "Use matching API, worker and dashboard images",
         "Roll back with the matched pre-upgrade database",
+        "Microsoft webhook subscriptions created before 0.11.0",
+        "POST /microsoft/subscriptions",
+        "GHSA-cxmg-mrg8-j7r6",
+        "GHSA-cpcw-3584-j8q4",
+        "GHSA-5prr-c8m5-63r7",
+        "GHSA-724p-6r8m-h85x",
     ):
         assert phrase in current_notes
+    assert "adds no database migration" not in current_notes
 
 
 def test_historical_v0_9_11_release_body_is_unchanged():
@@ -120,6 +127,13 @@ def test_historical_v0_9_13_release_body_is_unchanged():
     )
 
 
+def test_historical_v0_10_0_release_body_is_unchanged():
+    body = (ROOT / "docs/releases/v0.10.0.md").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "0bcce92d5cef65f880fa31b97693e1990c5ebd48de5afb9775609a4d0fa4e5c2"
+    )
+
+
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
@@ -128,11 +142,14 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     assert "open draft" not in body
     assert f"No v{VERSION} tag" not in body
     for phrase in (
-        "no database migration",
+        "This release adds one database migration",
+        "20261028_webhook_secret",
         "20261020_media_captions",
         "20261018_media_truth",
         "20261017_canvas_scope",
         "20260928_pdf_edit_pub",
+        "`client_state_hash`",
+        "Its downgrade drops nothing",
         "pause new intake",
         "Drain",
         "coordinated backup",
@@ -161,12 +178,16 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#376]",
         "[#375]",
         "[#377]",
-        "## Fixed: printed equation alt text",
-        "[#693]",
-        "[#694]",
-        "[#742]",
-        "[#748]",
-        "[#749]",
+        "## Security fixes",
+        "security/advisories/GHSA-cxmg-mrg8-j7r6",
+        "security/advisories/GHSA-cpcw-3584-j8q4",
+        "security/advisories/GHSA-5prr-c8m5-63r7",
+        "security/advisories/GHSA-724p-6r8m-h85x",
+        "`GET /microsoft/subscriptions`",
+        "`POST /microsoft/subscriptions`",
+        "`PUBLIC_API_URL`",
+        "[#687]",
+        "[#840]",
         "## Known limits and open security items",
         "CVE-2026-94283",
         "CVE-2026-94284",
@@ -180,10 +201,11 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "zod to 4.6.7",
         "[#786]",
         "`setuptools` 70.3.0",
+        "[#800]",
         "Chrome for Testing",
     ):
         assert phrase in body
-    assert "Known issue: printed equation alt text" not in body
+    assert "no database migration" not in body.lower()
     assert "Check the workflow result and published artifacts before upgrading" in body
 
 
