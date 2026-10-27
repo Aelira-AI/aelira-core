@@ -14,7 +14,8 @@ from sqlalchemy import create_engine, inspect
 from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
-HEAD = "20261020_media_captions"
+HEAD = "20261028_webhook_secret"
+MEDIA_CAPTIONS_HEAD = "20261020_media_captions"
 MEDIA_TRUTH_HEAD = "20261018_media_truth"
 PREVIOUS_HEAD = "20261017_canvas_scope"
 INSTITUTION_SCOPE_HEAD = "20260831_institution_scope"
@@ -44,7 +45,8 @@ def test_task17b_migrations_are_one_linear_reversible_head():
     scripts = ScriptDirectory.from_config(config)
 
     assert scripts.get_heads() == [HEAD]
-    assert scripts.get_revision(HEAD).down_revision == MEDIA_TRUTH_HEAD
+    assert scripts.get_revision(HEAD).down_revision == MEDIA_CAPTIONS_HEAD
+    assert scripts.get_revision(MEDIA_CAPTIONS_HEAD).down_revision == MEDIA_TRUTH_HEAD
     assert scripts.get_revision(MEDIA_TRUTH_HEAD).down_revision == PREVIOUS_HEAD
     assert scripts.get_revision(PREVIOUS_HEAD).down_revision == "20260928_pdf_edit_pub"
     assert (

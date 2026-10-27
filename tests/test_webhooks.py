@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import integration_route_fixtures as fixtures
 from src.api import webhook_routes as routes
 from src.db.models import CloudJobQueue, CloudWebhookSubscription
+from src.integrations.microsoft_365.onedrive import hash_client_state
 
 pytestmark = pytest.mark.integration
 integration_route = fixtures.integration_route
@@ -180,7 +181,7 @@ def test_microsoft_rejects_invalid_notification_envelope(integration_route, payl
     )
 
 
-def callback(case, provider, row):
+def callback(case, provider, row, client_state=fixtures.MICROSOFT_CLIENT_STATE):
     if provider == "google":
         return case.client.post(
             "/webhooks/google",
@@ -197,7 +198,7 @@ def callback(case, provider, row):
             "value": [
                 {
                     "subscriptionId": row.subscription_id,
-                    "clientState": row.department_id,
+                    "clientState": client_state,
                     "changeType": "updated",
                     "resource": "drive/root/fixture-item",
                 }
@@ -239,6 +240,59 @@ def test_supported_callback_persists_one_pending_reconciliation_job(
         else {"resource": "drive/root/fixture-item", "change_type": "updated"}
     )
     assert job.payload == expected
+
+
+def _no_microsoft_job(case, row):
+    case.db.expire_all()
+    assert case.db.get(CloudWebhookSubscription, row.id).last_notification_at is None
+    assert (
+        case.db.query(CloudJobQueue).filter_by(department_id=case.department.id).count()
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "client_state",
+    ["department", "fixture-client-state-secret-012345678", "x" * 129],
+)
+def test_microsoft_callback_without_the_subscription_secret_is_refused(
+    integration_route, client_state
+):
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, "microsoft"))
+    case.db.commit()
+    # The department ID used to be the clientState; it is not a secret.
+    if client_state == "department":
+        client_state = row.department_id
+    response = callback(case, "microsoft", row, client_state)
+    assert response.status_code == 202
+    _no_microsoft_job(case, row)
+
+
+def test_microsoft_subscription_created_before_secrets_is_refused(integration_route):
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, "microsoft"))
+    row.client_state_hash = None
+    case.db.commit()
+    for client_state in (row.department_id, fixtures.MICROSOFT_CLIENT_STATE):
+        assert callback(case, "microsoft", row, client_state).status_code == 202
+    _no_microsoft_job(case, row)
+
+
+def test_microsoft_secret_selects_the_row_when_two_share_a_graph_id(
+    integration_route,
+):
+    case = integration_route
+    credential = fixtures.credential(case, "microsoft")
+    first = fixtures.subscription(case, credential)
+    second = fixtures.subscription(
+        case, credential, client_state_hash=hash_client_state("second-row-secret")
+    )
+    second.subscription_id = first.subscription_id
+    case.db.commit()
+    assert callback(case, "microsoft", second, "second-row-secret").status_code == 202
+    job = case.db.query(CloudJobQueue).filter_by(department_id=case.department.id).one()
+    assert job.payload["subscription_id"] == second.id
 
 
 @pytest.mark.parametrize("provider,status", [("google", 500), ("microsoft", 503)])

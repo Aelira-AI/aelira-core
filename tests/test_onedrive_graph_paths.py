@@ -155,10 +155,7 @@ def test_microsoft_sync_folder_must_be_a_graph_id():
 )
 def test_subscription_resource_ids_must_be_graph_ids(resource):
     with pytest.raises(ValidationError):
-        CreateSubscriptionRequest(
-            resource=resource,
-            notification_url="https://example.test/webhooks/microsoft",
-        )
+        CreateSubscriptionRequest(resource=resource)
 
 
 def test_documented_subscription_resources_are_accepted():
@@ -167,13 +164,7 @@ def test_documented_subscription_resources_are_accepted():
         f"/drives/{DOCUMENTED_IDS[5]}/root",
         f"/sites/{DOCUMENTED_IDS[6]}/drive/root",
     ):
-        assert (
-            CreateSubscriptionRequest(
-                resource=resource,
-                notification_url="https://example.test/webhooks/microsoft",
-            ).resource
-            == resource
-        )
+        assert CreateSubscriptionRequest(resource=resource).resource == resource
 
 
 def _integration(requests, **kwargs):
@@ -220,7 +211,9 @@ async def test_adapter_refuses_an_unsafe_drive_or_site(kwargs):
         with pytest.raises(GraphPathRejected):
             await integration.list_files()
         with pytest.raises(GraphPathRejected):
-            await integration.create_webhook("https://example.test/hook")
+            await integration.create_webhook(
+                "https://example.test/hook", client_state="s" * 43
+            )
     finally:
         await integration.close()
     assert requests == []

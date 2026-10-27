@@ -5,6 +5,8 @@ Routes, token decryption, adapter DTOs, files, durable jobs and subscriptions ar
 """
 
 from src.database_url import engine_url
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,7 +52,6 @@ FOLDER = {
 }
 SUB = {
     "resource": "/me/drive/root",
-    "notification_url": "https://example.test/webhooks/microsoft",
     "change_types": ["updated"],
 }
 
@@ -272,6 +273,77 @@ def test_subscription_round_trip_is_persisted_and_scoped(microsoft_route):
     }
 
 
+def test_subscription_create_sends_a_fresh_secret_and_stores_only_its_hash(
+    microsoft_route,
+):
+    f = microsoft_route
+    receiver = routes.microsoft_notification_url()
+    assert receiver.endswith("/webhooks/microsoft")
+    response = f.client.post(
+        "/microsoft/subscriptions", json={**SUB, "notification_url": receiver}
+    )
+    assert response.status_code == 200
+    (request,) = [item for item in f.requests if item.method == "POST"]
+    body = json.loads(request.content)
+    assert body["notificationUrl"] == receiver
+    secret = body["clientState"]
+    assert secret != f.department.id and len(secret) >= 32
+    row = f.rows(CloudWebhookSubscription).one()
+    assert row.client_state_hash == hashlib.sha256(secret.encode()).hexdigest()
+    assert row.notification_url == receiver
+    # The secret itself is stored nowhere on the row.
+    for column in CloudWebhookSubscription.__table__.columns:
+        assert secret not in str(getattr(row, column.name))
+
+
+def test_each_subscription_gets_its_own_secret(microsoft_route):
+    f = microsoft_route
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    assert f.client.delete("/microsoft/subscriptions/sub-1").status_code == 200
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    secrets = [
+        json.loads(item.content)["clientState"]
+        for item in f.requests
+        if item.method == "POST"
+    ]
+    assert len(secrets) == 2 and secrets[0] != secrets[1]
+
+
+@pytest.mark.parametrize(
+    "old_url", [None, "https://old-caller.example/webhooks/microsoft"]
+)
+def test_create_retires_a_subscription_made_before_secrets(microsoft_route, old_url):
+    f = microsoft_route
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    old = f.rows(CloudWebhookSubscription).one()
+    old.client_state_hash = None
+    old.notification_url = old_url or routes.microsoft_notification_url()
+    f.db.commit()
+    response = f.client.post("/microsoft/subscriptions", json=SUB)
+    assert response.status_code == 200
+    f.db.refresh(old)
+    assert not old.is_active and old.renewal_status == "failed"
+    assert old.renewal_result["code"] == "webhook_client_state_missing"
+    active = f.rows(CloudWebhookSubscription).filter_by(is_active=True).all()
+    assert len(active) == 1 and active[0].client_state_hash
+
+
+def test_subscription_without_a_secret_cannot_be_renewed(microsoft_route):
+    f = microsoft_route
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    row = f.rows(CloudWebhookSubscription).one()
+    row.client_state_hash = None
+    f.db.commit()
+    f.requests.clear()
+    response = f.client.patch("/microsoft/subscriptions/sub-1")
+    assert response.status_code == 409
+    assert not f.requests
+    f.db.refresh(row)
+    assert row.renewal_status == "created" and row.is_active
+    # It can still be deleted, then created again with a secret.
+    assert f.client.delete("/microsoft/subscriptions/sub-1").status_code == 200
+
+
 READ_ROUTES = [
     ("/drives", "id", "drive-1"),
     ("/sites", "id", "site-1"),
@@ -454,6 +526,10 @@ def test_queue_failure_rolls_back_and_does_not_return_success(
         ("subscriptions", {**SUB, "resource": "/drives/../root"}),
         ("subscriptions", {**SUB, "resource": "/drives/%2E%2E/root"}),
         ("subscriptions", {**SUB, "notification_url": "http://example.test/hook"}),
+        (
+            "subscriptions",
+            {**SUB, "notification_url": "https://other.example/webhooks/microsoft"},
+        ),
     ],
 )
 def test_invalid_bodies_are_rejected_before_provider_requests(

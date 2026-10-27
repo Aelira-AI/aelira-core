@@ -9,9 +9,12 @@ Uses Microsoft Graph API v1.0.
 Reference: https://learn.microsoft.com/en-us/graph/api/overview
 """
 
+import hashlib
+import hmac
 import httpx
 import logging
 import re
+import secrets
 import unicodedata
 from typing import Optional, List, Dict, Any, Tuple, AsyncIterator
 from pathlib import Path
@@ -127,6 +130,25 @@ def graph_name(name: str) -> str:
     return _graph_segment(name)
 
 
+def new_client_state() -> str:
+    """A random clientState secret for one Graph subscription (Graph allows 128)."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_client_state(client_state: str) -> str:
+    """The stored form of a clientState secret."""
+    return hashlib.sha256(client_state.encode()).hexdigest()
+
+
+def client_state_matches(presented: object, stored_hash: object) -> bool:
+    """Constant-time check of a notification's clientState against the stored hash."""
+    if not isinstance(presented, str) or not presented or len(presented) > 128:
+        return False
+    if not isinstance(stored_hash, str) or len(stored_hash) != 64:
+        return False
+    return hmac.compare_digest(hash_client_state(presented), stored_hash)
+
+
 class OneDriveIntegration(BaseCloudIntegration):
     """
     Microsoft OneDrive/SharePoint integration via Graph API.
@@ -169,9 +191,10 @@ class OneDriveIntegration(BaseCloudIntegration):
             drive_id: Specific drive ID (optional, uses default user drive if not provided)
             site_id: SharePoint site ID (optional, for SharePoint access)
         """
-        # Graph webhook clientState is account-scoped.  Do not alias that account
-        # authority into BaseCloudIntegration.credential_id: callers must not be
-        # able to mistake a department identifier for a credential identifier.
+        # The department scopes the caller and is never sent to Graph (webhook
+        # clientState is a per-subscription secret). Do not alias it into
+        # BaseCloudIntegration.credential_id: callers must not be able to
+        # mistake a department identifier for a credential identifier.
         super().__init__(access_token=access_token)
         self._department_id = department_id
         self._drive_id = drive_id
@@ -762,6 +785,7 @@ class OneDriveIntegration(BaseCloudIntegration):
         self,
         notification_url: str,
         resource_id: Optional[str] = None,
+        client_state: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a Microsoft Graph subscription for change notifications.
@@ -769,10 +793,15 @@ class OneDriveIntegration(BaseCloudIntegration):
         Args:
             notification_url: URL to receive webhook notifications
             resource_id: Drive or folder ID to watch (None for default drive)
+            client_state: This subscription's secret (see new_client_state).
+                Graph echoes it in every notification; the caller stores only
+                its hash. Required.
 
         Returns:
             Subscription info including subscription_id and expiration
         """
+        if not client_state or len(client_state) > 128:
+            raise ValueError("a per-subscription client_state secret is required")
         client = await self._get_client()
 
         # Build resource path
@@ -794,7 +823,7 @@ class OneDriveIntegration(BaseCloudIntegration):
                     "notificationUrl": notification_url,
                     "resource": resource,
                     "expirationDateTime": expiration.isoformat().replace("+00:00", "Z"),
-                    "clientState": self._department_id,
+                    "clientState": client_state,
                 },
             )
             response.raise_for_status()
