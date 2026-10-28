@@ -25,3 +25,5 @@ def test_published_dashboard_installs_available_runtime_security_fixes():
     assert "libx11" in upgrade.split()
     # CVE-2026-111497 is fixed in Alpine brotli-libs 1.2.1-r0, after the pinned base.
     assert "brotli-libs" in upgrade.split()
+    # CVE-2026-92392 is fixed in Alpine curl and libcurl 8.23.0-r0, after the pinned base.
+    assert {"curl", "libcurl"} <= set(upgrade.split())
