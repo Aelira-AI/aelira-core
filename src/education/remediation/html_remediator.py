@@ -566,7 +566,7 @@ class HtmlRemediator(BaseRemediator):
         self.result.ai_calls_made += 1
 
         try:
-            from ...utils.security import sanitize_for_prompt
+            from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
             safe_desc = sanitize_for_prompt(issue.description or "", max_length=300)
             safe_content = (
@@ -613,6 +613,7 @@ Code snippet: {safe_content}
 
 Provide ONLY the fix content, no explanation."""
 
+            prompt = f"{PROMPT_DATA_NOTICE}\n\n{prompt}"
             result = client.generate_text_sync(
                 prompt=prompt, max_tokens=150, temperature=0.3
             )

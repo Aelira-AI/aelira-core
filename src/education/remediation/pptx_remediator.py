@@ -685,7 +685,7 @@ class PptxRemediator(BaseRemediator):
                 pass  # Shape may not have an image blob
 
         if image_bytes and hasattr(client, "analyze_image_sync"):
-            from ...utils.security import sanitize_for_prompt
+            from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
             safe_context = (
                 sanitize_for_prompt(context_text, max_length=500)
@@ -693,6 +693,7 @@ class PptxRemediator(BaseRemediator):
                 else "None"
             )
             prompt = (
+                f"{PROMPT_DATA_NOTICE}\n\n"
                 "Generate concise, descriptive alt text for this image "
                 "from a PowerPoint slide in a higher education context.\n\n"
                 f"Slide context: {safe_context}\n\n"

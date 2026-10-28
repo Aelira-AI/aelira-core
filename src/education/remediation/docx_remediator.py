@@ -412,11 +412,13 @@ class DocxRemediator(BaseRemediator):
         sample = paragraphs_for_ai[:40]
         para_list = "\n".join(f"[{p['index']}] {p['text']}" for p in sample)
 
-        from ...utils.security import sanitize_for_prompt
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
         safe_para_list = sanitize_for_prompt(para_list, max_length=3000)
 
-        prompt = f"""This Word document has no heading styles applied. Identify which paragraphs should be headings and what level (1-3) each should be.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+This Word document has no heading styles applied. Identify which paragraphs should be headings and what level (1-3) each should be.
 
 Paragraphs (format: [index] text):
 {safe_para_list}
@@ -816,7 +818,7 @@ Rules:
             )
 
         # Sanitize context text before AI prompt
-        from ...utils.security import sanitize_for_prompt
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
         safe_context = (
             sanitize_for_prompt(context_text, max_length=500)
@@ -825,7 +827,9 @@ Rules:
         )
 
         # Generate prompt
-        prompt = f"""Generate concise, descriptive alt text for an image in a Word document.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Generate concise, descriptive alt text for an image in a Word document.
 
 Context from surrounding text:
 {safe_context}

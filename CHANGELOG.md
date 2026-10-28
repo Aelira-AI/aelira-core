@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CI builds the dashboard image natively on amd64 and arm64 and rejects unresolved HIGH and CRITICAL findings with the same Trivy inventory and dispositions as the release workflow. Before this, CI scanned only the API image, so a dashboard finding first appeared when a release run stopped at its image gate, as in v0.10.0 and v0.11.0 ([#847](https://github.com/Aelira-AI/aelira-core/issues/847)).
 
+- Document text placed in AI prompts is enclosed in a tag whose code is derived from the text, and every prompt that carries it tells the model that the text is data and ends only at the closing tag with the same code. Anything spelled like the delimiter is removed first, in upper-case, spaced, zero-width-split, full-width or HTML-escaped form, so a document can no longer end its block early. The prompt sanitizer no longer deletes phrases such as "act as" or "system:": the list was easy to rephrase around, and deleting words changed what a document said before the model read it.
+
 ## [0.11.0] - 2026-10-28
 
 See the [release notes](docs/releases/v0.11.0.md) for operator actions and

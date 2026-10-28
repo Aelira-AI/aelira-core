@@ -604,7 +604,7 @@ class XlsxRemediator(BaseRemediator):
         except Exception:
             pass
 
-        from ...utils.security import sanitize_for_prompt
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
         safe_sheet_name = sanitize_for_prompt(sheet_name, max_length=100)
         safe_content = (
@@ -613,7 +613,9 @@ class XlsxRemediator(BaseRemediator):
             else "No content available"
         )
 
-        prompt = f"""Generate a concise, descriptive name for an Excel worksheet.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Generate a concise, descriptive name for an Excel worksheet.
 
 Current name: "{safe_sheet_name}"
 Sample content: {safe_content}
@@ -661,7 +663,7 @@ Generate only the sheet name, nothing else:"""
         except Exception:
             pass
 
-        from ...utils.security import sanitize_for_prompt
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
         safe_sheet_name = sanitize_for_prompt(sheet_name, max_length=100)
         safe_content = (
@@ -670,7 +672,9 @@ Generate only the sheet name, nothing else:"""
             else "No data available"
         )
 
-        prompt = f"""Generate a concise description for a chart in an Excel spreadsheet.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Generate a concise description for a chart in an Excel spreadsheet.
 
 Sheet: "{safe_sheet_name}"
 Nearby data: {safe_content}

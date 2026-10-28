@@ -676,11 +676,13 @@ class LatexRemediator(BaseRemediator):
         self.result.ai_calls_made += 1
 
         try:
-            from ...utils.security import sanitize_for_prompt
+            from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
             safe_desc = sanitize_for_prompt(issue.description or "", max_length=300)
             safe_loc = sanitize_for_prompt(issue.location or "Unknown", max_length=100)
-            prompt = f"""Suggest a fix for this LaTeX accessibility issue:
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+Suggest a fix for this LaTeX accessibility issue:
 Issue: {safe_desc}
 Category: {issue.category.value}
 Location: {safe_loc}
