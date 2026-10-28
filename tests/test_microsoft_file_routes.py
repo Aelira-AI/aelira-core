@@ -5,6 +5,8 @@ Routes, token decryption, adapter DTOs, files, durable jobs and subscriptions ar
 """
 
 from src.database_url import engine_url
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,7 +52,6 @@ FOLDER = {
 }
 SUB = {
     "resource": "/me/drive/root",
-    "notification_url": "https://example.test/webhooks/microsoft",
     "change_types": ["updated"],
 }
 
@@ -104,6 +105,8 @@ def microsoft_route(monkeypatch):
         requests=[],
         integrations=[],
         failure=None,
+        # An optional nextLink returned with folder children.
+        next_link=None,
     )
 
     def handler(request):
@@ -173,7 +176,10 @@ def microsoft_route(monkeypatch):
                 },
             )
         if path.endswith("/children") or "/search(" in path:
-            return httpx.Response(200, json={"value": [FOLDER, FILE]})
+            body = {"value": [FOLDER, FILE]}
+            if fixture.next_link:
+                body["@odata.nextLink"] = fixture.next_link
+            return httpx.Response(200, json=body)
         raise AssertionError(f"Unexpected Graph request: {request.method} {path}")
 
     transport = httpx.MockTransport(handler)
@@ -265,6 +271,77 @@ def test_subscription_round_trip_is_persisted_and_scoped(microsoft_route):
         "subscriptions": [],
         "count": 0,
     }
+
+
+def test_subscription_create_sends_a_fresh_secret_and_stores_only_its_hash(
+    microsoft_route,
+):
+    f = microsoft_route
+    receiver = routes.microsoft_notification_url()
+    assert receiver.endswith("/webhooks/microsoft")
+    response = f.client.post(
+        "/microsoft/subscriptions", json={**SUB, "notification_url": receiver}
+    )
+    assert response.status_code == 200
+    (request,) = [item for item in f.requests if item.method == "POST"]
+    body = json.loads(request.content)
+    assert body["notificationUrl"] == receiver
+    secret = body["clientState"]
+    assert secret != f.department.id and len(secret) >= 32
+    row = f.rows(CloudWebhookSubscription).one()
+    assert row.client_state_hash == hashlib.sha256(secret.encode()).hexdigest()
+    assert row.notification_url == receiver
+    # The secret itself is stored nowhere on the row.
+    for column in CloudWebhookSubscription.__table__.columns:
+        assert secret not in str(getattr(row, column.name))
+
+
+def test_each_subscription_gets_its_own_secret(microsoft_route):
+    f = microsoft_route
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    assert f.client.delete("/microsoft/subscriptions/sub-1").status_code == 200
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    secrets = [
+        json.loads(item.content)["clientState"]
+        for item in f.requests
+        if item.method == "POST"
+    ]
+    assert len(secrets) == 2 and secrets[0] != secrets[1]
+
+
+@pytest.mark.parametrize(
+    "old_url", [None, "https://old-caller.example/webhooks/microsoft"]
+)
+def test_create_retires_a_subscription_made_before_secrets(microsoft_route, old_url):
+    f = microsoft_route
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    old = f.rows(CloudWebhookSubscription).one()
+    old.client_state_hash = None
+    old.notification_url = old_url or routes.microsoft_notification_url()
+    f.db.commit()
+    response = f.client.post("/microsoft/subscriptions", json=SUB)
+    assert response.status_code == 200
+    f.db.refresh(old)
+    assert not old.is_active and old.renewal_status == "failed"
+    assert old.renewal_result["code"] == "webhook_client_state_missing"
+    active = f.rows(CloudWebhookSubscription).filter_by(is_active=True).all()
+    assert len(active) == 1 and active[0].client_state_hash
+
+
+def test_subscription_without_a_secret_cannot_be_renewed(microsoft_route):
+    f = microsoft_route
+    assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
+    row = f.rows(CloudWebhookSubscription).one()
+    row.client_state_hash = None
+    f.db.commit()
+    f.requests.clear()
+    response = f.client.patch("/microsoft/subscriptions/sub-1")
+    assert response.status_code == 409
+    assert not f.requests
+    f.db.refresh(row)
+    assert row.renewal_status == "created" and row.is_active
+    # It can still be deleted, then created again with a secret.
+    assert f.client.delete("/microsoft/subscriptions/sub-1").status_code == 200
 
 
 READ_ROUTES = [
@@ -446,7 +523,13 @@ def test_queue_failure_rolls_back_and_does_not_return_success(
         ("subscriptions", {}),
         ("subscriptions", {**SUB, "change_types": ["created"]}),
         ("subscriptions", {**SUB, "resource": "/unsupported"}),
+        ("subscriptions", {**SUB, "resource": "/drives/../root"}),
+        ("subscriptions", {**SUB, "resource": "/drives/%2E%2E/root"}),
         ("subscriptions", {**SUB, "notification_url": "http://example.test/hook"}),
+        (
+            "subscriptions",
+            {**SUB, "notification_url": "https://other.example/webhooks/microsoft"},
+        ),
     ],
 )
 def test_invalid_bodies_are_rejected_before_provider_requests(
@@ -473,6 +556,69 @@ def test_invalid_bodies_are_rejected_before_provider_requests(
 def test_invalid_queries_are_rejected(microsoft_route, path):
     assert microsoft_route.client.get("/microsoft" + path).status_code == 422
     assert not microsoft_route.requests
+
+
+# Each decodes to an ID or path that would leave its Graph resource: a dot
+# segment, an added query, a fragment or a nested path.
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/onedrive/folders/%2E%2E/children",
+        "/onedrive/files/%2E%2E",
+        "/onedrive/files/file-1%3F%24select%3Did",
+        "/onedrive/files/file-1%23x/content",
+        "/sharepoint/sites/site-1%3Fx%3D1/drives",
+        "/sharepoint/drives/%2E%2E/items",
+        "/sharepoint/drives/drive-1/items?folder_path=Course/../../other",
+        "/onedrive/files?folder_id=..%2Fother",
+        "/onedrive/files?drive_id=drive-1%2F..",
+        "/onedrive/files?site_id=site-1%3Fx",
+        "/onedrive/folders?parent_id=folder-1%2Fchildren%3F",
+    ],
+)
+def test_unsafe_graph_references_are_refused_before_provider_requests(
+    microsoft_route, path
+):
+    response = microsoft_route.client.get("/microsoft" + path)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Microsoft item reference"}
+    assert not microsoft_route.requests
+
+
+def test_sharepoint_folder_path_is_sent_as_encoded_segments(microsoft_route):
+    f = microsoft_route
+    response = f.client.get(
+        "/microsoft/sharepoint/drives/drive-1/items",
+        params={"folder_path": "/Course A/Week 1: notes?#100%/"},
+    )
+    assert response.status_code == 200
+    (request,) = f.requests
+    assert request.url.raw_path == (
+        b"/v1.0/drives/drive-1/root:/Course%20A/Week%201%3A%20notes%3F%23100%25"
+        b":/children"
+    )
+
+
+def test_sharepoint_search_term_stays_inside_the_odata_literal(microsoft_route):
+    f = microsoft_route
+    response = f.client.get(
+        "/microsoft/sharepoint/search", params={"query": "it's ?$top=1#x/y"}
+    )
+    assert response.status_code == 200
+    (request,) = f.requests
+    assert request.url.raw_path == (
+        b"/v1.0/me/drive/search(q='it''s%20%3F%24top%3D1%23x%2Fy')"
+    )
+
+
+@pytest.mark.parametrize("method", ["patch", "delete"])
+def test_unsafe_subscription_id_is_refused_before_any_mutation(microsoft_route, method):
+    f = microsoft_route
+    response = getattr(f.client, method)("/microsoft/subscriptions/%2E%2E")
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Microsoft item reference"}
+    assert not f.requests
+    assert not f.rows(CloudWebhookSubscription).all()
 
 
 @pytest.mark.parametrize(
@@ -893,3 +1039,48 @@ def test_typed_provider_failures_keep_provider_status(
     response = microsoft_route.client.get("/microsoft/onedrive/files")
     assert response.status_code == expected
     assert response.json() == {"detail": "Microsoft operation unavailable"}
+
+
+NON_GRAPH_LINKS = [
+    "http://graph.microsoft.com/v1.0/me/drive/root/children",
+    "https://other.example/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com@other.example/v1.0/me/drive/root/children",
+    "https://user:pass@graph.microsoft.com/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com.other.example/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com:8443/v1.0/me/drive/root/children",
+    "https://graph.microsoft.com/beta/me/drive/root/children",
+    "https://graph.microsoft.com/v1.0/../me",
+    "https://graph.microsoft.com\\@other.example/v1.0/me",
+    "//other.example/v1.0/me",
+    "not a url",
+    "",
+]
+
+
+@pytest.mark.parametrize("link", NON_GRAPH_LINKS)
+def test_page_token_off_graph_is_refused_before_any_request(microsoft_route, link):
+    f = microsoft_route
+    response = f.client.get("/microsoft/onedrive/files", params={"page_token": link})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid page token"}
+    assert not f.requests
+    assert f.rows(CloudFile).count() == 0
+
+
+def test_graph_next_link_still_pages(microsoft_route):
+    f = microsoft_route
+    link = "https://graph.microsoft.com/v1.0/me/drive/items/folder-1/children?$skiptoken=page2"
+    response = f.client.get("/microsoft/onedrive/files", params={"page_token": link})
+    assert response.status_code == 200
+    assert [item["provider_file_id"] for item in response.json()["files"]] == ["file-1"]
+    assert len(f.requests) == 1
+    assert str(f.requests[0].url) == link
+
+
+def test_folder_scan_does_not_follow_a_next_link_off_graph(microsoft_route):
+    f = microsoft_route
+    f.next_link = "https://other.example/v1.0/next"
+    response = f.client.post("/microsoft/scan/folder", json={"folder_id": "folder-1"})
+    assert response.status_code == 400
+    assert len(f.requests) == 1
+    assert f.rows(CloudJobQueue).count() == 0

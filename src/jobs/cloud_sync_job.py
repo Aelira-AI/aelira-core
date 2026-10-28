@@ -22,7 +22,7 @@ from ..db.models import (
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
-from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from ..integrations.microsoft_365.onedrive import GraphPathRejected, OneDriveIntegration
 from ..services.job_enqueue_service import enqueue_cloud_job
 from .contracts import JobFailure, LostJobOwnership
 
@@ -489,6 +489,7 @@ async def handle_sync_job(
     )
 
     failed_folders = 0
+    invalid_sync_folders: list[str] = []
     # Sync each selected folder
     for sync_folder in sync_folders:
         logger.info(
@@ -528,6 +529,12 @@ async def handle_sync_job(
         except LostJobOwnership:
             db.rollback()
             raise
+        except GraphPathRejected:
+            # A stored folder ID Graph cannot be asked about; retrying cannot help.
+            logger.error(
+                "Refused sync folder %s: not a Microsoft Graph ID", sync_folder.id
+            )
+            invalid_sync_folders.append(str(sync_folder.id))
         except Exception as e:
             logger.error(
                 f"Failed to sync folder {sync_folder.folder_name} "
@@ -550,12 +557,21 @@ async def handle_sync_job(
         f"{total_results['scan_jobs_created']} scan jobs created"
     )
 
+    invalid = (
+        {"invalid_sync_folders": invalid_sync_folders} if invalid_sync_folders else {}
+    )
     if failed_folders:
         return JobFailure.retryable(
             "cloud_sync_partial_failure",
             {
                 "processed": total_results["folders_processed"],
                 "failed": failed_folders,
+                **invalid,
             },
+        )
+    if invalid_sync_folders:
+        return JobFailure.deterministic(
+            "cloud_sync_invalid_folder",
+            {"processed": total_results["folders_processed"], **invalid},
         )
     return total_results

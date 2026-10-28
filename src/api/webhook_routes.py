@@ -25,6 +25,7 @@ from ..db.models import (
     CloudProvider,
     CloudJobType,
 )
+from ..integrations.microsoft_365.onedrive import client_state_matches
 from ..services.job_enqueue_service import enqueue_cloud_job
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ async def microsoft_graph_webhook(
     - subscriptionId: Our subscription ID
     - changeType: Type of change (updated, created, deleted)
     - resource: The resource path that changed
-    - clientState: Our verification token (department_id)
+    - clientState: The subscription's secret, checked against its stored hash
     """
     # Handle subscription validation
     if validationToken:
@@ -160,7 +161,7 @@ async def microsoft_graph_webhook(
         subscription_id = notification.get("subscriptionId")
         change_type = notification.get("changeType")
         resource = notification.get("resource")
-        client_state = notification.get("clientState")  # Our department_id
+        client_state = notification.get("clientState")
 
         if (
             not isinstance(subscription_id, str)
@@ -168,7 +169,7 @@ async def microsoft_graph_webhook(
             or len(subscription_id) > 255
             or not isinstance(client_state, str)
             or not client_state
-            or len(client_state) > 64
+            or len(client_state) > 128
             or not isinstance(change_type, str)
             or not change_type
             or len(change_type) > 64
@@ -183,23 +184,32 @@ async def microsoft_graph_webhook(
 
         # Validate subscription exists
         with get_db() as db:
-            subscription = (
+            candidates = (
                 db.query(CloudWebhookSubscription)
                 .filter(
                     CloudWebhookSubscription.subscription_id == subscription_id,
                     CloudWebhookSubscription.provider == CloudProvider.MICROSOFT.value,
-                    CloudWebhookSubscription.department_id == client_state,
                     CloudWebhookSubscription.is_active,
                 )
-                .first()
+                .all()
             )
 
-            if not subscription:
+            if not candidates:
                 logger.warning("Unknown Microsoft webhook subscription")
                 continue
 
-            # Verify client state matches department ID
-            if client_state != subscription.department_id:
+            # The secret, not the lookup, decides which row this is. A row
+            # created before per-subscription secrets has no hash and matches
+            # nothing.
+            subscription = next(
+                (
+                    row
+                    for row in candidates
+                    if client_state_matches(client_state, row.client_state_hash)
+                ),
+                None,
+            )
+            if subscription is None:
                 logger.warning("Microsoft webhook client state mismatch")
                 continue
 

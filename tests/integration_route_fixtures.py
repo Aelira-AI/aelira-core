@@ -28,6 +28,7 @@ from src.db.models import (
     Department,
     User,
 )
+from src.integrations.microsoft_365.onedrive import hash_client_state
 
 PROVIDERS = ("google", "microsoft", "canvas", "blackboard", "moodle", "brightspace")
 # One shared UTC reference keeps expected serialization exact without aging
@@ -57,7 +58,13 @@ def credential(case, provider, *, other=False, active=True, synced_at=NOW):
     return row
 
 
-def subscription(case, credentials, *, active=True):
+# The clientState secret behind every Microsoft fixture subscription.
+MICROSOFT_CLIENT_STATE = "fixture-client-state-secret-0123456789"
+
+
+def subscription(case, credentials, *, active=True, client_state_hash=None):
+    if client_state_hash is None and credentials.provider == "microsoft":
+        client_state_hash = hash_client_state(MICROSOFT_CLIENT_STATE)
     row = CloudWebhookSubscription(
         id=str(uuid4()),
         department_id=credentials.department_id,
@@ -68,6 +75,7 @@ def subscription(case, credentials, *, active=True):
         provider_channel_resource_id="fixture-channel-resource",
         expiration_time=NOW + timedelta(days=7),
         notification_url="https://example.test/webhooks",
+        client_state_hash=client_state_hash,
         is_active=active,
     )
     case.db.add(row)

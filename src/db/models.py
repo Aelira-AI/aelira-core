@@ -1750,6 +1750,9 @@ class CloudWebhookSubscription(Base):
     # Subscription details
     expiration_time = Column(DateTime(timezone=True), nullable=False)
     notification_url = Column(String(1024), nullable=True)
+    # SHA-256 of the Microsoft clientState secret; NULL for a subscription
+    # created before per-subscription secrets, whose notifications are refused.
+    client_state_hash = Column(String(64), nullable=True)
 
     # State
     is_active = Column(Boolean, default=True)

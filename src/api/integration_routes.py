@@ -11,7 +11,7 @@ Provides unified endpoints for:
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Any, Optional
 from datetime import datetime
 import hashlib
@@ -30,6 +30,7 @@ from ..db.models import (
     CloudSyncFolder,
 )
 from ..api.auth_routes import get_current_api_key
+from ..integrations.microsoft_365.onedrive import GraphPathRejected, graph_id
 from ..services.job_enqueue_service import enqueue_cloud_job
 from ..education.current_compliance import public_cloud_file_scores
 
@@ -75,10 +76,20 @@ class AddSyncFolderRequest(BaseModel):
     """Request to add a folder to sync list."""
 
     provider: str  # "google" or "microsoft"
-    folder_id: str
+    folder_id: str = Field(..., min_length=1, max_length=255)
     folder_name: str
     folder_path: Optional[str] = None
     sync_subfolders: bool = True
+
+    @model_validator(mode="after")
+    def microsoft_folder_is_a_graph_id(self):
+        # The stored ID is later placed in Graph item paths by the sync worker.
+        if self.provider == "microsoft":
+            try:
+                graph_id(self.folder_id)
+            except GraphPathRejected:
+                raise ValueError("invalid Microsoft folder ID") from None
+        return self
 
 
 class TriggerSyncRequest(BaseModel):

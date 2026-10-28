@@ -278,20 +278,35 @@ def test_preview_reports_the_bump_and_never_fails(repo: Path) -> None:
 REAL_CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
 
 
-def test_real_changelog_passes_as_0_10_0_after_0_9_13() -> None:
-    report = gate.check_release("0.10.0", "0.9.13", REAL_CHANGELOG, [])
+# The migration that 0.11.0 adds since v0.10.0, as the tag diff reports it.
+MIGRATIONS_SINCE_V0_10_0 = ["alembic/versions/2026_10_28_webhook_client_state.py"]
+
+
+def test_real_changelog_passes_as_0_11_0_after_0_10_0() -> None:
+    report = gate.check_release(
+        "0.11.0", "0.10.0", REAL_CHANGELOG, MIGRATIONS_SINCE_V0_10_0
+    )
     assert report.errors == []
     assert report.actual == "minor"
     assert report.required == "minor"
 
 
-def test_negative_control_real_changelog_is_refused_as_0_9_14() -> None:
-    renamed = REAL_CHANGELOG.replace("## [0.10.0] - ", "## [0.9.14] - ", 1)
+def test_negative_control_real_changelog_is_refused_as_0_10_1() -> None:
+    renamed = REAL_CHANGELOG.replace("## [0.11.0] - ", "## [0.10.1] - ", 1)
     assert renamed != REAL_CHANGELOG
-    report = gate.check_release("0.9.14", "0.9.13", renamed, [])
+    report = gate.check_release("0.10.1", "0.10.0", renamed, MIGRATIONS_SINCE_V0_10_0)
     message = "\n".join(report.errors)
     assert "'### Changed'" in message
     assert "'### Operator action required'" in message
-    assert "0.10.0" in message
-    # Without the rename there is simply no 0.9.14 section to release.
-    assert gate.check_release("0.9.14", "0.9.13", REAL_CHANGELOG, []).errors
+    assert MIGRATIONS_SINCE_V0_10_0[0] in message
+    assert "0.11.0" in message
+    # The migration alone refuses a patch.
+    fixed_only = gate.check_release(
+        "0.10.1",
+        "0.10.0",
+        FIXED_ONLY.format(version="0.10.1"),
+        MIGRATIONS_SINCE_V0_10_0,
+    )
+    assert fixed_only.errors
+    # Without the rename there is simply no 0.10.1 section to release.
+    assert gate.check_release("0.10.1", "0.10.0", REAL_CHANGELOG, []).errors

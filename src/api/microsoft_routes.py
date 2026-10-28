@@ -20,7 +20,7 @@ import uuid
 import re
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from ..integrations.cloud_base import (
@@ -43,7 +43,16 @@ from ..db.models import (
 from ..api.auth_routes import get_current_api_key
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
-from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from ..integrations.microsoft_365.onedrive import (
+    GraphLinkRejected,
+    GraphPathRejected,
+    OneDriveIntegration,
+    graph_drive_path,
+    graph_id,
+    hash_client_state,
+    new_client_state,
+    require_graph_link,
+)
 from ..integrations.microsoft_365.microsoft_oauth import MicrosoftOAuthService
 from ..config.settings import Settings, get_settings
 from .oauth_routes import integration_callback_redirect, trusted_http_origin
@@ -308,6 +317,10 @@ def microsoft_errors(handler):
             return await handler(*args, **kwargs)
         except HTTPException:
             raise
+        except GraphLinkRejected:
+            raise HTTPException(400, "Invalid page token") from None
+        except GraphPathRejected:
+            raise HTTPException(400, "Invalid Microsoft item reference") from None
         except Exception as exc:
             db = kwargs.get("db")
             if db is not None:
@@ -750,6 +763,10 @@ async def list_onedrive_files(
     Returns files that can be scanned (Word, PowerPoint, Excel, PDFs).
     Files are automatically tracked in our database for change detection.
     """
+    if page_token is not None:
+        # Refuse a page token that is not a Graph link before any credential
+        # or Graph request.
+        require_graph_link(page_token)
     credential = await get_microsoft_credential(api_key, db)
     integration = await get_microsoft_integration(credential, drive_id, site_id)
 
@@ -1243,7 +1260,7 @@ async def list_folder_children(
     endpoint = (
         "/me/drive/root/children"
         if folder_id == "root"
-        else f"/me/drive/items/{folder_id}/children"
+        else f"/me/drive/items/{graph_id(folder_id)}/children"
     )
     data = await microsoft_graph_get(api_key, db, endpoint)
     return {"items": data.get("value", []), "folder_id": folder_id}
@@ -1256,7 +1273,9 @@ async def get_onedrive_file_metadata(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    return await microsoft_graph_get(api_key, db, f"/me/drive/items/{file_id}")
+    return await microsoft_graph_get(
+        api_key, db, f"/me/drive/items/{graph_id(file_id)}"
+    )
 
 
 @router.get("/onedrive/files/{file_id}/content")
@@ -1266,6 +1285,7 @@ async def download_onedrive_file(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    graph_id(file_id)
     credential = await get_microsoft_credential(api_key, db)
     integration = await get_microsoft_integration(credential)
     try:
@@ -1310,7 +1330,7 @@ async def get_sharepoint_drives(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    data = await microsoft_graph_get(api_key, db, f"/sites/{site_id}/drives")
+    data = await microsoft_graph_get(api_key, db, f"/sites/{graph_id(site_id)}/drives")
     return {"drives": data.get("value", []), "site_id": site_id}
 
 
@@ -1322,10 +1342,12 @@ async def list_sharepoint_drive_items(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    drive = graph_id(drive_id)
+    path = graph_drive_path(folder_path or "")
     endpoint = (
-        f"/drives/{drive_id}/root/children"
-        if not folder_path
-        else f"/drives/{drive_id}/root:/{folder_path}:/children"
+        f"/drives/{drive}/root:/{path}:/children"
+        if path
+        else f"/drives/{drive}/root/children"
     )
     data = await microsoft_graph_get(api_key, db, endpoint)
     return {"items": data.get("value", []), "drive_id": drive_id}
@@ -1338,9 +1360,10 @@ async def search_sharepoint(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    data = await microsoft_graph_get(
-        api_key, db, f"/me/drive/search(q='{query.replace(chr(39), chr(39) * 2)}')"
-    )
+    # OData doubles a quote inside the literal; everything else is encoded so
+    # "?", "#" or "/" stay part of the search text.
+    term = quote(query.replace("'", "''"), safe="'")
+    data = await microsoft_graph_get(api_key, db, f"/me/drive/search(q='{term}')")
     return {"results": data.get("value", []), "query": query}
 
 
@@ -1410,20 +1433,33 @@ async def upload_to_sharepoint(
     )
 
 
+def microsoft_notification_url() -> str:
+    """Graph notifications are only ever sent to this API's own receiver."""
+    return f"{trusted_http_origin(get_settings().public_api_url)}/webhooks/microsoft"
+
+
 class CreateSubscriptionRequest(BaseModel):
     """Drive-root notifications supported by the existing OneDrive adapter."""
 
     resource: str = Field(..., max_length=1024)
     change_types: List[str] = Field(default_factory=lambda: ["updated"])
-    notification_url: str = Field(..., max_length=1024)
+    # Optional; when given it must be this API's receiver.
+    notification_url: Optional[str] = Field(None, max_length=1024)
 
     @field_validator("resource")
     @classmethod
     def supported_resource(cls, value):
-        if not re.fullmatch(
-            r"/me/drive/root|/drives/[^/?#]+/root|/sites/[^/?#]+/drive/root", value
-        ):
+        match = re.fullmatch(
+            r"/me/drive/root|/drives/([^/]+)/root|/sites/([^/]+)/drive/root", value
+        )
+        if not match:
             raise ValueError("unsupported drive-root resource")
+        resource_id = match.group(1) or match.group(2)
+        if resource_id is not None:
+            try:
+                graph_id(resource_id)
+            except GraphPathRejected:
+                raise ValueError("unsupported drive-root resource") from None
         return value
 
     @field_validator("change_types")
@@ -1435,18 +1471,9 @@ class CreateSubscriptionRequest(BaseModel):
 
     @field_validator("notification_url")
     @classmethod
-    def https_callback(cls, value):
-        parsed = urlparse(value)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.fragment
-        ):
-            raise ValueError(
-                "notification URL must use HTTPS without credentials or fragment"
-            )
+    def own_receiver(cls, value):
+        if value is not None and value != microsoft_notification_url():
+            raise ValueError("notification URL must be this API's Microsoft receiver")
         return value
 
 
@@ -1476,29 +1503,50 @@ async def create_webhook_subscription(
     db: Session = Depends(get_db_dependency),
 ):
     credential = await get_microsoft_credential(api_key, db)
+    notification_url = microsoft_notification_url()
     # Serialize initial intent creation within one credential.
     db.query(CloudOAuthCredentials).filter(
         CloudOAuthCredentials.id == credential.id
     ).with_for_update().one()
-    existing = (
+    matching = (
         db.query(CloudWebhookSubscription)
         .filter(
             CloudWebhookSubscription.department_id == api_key.department_id,
             CloudWebhookSubscription.credential_id == credential.id,
             CloudWebhookSubscription.provider == "microsoft",
             CloudWebhookSubscription.resource_uri == request.resource,
-            CloudWebhookSubscription.notification_url == request.notification_url,
             CloudWebhookSubscription.renewal_status.in_(
                 ["requesting", "indeterminate", "created", "renewed"]
             ),
         )
-        .first()
+        .all()
     )
-    if existing:
+    blocking = []
+    for candidate in matching:
+        if not candidate.client_state_hash:
+            # Created before per-subscription secrets (whatever URL it named):
+            # its notifications are refused and it cannot be renewed, so it is
+            # retired and replaced. Graph lets the old subscription expire.
+            candidate.is_active = False
+            candidate.renewal_status = "failed"
+            candidate.pending_renewal_channel_id = None
+            candidate.pending_renewal_started_at = None
+            candidate.renewal_result = {
+                "provider": "microsoft",
+                "operation": "create",
+                "status": "failed",
+                "code": "webhook_client_state_missing",
+            }
+        else:
+            blocking.append(candidate)
+    if blocking:
+        db.commit()
         raise HTTPException(
             409, "Subscription already exists or requires reconciliation"
         )
     intent_id = str(uuid.uuid4())
+    # Graph echoes this secret in every notification; only its hash is kept.
+    client_state = new_client_state()
     row = CloudWebhookSubscription(
         id=intent_id,
         department_id=api_key.department_id,
@@ -1507,7 +1555,8 @@ async def create_webhook_subscription(
         subscription_id=intent_id,
         provider_resource_id=request.resource,
         resource_uri=request.resource,
-        notification_url=request.notification_url,
+        notification_url=notification_url,
+        client_state_hash=hash_client_state(client_state),
         expiration_time=datetime.now(timezone.utc),
         is_active=False,
         renewal_status="requesting",
@@ -1528,7 +1577,9 @@ async def create_webhook_subscription(
     )
     integration = await get_microsoft_integration(credential, drive_id, site_id)
     try:
-        result = await integration.create_webhook(request.notification_url)
+        result = await integration.create_webhook(
+            notification_url, client_state=client_state
+        )
         row.subscription_id = result["subscription_id"]
         row.expiration_time = result["expiration_time"]
         row.is_active = True
@@ -1579,11 +1630,19 @@ async def renew_webhook_subscription(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    graph_id(subscription_id)
     # Refresh may commit: resolve credentials before taking the subscription lock.
     credential = await get_microsoft_credential(api_key, db)
     row = scoped_subscription(db, api_key.department_id, subscription_id)
     if credential.id != row.credential_id:
         raise HTTPException(409, "Subscription credential has changed")
+    if not row.client_state_hash:
+        # Graph cannot change clientState on renewal, and notifications for a
+        # subscription without a secret are refused.
+        raise HTTPException(
+            409,
+            "Subscription predates per-subscription secrets; delete and recreate it",
+        )
     begin_subscription_mutation(db, row, "renew")
     integration = await get_microsoft_integration(credential)
     try:
@@ -1608,6 +1667,7 @@ async def delete_webhook_subscription(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
+    graph_id(subscription_id)
     # Refresh may commit: resolve credentials before taking the subscription lock.
     credential = await get_microsoft_credential(api_key, db)
     row = scoped_subscription(db, api_key.department_id, subscription_id)

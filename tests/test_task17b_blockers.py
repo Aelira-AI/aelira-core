@@ -34,7 +34,7 @@ def test_onedrive_constructor_rejects_credential_identifier_scope():
 
 
 @pytest.mark.asyncio
-async def test_onedrive_webhook_uses_department_scope_as_client_state():
+async def test_onedrive_webhook_sends_the_subscription_secret_not_the_department():
     from src.integrations.microsoft_365.onedrive import OneDriveIntegration
 
     captured = {}
@@ -56,11 +56,14 @@ async def test_onedrive_webhook_uses_department_scope_as_client_state():
     assert integration.credential_id is None
     integration._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        await integration.create_webhook("https://example.test/hooks/microsoft")
+        await integration.create_webhook(
+            "https://example.test/hooks/microsoft", client_state="subscription-secret"
+        )
     finally:
         await integration.close()
 
-    assert b'"clientState":"department-authority"' in captured["body"]
+    assert b'"clientState":"subscription-secret"' in captured["body"]
+    assert b"department-authority" not in captured["body"]
     assert b"credential" not in captured["body"]
     assert not temporary_directory.exists()
 
@@ -87,8 +90,11 @@ async def test_onedrive_close_failure_is_sanitized_and_still_cleans_temp(caplog)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_state", [None, "", "another-department"])
-async def test_microsoft_webhook_requires_exact_department_client_state(
+@pytest.mark.parametrize(
+    "client_state",
+    [None, "", "another-department", "department-authority", "subscription-secreT"],
+)
+async def test_microsoft_webhook_requires_the_subscription_secret(
     monkeypatch, client_state
 ):
     from src.api import webhook_routes
@@ -98,10 +104,11 @@ async def test_microsoft_webhook_requires_exact_department_client_state(
         subscription_id="provider-subscription",
         department_id="department-authority",
         credential_id="credential-1",
+        client_state_hash=hashlib.sha256(b"subscription-secret").hexdigest(),
         last_notification_at=None,
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = subscription
+    db.query.return_value.filter.return_value.all.return_value = [subscription]
 
     @contextmanager
     def scoped_db():
@@ -137,7 +144,7 @@ async def test_microsoft_webhook_requires_exact_department_client_state(
 
 
 @pytest.mark.asyncio
-async def test_microsoft_webhook_filters_department_and_never_logs_provider_values(
+async def test_microsoft_webhook_finds_the_subscription_and_never_logs_provider_values(
     monkeypatch, caplog
 ):
     from src.api import webhook_routes
@@ -147,10 +154,11 @@ async def test_microsoft_webhook_filters_department_and_never_logs_provider_valu
         subscription_id="provider-subscription",
         department_id="department-authority",
         credential_id="credential-1",
+        client_state_hash=hashlib.sha256(b"subscription-secret").hexdigest(),
         last_notification_at=None,
     )
     query = MagicMock()
-    query.filter.return_value.first.return_value = subscription
+    query.filter.return_value.all.return_value = [subscription]
     db = MagicMock()
     db.query.return_value = query
 
@@ -169,7 +177,7 @@ async def test_microsoft_webhook_filters_department_and_never_logs_provider_valu
                 "value": [
                     {
                         "subscriptionId": secret_subscription,
-                        "clientState": "department-authority",
+                        "clientState": "subscription-secret",
                         "changeType": "updated",
                         "resource": secret_resource,
                     }
@@ -185,7 +193,9 @@ async def test_microsoft_webhook_filters_department_and_never_logs_provider_valu
         )
 
     filter_sql = " ".join(str(expression) for expression in query.filter.call_args.args)
-    assert "cloud_webhook_subscriptions.department_id" in filter_sql
+    # The clientState secret authenticates the notification; it is never used
+    # as a department filter.
+    assert "cloud_webhook_subscriptions.department_id" not in filter_sql
     assert "cloud_webhook_subscriptions.subscription_id" in filter_sql
     assert response.status_code == 202
     assert secret_subscription not in caplog.text
@@ -220,10 +230,11 @@ async def test_microsoft_webhook_enqueue_and_rollback_failures_are_sanitized(
         subscription_id="provider-subscription",
         department_id="department-authority",
         credential_id="credential-1",
+        client_state_hash=hashlib.sha256(b"subscription-secret").hexdigest(),
         last_notification_at=None,
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = subscription
+    db.query.return_value.filter.return_value.all.return_value = [subscription]
     db.rollback.side_effect = RuntimeError("/database/path password=secret")
 
     @contextmanager
@@ -242,7 +253,7 @@ async def test_microsoft_webhook_enqueue_and_rollback_failures_are_sanitized(
                 "value": [
                     {
                         "subscriptionId": "provider-subscription",
-                        "clientState": "department-authority",
+                        "clientState": "subscription-secret",
                         "changeType": "updated",
                         "resource": "/me/drive/root",
                     }
@@ -400,6 +411,7 @@ async def test_webhook_refresh_renews_microsoft_and_persists_audit(monkeypatch):
         subscription_id="provider-sub",
         resource_uri="/me/drive/root",
         notification_url="https://example.test/hooks/microsoft",
+        client_state_hash=hashlib.sha256(b"subscription-secret").hexdigest(),
         expiration_time=now,
         is_active=True,
         last_renewed_at=None,

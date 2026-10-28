@@ -129,6 +129,24 @@ async def handle_webhook_refresh_job(
             {"provider": provider, "retry_safe": False},
         )
 
+    if provider == "microsoft" and not getattr(subscription, "client_state_hash", None):
+        # Created before per-subscription secrets: its notifications are
+        # refused and Graph cannot change clientState on renewal, so renewing
+        # would only keep a dead subscription alive. It must be recreated.
+        subscription.is_active = False
+        subscription.renewal_status = "failed"
+        subscription.pending_renewal_channel_id = None
+        subscription.pending_renewal_started_at = None
+        subscription.renewal_result = {
+            "provider": provider,
+            "status": "failed",
+            "code": "webhook_client_state_missing",
+        }
+        db.commit()
+        return JobFailure.deterministic(
+            "webhook_client_state_missing", {"provider": provider}
+        )
+
     watched_resource_id = getattr(subscription, "provider_resource_id", None)
     if provider == "google" and (
         not isinstance(watched_resource_id, str) or not watched_resource_id.strip()
