@@ -1771,9 +1771,12 @@ jobs:
       - name: Build the dashboard image natively
         # The release workflow builds this same context and Dockerfile with no
         # build arguments, so the image scanned here is the one it publishes.
-        run: >-
-          docker buildx build --load --platform ${{ matrix.platform }}
-          --tag aelira-dashboard:test --file dashboard/Dockerfile dashboard
+        # Trivy does not create its output directory, so make it here.
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/dashboard-image-inventory
+          docker buildx build --load --platform ${{ matrix.platform }} \
+            --tag aelira-dashboard:test --file dashboard/Dockerfile dashboard
       - name: Inventory every HIGH and CRITICAL finding in the dashboard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
