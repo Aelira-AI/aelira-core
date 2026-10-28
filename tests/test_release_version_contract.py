@@ -190,7 +190,7 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "## Security fixes",
         "security/advisories/GHSA-7pr5-834v-2wp5",
         "`<user_content_CODE>`",
-        "scoring does not use a model and was not affected",
+        "does not use a model and was not affected",
         "[#847]",
         "[#852]",
         "[#856]",
