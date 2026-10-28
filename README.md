@@ -276,7 +276,7 @@ Aelira Core follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) f
 
 Releases 0.9.1 to 0.9.13 were published as patch releases but included new features, database migrations and breaking changes. Read the release notes for each version before you upgrade across them.
 
-This policy is enforced by tooling. The release workflow runs `scripts/verify_semver_bump.py` and refuses a tag that does not increase the version, skips a number, or is a patch whose CHANGELOG section has any heading other than Fixed, Security or Dependencies, or that adds an Alembic migration. A non-blocking check on pull requests prints the smallest bump the Unreleased section already requires. See [CONTRIBUTING.md](CONTRIBUTING.md#changelog-entries-and-version-bumps) for how to write entries.
+This policy is enforced by tooling. The release workflow runs `scripts/verify_semver_bump.py` and refuses a tag that does not increase the version, skips a number, or is a patch whose CHANGELOG section has any heading other than Fixed, Security or Dependencies, or that adds an Alembic migration. It also refuses a tag while the Unreleased section still has entries. Every pull request must add a CHANGELOG entry or state why it needs none, and a non-blocking check prints the smallest bump the Unreleased section already requires. See [CONTRIBUTING.md](CONTRIBUTING.md#changelog-entries-and-version-bumps) for how to write entries.
 
 ## Development
 

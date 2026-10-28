@@ -1,0 +1,38 @@
+name: Changelog entry
+
+# Every pull request adds or changes a CHANGELOG.md entry, or its description
+# has a standalone `Changelog: none` line with the reason. Editing the
+# description runs the check again. Dependabot pull requests are exempt; their
+# entries are written when the release is prepared.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-entry-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changelog-entry:
+    name: Changelog entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The merge commit and both parents: HEAD^1 is the base, so the diff is
+      # exactly what the pull request changes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Test the changelog policy
+        run: node --experimental-strip-types --test scripts/changelog_entry.test.ts
+      - name: Require a CHANGELOG entry or a stated reason
+        run: node --experimental-strip-types scripts/changelog_entry.ts

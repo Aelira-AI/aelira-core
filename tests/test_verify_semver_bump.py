@@ -118,6 +118,23 @@ def test_fixed_security_dependencies_only_passes_as_a_patch() -> None:
     assert report.required == "patch"
 
 
+def test_entries_left_under_unreleased_refuse_the_release() -> None:
+    changelog = FIXED_ONLY.format(version="0.9.14").replace(
+        "## [Unreleased]\n",
+        "## [Unreleased]\n\n### Security\n\n- A fix merged after the section was written.\n",
+    )
+    report = check("0.9.14", "0.9.13", changelog)
+    text = "\n".join(report.errors)
+    assert "still has entries under '## [Unreleased]'" in text
+    assert "'## [0.9.14]'" in text
+
+
+def test_a_missing_unreleased_section_does_not_refuse_the_release() -> None:
+    changelog = FIXED_ONLY.format(version="0.9.14").replace("## [Unreleased]\n\n", "")
+    assert "Unreleased" not in changelog
+    assert check("0.9.14", "0.9.13", changelog).errors == []
+
+
 def test_an_added_migration_refuses_a_patch_and_names_the_file() -> None:
     migration = "alembic/versions/20261101_new_table.py"
     report = check("0.9.14", "0.9.13", FIXED_ONLY.format(version="0.9.14"), [migration])

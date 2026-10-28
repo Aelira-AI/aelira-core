@@ -19,6 +19,9 @@ Rules:
   * From 1.0.0, an entry that starts with `**Breaking:**` anywhere in the
     section requires a major bump. Write the marker as the first words of the
     bullet, for example `- **Breaking:** the /v1/scan response drops "score".`
+  * `## [Unreleased]` must be empty. Every change in the tagged commit ships
+    in this release, so an entry still under Unreleased belongs in the
+    release's own section, where this gate can weigh it.
   * Alpha tags (`vX.Y.Z-alpha.N`) are checked only for a valid base version.
 
 Usage:
@@ -186,6 +189,13 @@ def check_release(
             f"error: CHANGELOG.md section [{new_version}] has no '###' entries"
         )
         return report
+    unreleased = changelog_section(changelog, "Unreleased")
+    if unreleased and unreleased.strip():
+        report.errors.append(
+            "error: CHANGELOG.md still has entries under '## [Unreleased]'. "
+            f"They are in the tagged commit, so they ship in {new_version}: "
+            f"move them into '## [{new_version}]' and the release notes."
+        )
 
     report.reasons = content_requirements(section, added_migrations, new[0])
     report.required = strongest(report.reasons)

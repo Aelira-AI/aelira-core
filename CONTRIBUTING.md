@@ -156,6 +156,10 @@ User-visible changes go under `## [Unreleased]` in `CHANGELOG.md`, in a `###` su
 
 A new file under `alembic/versions/` also requires at least a minor release. Mark a breaking change by starting its bullet with `**Breaking:**`, for example `- **Breaking:** the scan response no longer includes a field.`; use that marker only for a change that makes existing API, CLI or configuration use stop working. `scripts/verify_semver_bump.py` applies these rules when a release tag is pushed, and `python scripts/verify_semver_bump.py --preview` shows what the Unreleased section requires now. See [Versioning](README.md#versioning).
 
+Write the entry in the pull request that makes the change, not when the release is prepared. The **Changelog entry** check passes when a pull request adds or changes a bullet in `CHANGELOG.md`. For a change that needs no entry, such as tests, CI or documentation that does not alter behaviour, put a standalone line in the pull request description that starts `Changelog: none` and gives the reason, for example `Changelog: none, test-only change`. Lines inside HTML comments and fenced code blocks do not count, and editing the description runs the check again. Dependabot pull requests are exempt, and their entries are written when the release is prepared.
+
+When a release is tagged, `## [Unreleased]` must be empty. A change merged after the release section was written is in the tagged commit, so the gate refuses the tag until its entry is moved into that release's section and its release notes.
+
 ## Pull Request Process
 
 ### Issue traceability
@@ -213,7 +217,7 @@ bounded to 1,000 open PRs and 3,000 dependency files and fail if these limits ar
 exceeded. This check enforces traceability, not correctness of the implementation.
 
 1. Update documentation if you changed public APIs
-   Add notable user-facing changes to `CHANGELOG.md` under **Unreleased**, including compatibility limits and any operator actions. Move entries into a dated version section when that release is published.
+   Add notable user-facing changes to `CHANGELOG.md` under **Unreleased**, including compatibility limits and any operator actions, or state `Changelog: none` with the reason (see [Changelog entries and version bumps](#changelog-entries-and-version-bumps)). Move entries into a dated version section when that release is published.
 2. Add tests for new functionality
 3. Ensure all tests pass
 4. Keep PRs focused — one feature or fix per PR
