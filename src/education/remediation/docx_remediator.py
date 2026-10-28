@@ -888,15 +888,23 @@ Generate only the alt text, nothing else:"""
         self, issue: RemediationIssue, *, client: Any
     ) -> Optional[str]:
         """Generate descriptive link text using AI."""
-        original_text = issue.original_content or "click here"
+        original_text = issue.original_content or ""
         url = issue.metadata.get("url", "")
         context = issue.metadata.get("context", "")
 
-        prompt = f"""Generate better link text for an accessibility fix.
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
-Current link text: "{original_text}"
-URL: {url}
-Context: {context[:200] if context else 'No context'}
+        safe_text = sanitize_for_prompt(original_text, max_length=500) or "click here"
+        safe_url = sanitize_for_prompt(url, max_length=2000)
+        safe_context = sanitize_for_prompt(context, max_length=200) or "No context"
+
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Generate better link text for an accessibility fix.
+
+Current link text: "{safe_text}"
+URL: {safe_url}
+Context: {safe_context}
 
 Requirements:
 - Be descriptive of the link destination

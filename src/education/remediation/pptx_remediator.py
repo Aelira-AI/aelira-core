@@ -744,9 +744,15 @@ class PptxRemediator(BaseRemediator):
                     texts.append(shape.text)
             context_text = " ".join(texts)
 
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
+
+        safe_context = (
+            sanitize_for_prompt(context_text, max_length=500) or "No content available"
+        )
         prompt = (
+            f"{PROMPT_DATA_NOTICE}\n\n"
             "Generate a concise slide title based on the slide content.\n\n"
-            f"Slide content:\n{context_text[:500] if context_text else 'No content available'}\n\n"
+            f"Slide content:\n{safe_context}\n\n"
             "Requirements:\n"
             "- Keep it short (3-8 words)\n"
             "- Make it descriptive of the slide's main topic\n"

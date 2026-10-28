@@ -222,6 +222,23 @@ def _calls_and_names(path):
     return calls, names
 
 
+# Modules whose prompts carry document text. Each must keep delimiting it, so
+# a module that stops calling the sanitizer fails here as well.
+DELIMITING_MODULES = {
+    "src/ai/gemini_client.py",
+    "src/education/code_scanner.py",
+    "src/education/image_alt_text.py",
+    "src/education/latex_descriptions.py",
+    "src/education/remediation/docx_remediator.py",
+    "src/education/remediation/html_remediator.py",
+    "src/education/remediation/latex_remediator.py",
+    "src/education/remediation/pptx_remediator.py",
+    "src/education/remediation/xlsx_remediator.py",
+    "src/education/web_scanner.py",
+    "src/utils/ollama_client.py",
+}
+
+
 def test_every_module_that_delimits_text_tells_the_model_it_is_data():
     checked = []
     for path in sorted((ROOT / "src").rglob("*.py")):
@@ -232,4 +249,4 @@ def test_every_module_that_delimits_text_tells_the_model_it_is_data():
             checked.append(path.relative_to(ROOT).as_posix())
             assert names, f"{path} delimits text without PROMPT_DATA_NOTICE"
 
-    assert len(checked) >= 6
+    assert DELIMITING_MODULES <= set(checked), DELIMITING_MODULES - set(checked)

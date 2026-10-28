@@ -13,6 +13,8 @@ import logging
 import time
 from typing import Optional
 
+from src.utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,9 +242,11 @@ class MathDescriptionGenerator:
             Input: "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"
             Output: "The quadratic formula: x equals negative b plus or minus the square root of b squared minus 4ac, all divided by 2a"
         """
-        prompt = f"""Describe this LaTeX equation in natural language for a screen reader user:
+        prompt = f"""{PROMPT_DATA_NOTICE}
 
-LaTeX: {latex}
+Describe this LaTeX equation in natural language for a screen reader user:
+
+LaTeX: {sanitize_for_prompt(latex, max_length=4096)}
 
 Description:"""
 
