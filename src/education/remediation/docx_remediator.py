@@ -412,11 +412,13 @@ class DocxRemediator(BaseRemediator):
         sample = paragraphs_for_ai[:40]
         para_list = "\n".join(f"[{p['index']}] {p['text']}" for p in sample)
 
-        from ...utils.security import sanitize_for_prompt
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
         safe_para_list = sanitize_for_prompt(para_list, max_length=3000)
 
-        prompt = f"""This Word document has no heading styles applied. Identify which paragraphs should be headings and what level (1-3) each should be.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+This Word document has no heading styles applied. Identify which paragraphs should be headings and what level (1-3) each should be.
 
 Paragraphs (format: [index] text):
 {safe_para_list}
@@ -816,7 +818,7 @@ Rules:
             )
 
         # Sanitize context text before AI prompt
-        from ...utils.security import sanitize_for_prompt
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
         safe_context = (
             sanitize_for_prompt(context_text, max_length=500)
@@ -825,7 +827,9 @@ Rules:
         )
 
         # Generate prompt
-        prompt = f"""Generate concise, descriptive alt text for an image in a Word document.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Generate concise, descriptive alt text for an image in a Word document.
 
 Context from surrounding text:
 {safe_context}
@@ -884,15 +888,23 @@ Generate only the alt text, nothing else:"""
         self, issue: RemediationIssue, *, client: Any
     ) -> Optional[str]:
         """Generate descriptive link text using AI."""
-        original_text = issue.original_content or "click here"
+        original_text = issue.original_content or ""
         url = issue.metadata.get("url", "")
         context = issue.metadata.get("context", "")
 
-        prompt = f"""Generate better link text for an accessibility fix.
+        from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
-Current link text: "{original_text}"
-URL: {url}
-Context: {context[:200] if context else 'No context'}
+        safe_text = sanitize_for_prompt(original_text, max_length=500) or "click here"
+        safe_url = sanitize_for_prompt(url, max_length=2000)
+        safe_context = sanitize_for_prompt(context, max_length=200) or "No context"
+
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Generate better link text for an accessibility fix.
+
+Current link text: "{safe_text}"
+URL: {safe_url}
+Context: {safe_context}
 
 Requirements:
 - Be descriptive of the link destination

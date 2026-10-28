@@ -32,6 +32,7 @@ from src.education.color_blindness_simulator import (
     ColorBlindnessSimulator,
     ColorBlindnessAnalysisResult,
 )
+from src.utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
 # Configure cssutils to suppress warnings
 cssutils.log.setLevel(logging.ERROR)
@@ -951,21 +952,23 @@ class CodeScanner:
                     rule, code_snippet, page_context
                 )
                 if context_str:
-                    context_str = f"\n\nDOCUMENT CONTEXT:\n{context_str}"
+                    context_str = f"\n\nDOCUMENT CONTEXT:\n{sanitize_for_prompt(context_str, max_length=4000)}"
 
             # Build WCAG guidance based on rule
             wcag_guidance = self._get_wcag_guidance_for_rule(rule)
 
-            prompt = f"""You are an accessibility expert. Generate a code fix for this issue:
+            prompt = f"""{PROMPT_DATA_NOTICE}
 
-Issue: {description}
-File: {file_path}
+You are an accessibility expert. Generate a code fix for this issue:
+
+Issue: {sanitize_for_prompt(description, max_length=500)}
+File: {sanitize_for_prompt(file_path, max_length=500)}
 Category: {category}
 Rule: {rule}
 
 Current code:
 ```
-{code_snippet[:500]}
+{sanitize_for_prompt(code_snippet, max_length=500)}
 ```
 {context_str}
 
@@ -1117,10 +1120,12 @@ REQUIREMENTS:
         # Use AI for more nuanced validation if enabled
         if is_valid and self.llm_client:
             try:
-                prompt = f"""Analyze this alt text for accessibility quality:
+                prompt = f"""{PROMPT_DATA_NOTICE}
 
-Alt text: "{alt_text}"
-Image source: {image_src}
+Analyze this alt text for accessibility quality:
+
+Alt text: "{sanitize_for_prompt(alt_text, max_length=1000)}"
+Image source: {sanitize_for_prompt(image_src, max_length=2000)}
 
 Is this alt text likely to be helpful for screen reader users?
 Consider:

@@ -566,13 +566,14 @@ class HtmlRemediator(BaseRemediator):
         self.result.ai_calls_made += 1
 
         try:
-            from ...utils.security import sanitize_for_prompt
+            from ...utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
             safe_desc = sanitize_for_prompt(issue.description or "", max_length=300)
             safe_content = (
                 sanitize_for_prompt(issue.original_content or "", max_length=300)
                 or "Not available"
             )
+            safe_type = sanitize_for_prompt(issue.element_type or "", max_length=100)
 
             if issue.category == IssueCategory.ALT_TEXT:
                 # Get image context
@@ -592,7 +593,7 @@ respond with exactly: UNKNOWN"""
             elif issue.category == IssueCategory.ARIA:
                 prompt = f"""Suggest an appropriate aria-label for this element.
 Issue: {safe_desc}
-Element type: {issue.element_type or 'Unknown'}
+Element type: {safe_type or 'Unknown'}
 Code snippet: {safe_content}
 
 Provide ONLY the aria-label value, no explanation. Keep it under 50 characters."""
@@ -600,7 +601,7 @@ Provide ONLY the aria-label value, no explanation. Keep it under 50 characters."
             elif issue.category == IssueCategory.FORM:
                 prompt = f"""Generate a clear, accessible label for this form field.
 Issue: {safe_desc}
-Element type: {issue.element_type or 'input'}
+Element type: {safe_type or 'input'}
 Code snippet: {safe_content}
 
 Provide ONLY the label text, no explanation. Keep it under 30 characters."""
@@ -613,6 +614,7 @@ Code snippet: {safe_content}
 
 Provide ONLY the fix content, no explanation."""
 
+            prompt = f"{PROMPT_DATA_NOTICE}\n\n{prompt}"
             result = client.generate_text_sync(
                 prompt=prompt, max_tokens=150, temperature=0.3
             )

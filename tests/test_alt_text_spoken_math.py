@@ -685,9 +685,11 @@ def test_a_method_whose_prompt_or_rules_changed_gets_a_new_request_hash(method):
     args = ("image.png",)
     current = _analysis_request_fingerprint(method, args, {})
     assert current != _legacy_fingerprint(method, args, {})
-    # The first revision, which converted descriptions, is not replayed either.
+    # The first revision, which converted descriptions, is not replayed either,
+    # nor the second, whose prompts carried document text undelimited.
     assert current != _fingerprint_with(method, args, {}, "spoken-math-v1")
-    assert current == _fingerprint_with(method, args, {}, "spoken-math-v2")
+    assert current != _fingerprint_with(method, args, {}, "spoken-math-v2")
+    assert current == _fingerprint_with(method, args, {}, "delimited-text-v3")
 
 
 def test_a_method_that_did_not_change_keeps_its_request_hash():
@@ -762,7 +764,7 @@ async def test_a_description_with_markup_is_recorded_as_a_failure_with_no_review
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("revision", [None, "spoken-math-v1"])
+@pytest.mark.parametrize("revision", [None, "spoken-math-v1", "spoken-math-v2"])
 async def test_an_analysis_stored_under_earlier_rules_is_not_replayed(
     tmp_path, revision
 ):

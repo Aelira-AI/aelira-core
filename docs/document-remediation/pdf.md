@@ -2,7 +2,7 @@
 
 PDF has the deepest end-to-end document-remediation evidence in this repository. That does not turn heuristic structure inference or a successful re-scan into a PDF/UA certificate.
 
-> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, and exact-byte managed-publication controls on this page are included in v0.9.7 and are still included in v0.11.0. They were not part of v0.9.5.
+> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, and exact-byte managed-publication controls on this page are included in v0.9.7 and are still included in v0.11.1. They were not part of v0.9.5.
 
 ## Verified capabilities
 

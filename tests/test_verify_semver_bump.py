@@ -334,6 +334,21 @@ def test_real_changelog_passes_as_0_11_0_after_0_10_0() -> None:
     assert report.required == "minor"
 
 
+def test_real_changelog_passes_as_0_11_1_after_0_11_0() -> None:
+    report = gate.check_release("0.11.1", "0.11.0", REAL_CHANGELOG, [])
+    assert report.errors == []
+    assert report.actual == "patch"
+    assert report.required == "patch"
+
+
+def test_negative_control_0_11_1_is_refused_with_a_migration() -> None:
+    report = gate.check_release(
+        "0.11.1", "0.11.0", REAL_CHANGELOG, MIGRATIONS_SINCE_V0_10_0
+    )
+    assert report.errors
+    assert MIGRATIONS_SINCE_V0_10_0[0] in "\n".join(report.errors)
+
+
 def test_negative_control_real_changelog_is_refused_as_0_10_1() -> None:
     renamed = REAL_CHANGELOG.replace("## [0.11.0] - ", "## [0.10.1] - ", 1)
     assert renamed != REAL_CHANGELOG

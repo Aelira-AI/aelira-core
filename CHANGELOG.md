@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-29
+
+See the [release notes](docs/releases/v0.11.1.md) for operator actions and
+evidence limits.
+
 ### Security
 
 - CI builds the dashboard image natively on amd64 and arm64 and rejects unresolved HIGH and CRITICAL findings with the same Trivy inventory and dispositions as the release workflow. Before this, CI scanned only the API image, so a dashboard finding first appeared when a release run stopped at its image gate, as in v0.10.0 and v0.11.0 ([#847](https://github.com/Aelira-AI/aelira-core/issues/847)).
+- Document text placed in AI prompts is enclosed in a tag whose code is derived from the text, and every prompt that carries it tells the model that the text is data and ends only at the closing tag with the same code. Anything spelled like the delimiter is removed first, in upper-case, spaced, zero-width-split, full-width or HTML-escaped form, so a document can no longer end its block early. Prompts that inserted document text with no delimiter at all now enclose it the same way: the web and source-code scanners' fix and explanation prompts, image alt-text generation and checks, Word link text, PowerPoint slide titles, the HTML remediator's element type, and the API's Gemini severity and code-fix prompts. Image analyses recorded under the old prompts are no longer replayed. The prompt sanitizer no longer deletes phrases such as "act as" or "system:": the list was easy to rephrase around, and deleting words changed what a document said before the model read it ([GHSA-7pr5-834v-2wp5](https://github.com/Aelira-AI/aelira-core/security/advisories/GHSA-7pr5-834v-2wp5), [#855](https://github.com/Aelira-AI/aelira-core/issues/855)).
 
 ## [0.11.0] - 2026-10-28
 

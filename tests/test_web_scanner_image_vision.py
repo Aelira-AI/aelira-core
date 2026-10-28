@@ -101,7 +101,10 @@ def test_alt_validation_uses_the_same_source_pixels(monkeypatch):
     )
     assert result["is_accurate"] is True
     assert observed[0][0] == pixels
-    assert 'EXISTING ALT TEXT: "A red square"' in observed[0][1]
+    assert (
+        f'EXISTING ALT TEXT: "{security.sanitize_for_prompt("A red square", 1000)}"'
+        in observed[0][1]
+    )
 
 
 def test_malformed_vision_validation_does_not_invent_accuracy(monkeypatch):

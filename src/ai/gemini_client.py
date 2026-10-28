@@ -11,6 +11,7 @@ from copy import copy
 from typing import Dict, Any, Optional
 
 from src.config.settings import get_settings
+from src.utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 from .providers.base import LLMResponse
 from .providers.manager import ProviderManager, get_provider_manager
 from .wcag_knowledge_base import WCAGKnowledgeBase
@@ -391,17 +392,23 @@ class GeminiClient:
         Returns:
             Dict with fixed_code, explanation, inference_time
         """
-        context_info = f"\nContext: {context}" if context else ""
+        context_info = (
+            f"\nContext: {sanitize_for_prompt(context, max_length=2000)}"
+            if context
+            else ""
+        )
 
-        prompt = f"""Fix this WCAG accessibility violation.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Fix this WCAG accessibility violation.
 
 Rule: {rule_id}
-Issue: {issue_description}
+Issue: {sanitize_for_prompt(issue_description, max_length=1000)}
 {context_info}
 
 Current HTML:
 ```html
-{html_snippet}
+{sanitize_for_prompt(html_snippet, max_length=4000)}
 ```
 
 Provide:
@@ -500,12 +507,14 @@ EXPLANATION:
         # reports have to be reproducible. The model writes the prose only.
         resolution = resolve_severity(rule_id, impact)
 
-        prompt = f"""You are an accessibility expert explaining a WCAG violation.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+You are an accessibility expert explaining a WCAG violation.
 
 Rule: {rule_id}
 Impact: {impact}
-HTML: {html_snippet}
-Selector: {selector}
+HTML: {sanitize_for_prompt(html_snippet, max_length=4000)}
+Selector: {sanitize_for_prompt(selector, max_length=1000)}
 
 This violation has been classified as {resolution.severity} severity. Do not
 question or restate the severity; explain the violation consistently with it.
@@ -636,7 +645,9 @@ Respond ONLY with valid JSON:
             # guidelines ground the *explanation* in canonical criteria.
             resolution = resolve_severity(rule_id, impact)
 
-            prompt = f"""You are an accessibility expert explaining WCAG 2.2 violations.
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+You are an accessibility expert explaining WCAG 2.2 violations.
 
 {wcag_context}
 
@@ -644,9 +655,9 @@ Now explain this specific violation:
 
 Rule: {rule_id}
 Impact: {impact}
-HTML: {html_snippet[:500]}
-Selector: {selector}
-{f'Description: {violation_description}' if violation_description else ''}
+HTML: {sanitize_for_prompt(html_snippet, max_length=500)}
+Selector: {sanitize_for_prompt(selector, max_length=1000)}
+{f'Description: {sanitize_for_prompt(violation_description, max_length=1000)}' if violation_description else ''}
 
 This violation has been classified as {resolution.severity} severity by Aelira's
 rules engine. Do not question or restate the severity. Explain the violation

@@ -47,6 +47,7 @@ from src.education.color_blindness_simulator import (
     ColorBlindnessSimulator,
     ColorBlindnessAnalysisResult,
 )
+from src.utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
 MAX_VISION_IMAGE_BYTES = 10 * 1024 * 1024
@@ -2860,6 +2861,8 @@ class WebScanner:
         }
         link_issues = {"link-in-text-block"}
 
+        # Each structure below is built from page text, so it is delimited;
+        # the guidance around it is ours and stays outside.
         context_parts = []
 
         # Add heading context for heading-related issues
@@ -2870,7 +2873,7 @@ class WebScanner:
             context_parts.append(
                 f"""
 PAGE HEADING STRUCTURE:
-{heading_context}
+{sanitize_for_prompt(heading_context, max_length=4000)}
 
 IMPORTANT: Use the heading structure above to determine the CORRECT heading level.
 The fix should maintain proper document hierarchy (h1 → h2 → h3, no skipping levels)."""
@@ -2881,7 +2884,7 @@ The fix should maintain proper document hierarchy (h1 → h2 → h3, no skipping
             landmark_context = self._format_landmark_context(page_context["landmarks"])
             context_parts.append(f"""
 PAGE LANDMARK STRUCTURE:
-{landmark_context}
+{sanitize_for_prompt(landmark_context, max_length=4000)}
 
 IMPORTANT: Use the landmark structure above to determine the correct fix.
 Ensure landmarks are unique, properly nested, and appropriately labeled.""")
@@ -2894,7 +2897,7 @@ Ensure landmarks are unique, properly nested, and appropriately labeled.""")
             context_parts.append(
                 f"""
 PAGE LIST STRUCTURE:
-{list_context}
+{sanitize_for_prompt(list_context, max_length=4000)}
 
 IMPORTANT: Ensure list elements are properly nested and use correct parent/child relationships."""
             )
@@ -2906,7 +2909,7 @@ IMPORTANT: Ensure list elements are properly nested and use correct parent/child
             )
             context_parts.append(f"""
 PAGE TABLE STRUCTURE:
-{table_context}
+{sanitize_for_prompt(table_context, max_length=4000)}
 
 IMPORTANT: Use proper header associations with scope or headers attributes.""")
 
@@ -2917,7 +2920,7 @@ IMPORTANT: Use proper header associations with scope or headers attributes.""")
             )
             context_parts.append(f"""
 PAGE FORM STRUCTURE:
-{form_context}
+{sanitize_for_prompt(form_context, max_length=4000)}
 
 IMPORTANT: Every form input needs a programmatically associated label.""")
 
@@ -2927,7 +2930,7 @@ IMPORTANT: Every form input needs a programmatically associated label.""")
             context_parts.append(
                 f"""
 PAGE LINK CONTEXT:
-{link_context}
+{sanitize_for_prompt(link_context, max_length=4000)}
 
 IMPORTANT: Links must be distinguishable from surrounding text by more than color alone."""
             )
@@ -3343,11 +3346,15 @@ IMPORTANT: Links must be distinguishable from surrounding text by more than colo
                 }
 
             # Build prompt for Ollama
-            prompt = f"""Analyze this web page content for accessibility and readability:
+            safe_title = sanitize_for_prompt(title or "", max_length=500)
+            safe_content = sanitize_for_prompt(text_content, max_length=2000)
+            prompt = f"""{PROMPT_DATA_NOTICE}
 
-Title: {title}
+Analyze this web page content for accessibility and readability:
 
-Content: {text_content}
+Title: {safe_title}
+
+Content: {safe_content}
 
 Detected Issues: {len(issues)} accessibility issues found
 
@@ -3439,9 +3446,11 @@ Format your response as JSON with keys: readability_score, clarity_assessment, s
             )
         try:
             # Truncate extremely long element HTML
-            truncated_html = element_html[:400] + (
+            truncated_html = sanitize_for_prompt(element_html, max_length=400) + (
                 "..." if len(element_html) > 400 else ""
             )
+            safe_description = sanitize_for_prompt(description, max_length=500)
+            safe_failure = sanitize_for_prompt(failure_summary, max_length=1000)
 
             # Fallback fixes
             simple_fixes = {
@@ -3464,12 +3473,14 @@ Format your response as JSON with keys: readability_score, clarity_assessment, s
                 )
 
             # Build unified prompt with EXPLANATION/CODE sections
-            prompt = f"""You are an accessibility expert. Analyze and fix this WCAG accessibility issue:
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+You are an accessibility expert. Analyze and fix this WCAG accessibility issue:
 
 ISSUE DETAILS:
-- Description: {description}
+- Description: {safe_description}
 - Rule ID: {issue_id}
-- Problem: {failure_summary}
+- Problem: {safe_failure}
 - Severity: {impact}
 {context_section}
 WCAG GUIDANCE:
@@ -3605,27 +3616,33 @@ Now provide your response (remember: CODE section = ONLY HTML, NO TEXT):"""
                 headings = page_context.get("heading_hierarchy", [])
                 landmarks = page_context.get("landmarks", [])
                 if headings:
-                    context_summary += f"\nPage heading structure: {', '.join(str(h) for h in headings[:10])}"
+                    heading_text = ", ".join(str(h) for h in headings[:10])
+                    context_summary += f"\nPage heading structure: {sanitize_for_prompt(heading_text, max_length=2000)}"
                 if landmarks:
-                    context_summary += f"\nPage landmarks: {', '.join(str(lm) for lm in landmarks[:8])}"
+                    landmark_text = ", ".join(str(lm) for lm in landmarks[:8])
+                    context_summary += f"\nPage landmarks: {sanitize_for_prompt(landmark_text, max_length=2000)}"
 
             # Build a single prompt for all issues in this batch
             issues_text = ""
             for i, issue in enumerate(batch, 1):
-                truncated_html = (issue.element or "")[:300]
+                truncated_html = sanitize_for_prompt(
+                    issue.element or "", max_length=300
+                )
                 # Get WCAG guidance for this issue type
                 wcag_guidance = self._get_wcag_guidance_for_issue(issue.criterion or "")
                 issues_text += f"""
 --- ISSUE {i} ---
 Rule: {issue.criterion}
 Impact: {issue.impact}
-Description: {issue.description[:200] if issue.description else ''}
+Description: {sanitize_for_prompt(issue.description or '', max_length=200)}
 Element: {truncated_html}
-Fix guidance: {issue.fix[:200] if issue.fix else ''}
+Fix guidance: {sanitize_for_prompt(issue.fix or '', max_length=200)}
 WCAG: {wcag_guidance[:200] if wcag_guidance else 'Follow WCAG 2.1 AA guidelines'}
 """
 
-            prompt = f"""You are an accessibility expert. Generate fixes for {len(batch)} WCAG accessibility issues found on a web page.
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+You are an accessibility expert. Generate fixes for {len(batch)} WCAG accessibility issues found on a web page.
 {context_summary}
 {issues_text}
 
@@ -3753,9 +3770,11 @@ RULES:
 
         issues_text = ""
         for i, issue in enumerate(issues, 1):
-            issues_text += f"\n{i}. [{issue.impact}] {issue.fix[:200] if issue.fix else 'No description'}"
+            issues_text += f"\n{i}. [{issue.impact}] {sanitize_for_prompt(issue.fix or '', max_length=200) or 'No description'}"
 
-        prompt = f"""You are helping university faculty understand accessibility issues in their course materials. Rewrite each of these technical fix descriptions into clear, warm, actionable guidance.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+You are helping university faculty understand accessibility issues in their course materials. Rewrite each of these technical fix descriptions into clear, warm, actionable guidance.
 
 For each issue, write 2-3 sentences that:
 - Explain what's wrong in plain language (no jargon)
@@ -4245,20 +4264,26 @@ BEST PRACTICES:
             else:
                 rag_context = "(No canonical guideline found in knowledge base)"
 
+            safe_description = sanitize_for_prompt(description, max_length=500)
+            safe_failure = sanitize_for_prompt(failure_summary, max_length=1000)
+            safe_element = sanitize_for_prompt(element_html, max_length=300)
+
             # Build prompt for Ollama with RAG-grounded context
-            prompt = f"""You are an accessibility expert helping developers fix WCAG issues. Transform this technical fix description into clear, actionable guidance using the canonical WCAG guidelines below.
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+You are an accessibility expert helping developers fix WCAG issues. Transform this technical fix description into clear, actionable guidance using the canonical WCAG guidelines below.
 
 {rag_context}
 
 DETECTED ISSUE:
-Issue: {description}
+Issue: {safe_description}
 Rule ID: {issue_id}
 
 Technical fix description from axe-core:
-{failure_summary}
+{safe_failure}
 
 Element:
-{element_html[:300]}
+{safe_element}
 
 Using the canonical WCAG guidance above, rewrite the fix description to be:
 1. Clear and conversational (not robotic)
@@ -4428,9 +4453,12 @@ Provide ONLY the improved fix description (no explanations, no introductions):""
             Natural language description
         """
         try:
-            prompt = f"""Describe this mathematical expression in clear, accessible language:
+            safe_expression = sanitize_for_prompt(math_expression, max_length=4096)
+            prompt = f"""{PROMPT_DATA_NOTICE}
 
-{math_expression}
+Describe this mathematical expression in clear, accessible language:
+
+{safe_expression}
 
 Provide a concise description (1-2 sentences) that would help a screen reader user understand the math. Focus on the meaning, not just the symbols."""
 

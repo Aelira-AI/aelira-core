@@ -22,6 +22,7 @@ from src.education.math_speech import (
     refuse_math_markup,
 )
 from src.education.model_json import parse_tolerant
+from src.utils.security import PROMPT_DATA_NOTICE, sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +35,14 @@ logger = logging.getLogger(__name__)
 # recorded under the old prompt or the old rules, which may hold raw LaTeX or a
 # rewritten description, is never replayed as if it came from the new ones.
 # Methods that did not change keep their original hash. Version 2 adds the
-# refusal of mathematical markup in place of rewriting it.
+# refusal of mathematical markup in place of rewriting it. Version 3 encloses
+# document text in prompt delimiters. score_alt_text_quality has no recorded
+# purpose, so its results are never stored or replayed and it needs no revision.
 _PROMPT_REVISIONS = {
-    "generate_alt_text": "spoken-math-v2",
-    "describe_chart_or_graph": "spoken-math-v2",
-    "validate_alt_text": "spoken-math-v2",
-    "detect_image_type": "spoken-math-v2",
+    "generate_alt_text": "delimited-text-v3",
+    "describe_chart_or_graph": "delimited-text-v3",
+    "validate_alt_text": "delimited-text-v3",
+    "detect_image_type": "delimited-text-v3",
 }
 
 
@@ -662,16 +665,24 @@ class ImageAltTextGenerator:
             }
 
         # Build prompt
-        context_info = f"\n\nContext: {context}" if context else ""
+        context_info = (
+            f"\n\nContext: {sanitize_for_prompt(context, max_length=2000)}"
+            if context
+            else ""
+        )
 
         if educational_context:
-            prompt = f"""Describe this image for a screen reader user who cannot see it.
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+Describe this image for a screen reader user who cannot see it.
 If it contains text, diagrams, charts, equations, or code, describe the content clearly.
 {SPOKEN_MATH_INSTRUCTION}
 Be concise but accurate (1-3 sentences, under 150 characters for simple images, longer for complex content).
 Focus on what's important for understanding the educational content.{context_info}"""
         else:
-            prompt = f"""Describe this image for a screen reader user who cannot see it.
+            prompt = f"""{PROMPT_DATA_NOTICE}
+
+Describe this image for a screen reader user who cannot see it.
 {SPOKEN_MATH_INSTRUCTION}
 Be concise but accurate (1-2 sentences, under 125 characters).
 Focus on the main visual elements and purpose.{context_info}"""
@@ -805,11 +816,17 @@ Focus on the main visual elements and purpose.{context_info}"""
             }
 
         # Build validation prompt
-        context_info = f"\n\nContext where image appears: {context}" if context else ""
+        context_info = (
+            f"\n\nContext where image appears: {sanitize_for_prompt(context, max_length=2000)}"
+            if context
+            else ""
+        )
 
-        prompt = f"""Analyze this image and evaluate if the following alt text accurately describes it.
+        prompt = f"""{PROMPT_DATA_NOTICE}
 
-EXISTING ALT TEXT: "{existing_alt_text}"
+Analyze this image and evaluate if the following alt text accurately describes it.
+
+EXISTING ALT TEXT: "{sanitize_for_prompt(existing_alt_text, max_length=1000)}"
 {context_info}
 
 Evaluate the alt text on these criteria:
@@ -926,9 +943,15 @@ Common issues to check for:
             }
 
         # Build classification prompt
-        context_info = f"\n\nContext where image appears: {context}" if context else ""
+        context_info = (
+            f"\n\nContext where image appears: {sanitize_for_prompt(context, max_length=2000)}"
+            if context
+            else ""
+        )
 
-        prompt = f"""Analyze this image and classify its purpose for web accessibility (WCAG 1.1.1).
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Analyze this image and classify its purpose for web accessibility (WCAG 1.1.1).
 
 {context_info}
 
@@ -1069,7 +1092,11 @@ Respond in this exact JSON format:
             }
 
         # Build description prompt
-        context_info = f"\n\nContext: {context}" if context else ""
+        context_info = (
+            f"\n\nContext: {sanitize_for_prompt(context, max_length=2000)}"
+            if context
+            else ""
+        )
 
         detail_instructions = {
             "brief": "Provide a concise 2-3 sentence description.",
@@ -1077,7 +1104,9 @@ Respond in this exact JSON format:
             "detailed": "Provide an exhaustive description including all visible data values, labels, and visual elements.",
         }
 
-        prompt = f"""Analyze this chart, graph, diagram, or infographic and create an accessible description for screen reader users.
+        prompt = f"""{PROMPT_DATA_NOTICE}
+
+Analyze this chart, graph, diagram, or infographic and create an accessible description for screen reader users.
 
 {context_info}
 
@@ -1491,11 +1520,17 @@ Important guidelines:
             }
 
         # Build scoring prompt
-        context_info = f"\n\nContext where image appears: {context}" if context else ""
+        context_info = (
+            f"\n\nContext where image appears: {sanitize_for_prompt(context, max_length=2000)}"
+            if context
+            else ""
+        )
 
-        prompt = f"""Analyze this image and score the quality of the following alt text on multiple criteria.
+        prompt = f"""{PROMPT_DATA_NOTICE}
 
-ALT TEXT TO SCORE: "{alt_text}"
+Analyze this image and score the quality of the following alt text on multiple criteria.
+
+ALT TEXT TO SCORE: "{sanitize_for_prompt(alt_text, max_length=1000)}"
 {context_info}
 
 Score each criterion from 0-100:

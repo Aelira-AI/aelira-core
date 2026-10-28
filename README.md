@@ -22,12 +22,12 @@
   <a href="https://aelira.ai/docs">Docs</a> ·
   <a href="#try-it-in-one-command">Quickstart</a> ·
   <a href="docs/deployment/self-hosting.md">Self-hosting</a> ·
-  <a href="docs/releases/v0.11.0.md">Release notes</a> ·
+  <a href="docs/releases/v0.11.1.md">Release notes</a> ·
   <a href="SECURITY.md">Security policy</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-> **Status: 0.11.0 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. A verified improved PDF can remain downloadable as a working file while manual work remains; unsupported or unsafe cases can still have no downloadable candidate. Publication requires separate review and approval. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.10.0 release notes](docs/releases/v0.10.0.md) for upgrade actions and verification limits.
+> **Status: 0.11.1 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. A verified improved PDF can remain downloadable as a working file while manual work remains; unsupported or unsafe cases can still have no downloadable candidate. Publication requires separate review and approval. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.10.0 release notes](docs/releases/v0.10.0.md) for upgrade actions and verification limits.
 
 Aelira can apply eligible fixes and return a saved candidate with a report of recorded outcomes. Supported changes differ by format and source structure, and unsupported or ambiguous cases remain unresolved. Review the actual saved file and remaining findings before approving publication.
 

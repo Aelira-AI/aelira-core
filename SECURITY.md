@@ -6,8 +6,8 @@ We release patches for security vulnerabilities in the following versions:
 
 | Version   | Supported          |
 | --------- | ------------------ |
-| 0.11.0    | :white_check_mark: |
-| <= 0.10.0 | :x:                |
+| 0.11.1    | :white_check_mark: |
+| <= 0.11.0 | :x:                |
 
 As a pre-1.0 project, only the current security patch is supported. Earlier 0.x releases are not maintained.
 
@@ -98,7 +98,7 @@ This protection is prospective: upgrading cannot rewrite logs emitted by an olde
 
 - **Local execution available** - AI inference can run fully locally via Ollama; Gemini, OpenAI, Anthropic, xAI, and compatible remote endpoints are opt-in per deployment
 - **Model integrity** - Download models only from official Ollama sources
-- **Prompt injection** - Input sanitization applied to AI prompts
+- **Prompt injection** - Document text reaches AI prompts inside a tag it cannot close, and each prompt tells the model to treat that text as data. This limits, but cannot rule out, a document steering what the model writes, so review AI-generated text before publishing remediated content
 
 ## Bug Bounty
 
