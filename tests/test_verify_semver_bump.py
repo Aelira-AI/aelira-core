@@ -289,10 +289,36 @@ def test_preview_reports_the_bump_and_never_fails(repo: Path) -> None:
     assert "No unreleased changes" in _cli(repo, "--preview").stdout
 
 
+def _as_tagged(changelog: str) -> str:
+    """The changelog as its release tag saw it, with Unreleased empty.
+
+    The gate refuses a tag while Unreleased has entries, but main keeps
+    gaining entries after a release, so these tests check the released
+    sections without them.
+    """
+    lines = changelog.splitlines(keepends=True)
+    start = next(
+        i for i, line in enumerate(lines) if line.startswith("## [Unreleased]")
+    )
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("## ["))
+    return "".join([*lines[: start + 1], "\n", *lines[end:]])
+
+
 # The CI test job checks out without tags, so these run the decision on the
 # real CHANGELOG directly. The tag lookup and the migration diff are covered
 # by the temporary-repository tests above.
-REAL_CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
+REAL_CHANGELOG = _as_tagged((ROOT / "CHANGELOG.md").read_text())
+
+
+def test_as_tagged_empties_only_the_unreleased_section() -> None:
+    live = "# Changelog\n\n## [Unreleased]\n\n### Security\n\n- Merged later.\n\n## [0.11.0] - 2026-10-28\n\n### Fixed\n\n- Shipped.\n"
+    tagged = _as_tagged(live)
+    assert gate.changelog_section(tagged, "Unreleased").strip() == ""
+    assert gate.changelog_section(tagged, "0.11.0") == gate.changelog_section(
+        live, "0.11.0"
+    )
+    assert gate.check_release("0.11.0", "0.10.0", live, []).errors
+    assert gate.check_release("0.11.0", "0.10.0", tagged, []).errors == []
 
 
 # The migration that 0.11.0 adds since v0.10.0, as the tag diff reports it.
