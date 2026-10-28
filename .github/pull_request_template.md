@@ -30,4 +30,11 @@ Describe user-visible changes, configuration or migration needs, and any effect
 on source fidelity, saved-file review or unresolved findings. Write "None" when
 there is no such impact.
 
+## Changelog
+
+<!-- Add an entry under `## [Unreleased]` in CHANGELOG.md. If this change needs
+none, replace this comment with one line that starts `Changelog: none` and gives
+the reason, for example `Changelog: none, test-only change`. The Changelog entry
+check reads this line and runs again when the description is edited. -->
+
 ## Screenshots (if UI changes)
