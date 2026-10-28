@@ -47,6 +47,7 @@ jobs:
       - user-journeys-lms
       - cli
       - quickstart
+      - dashboard-image
       - docker
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -59,7 +60,7 @@ jobs:
           LMS_JOURNEY_RUNS: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'true' || 'false' }}
         run: |
           printf '%s\n' "$JOB_RESULTS" | jq -e --arg lms "$LMS_JOURNEY_RUNS" '
-            length == 21 and all(to_entries[];
+            length == 22 and all(to_entries[];
               .value.result == "success"
               or (.key == "user-journeys-lms" and .value.result == "skipped" and $lms == "false"))
           '
@@ -1743,6 +1744,68 @@ jobs:
       - name: Stop the disposable quickstart stack
         if: always()
         run: docker compose -f docker-compose.quickstart.yml down --volumes --remove-orphans
+
+  dashboard-image:
+    name: Dashboard image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the dashboard image natively
+        # The release workflow builds this same context and Dockerfile with no
+        # build arguments, so the image scanned here is the one it publishes.
+        # Trivy does not create its output directory, so make it here.
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/dashboard-image-inventory
+          docker buildx build --load --platform ${{ matrix.platform }} \
+            --tag aelira-dashboard:test --file dashboard/Dockerfile dashboard
+      - name: Inventory every HIGH and CRITICAL finding in the dashboard image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          version: v0.74.0
+          scanners: vuln,secret
+          timeout: 15m
+          image-ref: aelira-dashboard:test
+          format: json
+          output: test-results/dashboard-image-inventory/trivy.json
+          exit-code: '0'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          trivyignores: .trivyignore.inventory
+      - name: Retain dashboard image vulnerability inventory
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dashboard-image-inventory-${{ matrix.runner }}-${{ github.run_attempt }}
+          path: test-results/dashboard-image-inventory/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Reject unresolved HIGH and CRITICAL dashboard image findings
+        run: |
+          set -euo pipefail
+          bun run scripts/verify_trivy_inventory.ts \
+            --file test-results/dashboard-image-inventory/trivy.json \
+            --image aelira-dashboard:test \
+            --architecture ${{ matrix.arch }} \
+            --dispositions .trivy-unfixed-dispositions.json
 
   docker:
     name: Docker (${{ matrix.platform }})
