@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Uploads: the upload validator rated an Office file as a high threat whenever its text contained an ordinary phrase such as "act as", "user:", "system:" or "pretend to be". A high result rebuilt the file without its embedded objects (OLE equations, embedded workbooks) before it was scanned, so a document that said "the valve can act as a buffer" lost objects that the same document without the phrase kept, and its security record said the upload was blocked. The validator no longer screens document text for phrases, so only its structural checks decide whether a file is rebuilt, and an upload that is sanitised or allowed through is no longer recorded as blocked. (#856)
+
 ## [0.11.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.11.1.md) for operator actions and

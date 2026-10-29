@@ -6,7 +6,6 @@ Validates uploaded documents for security threats including:
 - Suspicious PDF elements (JavaScript, auto-actions)
 - File type spoofing (magic byte validation)
 - Zip bombs and archive attacks
-- Prompt injection patterns
 
 Uses oletools for Office analysis and custom PDF inspection.
 """
@@ -160,37 +159,16 @@ SUSPICIOUS_PDF_KEYWORDS = {
     "/Annot": (ThreatLevel.LOW, "PDF contains annotations"),
 }
 
-# Prompt injection patterns to detect
-PROMPT_INJECTION_PATTERNS = [
-    # Direct instruction overrides
-    r"ignore\s+(previous|all|above|prior)\s+(instructions?|prompts?|rules?)",
-    r"disregard\s+(previous|all|above|prior)\s+(instructions?|prompts?)",
-    r"forget\s+(previous|all|everything|above)",
-    r"new\s+instructions?:",
-    r"system\s*:\s*",
-    r"assistant\s*:\s*",
-    r"user\s*:\s*",
-    # Role manipulation
-    r"you\s+are\s+now\s+",
-    r"act\s+as\s+(if\s+you\s+are\s+)?",
-    r"pretend\s+(to\s+be|you\s+are)",
-    r"roleplay\s+as",
-    # Jailbreak attempts
-    r"DAN\s*mode",
-    r"developer\s*mode",
-    r"jailbreak",
-    r"bypass\s+(restrictions?|filters?|safety)",
-    # Data exfiltration
-    r"output\s+(all|your|the)\s+(instructions?|prompts?|system)",
-    r"reveal\s+(your|the)\s+(instructions?|prompts?|system)",
-    r"print\s+(your|the)\s+(instructions?|prompts?|system)",
-    r"show\s+me\s+(your|the)\s+(instructions?|prompts?)",
-]
-
 
 class DocumentValidator:
     """
     Validates documents for security threats.
+
+    The checks are structural: file size, magic bytes against the extension,
+    archive shape, macros, active content and code. The validator does not
+    screen document text for phrases. Wording cannot change what a document
+    contains, and document text reaches a model only inside a delimiter it
+    cannot close, so a phrase list would only rebuild ordinary documents.
 
     Usage:
         validator = DocumentValidator()
@@ -211,16 +189,10 @@ class DocumentValidator:
         self.max_archive_files = max_archive_files
         self.max_archive_ratio = max_archive_ratio
 
-        # Compile prompt injection patterns
-        self.prompt_injection_patterns = [
-            re.compile(pattern, re.IGNORECASE) for pattern in PROMPT_INJECTION_PATTERNS
-        ]
-
     async def validate(
         self,
         filename: str,
         content: Union[bytes, BinaryIO],
-        check_prompt_injection: bool = True,
     ) -> ValidationResult:
         """
         Validate a document for security threats.
@@ -228,7 +200,6 @@ class DocumentValidator:
         Args:
             filename: Original filename
             content: File content as bytes or file-like object
-            check_prompt_injection: Whether to check for prompt injection
 
         Returns:
             ValidationResult with findings
@@ -303,11 +274,6 @@ class DocumentValidator:
         if ext in CODE_FILE_EXTENSIONS:
             code_findings = self._scan_standalone_code(content, filename)
             findings.extend(code_findings)
-
-        # 5. Check for prompt injection in text content
-        if check_prompt_injection:
-            injection_findings = self._check_prompt_injection(content, detected_type)
-            findings.extend(injection_findings)
 
         # Determine overall threat level
         max_threat = ThreatLevel.SAFE
@@ -908,55 +874,6 @@ class DocumentValidator:
             logger.warning("oletools not installed, skipping OLE macro analysis")
         except Exception as e:
             logger.warning(f"OLE macro analysis error: {e}")
-
-        return findings
-
-    def _check_prompt_injection(
-        self, content: bytes, file_type: str
-    ) -> List[SecurityFinding]:
-        """Check for prompt injection patterns in document text."""
-        findings = []
-
-        try:
-            # Extract text based on file type
-            text = ""
-
-            if file_type == "pdf":
-                # Basic text extraction from PDF
-                text = content.decode("latin-1", errors="ignore")
-            elif file_type == "zip_archive":
-                # Extract text from OOXML documents
-                try:
-                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                        for name in zf.namelist():
-                            if name.endswith(".xml"):
-                                xml_content = zf.read(name).decode(
-                                    "utf-8", errors="ignore"
-                                )
-                                # Strip XML tags for text content
-                                text += re.sub(r"<[^>]+>", " ", xml_content)
-                except Exception:
-                    pass
-            else:
-                text = content.decode("utf-8", errors="ignore")
-
-            # Check for prompt injection patterns
-            for pattern in self.prompt_injection_patterns:
-                matches = pattern.findall(text)
-                if matches:
-                    findings.append(
-                        SecurityFinding(
-                            category="prompt_injection",
-                            description="Document contains potential prompt injection",
-                            threat_level=ThreatLevel.HIGH,
-                            details=f"Pattern matched: {matches[0][:50]}...",
-                            remediation="Review document content for malicious instructions",
-                        )
-                    )
-                    break  # One finding is enough
-
-        except Exception as e:
-            logger.warning(f"Prompt injection check error: {e}")
 
         return findings
 

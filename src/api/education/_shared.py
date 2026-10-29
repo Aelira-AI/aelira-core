@@ -206,7 +206,6 @@ async def validate_uploaded_file(
     - Suspicious PDF elements (JavaScript, auto-actions, etc.)
     - File type spoofing (magic byte validation)
     - Zip bombs and archive attacks
-    - Prompt injection patterns
 
     Args:
         file: The uploaded file
@@ -255,6 +254,13 @@ async def validate_uploaded_file(
         # Validate the document
         result = await validate_document(filename, content)
 
+        # The upload is refused only for CRITICAL results, and for HIGH results
+        # when sanitising is not allowed. Everything else is processed, in its
+        # original or sanitised form, so it is not recorded as blocked.
+        is_blocked = result.threat_level == ThreatLevel.CRITICAL or (
+            result.threat_level == ThreatLevel.HIGH and not allow_sanitized
+        )
+
         # Log security scan result
         security_result = SecurityScanResult(
             id=str(uuid.uuid4()),
@@ -284,10 +290,10 @@ async def validate_uploaded_file(
                 else None
             ),
             was_sanitized=False,
-            was_blocked=not result.is_safe,
+            was_blocked=is_blocked,
             blocked_reason=(
                 result.findings[0].description
-                if result.findings and not result.is_safe
+                if result.findings and is_blocked
                 else None
             ),
         )
