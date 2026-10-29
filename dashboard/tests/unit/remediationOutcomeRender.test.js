@@ -103,3 +103,13 @@ it('renders saved automated checks independently from human approval and never i
   assert.match(markup, /Change applied · verification not reported/);
   assert.doesNotMatch(markup, /Approved for publication|fully compliant|certified/i);
 });
+
+it('shows readable categories under finding titles, never the raw slug', () => {
+  const slugRows = ['font_size', 'heading', 'title'].map(category => ({
+    issue: { description: `Recorded finding ${category.length}`, category },
+    outcomeSource: 'recorded_job', recordedOutcome: 'fixed', recordedDetails: { status: 'fixed', needs_review: false },
+  }));
+  const markup = render(RecordedOutcomeGroups, { rows: slugRows });
+  for (const label of ['Font Size', 'Heading Structure', 'Document Title']) assert.ok(markup.includes(`>${label}<`), label);
+  for (const slug of ['font_size', '>heading<', '>title<']) assert.ok(!markup.includes(slug), slug);
+});

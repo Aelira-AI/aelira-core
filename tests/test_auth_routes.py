@@ -1533,6 +1533,35 @@ class TestSessionValidate:
         assert body["expires_at"] == 12345
         assert body["auth_method"] == "session"
 
+    @pytest.mark.parametrize("owned_key,expected", [(None, False), (object(), True)])
+    def test_session_reports_whether_the_account_has_api_keys(
+        self, client, monkeypatch, owned_key, expected
+    ):
+        """The dashboard shows its API-key retirement notice only when this is true."""
+        fake_user = MagicMock(
+            id="user-9",
+            email=EDU_EMAIL,
+            role=None,
+            department_id="dept-1",
+            email_verified=True,
+        )
+        fake_user.name = "Prof X"
+        session_service = MagicMock()
+        session_service.validate_session.return_value = (fake_user, {"exp": 12345})
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        jwt_service = MagicMock()
+        jwt_service.verify_access_token.return_value = {"type": "access", "exp": 12345}
+        monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
+        dept = MagicMock(id="dept-1", tier="trial")
+        dept.name = "CS"
+        _use_db(_db_with({Department: {"first": dept}, APIKey: {"first": owned_key}}))
+        client.cookies.set("aelira_access", "tok")
+
+        response = client.get("/auth/session/validate")
+
+        assert response.status_code == 200
+        assert response.json()["user"]["has_api_keys"] is expected
+
     def test_validated_session_recovers_from_stale_bearer_and_creates_one_requested_key(
         self, client, mock_db, monkeypatch
     ):

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { shouldShowApiKeyRetirementNotice } from '../../src/utils/apiKeyRetirementNotice.ts';
 
 const client = readFileSync(new URL('../../src/api/client.ts', import.meta.url), 'utf8');
 const auth = readFileSync(new URL('../../src/context/AuthContext.tsx', import.meta.url), 'utf8');
@@ -82,7 +83,7 @@ test('LTI settings render API-key management unavailable without mounting CRUD',
 test('retirement banner is session-only, version/user scoped, and storage-failure tolerant', () => {
   assert.ok(app.includes('<APIKeyRetirementBanner />'));
   for (const token of [
-    "authMethod !== 'session'",
+    'shouldShowApiKeyRetirementNotice(authMethod, user)',
     "aelira_api_key_retirement_ack:${RETIREMENT_NOTICE_VERSION}:${userId}",
     'localStorage.getItem(storageKey)',
     'localStorage.setItem(storageKey',
@@ -91,4 +92,14 @@ test('retirement banner is session-only, version/user scoped, and storage-failur
     'I understand',
     'to="/settings"',
   ]) assert.ok(banner.includes(token), `missing ${token}`);
+});
+
+test('retirement notice is shown only to a session whose account has or had API keys', () => {
+  assert.equal(shouldShowApiKeyRetirementNotice('session', { has_api_keys: true }), true);
+  assert.equal(shouldShowApiKeyRetirementNotice('session', { has_api_keys: false }), false);
+  assert.equal(shouldShowApiKeyRetirementNotice('session', {}), false, 'an API that reports nothing shows nothing');
+  assert.equal(shouldShowApiKeyRetirementNotice('session', null), false);
+  assert.equal(shouldShowApiKeyRetirementNotice('lti', { has_api_keys: true }), false);
+  assert.equal(shouldShowApiKeyRetirementNotice('api_key', { has_api_keys: true }), false);
+  assert.equal(shouldShowApiKeyRetirementNotice(null, { has_api_keys: true }), false);
 });

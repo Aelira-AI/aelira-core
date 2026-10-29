@@ -9,6 +9,7 @@ import { ScoreChip } from '../components/ui/ScoreChip';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { apiClient } from '../api/client';
 import { scannedAverage } from '../utils/scannedAverage';
+import { issueCountLabel } from '../utils/displayText';
 
 interface CourseOverviewProps {
   isLTI?: boolean;  // When true, renders without AppLayout chrome
@@ -347,7 +348,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
                       <Link
                         to={courseHref(course.course_id)}
                         className="font-medium text-[var(--content-accent)] hover:underline"
-                        aria-label={`${course.course_name}, ${course.avg_compliance === null ? 'score not assessed' : `${course.avg_compliance.toFixed(0)}% automated scan score`}, ${course.total_issues === null ? 'issue count unavailable' : `${course.total_issues} issues`}`}
+                        aria-label={`${course.course_name}, ${course.avg_compliance === null ? 'score not assessed' : `${course.avg_compliance.toFixed(0)}% automated scan score`}, ${course.total_issues === null ? 'issue count unavailable' : issueCountLabel(course.total_issues)}`}
                       >
                         {course.course_name}
                       </Link>

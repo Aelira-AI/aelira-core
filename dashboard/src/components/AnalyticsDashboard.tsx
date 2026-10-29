@@ -355,7 +355,7 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
               {issueStats.auto_fixable_issues > 0 && (
                 <div className="mt-2 p-2 rounded bg-surface-accent-subtle">
                   <span className="text-xs text-accent">
-                    {issueStats.auto_fixable_issues} issues can be auto-fixed (
+                    {issueStats.auto_fixable_issues === 1 ? '1 issue can' : `${issueStats.auto_fixable_issues} issues can`} be auto-fixed (
                     {issueStats.auto_fixed_issues} already fixed)
                   </span>
                 </div>
