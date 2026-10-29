@@ -476,8 +476,10 @@ class PDFProcessor:
 
         if heading_inventory.first_is_h1:
             issues = [item for item in issues if not first_rule(item)]
-        elif heading_inventory.headings and not any(
-            first_rule(item) for item in issues
+        elif (
+            heading_inventory.complete
+            and heading_inventory.headings
+            and not any(first_rule(item) for item in issues)
         ):
             issues.append(
                 {

@@ -13,6 +13,7 @@ from statistics import median
 import pikepdf
 import pymupdf as fitz
 
+from ..scan_completeness import record_incomplete_check
 from .marked_content import MarkedContentResolver
 
 HEADING_ROLES = {f"/H{level}" for level in range(1, 7)}
@@ -73,6 +74,19 @@ def effective_role(role, root):
     return role
 
 
+def _is_incomplete_check(reason):
+    """Work or size limits and unexpected errors leave the scan unfinished.
+
+    Document-structure refusals (empty or unbound headings, bad parent
+    relations) are findings about the document, not a failed check.
+    """
+    if reason == "heading_inventory_failed" or reason.endswith("_limit"):
+        return True
+    # Coded refusals are structure findings; any other ValueError text came
+    # from an unexpected resolver error.
+    return not reason.startswith(("heading_", "reading_order_"))
+
+
 def inventory(pdf, source_path):
     # Shared traversal enforces parent, page, unique owner and work-limit rules.
     from ..remediation.source_order import _tree, _nodes
@@ -122,7 +136,6 @@ def inventory(pdf, source_path):
                     text,
                     tuple(sorted(node.pages)),
                 )
-                result.targets.append(target)
                 if role in HEADING_ROLES | {"/H"} and not text:
                     raise ValueError("heading_unbound_or_empty")
                 descendants = [n for n in _nodes(node) if n.role]
@@ -147,6 +160,9 @@ def inventory(pdf, source_path):
                     )
                 ):
                     raise ValueError("heading_replacement_content_ambiguous")
+                # Only a node that passed every binding check joins the list, so
+                # a refused first heading never counts as a proven first heading.
+                result.targets.append(target)
                 if (
                     not text
                     or len(node.pages) != 1
@@ -263,6 +279,8 @@ def inventory(pdf, source_path):
         result.reason = (
             str(exc) if isinstance(exc, ValueError) else "heading_inventory_failed"
         )
+        if _is_incomplete_check(result.reason):
+            record_incomplete_check("heading_inventory")
         # A failed inventory never clears a finding. Existing scanners report
         # broken structure separately; keep the unresolved heading observable.
         return result
