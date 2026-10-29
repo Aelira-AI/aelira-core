@@ -465,7 +465,8 @@ class PDFProcessor:
             )
 
         # Bound heading roles outrank visual heuristics, but a later H1 cannot
-        # clear the product's separate first-heading rule.
+        # clear the product's separate first-heading rule. A bound first H1
+        # clears it even when the inventory stopped at a later heading.
         heading_inventory = structure_checker.heading_inventory(file_path)
 
         def first_rule(item):
@@ -474,7 +475,7 @@ class PDFProcessor:
                 and item.get("rule") == "WCAG 1.3.1"
             )
 
-        if heading_inventory.first_is_h1:
+        if heading_inventory.proven_first_is_h1:
             issues = [item for item in issues if not first_rule(item)]
         elif (
             heading_inventory.complete

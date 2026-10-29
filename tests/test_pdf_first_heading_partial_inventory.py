@@ -30,7 +30,22 @@ def _first_heading_findings(result):
     ]
 
 
-def test_empty_later_heading_does_not_create_first_heading_finding(tmp_path):
+@pytest.fixture
+def ocr_text(monkeypatch):
+    # The fixture's text layer is short enough to send the processor to OCR.
+    # Return the page text so the text-heuristic heading check runs the same
+    # way with or without Tesseract installed.
+    monkeypatch.setattr(
+        PDFProcessor,
+        "_ocr_pdf",
+        lambda self, path: (
+            "R\xe9sum\xe9 of methods\nfor invented courses\n\n"
+            "Ordinary source paragraph\n"
+        ),
+    )
+
+
+def test_empty_later_heading_does_not_create_first_heading_finding(tmp_path, ocr_text):
     path = title_pdf(tmp_path, change=_first_h1_with_empty_h2)
     result = PDFProcessor(
         generate_alt_text=False,
@@ -40,7 +55,21 @@ def test_empty_later_heading_does_not_create_first_heading_finding(tmp_path):
     assert _first_heading_findings(result) == []
 
 
-def test_complete_inventory_still_reports_first_heading_not_h1(tmp_path):
+def test_refused_first_heading_keeps_first_heading_finding(tmp_path, ocr_text):
+    def change(pdf, group, owners):
+        owners[0].S = Name.H1
+        del owners[0].K
+
+    path = title_pdf(tmp_path, change=change)
+    result = PDFProcessor(
+        generate_alt_text=False,
+        enhance_descriptions=False,
+        require_complete_scan=False,
+    ).process_pdf(str(path))
+    assert len(_first_heading_findings(result)) == 1
+
+
+def test_complete_inventory_still_reports_first_heading_not_h1(tmp_path, ocr_text):
     def change(pdf, group, owners):
         owners[0].S = Name.H2
         owners[2].S = Name.H1

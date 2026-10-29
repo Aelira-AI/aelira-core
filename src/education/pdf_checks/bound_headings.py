@@ -59,6 +59,16 @@ class HeadingInventory:
     def first_is_h1(self):
         return self.complete and bool(self.headings) and self.headings[0].role == "/H1"
 
+    @property
+    def proven_first_is_h1(self):
+        """The first heading is a bound H1, even if the walk stopped later.
+
+        A target joins the list only after its binding checks and the walk
+        stops at the first refusal, so the first listed heading is the
+        document's first heading whether or not the inventory finished.
+        """
+        return bool(self.headings) and self.headings[0].role == "/H1"
+
 
 def effective_role(role, root):
     roles = root.get("/RoleMap", {})
@@ -281,8 +291,9 @@ def inventory(pdf, source_path):
         )
         if _is_incomplete_check(result.reason):
             record_incomplete_check("heading_inventory")
-        # A failed inventory never clears a finding. Existing scanners report
-        # broken structure separately; keep the unresolved heading observable.
+        # A failed inventory never clears a finding about a heading it did not
+        # prove. Existing scanners report broken structure separately; keep the
+        # unresolved heading observable.
         return result
 
 
