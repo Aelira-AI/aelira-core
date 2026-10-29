@@ -40,3 +40,4 @@ dist-ssr
 *.sw?
 test-results/
 journey-results/
+readme-results/

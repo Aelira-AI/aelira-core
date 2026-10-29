@@ -110,25 +110,27 @@ If you run one of the experimental integrations, we would value the feedback: op
 
 ## Screenshots
 
-<!--
-  Screenshot placeholders. Capture these from a real deployment with
-  generic demo data only (no real institution, prospect, staff or student
-  names), in light mode at 1440px wide, then replace this comment and the line
-  below with <picture>/<img> elements that carry descriptive alt text.
+Captured from a deployment of a released version with generic demo files, by [`dashboard/tests/readme/screenshots.capture.ts`](dashboard/tests/readme/screenshots.capture.ts). [How to regenerate them](docs/assets/readme/screenshots/README.md).
 
-  1. Scan results (/scan/:id)
-     docs/assets/readme/screenshots/scan-results.png
-  2. Issue review (/issues)
-     docs/assets/readme/screenshots/issue-review.png
-  3. Remediation review and approval of the exact saved candidate (/review/:scanId)
-     docs/assets/readme/screenshots/remediation-review.png
-  4. Evidence package download and contents (review evidence export)
-     docs/assets/readme/screenshots/evidence-package.png
-  5. Canvas course view (/canvas/courses/:courseId/content)
-     docs/assets/readme/screenshots/canvas-course.png
--->
+**Scan results.** Each finding names its WCAG criterion, where it is and how to fix it.
 
-Screenshots are coming in a later release.
+<img src="docs/assets/readme/screenshots/scan-results.png" width="100%" alt="Scan results for course-overview.docx: a compliance score of 88 out of 100, one high, one medium and one low finding, charts by severity and by WCAG criterion, and three findings, each with how to fix it.">
+
+**Issue review.** Findings from every scanned document in one list, with filters.
+
+<img src="docs/assets/readme/screenshots/issue-review.png" width="100%" alt="The Issues page listing nine findings from three demo documents, each with its severity, status, category and file, with filters and a button to queue document remediation.">
+
+**Remediation review.** A reviewer approves each change, then the exact saved working file, identified by its SHA-256.
+
+<img src="docs/assets/readme/screenshots/remediation-review.png" width="100%" alt="Document review for course-overview.docx: both proposed changes approved, the working file named with its SHA-256, the reviewer's confirmation ticked, and the button to approve that exact file for publication.">
+
+**Review evidence.** The evidence export records the source and output hashes and every review decision.
+
+<img src="docs/assets/readme/screenshots/evidence-package.png" width="100%" alt="First page of the accessibility review evidence PDF for course-overview.docx, listing the source and working-file SHA-256 hashes and a summary of the review decisions.">
+
+**Canvas course.** Course files scanned in place, ready to remediate, review and write back.
+
+<img src="docs/assets/readme/screenshots/canvas-course.png" width="100%" alt="The Canvas course WRIT 101: Academic Writing in Aelira: five course files scanned, 72 percent overall with 12 issues, and each file's score, status and Remediate and Review actions.">
 
 ## Architecture
 
