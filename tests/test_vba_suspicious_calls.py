@@ -46,3 +46,21 @@ async def test_shell_without_parentheses_makes_a_macro_critical():
 
     assert result.threat_level == ThreatLevel.CRITICAL
     assert "office_macro_suspicious" in {f.category for f in result.findings}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "Shell .Value",
+        "Shell [A1]",
+        "Shell -1",
+        # An unbalanced quote must not hide the lines after it.
+        'x = "abc\nShell "calc"\ny = "def"',
+    ],
+)
+def test_call_with_any_first_argument_is_found(code):
+    assert _suspicious_vba_calls(code) == ["Shell command execution"]
+
+
+def test_assignment_to_the_name_is_not_a_call():
+    assert _suspicious_vba_calls("Shell = 3") == []

@@ -732,3 +732,69 @@ async def test_presentation_ole_object_frame_is_removed_with_its_object():
     assert [shape.has_text_frame and shape.text_frame.text for shape in shapes] == [
         "Results"
     ]
+
+
+def test_detection_reads_only_package_xml_and_rebuild_is_size_bounded(monkeypatch):
+    from src.security import active_content
+
+    original = macro_word_document()
+    monkeypatch.setattr(active_content, "_MAX_PART_BYTES", 4096)
+
+    # Detection reads only content types and relationships, which are small.
+    assert active_content.find_active_content(original) is not None
+    # A rebuild reads every part, and refuses a part over the limit.
+    with pytest.raises(SanitizationError) as caught:
+        rebuild_ooxml(original)
+    assert caught.value.reason == "package_too_large"
+
+
+@pytest.mark.asyncio
+async def test_pdf_name_followed_by_nul_is_found():
+    """NUL is PDF whitespace but not a Python regex \\s."""
+    content = b"%PDF-1.4\n1 0 obj << /S /JavaScript\x00>> endobj\n%%EOF"
+
+    result = await DocumentValidator().validate("a.pdf", content)
+
+    assert result.threat_level == ThreatLevel.HIGH
+
+
+@pytest.mark.asyncio
+async def test_pdf_script_inside_a_compressed_object_stream_is_found():
+    with pikepdf.open(io.BytesIO(scripted_pdf())) as pdf:
+        buffer = io.BytesIO()
+        pdf.save(buffer, object_stream_mode=pikepdf.ObjectStreamMode.generate)
+    hidden = buffer.getvalue()
+    assert b"/JavaScript" not in hidden and b"/JS" not in hidden
+
+    result = await DocumentValidator().validate("outline.pdf", hidden)
+    assert result.threat_level == ThreatLevel.HIGH
+
+    rebuilt, rebuilt_result = await sanitize_document("outline.pdf", hidden)
+    assert rebuilt_result.sanitized is True
+    assert rebuilt_result.threat_level.rank < ThreatLevel.HIGH.rank
+
+
+@pytest.mark.asyncio
+async def test_only_code_pattern_findings_pass_through_without_a_rebuild():
+    page = b"<html><body><script>document.cookie = 'a=1';</script></body></html>"
+    passed, result = await sanitize_document("page.html", page)
+    assert passed == page and result.sanitized is False
+
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as zf:
+        zf.writestr("site/index.html", page.decode())
+    passed, result = await sanitize_document("site.zip", bundle.getvalue())
+    assert result.sanitized is False
+
+    # A zip uploaded as .html is a type mismatch, not a code pattern.
+    with pytest.raises(SanitizationError):
+        await sanitize_document("page.html", bundle.getvalue())
+
+
+@pytest.mark.asyncio
+async def test_xhtml_is_not_an_extension_mismatch():
+    page = b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"></html>'
+
+    result = await DocumentValidator().validate("page.html", page)
+
+    assert "file_type_mismatch" not in {f.category for f in result.findings}

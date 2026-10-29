@@ -111,6 +111,10 @@ EMPTY_CONTAINERS = frozenset(
 )
 
 _MAX_XML_BYTES = 64 * 1024 * 1024
+# Decompressed size limits. The validator refuses an archive whose compression
+# ratio suggests a zip bomb; these bound what is read even when it does not.
+_MAX_PART_BYTES = 256 * 1024 * 1024
+_MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 _PARSER = etree.XMLParser(
     resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False
 )
@@ -217,8 +221,34 @@ class Package:
         return self.defaults.get(extension)
 
 
-def read_package(content: bytes) -> Package:
-    """Read a package's content types and relationships, or raise."""
+def _read_member(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: List[int]
+) -> bytes:
+    """Read one member within the per-part and whole-package limits.
+
+    Sizes are checked as declared before decompressing, and the read is
+    bounded, so a member that declares a small size cannot expand past it.
+    """
+    if info.file_size > _MAX_PART_BYTES or info.file_size > budget[0]:
+        raise SanitizationError("package_too_large")
+    try:
+        with archive.open(info) as handle:
+            data = handle.read(info.file_size + 1)
+    except Exception as exc:
+        raise SanitizationError("package_unreadable") from exc
+    if len(data) != info.file_size:
+        raise SanitizationError("package_unreadable")
+    budget[0] -= len(data)
+    return data
+
+
+def read_package(content: bytes, *, all_parts: bool = False) -> Package:
+    """Read a package's content types and relationships, or raise.
+
+    Only ``[Content_Types].xml`` and the ``.rels`` parts are decompressed
+    unless ``all_parts`` is set, which a rebuild needs. Both are bounded by
+    the declared sizes and by a limit for the whole package.
+    """
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile as exc:
@@ -231,10 +261,14 @@ def read_package(content: bytes) -> Package:
             if lowered in names:
                 raise SanitizationError("package_duplicate_part")
             names[lowered] = info.filename
-        try:
-            data = {info.filename: archive.read(info.filename) for info in infos}
-        except Exception as exc:
-            raise SanitizationError("package_unreadable") from exc
+        budget = [_MAX_PACKAGE_BYTES]
+        data = {
+            info.filename: _read_member(archive, info, budget)
+            for info in infos
+            if all_parts
+            or info.filename.lower() == "[content_types].xml"
+            or info.filename.lower().endswith(".rels")
+        }
 
     content_types_name = names.get("[content_types].xml")
     content_types = (
@@ -469,7 +503,7 @@ def _clean_workbook(
 
 def rebuild_ooxml(content: bytes) -> bytes:
     """Return the package without its active content, or raise SanitizationError."""
-    package = read_package(content)
+    package = read_package(content, all_parts=True)
     removed_parts, removed_relationships = _active_parts(package)
 
     removed_ids: Dict[str, Set[str]] = {}
@@ -621,7 +655,8 @@ def _clean_pdf_object(obj) -> None:
         ):
             del obj["/A"]
         if str(obj.get("/S", "")) in ACTIVE_PDF_ACTIONS:
-            for key in ("/JS", "/F", "/Win", "/Mac", "/Unix", "/Next"):
+            # Left unreachable but inert: no type, script, file or chain.
+            for key in ("/S", "/JS", "/F", "/Win", "/Mac", "/Unix", "/Next"):
                 if key in obj:
                     del obj[key]
         elif "/S" in obj and "/Next" in obj:

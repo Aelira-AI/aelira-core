@@ -18,7 +18,7 @@ import zipfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, List, Optional, Set, Tuple, Union
+from typing import BinaryIO, Dict, List, Optional, Set, Tuple, Union
 import hashlib
 
 from .active_content import (
@@ -138,8 +138,9 @@ ALLOWED_EXTENSIONS = {
     ".gif": ["gif"],
     ".webp": ["webp"],
     # Code files (text-based, may not have magic bytes)
-    ".html": ["html", "text", "unknown"],
-    ".htm": ["html", "text", "unknown"],
+    # XHTML starts with an XML declaration
+    ".html": ["html", "xml", "text", "unknown"],
+    ".htm": ["html", "xml", "text", "unknown"],
     ".js": ["text", "unknown"],
     ".css": ["text", "unknown"],
     ".tex": ["latex", "text", "unknown"],
@@ -171,31 +172,88 @@ SUSPICIOUS_PDF_KEYWORDS = {
 }
 
 
-_PDF_NAME = re.compile(r"/[^\s()<>\[\]{}/%]*")
+# A PDF name runs to the next PDF whitespace (NUL, tab, LF, FF, CR, space) or
+# delimiter. Python's \s is a different set, so the bytes are matched directly.
+_PDF_NAME = re.compile(rb"/[^\x00\x09\x0a\x0c\x0d\x20()<>\[\]{}/%]*")
+_MAX_PDF_OBJECTS = 200_000
 
 
-def _pdf_names(pdf_text: str) -> List[str]:
-    """Every PDF name in the text, with #hh escapes decoded.
+def _pdf_names(content: bytes) -> List[str]:
+    """Every PDF name in the raw bytes, with #hh escapes decoded.
 
     A name may spell any character as #hh, so /J#61vaScript is /JavaScript.
     """
     return [
         re.sub(
-            r"#([0-9A-Fa-f]{2})",
-            lambda escape: chr(int(escape.group(1), 16)),
+            rb"#([0-9A-Fa-f]{2})",
+            lambda escape: bytes([int(escape.group(1), 16)]),
             match.group(0),
-        )
-        for match in _PDF_NAME.finditer(pdf_text)
+        ).decode("latin-1")
+        for match in _PDF_NAME.finditer(content)
     ]
+
+
+def _pdf_structural_keywords(content: bytes) -> Dict[str, int]:
+    """Keywords found by parsing the PDF, including inside object streams.
+
+    The byte scan cannot see into compressed object streams. This counts the
+    keywords as dictionary keys and name values in every object. A PDF that
+    cannot be parsed returns an empty count, and the byte scan still applies.
+    """
+    counts: Dict[str, int] = {}
+    try:
+        import pikepdf
+
+        pdf = pikepdf.open(io.BytesIO(content))
+    except Exception:
+        return counts
+
+    def add(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
+    def visit(obj, depth: int) -> None:
+        if depth > 32:
+            return
+        if isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
+            for key in obj.keys():
+                if key in SUSPICIOUS_PDF_KEYWORDS:
+                    add(key)
+                value = obj[key]
+                if isinstance(value, pikepdf.Name) and str(value) in (
+                    SUSPICIOUS_PDF_KEYWORDS
+                ):
+                    add(str(value))
+                if not getattr(value, "is_indirect", True):
+                    visit(value, depth + 1)
+        elif isinstance(obj, pikepdf.Array):
+            for value in obj:
+                if isinstance(value, pikepdf.Name) and str(value) in (
+                    SUSPICIOUS_PDF_KEYWORDS
+                ):
+                    add(str(value))
+                if not getattr(value, "is_indirect", True):
+                    visit(value, depth + 1)
+
+    with pdf:
+        try:
+            for index, obj in enumerate(pdf.objects):
+                if index >= _MAX_PDF_OBJECTS:
+                    break
+                visit(obj, 0)
+        except Exception:
+            pass
+    return counts
 
 
 def _vba_call(name: str) -> str:
     """A call to ``name`` with or without parentheses, as VBA allows.
 
-    ``Shell "calc.exe"`` and ``Shell(cmd)`` match; a longer identifier such as
-    ``ShellSort`` does not.
+    Any use of the name counts, whatever its first argument starts with
+    (``Shell "calc.exe"``, ``Shell(cmd)``, ``Shell .Value``, ``Shell [A1]``),
+    except an assignment to it or the bare name at the end of a line. A longer
+    identifier such as ``ShellSort`` does not match.
     """
-    return rf"\b{name}(?![A-Za-z0-9_])(?:\s*[(\"]|[ \t]+[A-Za-z_&])"
+    return rf"\b{name}(?![A-Za-z0-9_$])(?![ \t]*(?:=|$))"
 
 
 # Calls in macro code that make a macro CRITICAL rather than HIGH. They are
@@ -240,11 +298,13 @@ def _vba_without_comments(code: str) -> str:
 def _suspicious_vba_calls(code: str) -> List[str]:
     """Descriptions of the suspicious calls and names in VBA source."""
     code = _vba_without_comments(code)
-    without_strings = re.sub(r'"(?:[^"]|"")*"', '""', code)
+    # Strings end on their line; an unbalanced quote must not hide the lines
+    # after it.
+    without_strings = re.sub(r'"(?:[^"\n]|"")*"', '""', code)
     found = [
         desc
         for pattern, desc in SUSPICIOUS_VBA_CALLS
-        if re.search(pattern, without_strings, re.IGNORECASE)
+        if re.search(pattern, without_strings, re.IGNORECASE | re.MULTILINE)
     ]
     found += [
         desc
@@ -484,11 +544,13 @@ class DocumentValidator:
             # Convert to string for keyword search
             # PDF can have binary content, so we use latin-1 encoding
             pdf_text = content.decode("latin-1", errors="ignore")
-            names = _pdf_names(pdf_text)
+            # Whole names, so /JS does not match /JSomething. The parsed count
+            # can only add to the byte count, for keywords in object streams.
+            names = _pdf_names(content)
+            parsed = _pdf_structural_keywords(content)
 
             for keyword, (threat_level, description) in SUSPICIOUS_PDF_KEYWORDS.items():
-                # Count whole names, so /JS does not match /JSomething
-                count = names.count(keyword)
+                count = max(names.count(keyword), parsed.get(keyword, 0))
                 if count > 0:
                     findings.append(
                         SecurityFinding(
@@ -1165,6 +1227,26 @@ async def validate_document(
 # Office formats the upload routes accept and the rebuild supports.
 REBUILDABLE_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 
+# HIGH findings that a code file or code archive may carry and still be
+# processed as uploaded: patterns in its code, which the scanner runs in an
+# isolated browser. Any other HIGH finding needs a rebuild.
+CODE_PATTERN_CATEGORIES = {"malicious_code", "malicious_html", "malicious_css"}
+
+
+def _code_file_without_rebuild(ext: str, result: ValidationResult) -> bool:
+    if ext in CODE_FILE_EXTENSIONS:
+        expected = set(ALLOWED_EXTENSIONS.get(ext, ["html", "xml", "text", "unknown"]))
+    elif ext == ".zip":
+        expected = {"zip_archive"}
+    else:
+        return False
+    high = {
+        f.category
+        for f in result.findings
+        if f.threat_level.rank >= ThreatLevel.HIGH.rank
+    }
+    return result.file_type in expected and high <= CODE_PATTERN_CATEGORIES
+
 
 async def sanitize_document(
     filename: str,
@@ -1200,10 +1282,10 @@ async def sanitize_document(
         rebuild = rebuild_pdf
     elif result.file_type == "zip_archive" and ext in REBUILDABLE_OFFICE_EXTENSIONS:
         rebuild = rebuild_ooxml
-    elif result.file_type == "ole_compound" or ext in OFFICE_EXTENSIONS:
-        raise SanitizationError("office_format_not_rebuildable")
-    else:
+    elif _code_file_without_rebuild(ext, result):
         return content, result
+    else:
+        raise SanitizationError("not_rebuildable")
 
     try:
         rebuilt = rebuild(content)
