@@ -729,7 +729,7 @@ class AuditReportGenerator:
                     logo = Image(
                         logo_path,
                         width=2.5 * inch,
-                        height=0.6 * inch,
+                        height=0.42 * inch,
                         kind="proportional",
                     )
                     logo.hAlign = "LEFT"

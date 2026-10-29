@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The review evidence PDF's header logo carried the tagline "ADA compliance that actually works". An evidence record describes a review and makes no compliance claim, so the header now uses the Aelira wordmark from the website without the tagline, drawn at the size the wordmark had before.
+
 ## [0.12.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.12.1.md) for operator actions and
