@@ -21,6 +21,12 @@ from .models import ReadingOrderIssue, ReadingOrderResult
 
 logger = logging.getLogger(__name__)
 
+# Shown to users when a PDF could not be read; the detail goes to the log only.
+READ_FAILURE_RECOMMENDATION = (
+    "This PDF could not be read for a reading-order check. Review the "
+    "document manually."
+)
+
 
 class _StructureBlocks(list):
     """Text blocks with local completeness state, also retained in partial scans."""
@@ -151,7 +157,7 @@ class ReadingOrderVerifier:
 
         except Exception as e:
             record_incomplete_check("reading_order.check")
-            logger.error(f"[ReadingOrderVerifier] Error verifying reading order: {e}")
+            logger.warning(f"[ReadingOrderVerifier] Error verifying reading order: {e}")
             return ReadingOrderResult(
                 total_pages=total_pages,
                 pages_analyzed=pages_analyzed,
@@ -161,7 +167,7 @@ class ReadingOrderVerifier:
                         expected_order=[],
                         actual_order=[],
                         severity="critical",
-                        recommendation=f"Error reading PDF: {str(e)}",
+                        recommendation=READ_FAILURE_RECOMMENDATION,
                     )
                 ],
                 compliance_score=0.0,
@@ -924,13 +930,18 @@ class ReadingOrderVerifier:
         # Choose a complete geometric plan before comparing with the tag order.
         # Never choose between competing plans merely because one happens to pass.
         if visual and all("bbox" in block for block in visual):
-            from ..layout_order import block_plan, LayoutAmbiguous
+            from ..layout_order import (
+                block_plan,
+                LayoutAmbiguous,
+                plain_refusal_reason,
+            )
 
             try:
                 ordered = block_plan(visual, page_width)
             except LayoutAmbiguous as exc:
                 return issue(
-                    "Review the page's regional reading order: " + str(exc),
+                    "Review the page's regional reading order: "
+                    + plain_refusal_reason(exc),
                     review_only=True,
                 )
             if words(ordered) == structure_words:
