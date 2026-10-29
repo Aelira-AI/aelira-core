@@ -350,8 +350,8 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
         assert dockerfile.index(voice_download) < dockerfile.index("USER aelira")
 
     assert (
-        "FROM node:22-alpine@sha256:"
-        "c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32"
+        "FROM node:26-alpine@sha256:"
+        "c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94"
         " AS builder"
     ) in dashboard
     assert (
@@ -471,7 +471,7 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
 
     smoke = (ROOT / "scripts" / "smoke_pa11y_runtime.py").read_text()
     assert "os.geteuid() == 0" in smoke
-    assert "SUPPORTED_NODE_MAJORS = {24}" in smoke
+    assert "SUPPORTED_NODE_MAJORS = {26}" in smoke
     assert 'EXPECTED_PA11Y_VERSION = "9.0.1"' in smoke
     assert 'EXPECTED_BROWSERS_VERSION = "3.2.4"' in smoke
     assert 'FORBIDDEN_RUNTIME_PACKAGES = ("basic-ftp", "extract-zip")' in smoke

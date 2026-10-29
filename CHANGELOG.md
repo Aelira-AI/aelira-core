@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Dependencies
+
+- The API and developer images run Pa11y on Node.js 26.13.0, the first 26.x LTS release, pinned by digest, instead of Node 24.22.1. It carries the 26.12.1 security fixes and OpenSSL 3.5.9, and its root store still leaves out emSign ECC Root CA - G3. Because Node 25 and later link `libatomic.so.1`, both images install `libatomic1`. The Pa11y smoke gate accepts only Node 26 at 26.12.1 or later. The dashboard image builds on `node:26-alpine`, and CI and release workflows run their Node tooling on 26; the CLI keeps its `>=22` floor, which CI still tests on Node 22 ([#877](https://github.com/Aelira-AI/aelira-core/issues/877)).
+
 ## [0.12.0] - 2026-10-29
 
 See the [release notes](docs/releases/v0.12.0.md) for operator actions and

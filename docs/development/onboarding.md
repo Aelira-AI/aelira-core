@@ -319,7 +319,7 @@ packages in [`Dockerfile.dev`](../../Dockerfile.dev) for the features you use:
 | Python builds/rendering | C/C++ build tools, pkg-config, Cairo development libraries |
 | PDF/OCR | Tesseract with English language data, Poppler utilities |
 | Multimedia | FFmpeg (including ffprobe) |
-| Web/code scanning | Node 24, Pa11y 9.0.1 on PATH, Chromium and its system libraries |
+| Web/code scanning | Node 26, Pa11y 9.0.1 on PATH, Chromium and its system libraries |
 | LaTeX/document conversion | LaTeXML, libxml2/libxslt, ImageMagick, Ghostscript, TeX Live packages and Pandoc listed in the Dockerfile |
 | Piper TTS | The `.onnx` voice and matching `.onnx.json` under `data/piper-voices/`, as downloaded in the Dockerfile |
 
