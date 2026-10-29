@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
+import { prefersReducedMotion } from '../../utils/motion';
 
 // ============================================================================
 // Types
@@ -25,8 +26,11 @@ export function ComplianceScore({ score }: ComplianceScoreProps): React.ReactEle
   // Start visible immediately (no need for effect-triggered state change)
   const [isVisible] = useState<boolean>(true);
 
-  // Animate the score on mount
+  const reduceMotion = prefersReducedMotion();
+
+  // Animate the score on mount, unless the user asked for reduced motion
   useEffect(() => {
+    if (reduceMotion) return undefined;
     const duration = 1000; // 1 second
     const steps = 60;
     const increment = score / steps;
@@ -43,7 +47,11 @@ export function ComplianceScore({ score }: ComplianceScoreProps): React.ReactEle
     }, duration / steps);
 
     return () => clearInterval(timer);
-  }, [score]);
+  }, [score, reduceMotion]);
+
+  // The number, ring, colour and label always describe the same value, so a
+  // count-up never shows a low number next to a high score's label.
+  const shown = reduceMotion ? score : animatedScore;
 
   const getScoreColor = (scoreValue: number): ScoreColors => {
     if (scoreValue >= 90)
@@ -82,14 +90,14 @@ export function ComplianceScore({ score }: ComplianceScoreProps): React.ReactEle
     return 'Needs Work';
   };
 
-  const colors = getScoreColor(score);
+  const colors = getScoreColor(shown);
 
   // SVG circular progress calculations
   const size = 160;
   const strokeWidth = 12;
   const radius = (size - strokeWidth) / 2;
   const circumference = radius * 2 * Math.PI;
-  const strokeDashoffset = circumference - (animatedScore / 100) * circumference;
+  const strokeDashoffset = circumference - (shown / 100) * circumference;
 
   return (
     <div
@@ -131,7 +139,7 @@ export function ComplianceScore({ score }: ComplianceScoreProps): React.ReactEle
 
           {/* Center content */}
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className={`text-4xl font-bold font-heading ${colors.text}`}>{animatedScore}</span>
+            <span className={`text-4xl font-bold font-heading ${colors.text}`}>{shown}</span>
             <span className="text-sm text-secondary">/100</span>
           </div>
         </div>
@@ -139,8 +147,8 @@ export function ComplianceScore({ score }: ComplianceScoreProps): React.ReactEle
 
       {/* Status label with icon */}
       <div className="flex items-center justify-center space-x-2 mt-4">
-        {getScoreIcon(score)}
-        <span className={`text-sm font-semibold ${colors.text}`}>{getScoreLabel(score)}</span>
+        {getScoreIcon(shown)}
+        <span className={`text-sm font-semibold ${colors.text}`}>{getScoreLabel(shown)}</span>
       </div>
     </div>
   );

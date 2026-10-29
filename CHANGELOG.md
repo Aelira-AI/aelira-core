@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The review evidence PDF let the source and working-file SHA-256 values run past the metadata table's border, listed Matterhorn checkpoints and a validator result for Word, Excel and PowerPoint documents, and labelled its count of review items "Total Issues Found". Hashes now wrap inside the table in a small monospaced font, the Matterhorn lines and scope text appear only for PDFs, and the count is labelled "Review Items Recorded". File, department and institution names containing markup characters are shown as text ([#876](https://github.com/Aelira-AI/aelira-core/issues/876)).
+- The compliance score on the scan page counted up from 0 and the severity and WCAG criteria charts animated even when the user asked the system to reduce motion, because both run in script and the CSS reduced-motion rule does not reach them. With reduced motion the score shows its value at once and the charts do not animate. While the count-up runs, the label, colour and ring follow the number shown, so a low number never appears next to a high score's label ([#878](https://github.com/Aelira-AI/aelira-core/issues/878)).
+
 ## [0.12.0] - 2026-10-29
 
 See the [release notes](docs/releases/v0.12.0.md) for operator actions and
