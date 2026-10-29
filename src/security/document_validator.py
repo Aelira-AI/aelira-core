@@ -189,19 +189,69 @@ def _pdf_names(pdf_text: str) -> List[str]:
     ]
 
 
-# Calls in macro code that make a macro CRITICAL rather than HIGH
+def _vba_call(name: str) -> str:
+    """A call to ``name`` with or without parentheses, as VBA allows.
+
+    ``Shell "calc.exe"`` and ``Shell(cmd)`` match; a longer identifier such as
+    ``ShellSort`` does not.
+    """
+    return rf"\b{name}(?![A-Za-z0-9_])(?:\s*[(\"]|[ \t]+[A-Za-z_&])"
+
+
+# Calls in macro code that make a macro CRITICAL rather than HIGH. They are
+# matched after comments and string contents are removed, so a word inside a
+# message is not a call.
+SUSPICIOUS_VBA_CALLS = [
+    (_vba_call("Shell"), "Shell command execution"),
+    (_vba_call("CreateObject"), "COM object creation"),
+    (_vba_call(r"Environ\$?"), "Environment variable access"),
+]
+
+# Names in macro code, usually inside strings, that make a macro CRITICAL.
+# They are matched after comments are removed.
 SUSPICIOUS_VBA_PATTERNS = [
-    (r"Shell\s*\(", "Shell command execution"),
-    (r"CreateObject\s*\(", "COM object creation"),
     (r"WScript\.Shell", "Windows Script Host"),
     (r"PowerShell", "PowerShell execution"),
     (r"cmd\.exe", "Command prompt execution"),
-    (r"Environ\s*\(", "Environment variable access"),
     (r"DownloadFile", "File download"),
     (r"URLDownloadToFile", "URL file download"),
     (r"ADODB\.Stream", "Binary stream operations"),
     (r"RegWrite|RegDelete", "Registry modification"),
 ]
+
+
+def _vba_without_comments(code: str) -> str:
+    """VBA source with ' and Rem comments removed, keeping string contents."""
+    lines = []
+    for line in code.splitlines():
+        in_string = False
+        for index, char in enumerate(line):
+            if char == '"':
+                in_string = not in_string
+            elif char == "'" and not in_string:
+                line = line[:index]
+                break
+        if re.match(r"\s*Rem\b", line, re.IGNORECASE):
+            line = ""
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _suspicious_vba_calls(code: str) -> List[str]:
+    """Descriptions of the suspicious calls and names in VBA source."""
+    code = _vba_without_comments(code)
+    without_strings = re.sub(r'"(?:[^"]|"")*"', '""', code)
+    found = [
+        desc
+        for pattern, desc in SUSPICIOUS_VBA_CALLS
+        if re.search(pattern, without_strings, re.IGNORECASE)
+    ]
+    found += [
+        desc
+        for pattern, desc in SUSPICIOUS_VBA_PATTERNS
+        if re.search(pattern, code, re.IGNORECASE)
+    ]
+    return found
 
 
 _MAX_PACKAGE_XML_BYTES = 4 * 1024 * 1024
@@ -930,17 +980,16 @@ class DocumentValidator:
                     vba_filename,
                     vba_code,
                 ) in vba_parser.extract_macros():
-                    for pattern, desc in SUSPICIOUS_VBA_PATTERNS:
-                        if re.search(pattern, vba_code, re.IGNORECASE):
-                            findings.append(
-                                SecurityFinding(
-                                    category="office_macro_suspicious",
-                                    description=f"Macro contains suspicious code: {desc}",
-                                    threat_level=ThreatLevel.CRITICAL,
-                                    details=f"Found in {vba_filename}",
-                                    remediation="Do not open this document",
-                                )
+                    for desc in _suspicious_vba_calls(vba_code or ""):
+                        findings.append(
+                            SecurityFinding(
+                                category="office_macro_suspicious",
+                                description=f"Macro contains suspicious code: {desc}",
+                                threat_level=ThreatLevel.CRITICAL,
+                                details=f"Found in {vba_filename}",
+                                remediation="Do not open this document",
                             )
+                        )
             except Exception as e:
                 logger.warning(f"Macro content analysis error ({type(e).__name__})")
                 findings.append(
