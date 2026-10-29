@@ -1,4 +1,4 @@
-"""Release metadata and operator notices must agree for v0.11.2."""
+"""Release metadata and operator notices must agree for v0.12.0."""
 
 import ast
 import hashlib
@@ -8,9 +8,9 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.11.2"
-RELEASE_HEADING = "## [0.11.2] - 2026-10-29"
-RELEASE_BODY = ROOT / "docs/releases/v0.11.2.md"
+VERSION = "0.12.0"
+RELEASE_HEADING = "## [0.12.0] - 2026-10-29"
+RELEASE_BODY = ROOT / "docs/releases/v0.12.0.md"
 PREVIOUS_HEADING = "## [0.11.1] - 2026-10-29"
 V0110_HEADING = "## [0.11.0] - 2026-10-28"
 V0100_HEADING = "## [0.10.0] - 2026-10-25"
@@ -18,7 +18,7 @@ V0913_HEADING = "## [0.9.13] - 2026-10-20"
 V0912_HEADING = "## [0.9.12] - 2026-10-15"
 
 
-def test_authoritative_release_versions_are_0_11_2():
+def test_authoritative_release_versions_are_0_12_0():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -56,7 +56,7 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.11\.2\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*0\.12\.0\s*\|\s*:white_check_mark:\s*\|", security)
     assert re.search(r"\|\s*<=\s*0\.11\.1\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
@@ -68,7 +68,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_dates_v0_11_2_and_preserves_history():
+def test_changelog_dates_v0_12_0_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
@@ -102,8 +102,10 @@ def test_changelog_dates_v0_11_2_and_preserves_history():
     )
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
     for phrase in (
-        "docs/releases/v0.11.2.md",
+        "docs/releases/v0.12.0.md",
+        "### Changed",
         "### Fixed",
+        "### Security",
         "[#736]",
         "[#804]",
         "[#816]",
@@ -113,12 +115,18 @@ def test_changelog_dates_v0_11_2_and_preserves_history():
         "[#856]",
         "[#859]",
         "[#860]",
+        "[#863]",
         "[#871]",
+        "[#872]",
         "[#873]",
     ):
         assert phrase in current_notes
-    # A patch section carries only patch-level headings.
-    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {"Fixed"}
+    # A minor section lists its behaviour changes under Changed.
+    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {
+        "Changed",
+        "Fixed",
+        "Security",
+    }
     v0111_notes = changelog[previous:v0110]
     for phrase in (
         "docs/releases/v0.11.1.md",
@@ -223,9 +231,10 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#376]",
         "[#375]",
         "[#377]",
-        "## Upload fixes",
+        "## Upload security",
         "## Other fixes",
-        "backwards-compatible fixes only",
+        "It is a minor release",
+        "Uploads behave differently in this release",
         "`has_api_keys`",
         "[#860]",
         "[#856]",
@@ -242,6 +251,7 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#871]",
         "[#872]",
         "[#873]",
+        "[#874]",
         "/scan/{id}",
         "CVE-2026-94283",
         "CVE-2026-94284",
