@@ -329,7 +329,9 @@ class EmailService:
         scan_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send scan completion notification."""
-        # Sanitize user-controlled input
+        # render_template escapes every variable that is not *_html or *_url, so
+        # file_name is passed raw there; it is escaped here once only for the
+        # hand-built message_html. The subject is plain text.
         safe_file_name = html_lib.escape(file_name)
 
         # Determine status color and message
@@ -347,14 +349,14 @@ class EmailService:
             "scan_complete",
             {
                 "title": "Scan Complete",
-                "file_name": safe_file_name,
+                "file_name": file_name,
                 "compliance_score": f"{compliance_score:.0f}%",
                 "issues_found": issues_found,
                 "status_color": status_color,
                 "status_text": status_text,
                 "action_url": scan_url or "",
                 "action_text": "View Results",
-                "message": f"""
+                "message_html": f"""
                 <p>The accessibility scan for <strong>{safe_file_name}</strong> has completed.</p>
                 <div style="text-align: center; margin: 24px 0;">
                     <div style="font-size: 48px; font-weight: bold; color: {status_color};">
@@ -369,7 +371,7 @@ class EmailService:
 
         return await self.send_email(
             to_emails=to_emails,
-            subject=f"Scan Complete: {safe_file_name} - {compliance_score:.0f}% Compliance",
+            subject=f"Scan Complete: {file_name} - {compliance_score:.0f}% Compliance",
             html_content=html,
         )
 
@@ -405,7 +407,7 @@ class EmailService:
             "critical_issues",
             {
                 "title": "Critical Accessibility Issues Detected",
-                "file_name": safe_file_name,
+                "file_name": file_name,
                 "critical_count": len(critical_issues),
                 "issues_html": issues_html,
                 "action_url": resolved_action_url,
@@ -428,7 +430,7 @@ class EmailService:
 
         return await self.send_email(
             to_emails=to_emails,
-            subject=f"CRITICAL: {len(critical_issues)} Accessibility Issues in {safe_file_name}",
+            subject=f"CRITICAL: {len(critical_issues)} Accessibility Issues in {file_name}",
             html_content=html,
         )
 
@@ -438,8 +440,8 @@ class EmailService:
         department_name: str,
         total_files: int,
         files_scanned: Optional[int] = None,
-        average_score: float = 0,
-        total_issues: int = 0,
+        average_score: Optional[float] = 0,
+        total_issues: Optional[int] = 0,
         issues_fixed: Optional[int] = None,
         dashboard_url: str = None,
         unsubscribe_url: str = None,
@@ -472,6 +474,14 @@ class EmailService:
             issues_fixed if issues_fixed is not None else "Not available"
         )
 
+        # None means the figure was not measured; show that instead of a zero.
+        average_score_display = (
+            f"{average_score:.0f}%" if average_score is not None else "Not available"
+        )
+        total_issues_display: int | str = (
+            total_issues if total_issues is not None else "Not available"
+        )
+
         severity_counts = (critical_count, serious_count, moderate_count, minor_count)
         severity_total = (
             sum(severity_counts) if all(c is not None for c in severity_counts) else 0
@@ -498,8 +508,8 @@ class EmailService:
                 "total_files": total_files,
                 "files_scanned": weekly_scans,
                 "scans_this_week": weekly_scans,
-                "average_score": f"{average_score:.0f}",
-                "total_issues": total_issues,
+                "average_score": average_score_display,
+                "total_issues": total_issues_display,
                 "issues_fixed": issues_fixed_display,
                 "score_change": score_change,
                 "critical_count": measured_count(critical_count),
@@ -536,12 +546,12 @@ class EmailService:
                         <tr>
                             <td style="padding: 8px 0;"><strong>Average Scan Score:</strong></td>
                             <td style="text-align: right; color: #2563eb;">
-                                {average_score:.0f}%
+                                {average_score_display}
                             </td>
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Total Issues Found:</strong></td>
-                            <td style="text-align: right;">{total_issues}</td>
+                            <td style="text-align: right;">{total_issues_display}</td>
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Issues Fixed:</strong></td>
