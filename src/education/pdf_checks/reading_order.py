@@ -21,6 +21,12 @@ from .models import ReadingOrderIssue, ReadingOrderResult
 
 logger = logging.getLogger(__name__)
 
+# Shown to users when a PDF could not be read; the detail goes to the log only.
+READ_FAILURE_RECOMMENDATION = (
+    "This PDF could not be read for a reading-order check. Review the "
+    "document manually."
+)
+
 
 class _StructureBlocks(list):
     """Text blocks with local completeness state, also retained in partial scans."""
@@ -88,6 +94,10 @@ class ReadingOrderVerifier:
             with fitz.open(file_path) as doc:
                 total_pages = len(doc)
                 pages_to_check = min(total_pages, max_pages)
+                # One page-ordinal extraction per page for the whole document.
+                from ..remediation.source_order import PageNumberBoxes
+
+                ordinals = PageNumberBoxes(doc)
 
                 for page_num in range(pages_to_check):
                     page = doc[page_num]
@@ -97,7 +107,9 @@ class ReadingOrderVerifier:
                     duplicates = self._verified_artifact_duplicates(
                         file_path, page_num, page
                     )
-                    visual_blocks = self._get_visual_text_order(page, duplicates)
+                    visual_blocks = self._get_visual_text_order(
+                        page, duplicates, ordinals=ordinals
+                    )
 
                     # Detect multi-column layout
                     if self._detect_multi_column(visual_blocks):
@@ -145,7 +157,7 @@ class ReadingOrderVerifier:
 
         except Exception as e:
             record_incomplete_check("reading_order.check")
-            logger.error(f"[ReadingOrderVerifier] Error verifying reading order: {e}")
+            logger.warning(f"[ReadingOrderVerifier] Error verifying reading order: {e}")
             return ReadingOrderResult(
                 total_pages=total_pages,
                 pages_analyzed=pages_analyzed,
@@ -155,7 +167,7 @@ class ReadingOrderVerifier:
                         expected_order=[],
                         actual_order=[],
                         severity="critical",
-                        recommendation=f"Error reading PDF: {str(e)}",
+                        recommendation=READ_FAILURE_RECOMMENDATION,
                     )
                 ],
                 compliance_score=0.0,
@@ -266,7 +278,9 @@ class ReadingOrderVerifier:
             # artifacts cannot make its coverage requirement less strict.
             return []
 
-    def _get_visual_text_order(self, page, duplicates=None) -> List[Dict]:
+    def _get_visual_text_order(
+        self, page, duplicates=None, ordinals=None
+    ) -> List[Dict]:
         """Extract text blocks from page sorted by visual position.
 
         Sorting: Primary by y-position (top to bottom), secondary by x-position
@@ -274,6 +288,8 @@ class ReadingOrderVerifier:
 
         Args:
             page: PyMuPDF page object
+            duplicates: Verified artifact duplicate characters to leave out
+            ordinals: PageNumberBoxes cache shared across a document's pages
 
         Returns:
             List of dicts with 'text', 'bbox' (x0, y0, x1, y1) sorted by position
@@ -365,24 +381,20 @@ class ReadingOrderVerifier:
             blocks.sort(key=sort_key)
             # A source-corroborated ordinal is retained as final content. It
             # cannot make a short left footer look like a persistent right column.
-            from ..remediation.source_order import _page_number_box
+            from ..remediation.source_order import PageNumberBoxes
 
             margin = None
-            corroborated = 0
+            corroborated = False
             if (
                 isinstance(getattr(page, "number", None), int)
                 and page.parent is not None
                 and len(page.parent) <= 100
             ):
-                margin = _page_number_box(page, page.number + 1)
-                if margin:
-                    for i in range(len(page.parent)):
-                        corroborated += (
-                            _page_number_box(page.parent[i], i + 1) is not None
-                        )
-                        if corroborated >= 3:
-                            break
-            if margin and corroborated >= 3:
+                if ordinals is None or ordinals.document is not page.parent:
+                    ordinals = PageNumberBoxes(page.parent)
+                margin = ordinals.box(page.number)
+                corroborated = bool(margin) and ordinals.corroborated()
+            if margin and corroborated:
                 for block in blocks:
                     if block["text"] == margin[0] and tuple(block["bbox"]) == tuple(
                         margin[1]
@@ -918,13 +930,18 @@ class ReadingOrderVerifier:
         # Choose a complete geometric plan before comparing with the tag order.
         # Never choose between competing plans merely because one happens to pass.
         if visual and all("bbox" in block for block in visual):
-            from ..layout_order import block_plan, LayoutAmbiguous
+            from ..layout_order import (
+                block_plan,
+                LayoutAmbiguous,
+                plain_refusal_reason,
+            )
 
             try:
                 ordered = block_plan(visual, page_width)
             except LayoutAmbiguous as exc:
                 return issue(
-                    "Review the page's regional reading order: " + str(exc),
+                    "Review the page's regional reading order: "
+                    + plain_refusal_reason(exc),
                     review_only=True,
                 )
             if words(ordered) == structure_words:

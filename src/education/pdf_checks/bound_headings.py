@@ -13,6 +13,7 @@ from statistics import median
 import pikepdf
 import pymupdf as fitz
 
+from ..scan_completeness import record_incomplete_check
 from .marked_content import MarkedContentResolver
 
 HEADING_ROLES = {f"/H{level}" for level in range(1, 7)}
@@ -58,6 +59,16 @@ class HeadingInventory:
     def first_is_h1(self):
         return self.complete and bool(self.headings) and self.headings[0].role == "/H1"
 
+    @property
+    def proven_first_is_h1(self):
+        """The first heading is a bound H1, even if the walk stopped later.
+
+        A target joins the list only after its binding checks and the walk
+        stops at the first refusal, so the first listed heading is the
+        document's first heading whether or not the inventory finished.
+        """
+        return bool(self.headings) and self.headings[0].role == "/H1"
+
 
 def effective_role(role, root):
     roles = root.get("/RoleMap", {})
@@ -71,6 +82,19 @@ def effective_role(role, root):
             raise ValueError("heading_invalid_role_map")
         role = str(value)
     return role
+
+
+def _is_incomplete_check(reason):
+    """Work or size limits and unexpected errors leave the scan unfinished.
+
+    Document-structure refusals (empty or unbound headings, bad parent
+    relations) are findings about the document, not a failed check.
+    """
+    if reason == "heading_inventory_failed" or reason.endswith("_limit"):
+        return True
+    # Coded refusals are structure findings; any other ValueError text came
+    # from an unexpected resolver error.
+    return not reason.startswith(("heading_", "reading_order_"))
 
 
 def inventory(pdf, source_path):
@@ -122,7 +146,6 @@ def inventory(pdf, source_path):
                     text,
                     tuple(sorted(node.pages)),
                 )
-                result.targets.append(target)
                 if role in HEADING_ROLES | {"/H"} and not text:
                     raise ValueError("heading_unbound_or_empty")
                 descendants = [n for n in _nodes(node) if n.role]
@@ -147,6 +170,9 @@ def inventory(pdf, source_path):
                     )
                 ):
                     raise ValueError("heading_replacement_content_ambiguous")
+                # Only a node that passed every binding check joins the list, so
+                # a refused first heading never counts as a proven first heading.
+                result.targets.append(target)
                 if (
                     not text
                     or len(node.pages) != 1
@@ -263,8 +289,11 @@ def inventory(pdf, source_path):
         result.reason = (
             str(exc) if isinstance(exc, ValueError) else "heading_inventory_failed"
         )
-        # A failed inventory never clears a finding. Existing scanners report
-        # broken structure separately; keep the unresolved heading observable.
+        if _is_incomplete_check(result.reason):
+            record_incomplete_check("heading_inventory")
+        # A failed inventory never clears a finding about a heading it did not
+        # prove. Existing scanners report broken structure separately; keep the
+        # unresolved heading observable.
         return result
 
 
