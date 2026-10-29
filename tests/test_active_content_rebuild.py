@@ -800,48 +800,46 @@ async def test_xhtml_is_not_an_extension_mismatch():
     assert "file_type_mismatch" not in {f.category for f in result.findings}
 
 
-@pytest.mark.asyncio
-async def test_unfinished_walk_of_object_streams_fails_closed(monkeypatch):
-    from src.security import document_validator
-
+def clean_pdf(object_streams):
     with pikepdf.open(io.BytesIO(scripted_pdf())) as pdf:
         pdf.Root.OpenAction = pikepdf.Array([pdf.pages[0].obj, pikepdf.Name.Fit])
         del pdf.Root["/Names"]
         del pdf.pages[0].obj["/AA"]
         pdf.pages[0].obj.Annots = pikepdf.Array([])
         buffer = io.BytesIO()
-        pdf.save(buffer, object_stream_mode=pikepdf.ObjectStreamMode.generate)
-    clean_with_streams = buffer.getvalue()
-    assert b"/ObjStm" in clean_with_streams
+        mode = (
+            pikepdf.ObjectStreamMode.generate
+            if object_streams
+            else pikepdf.ObjectStreamMode.disable
+        )
+        pdf.save(buffer, object_stream_mode=mode)
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("object_streams", [True, False])
+async def test_incomplete_pdf_walk_fails_closed(monkeypatch, object_streams):
+    from src.security import document_validator
+
+    content = clean_pdf(object_streams)
     validator = DocumentValidator()
-    assert (await validator.validate("a.pdf", clean_with_streams)).threat_level.rank < (
+    assert (await validator.validate("a.pdf", content)).threat_level.rank < (
         ThreatLevel.HIGH.rank
     )
 
     monkeypatch.setattr(document_validator, "_MAX_PDF_OBJECTS", 1)
-    result = await validator.validate("a.pdf", clean_with_streams)
+    result = await validator.validate("a.pdf", content)
     assert "pdf_structure_unchecked" in {f.category for f in result.findings}
     assert result.threat_level == ThreatLevel.HIGH
 
-    # The rebuild writes no object streams, so the byte scan sees everything.
-    rebuilt, rebuilt_result = await sanitize_document("a.pdf", clean_with_streams)
-    assert b"/ObjStm" not in rebuilt
-    assert rebuilt_result.sanitized is True
+    # A rebuild that cannot be walked either is refused.
+    with pytest.raises(SanitizationError):
+        await sanitize_document("a.pdf", content)
 
 
 @pytest.mark.asyncio
-async def test_unfinished_walk_without_object_streams_is_not_a_finding(monkeypatch):
-    from src.security import document_validator
+async def test_pdf_that_cannot_be_parsed_is_high():
+    result = await DocumentValidator().validate("a.pdf", b"%PDF-1.4\nnot a pdf")
 
-    monkeypatch.setattr(document_validator, "_MAX_PDF_OBJECTS", 1)
-    with pikepdf.open(io.BytesIO(scripted_pdf())) as pdf:
-        pdf.Root.OpenAction = pikepdf.Array([pdf.pages[0].obj, pikepdf.Name.Fit])
-        del pdf.Root["/Names"]
-        del pdf.pages[0].obj["/AA"]
-        pdf.pages[0].obj.Annots = pikepdf.Array([])
-        buffer = io.BytesIO()
-        pdf.save(buffer, object_stream_mode=pikepdf.ObjectStreamMode.disable)
-
-    result = await DocumentValidator().validate("a.pdf", buffer.getvalue())
-
-    assert "pdf_structure_unchecked" not in {f.category for f in result.findings}
+    assert "pdf_structure_unchecked" in {f.category for f in result.findings}
+    assert result.threat_level == ThreatLevel.HIGH

@@ -201,17 +201,22 @@ def _pdf_structural_keywords(content: bytes) -> Tuple[Dict[str, int], bool]:
     The byte scan cannot see into compressed object streams. This counts the
     keywords as dictionary keys and name values in every object, and returns
     whether every object was walked. An object that cannot be read is skipped
-    and makes the walk incomplete, as do the object, node and depth limits. A
-    PDF that cannot be parsed at all returns no counts and a complete walk:
-    the byte scan then sees everything that is not compressed.
+    and makes the walk incomplete, as do the object, node and depth limits, an
+    error while listing the objects, and a PDF that cannot be parsed at all.
     """
     counts: Dict[str, int] = {}
     try:
-        import pikepdf
-
-        pdf = pikepdf.open(io.BytesIO(content))
+        return _walk_pdf_keywords(content, counts)
     except Exception:
-        return counts, True
+        return counts, False
+
+
+def _walk_pdf_keywords(
+    content: bytes, counts: Dict[str, int]
+) -> Tuple[Dict[str, int], bool]:
+    import pikepdf
+
+    pdf = pikepdf.open(io.BytesIO(content))
 
     def add(name: str) -> None:
         counts[name] = counts.get(name, 0) + 1
@@ -559,15 +564,16 @@ class DocumentValidator:
             # Whole names, so /JS does not match /JSomething. The parsed count
             # can only add to the byte count, for keywords in object streams.
             names = _pdf_names(content)
+            # The parse never raises; an incomplete walk fails closed, since
+            # what it did not reach may sit in an object stream.
             parsed, walked = _pdf_structural_keywords(content)
-            if not walked and "/ObjStm" in names:
-                # Object streams are the one place the byte scan cannot see.
+            if not walked:
                 findings.append(
                     SecurityFinding(
                         category="pdf_structure_unchecked",
-                        description="PDF object streams could not be fully checked",
+                        description="PDF structure could not be fully checked",
                         threat_level=ThreatLevel.HIGH,
-                        details="Some objects could not be read or the PDF is too large to walk",
+                        details="The PDF could not be parsed, some objects could not be read, or it is too large to walk",
                         remediation="Save the PDF again from its source application",
                     )
                 )
