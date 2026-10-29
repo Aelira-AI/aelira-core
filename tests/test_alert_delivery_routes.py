@@ -87,12 +87,12 @@ def test_trigger_delivers_scoped_inputs(
             "file_name": "Lecture.pdf",
             "compliance_score": 82.5,
             "issues_found": 3,
-            "scan_url": "https://campus.example.edu/scans/fixture-scan",
+            "scan_url": "https://campus.example.edu/scan/fixture-scan",
         }
     elif path == "critical-issues":
         assert args["critical_issues"] == payload["critical_issues"]
         assert args["department"].id == case.department.id
-        assert args["action_url"] == "https://campus.example.edu/scans/fixture-scan"
+        assert args["action_url"] == "https://campus.example.edu/scan/fixture-scan"
     else:
         assert args["department"].id == case.department.id
         assert args["department_name"] == case.department.name
