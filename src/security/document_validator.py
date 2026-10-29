@@ -12,12 +12,13 @@ Uses oletools for Office analysis and custom PDF inspection.
 
 import io
 import logging
+import posixpath
 import re
 import zipfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, List, Optional, Tuple, Union
+from typing import BinaryIO, List, Optional, Set, Tuple, Union
 import hashlib
 
 logger = logging.getLogger(__name__)
@@ -175,16 +176,76 @@ SUSPICIOUS_VBA_PATTERNS = [
 ]
 
 
-def _has_vba_part(content: bytes) -> bool:
-    """True if the archive has a part named vbaProject.bin, in any folder."""
+_MAX_PACKAGE_XML_BYTES = 4 * 1024 * 1024
+
+
+def _vba_project_parts(content: bytes) -> Optional[Set[str]]:
+    """Parts an Office Open XML package declares as a VBA project.
+
+    A package finds its parts through [Content_Types].xml and the .rels
+    relationships, not through file names, so this reads both and also keeps a
+    part named vbaProject.bin in any folder. An empty set means the package
+    declares none. None means the package structure could not be read, which
+    callers must treat as possibly carrying a project.
+    """
+    from defusedxml import ElementTree
+
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            return any(
-                name.replace("\\", "/").rsplit("/", 1)[-1].lower() == "vbaproject.bin"
-                for name in zf.namelist()
-            )
+        zf = zipfile.ZipFile(io.BytesIO(content))
     except Exception:
-        return False
+        return set()  # not a package; the archive checks report that
+
+    with zf:
+        members = zf.namelist()
+        found: Set[str] = {
+            name
+            for name in members
+            if name.replace("\\", "/").rsplit("/", 1)[-1].lower() == "vbaproject.bin"
+        }
+        by_lower = {name.lower(): name for name in members}
+
+        def read_xml(name):
+            if zf.getinfo(name).file_size > _MAX_PACKAGE_XML_BYTES:
+                raise ValueError("package XML too large")
+            return ElementTree.fromstring(zf.read(name))
+
+        try:
+            content_types = by_lower.get("[content_types].xml")
+            if content_types is not None:
+                for element in read_xml(content_types):
+                    kind = element.tag.rsplit("}", 1)[-1]
+                    if "vbaproject" not in element.get("ContentType", "").lower():
+                        continue
+                    if kind == "Override":
+                        found.add(element.get("PartName", "").lstrip("/"))
+                    elif kind == "Default":
+                        extension = "." + element.get("Extension", "").lower()
+                        found.update(
+                            name for name in members if name.lower().endswith(extension)
+                        )
+
+            for name in members:
+                if not name.lower().endswith(".rels"):
+                    continue
+                # A .rels file describes the part beside its _rels folder.
+                source_folder = posixpath.dirname(posixpath.dirname(name))
+                for relationship in read_xml(name):
+                    kind = relationship.get("Type", "").lower()
+                    if not kind.endswith("/vbaproject"):
+                        continue
+                    if relationship.get("TargetMode", "").lower() == "external":
+                        continue
+                    target = relationship.get("Target", "")
+                    if target.startswith("/"):
+                        found.add(posixpath.normpath(target.lstrip("/")))
+                    else:
+                        found.add(
+                            posixpath.normpath(posixpath.join(source_folder, target))
+                        )
+        except Exception:
+            return None
+
+    return found
 
 
 def _declares_macros(content: bytes) -> bool:
@@ -796,21 +857,23 @@ class DocumentValidator:
             return findings
 
         vba_parser = None
-        has_vba_part = _has_vba_part(content)
+        vba_parts = _vba_project_parts(content)
+        # None means the package structure was unreadable: possibly a project.
+        carries_vba_project = vba_parts is None or bool(vba_parts)
         try:
             vba_parser = VBA_Parser(filename=f"document{ext}", data=content)
 
             if not vba_parser.detect_vba_macros():
-                if has_vba_part:
-                    # The file carries a VBA project that oletools does not
-                    # recognise. Office may still read it, so do not call the
-                    # file clean.
+                if carries_vba_project:
+                    # The package declares a VBA project, or its structure
+                    # cannot be read, and oletools found no macros. Office may
+                    # still read it, so do not call the file clean.
                     findings.append(
                         SecurityFinding(
                             category="macro_check_failed",
                             description="Document has a VBA project that could not be read",
                             threat_level=ThreatLevel.HIGH,
-                            details="A vbaProject.bin part is present but no macros were found in it",
+                            details="The package declares a VBA project or cannot be read, and no macros were found",
                             remediation="Remove the VBA project or verify document source",
                         )
                     )
@@ -865,7 +928,7 @@ class DocumentValidator:
             # to make the parser raise is still rebuilt without the project.
             # Without one, an ordinary document with embedded objects must not
             # be rebuilt, because that drops the objects (#856).
-            carries_vba = has_vba_part or _declares_macros(content)
+            carries_vba = carries_vba_project or _declares_macros(content)
             findings.append(
                 SecurityFinding(
                     category="macro_check_failed",
@@ -1053,6 +1116,11 @@ async def _sanitize_pdf(content: bytes) -> bytes:
 async def _sanitize_ooxml(content: bytes) -> bytes:
     """
     Sanitize Office Open XML by removing macros and external references.
+
+    Parts are removed by name pattern only (see skip_patterns below). A VBA
+    project stored under another name and found through the package's content
+    types or relationships is rated HIGH by the validator but is not yet
+    removed here (#863).
     """
     try:
         sanitized_buffer = io.BytesIO()

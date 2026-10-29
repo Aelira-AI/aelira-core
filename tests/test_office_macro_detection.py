@@ -15,7 +15,11 @@ import pytest
 from fastapi import HTTPException, UploadFile
 
 from src.api.education import _shared
-from src.security.document_validator import DocumentValidator, ThreatLevel
+from src.security.document_validator import (
+    DocumentValidator,
+    ThreatLevel,
+    _vba_project_parts,
+)
 from tests.vba_fixtures import ooxml_with_vba, vba_project_bin
 
 BENIGN = "Sub Hello()\r\n  MsgBox 1\r\nEnd Sub"
@@ -248,6 +252,106 @@ async def test_parser_failure_without_a_vba_part_keeps_embedded_objects(
     assert returned == original
     assert embedding in names(returned)
     assert session.added[0].was_sanitized is False
+
+
+VBA_TYPE = "application/vnd.ms-office.vbaProject"
+VBA_REL_TYPE = "http://schemas.microsoft.com/office/2006/relationships/vbaProject"
+NOT_OLE = b"not an ole file at all" * 10
+TYPES_OPEN = (
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+)
+RELS_OPEN = (
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+    'relationships">'
+)
+DOCUMENT_RELS = "word/_rels/document.xml.rels"
+
+
+def renamed_vba_package(types="", rels=""):
+    """A package whose unreadable VBA project is stored as word/data.dat."""
+    parts = {"word/data.dat": NOT_OLE}
+    if types:
+        parts["[Content_Types].xml"] = f"{TYPES_OPEN}{types}</Types>"
+    if rels:
+        parts[DOCUMENT_RELS] = f"{RELS_OPEN}{rels}</Relationships>"
+    return plain_docx(parts)
+
+
+RENAMED_VBA_PACKAGES = {
+    "override_and_rels": renamed_vba_package(
+        f'<Override PartName="/word/data.dat" ContentType="{VBA_TYPE}"/>',
+        f'<Relationship Id="rId9" Type="{VBA_REL_TYPE}" Target="data.dat"/>',
+    ),
+    "override_only": renamed_vba_package(
+        f'<Override PartName="/word/data.dat" ContentType="{VBA_TYPE}"/>'
+    ),
+    "default_extension_only": renamed_vba_package(
+        f'<Default Extension="dat" ContentType="{VBA_TYPE}"/>'
+    ),
+    "rels_type_only": renamed_vba_package(
+        rels=f'<Relationship Id="rId9" Type="{VBA_REL_TYPE}" Target="data.dat"/>'
+    ),
+    "absolute_rels_target": renamed_vba_package(
+        rels=f'<Relationship Id="rId9" Type="{VBA_REL_TYPE}" Target="/word/data.dat"/>'
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", sorted(RENAMED_VBA_PACKAGES))
+async def test_vba_project_stored_under_another_name_is_not_clean(kind):
+    result = await DocumentValidator().validate("a.docx", RENAMED_VBA_PACKAGES[kind])
+
+    assert categories(result) == {"macro_check_failed"}
+    assert result.threat_level == ThreatLevel.HIGH
+
+
+def test_relationship_target_is_resolved_against_the_source_part_folder():
+    package = renamed_vba_package(
+        rels=f'<Relationship Id="rId9" Type="{VBA_REL_TYPE}" Target="data.dat"/>'
+    )
+    assert _vba_project_parts(package) == {"word/data.dat"}
+    assert _vba_project_parts(plain_docx()) == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"[Content_Types].xml": "<Types><Override"},
+        {DOCUMENT_RELS: "<Relationships><Relationship"},
+    ],
+    ids=["content_types", "rels"],
+)
+async def test_unreadable_package_structure_fails_closed(broken):
+    result = await DocumentValidator().validate("a.docx", plain_docx(broken))
+
+    assert categories(result) == {"macro_check_failed"}
+    assert result.threat_level == ThreatLevel.HIGH
+
+
+@pytest.mark.asyncio
+async def test_package_with_embedded_object_and_no_vba_declaration_is_clean(session):
+    """The #856 guard: embedded objects alone are not a VBA project."""
+    embedding = "word/embeddings/oleObject1.bin"
+    original = plain_docx(
+        {
+            embedding: b"\xd0\xcf\x11\xe0 synthetic equation",
+            DOCUMENT_RELS: f"{RELS_OPEN}"
+            '<Relationship Id="rId5" Type="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/relationships/oleObject" '
+            'Target="embeddings/oleObject1.bin"/></Relationships>',
+        }
+    )
+
+    result = await DocumentValidator().validate("a.docx", original)
+    returned = await _shared.validate_uploaded_file(
+        upload(original, "report.docx"), session, "workspace"
+    )
+
+    assert result.findings == []
+    assert returned == original
+    assert embedding in names(returned)
 
 
 @pytest.mark.asyncio
