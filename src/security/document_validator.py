@@ -160,6 +160,21 @@ SUSPICIOUS_PDF_KEYWORDS = {
 }
 
 
+# Calls in macro code that make a macro CRITICAL rather than HIGH
+SUSPICIOUS_VBA_PATTERNS = [
+    (r"Shell\s*\(", "Shell command execution"),
+    (r"CreateObject\s*\(", "COM object creation"),
+    (r"WScript\.Shell", "Windows Script Host"),
+    (r"PowerShell", "PowerShell execution"),
+    (r"cmd\.exe", "Command prompt execution"),
+    (r"Environ\s*\(", "Environment variable access"),
+    (r"DownloadFile", "File download"),
+    (r"URLDownloadToFile", "URL file download"),
+    (r"ADODB\.Stream", "Binary stream operations"),
+    (r"RegWrite|RegDelete", "Registry modification"),
+]
+
+
 class DocumentValidator:
     """
     Validates documents for security threats.
@@ -744,65 +759,7 @@ class DocumentValidator:
         findings = []
 
         try:
-            # Try to import oletools
-            from oletools.olevba import VBA_Parser, detect_vba_macros
-
-            # Check for VBA macros
-            vba_detected = detect_vba_macros(content)
-
-            if vba_detected:
-                findings.append(
-                    SecurityFinding(
-                        category="office_macros_detected",
-                        description="Document contains VBA macros",
-                        threat_level=ThreatLevel.HIGH,
-                        details="Macros can execute arbitrary code",
-                        remediation="Remove macros or verify document source",
-                    )
-                )
-
-                # Analyze macro content
-                try:
-                    vba_parser = VBA_Parser(filename=f"document{ext}", data=content)
-
-                    if vba_parser.detect_vba_macros():
-                        for (
-                            filename,
-                            stream_path,
-                            vba_filename,
-                            vba_code,
-                        ) in vba_parser.extract_macros():
-                            # Check for suspicious VBA patterns
-                            suspicious_patterns = [
-                                (r"Shell\s*\(", "Shell command execution"),
-                                (r"CreateObject\s*\(", "COM object creation"),
-                                (r"WScript\.Shell", "Windows Script Host"),
-                                (r"PowerShell", "PowerShell execution"),
-                                (r"cmd\.exe", "Command prompt execution"),
-                                (r"Environ\s*\(", "Environment variable access"),
-                                (r"DownloadFile", "File download"),
-                                (r"URLDownloadToFile", "URL file download"),
-                                (r"ADODB\.Stream", "Binary stream operations"),
-                                (r"RegWrite|RegDelete", "Registry modification"),
-                            ]
-
-                            for pattern, desc in suspicious_patterns:
-                                if re.search(pattern, vba_code, re.IGNORECASE):
-                                    findings.append(
-                                        SecurityFinding(
-                                            category="office_macro_suspicious",
-                                            description=f"Macro contains suspicious code: {desc}",
-                                            threat_level=ThreatLevel.CRITICAL,
-                                            details=f"Found in {vba_filename}",
-                                            remediation="Do not open this document",
-                                        )
-                                    )
-
-                    vba_parser.close()
-
-                except Exception as e:
-                    logger.warning(f"Macro analysis error: {e}")
-
+            from oletools.olevba import VBA_Parser
         except ImportError:
             # oletools not installed - log warning but continue
             logger.warning("oletools not installed, skipping macro analysis")
@@ -814,14 +771,80 @@ class DocumentValidator:
                     details="Install oletools for full security scanning",
                 )
             )
+            return findings
+
+        vba_parser = None
+        try:
+            vba_parser = VBA_Parser(filename=f"document{ext}", data=content)
+
+            if not vba_parser.detect_vba_macros():
+                return findings
+
+            findings.append(
+                SecurityFinding(
+                    category="office_macros_detected",
+                    description="Document contains VBA macros",
+                    threat_level=ThreatLevel.HIGH,
+                    details="Macros can execute arbitrary code",
+                    remediation="Remove macros or verify document source",
+                )
+            )
+
+            # Analyze macro content. A failure here is reported, because the
+            # suspicious-code check did not run.
+            try:
+                for (
+                    filename,
+                    stream_path,
+                    vba_filename,
+                    vba_code,
+                ) in vba_parser.extract_macros():
+                    for pattern, desc in SUSPICIOUS_VBA_PATTERNS:
+                        if re.search(pattern, vba_code, re.IGNORECASE):
+                            findings.append(
+                                SecurityFinding(
+                                    category="office_macro_suspicious",
+                                    description=f"Macro contains suspicious code: {desc}",
+                                    threat_level=ThreatLevel.CRITICAL,
+                                    details=f"Found in {vba_filename}",
+                                    remediation="Do not open this document",
+                                )
+                            )
+            except Exception as e:
+                logger.warning(f"Macro content analysis error ({type(e).__name__})")
+                findings.append(
+                    SecurityFinding(
+                        category="macro_analysis_failed",
+                        description="Macro code could not be analyzed",
+                        threat_level=ThreatLevel.MEDIUM,
+                        details="The macros were detected but their code could not be read",
+                    )
+                )
+
         except Exception as e:
-            logger.warning(f"Office macro analysis error: {e}")
+            logger.warning(f"Office macro analysis error ({type(e).__name__})")
+            findings.append(
+                SecurityFinding(
+                    category="macro_check_failed",
+                    description="Macro analysis failed",
+                    threat_level=ThreatLevel.MEDIUM,
+                    details="The document could not be checked for macros",
+                    remediation="Review the document manually",
+                )
+            )
+        finally:
+            if vba_parser is not None:
+                try:
+                    vba_parser.close()
+                except Exception:
+                    pass
 
         return findings
 
     async def _analyze_ole_macros(self, content: bytes) -> List[SecurityFinding]:
         """Analyze legacy Office (OLE) documents for macros."""
         findings = []
+        vba_parser = None
 
         try:
             from oletools.olevba import VBA_Parser
@@ -868,12 +891,25 @@ class DocumentValidator:
                             )
                             break
 
-            vba_parser.close()
-
         except ImportError:
             logger.warning("oletools not installed, skipping OLE macro analysis")
         except Exception as e:
-            logger.warning(f"OLE macro analysis error: {e}")
+            logger.warning(f"OLE macro analysis error ({type(e).__name__})")
+            findings.append(
+                SecurityFinding(
+                    category="macro_check_failed",
+                    description="Macro analysis failed",
+                    threat_level=ThreatLevel.MEDIUM,
+                    details="The document could not be checked for macros",
+                    remediation="Review the document manually",
+                )
+            )
+        finally:
+            if vba_parser is not None:
+                try:
+                    vba_parser.close()
+                except Exception:
+                    pass
 
         return findings
 

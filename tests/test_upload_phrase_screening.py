@@ -18,15 +18,12 @@ from fastapi import UploadFile
 from src.api.education import _shared
 from src.security.document_validator import (
     DocumentValidator,
-    SecurityFinding,
     ThreatLevel,
 )
+from tests.vba_fixtures import ooxml_with_vba
 
 EMBEDDING = "word/embeddings/oleObject1.bin"
 EMBEDDING_BYTES = b"\xd0\xcf\x11\xe0 synthetic embedded object"
-# oletools may be absent, in which case the macro check reports this LOW notice.
-# It says nothing about the document, so the tests accept it and nothing else.
-ENVIRONMENT_NOTICES = {"macro_check_skipped"}
 PHRASES = [
     "the valve can act as a buffer",
     "user: system: assistant: pretend to be a pump",
@@ -94,8 +91,8 @@ def upload(content, filename="report.docx"):
 @pytest.mark.parametrize("text", PHRASES)
 async def test_validator_ignores_phrases_in_document_text(text):
     result = await DocumentValidator().validate("report.docx", make_docx(text))
-    assert {f.category for f in result.findings} <= ENVIRONMENT_NOTICES
-    assert result.threat_level.rank <= ThreatLevel.LOW.rank
+    assert result.findings == []
+    assert result.threat_level == ThreatLevel.SAFE
     assert result.is_safe is True
 
 
@@ -114,7 +111,7 @@ async def test_upload_with_phrase_keeps_embedded_object_for_the_scan(session, te
     with zipfile.ZipFile(io.BytesIO(returned)) as zf:
         assert zf.read(EMBEDDING) == EMBEDDING_BYTES
     record = session.added[0]
-    assert record.threat_level in {"safe", "low"}
+    assert record.threat_level == "safe"
     assert record.was_sanitized is False
     assert record.was_blocked is False
 
@@ -132,8 +129,7 @@ async def test_phrase_makes_no_difference_to_the_outcome(session):
     )
 
     assert names(kept_with) == names(kept_without)
-    assert session.added[0].threat_level == session.added[1].threat_level
-    assert session.added[0].threat_level in {"safe", "low"}
+    assert [r.threat_level for r in session.added] == ["safe", "safe"]
 
 
 @pytest.mark.asyncio
@@ -168,27 +164,23 @@ async def test_structural_threat_is_still_rebuilt_without_embedded_objects(sessi
 
 
 @pytest.mark.asyncio
-async def test_macro_finding_is_still_rebuilt_without_embedded_objects(
-    session, monkeypatch
-):
-    """Negative control for the macro check, with the oletools result stubbed."""
-
-    async def macro_finding(self, content, ext):
-        return [
-            SecurityFinding(
-                category="office_macros_detected",
-                description="Document contains VBA macros",
-                threat_level=ThreatLevel.HIGH,
-            )
-        ]
-
-    monkeypatch.setattr(DocumentValidator, "_analyze_office_macros", macro_finding)
-    original = make_docx("the valve can work as a buffer")
+async def test_macro_is_still_rebuilt_without_embedded_objects(session):
+    """Negative control for the macro check, with a real vbaProject.bin."""
+    original = ooxml_with_vba(
+        "Sub Hello()\r\nEnd Sub",
+        body_text="the valve can work as a buffer",
+        extra_parts={EMBEDDING: EMBEDDING_BYTES},
+    )
+    result = await DocumentValidator().validate("report.docx", original)
+    assert result.threat_level == ThreatLevel.HIGH
+    assert "office_macros_detected" in {f.category for f in result.findings}
 
     returned = await _shared.validate_uploaded_file(
         upload(original), session, "workspace"
     )
 
+    assert "word/vbaProject.bin" in names(original)
+    assert "word/vbaProject.bin" not in names(returned)
     assert EMBEDDING not in names(returned)
     assert session.added[0].was_sanitized is True
 
