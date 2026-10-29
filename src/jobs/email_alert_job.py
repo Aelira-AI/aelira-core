@@ -464,7 +464,7 @@ async def trigger_scan_alerts(
     compliance_score = result.compliance_score if result is not None else None
 
     base_url = (app_base_url or get_settings().dashboard_url).rstrip("/")
-    scan_url = f"{base_url}/scans/{scan_id}"
+    scan_url = f"{base_url}/scan/{scan_id}"
     remediate_url = f"{base_url}/remediate/{scan_id}"
 
     # Send scan complete alert. An unscored or finding-less result is not

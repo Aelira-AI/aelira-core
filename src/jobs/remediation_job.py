@@ -2595,6 +2595,10 @@ async def _send_remediation_notification(
             return
 
         to_emails = [str(department.contact_email)]
+        from ..config.settings import get_settings
+
+        # The dashboard shows a scan at /scan/{id}; email links must be absolute.
+        scan_url = f"{get_settings().dashboard_url.rstrip('/')}/scan/{scan.id}"
 
         # Determine notification type based on result
         if result.failed_count == 0 and result.fixed_count > 0:
@@ -2605,7 +2609,7 @@ async def _send_remediation_notification(
                 file_name=str(scan.file_name),
                 issues_found=result.manual_count,  # Issues still needing manual work
                 compliance_score=result.remediated_compliance_score or 0.0,
-                scan_url=f"/scans/{scan.id}",
+                scan_url=scan_url,
                 department_id=department_id,
                 db=db,
             )
@@ -2624,7 +2628,7 @@ async def _send_remediation_notification(
                     {"description": fi.description} for fi in result.fixed_issues
                 ],
                 failed_issues=result.failed_issues,
-                scan_url=f"/scans/{scan.id}",
+                scan_url=scan_url,
                 department_id=department_id,
                 db=db,
             )
@@ -2649,7 +2653,7 @@ async def _send_remediation_notification(
                 scan_id=str(scan.id),
                 file_name=str(scan.file_name),
                 error_message=error_message,
-                scan_url=f"/scans/{scan.id}",
+                scan_url=scan_url,
                 department_id=department_id,
                 db=db,
             )

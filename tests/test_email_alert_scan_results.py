@@ -162,7 +162,7 @@ async def test_scan_alert_email_carries_result_score_issue_count_and_file_name(
     assert "85%" in kwargs["subject"]
     assert "85%" in kwargs["html_content"]
     assert "3 issues found" in kwargs["html_content"]
-    assert "https://campus.example.edu/scans/scan-1" in kwargs["html_content"]
+    assert "https://campus.example.edu/scan/scan-1" in kwargs["html_content"]
 
 
 @pytest.mark.asyncio
@@ -203,8 +203,8 @@ async def test_alert_links_use_the_configured_dashboard_url(
     scan_html, critical_html = (
         call.kwargs["html_content"] for call in send_email.await_args_list
     )
-    assert "https://campus.example.edu/scans/scan-1" in scan_html
-    assert "https://campus.example.edu/scans/scan-1" in critical_html
+    assert "https://campus.example.edu/scan/scan-1" in scan_html
+    assert "https://campus.example.edu/scan/scan-1" in critical_html
     assert "https://campus.example.edu/remediate/scan-1" in critical_html
     assert "dashboard.example.com" not in scan_html + critical_html
 
@@ -229,7 +229,7 @@ async def test_explicit_base_url_overrides_the_configured_dashboard_url(
     )
 
     html = send_email.await_args.kwargs["html_content"]
-    assert "https://other.example.org/scans/scan-1" in html
+    assert "https://other.example.org/scan/scan-1" in html
 
 
 @pytest.mark.asyncio
