@@ -113,6 +113,8 @@ def test_changelog_dates_v0_11_2_and_preserves_history():
         "[#856]",
         "[#859]",
         "[#860]",
+        "[#871]",
+        "[#873]",
     ):
         assert phrase in current_notes
     # A patch section carries only patch-level headings.
@@ -237,6 +239,10 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "## Known limits and open security items",
         "[#863]",
         "[#866]",
+        "[#871]",
+        "[#872]",
+        "[#873]",
+        "/scan/{id}",
         "CVE-2026-94283",
         "CVE-2026-94284",
         "CVE-2026-94285",
