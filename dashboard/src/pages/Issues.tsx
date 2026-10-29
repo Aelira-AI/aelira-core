@@ -4,7 +4,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
 import { batchRemediationReceiptIsConfirmed } from '../utils/batchRemediationReceipt';
 import { describeIssueFinding } from '../utils/issueFindingDescription';
-import { CATEGORY_LABELS, categoryLabel, issueCategory } from '../utils/displayText';
+import { wcagBadgeLabel } from '../utils/wcagCriterion';
+import { CATEGORY_LABELS, categoryLabel, issueCategory, issueCountLabel } from '../utils/displayText';
 import {
   authorizedTrackedIssueScanIds,
   withTrackedIssueScanIds,
@@ -512,7 +513,7 @@ export function Issues(): React.ReactElement {
           category: issueCategory(rawIssue),
           status: (rawIssue.status as IssueStatus) || undefined,
           location: location || undefined,
-          wcag_criteria: (rawIssue.criterion as string) || (rawIssue.rule as string) || undefined,
+          wcag_criteria: wcagBadgeLabel(rawIssue.criterion || rawIssue.wcag_criterion || rawIssue.wcag_criteria) || (rawIssue.rule as string) || undefined,
           recommendation: suggestedFix || undefined,
           autoFixCapability: normalizeFindingAutoFix(rawIssue),
           assigned_to_name: (rawIssue.assigned_to as string) || undefined,
@@ -855,7 +856,7 @@ export function Issues(): React.ReactElement {
         {/* Results count */}
         {filteredIssues.length > 0 && (
           <p className="text-sm text-tertiary mt-4 text-center">
-            Showing {filteredIssues.length} of {allIssues.length} issues
+            Showing {filteredIssues.length} of {issueCountLabel(allIssues.length)}
           </p>
         )}
       </div>

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { Calendar, FileText, Eye, Download, Trash2, Loader, FileCode, Upload, X } from 'lucide-react';
 import { scansApi } from '../api/scans';
 import { trackEvent } from '../utils/analytics';
+import { issueCountLabel } from '../utils/displayText';
 import { useToast } from '../context/toast-context';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 
@@ -309,7 +310,7 @@ export function History(): React.ReactElement {
                 </div>
                 <div className="flex items-center justify-between pt-3 border-t border-[var(--border-primary)]">
                   <span className="text-sm text-secondary">
-                    {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                    {scan.issues_count == null ? 'Issues unavailable' : issueCountLabel(scan.issues_count)}
                   </span>
                   <div className="flex items-center space-x-1">
                     <button
@@ -413,7 +414,7 @@ export function History(): React.ReactElement {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className="text-sm text-primary">
-                          {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                          {scan.issues_count == null ? 'Issues unavailable' : issueCountLabel(scan.issues_count)}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right">

@@ -108,3 +108,28 @@ test('document findings take their category from `category` when they have no `t
   const page = readFileSync(new URL('../../src/pages/Issues.tsx', import.meta.url), 'utf8');
   assert.match(page, /category: issueCategory\(rawIssue\)/);
 });
+
+test('every issue count on the history, dashboard, bulk upload and chart screens uses the singular', () => {
+  const read = path => readFileSync(new URL(`../../src/${path}`, import.meta.url), 'utf8');
+  const screens = [
+    'pages/History.tsx', 'pages/Dashboard.tsx', 'pages/BulkUpload.tsx', 'pages/CourseOverview.tsx',
+    'pages/Issues.tsx', 'components/charts/IssuesByTypeChart.tsx', 'components/charts/WCAGCriteriaChart.tsx',
+  ];
+  for (const path of screens) {
+    const source = read(path);
+    assert.match(source, /issueCountLabel\(/, `${path} formats counts with issueCountLabel`);
+    // A count followed by a bare plural, in visible text or in an aria-label built from it.
+    assert.doesNotMatch(source, /\}\s+issues\b(?!\s+can)/, `${path} has an unpluralised count`);
+  }
+  assert.match(read('components/AnalyticsDashboard.tsx'), /=== 1 \? '1 issue can'/);
+  assert.equal(issueCountLabel(1), '1 issue');
+  assert.equal(issueCountLabel(12), '12 issues');
+});
+
+test('the Issues page criterion reads every recorded field and never doubles the prefix', () => {
+  const page = readFileSync(new URL('../../src/pages/Issues.tsx', import.meta.url), 'utf8');
+  assert.match(page, /wcagBadgeLabel\(rawIssue\.criterion \|\| rawIssue\.wcag_criterion \|\| rawIssue\.wcag_criteria\)/);
+  // Document findings record "WCAG 1.3.1" in wcag_criterion; web findings record a bare number in criterion.
+  assert.equal(wcagBadgeLabel('WCAG 1.3.1'), 'WCAG 1.3.1');
+  assert.equal(wcagBadgeLabel('1.4.3'), 'WCAG 1.4.3');
+});
