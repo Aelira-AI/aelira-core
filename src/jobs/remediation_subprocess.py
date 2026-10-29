@@ -40,11 +40,31 @@ _PRIVATE_RECOVERY_OPTIONS = frozenset(
 )
 
 
+# Refusal reasons the child may report for a file it declined to remediate.
+# Only these reach the parent: each names a property of the source file that
+# the user can act on, and none carries paths or exception text.
+_PUBLIC_REFUSAL_REASONS = frozenset(
+    {"source_text_mapping_unavailable", "source_text_scope_unsupported"}
+)
+
+
 class RemediationSubprocessError(RuntimeError):
     """A child failure with an optional bounded validation receipt."""
 
-    def __init__(self, code, *, latex_pdf_validation=None, latex_evidence=None):
+    def __init__(
+        self,
+        code,
+        *,
+        latex_pdf_validation=None,
+        latex_evidence=None,
+        score_verification_reason=None,
+    ):
         super().__init__(code)
+        self.score_verification_reason = (
+            score_verification_reason
+            if score_verification_reason in _PUBLIC_REFUSAL_REASONS
+            else None
+        )
         self.latex_pdf_validation = public_pdf_validation(latex_pdf_validation)
         self.latex_evidence = public_latex_evidence(latex_evidence)
 
@@ -974,6 +994,7 @@ async def run_remediation_subprocess(
                 code if isinstance(code, str) else "remediation_failed",
                 latex_pdf_validation=response.get("latex_pdf_validation"),
                 latex_evidence=response.get("latex_evidence"),
+                score_verification_reason=response.get("score_verification_reason"),
             )
         output_claim = _claim_output(
             response.pop("output_file", None),

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- When the PDF remediator refused a file because its text encoding could not be verified (`source_text_mapping_unavailable`) or its text sits in a stream scope it cannot verify (`source_text_scope_unsupported`), the job kept only the generic `remediation_failed` code and the result page showed "legacy_unverified" with no guidance. The refusal reason now reaches the job result, so the page shows its existing message about exporting a new PDF or repairing the font mappings. The job still fails and no output is published ([#804](https://github.com/Aelira-AI/aelira-core/issues/804)).
+
 ## [0.11.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.11.1.md) for operator actions and

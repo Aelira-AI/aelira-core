@@ -1329,10 +1329,16 @@ async def process_remediation_job(
                 }
             except RemediationSubprocessError as exc:
                 code = str(exc)
+                refusal_reason = getattr(exc, "score_verification_reason", None)
                 return {
                     "success": False,
                     **account_outcomes(exc, published=False),
                     **latex_result_fields(exc),
+                    **(
+                        {"score_verification_reason": refusal_reason}
+                        if refusal_reason
+                        else {}
+                    ),
                     "error": (
                         code
                         if code
