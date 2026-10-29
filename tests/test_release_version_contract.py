@@ -1,4 +1,4 @@
-"""Release metadata and operator notices must agree for v0.11.1."""
+"""Release metadata and operator notices must agree for v0.11.2."""
 
 import ast
 import hashlib
@@ -8,16 +8,17 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.11.1"
-RELEASE_HEADING = "## [0.11.1] - 2026-10-29"
-RELEASE_BODY = ROOT / "docs/releases/v0.11.1.md"
-PREVIOUS_HEADING = "## [0.11.0] - 2026-10-28"
+VERSION = "0.11.2"
+RELEASE_HEADING = "## [0.11.2] - 2026-10-29"
+RELEASE_BODY = ROOT / "docs/releases/v0.11.2.md"
+PREVIOUS_HEADING = "## [0.11.1] - 2026-10-29"
+V0110_HEADING = "## [0.11.0] - 2026-10-28"
 V0100_HEADING = "## [0.10.0] - 2026-10-25"
 V0913_HEADING = "## [0.9.13] - 2026-10-20"
 V0912_HEADING = "## [0.9.12] - 2026-10-15"
 
 
-def test_authoritative_release_versions_are_0_11_1():
+def test_authoritative_release_versions_are_0_11_2():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -55,8 +56,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.11\.1\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.11\.0\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.11\.2\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.11\.1\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -67,7 +68,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_dates_v0_11_1_and_preserves_history():
+def test_changelog_dates_v0_11_2_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
@@ -82,24 +83,50 @@ def test_changelog_dates_v0_11_1_and_preserves_history():
     # Unreleased is empty or holds only Keep a Changelog subsections.
     assert pending == "" or pending.startswith("### ")
     previous = changelog.index(PREVIOUS_HEADING)
+    v0110 = changelog.index(V0110_HEADING)
     v0100 = changelog.index(V0100_HEADING)
     v0913 = changelog.index(V0913_HEADING)
     v0912 = changelog.index(V0912_HEADING)
     v0911 = changelog.index("## [0.9.11] - 2026-09-12")
     historical = changelog.index("## [0.9.8] - 2026-09-08")
-    assert unreleased < release < previous < v0100 < v0913 < v0912 < v0911 < historical
+    assert (
+        unreleased
+        < release
+        < previous
+        < v0110
+        < v0100
+        < v0913
+        < v0912
+        < v0911
+        < historical
+    )
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
     for phrase in (
+        "docs/releases/v0.11.2.md",
+        "### Fixed",
+        "[#736]",
+        "[#804]",
+        "[#816]",
+        "[#830]",
+        "[#831]",
+        "[#832]",
+        "[#856]",
+        "[#859]",
+        "[#860]",
+    ):
+        assert phrase in current_notes
+    # A patch section carries only patch-level headings.
+    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {"Fixed"}
+    v0111_notes = changelog[previous:v0110]
+    for phrase in (
         "docs/releases/v0.11.1.md",
-        "### Security",
         "GHSA-7pr5-834v-2wp5",
         "[#847]",
         "[#855]",
     ):
-        assert phrase in current_notes
-    # A patch section carries only patch-level headings.
-    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {"Security"}
-    previous_notes = changelog[previous:v0100]
+        assert phrase in v0111_notes
+    assert set(re.findall(r"^### (.+)$", v0111_notes, re.MULTILINE)) == {"Security"}
+    previous_notes = changelog[v0110:v0100]
     for phrase in (
         "adds one database migration, `20261028_webhook_secret`",
         "Microsoft webhook subscriptions created before 0.11.0",
@@ -141,6 +168,13 @@ def test_historical_v0_11_0_release_body_is_unchanged():
     body = (ROOT / "docs/releases/v0.11.0.md").read_bytes()
     assert hashlib.sha256(body).hexdigest() == (
         "e9600033692813df686b193ca8268c4b8ae93fd1a22c725dda60cac0ff941a0d"
+    )
+
+
+def test_historical_v0_11_1_release_body_is_unchanged():
+    body = (ROOT / "docs/releases/v0.11.1.md").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "532b7dc6dc80a898ec5de350f7a2bfa95a7005f94401dc5227d5891240285db9"
     )
 
 
@@ -187,14 +221,22 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#376]",
         "[#375]",
         "[#377]",
-        "## Security fixes",
-        "security/advisories/GHSA-7pr5-834v-2wp5",
-        "`<user_content_CODE>`",
-        "does not use a model and was not affected",
-        "[#847]",
-        "[#852]",
+        "## Upload fixes",
+        "## Other fixes",
+        "backwards-compatible fixes only",
+        "`has_api_keys`",
+        "[#860]",
         "[#856]",
+        "[#736]",
+        "[#804]",
+        "[#830]",
+        "[#831]",
+        "[#832]",
+        "[#816]",
+        "[#859]",
         "## Known limits and open security items",
+        "[#863]",
+        "[#866]",
         "CVE-2026-94283",
         "CVE-2026-94284",
         "CVE-2026-94285",

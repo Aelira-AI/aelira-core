@@ -14,7 +14,7 @@
 
 > **Beta, not a compliance certificate.** A completed scan or remediated file is evidence from Aelira's checks, not proof that a document satisfies every applicable WCAG or format-specific requirement. Review and test the output with assistive technology and any validator required by your organization.
 >
-> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, exact-byte managed-publication controls, and General STEM specialist pipeline described here are included in v0.9.7 and are still included in v0.11.1. They were not part of v0.9.5.
+> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, exact-byte managed-publication controls, and General STEM specialist pipeline described here are included in v0.9.7 and are still included in v0.11.2. They were not part of v0.9.5.
 
 Aelira Core scans and can remediate PDF, DOCX, PPTX, XLSX, and LaTeX content. Choose a guide:
 

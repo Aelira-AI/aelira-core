@@ -22,7 +22,8 @@ def plan(tag: str) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.parametrize(
-    "version", ["0.0.0", "0.9.12", "0.10.0", "0.11.0", "0.11.1", "1.0.0", "12.34.56"]
+    "version",
+    ["0.0.0", "0.9.12", "0.10.0", "0.11.0", "0.11.1", "0.11.2", "1.0.0", "12.34.56"],
 )
 def test_stable_preserves_existing_channels(version):
     result = plan(f"v{version}")
@@ -102,7 +103,7 @@ def test_all_publish_boundaries_recompute_the_validated_plan():
 
 def test_default_deployment_refs_remain_stable():
     compose = (ROOT / "docker-compose.prod.yml").read_text()
-    assert compose.count("${AELIRA_VERSION:-0.11.1}") == 3
+    assert compose.count("${AELIRA_VERSION:-0.11.2}") == 3
     assert "alpha" not in compose
 
 
