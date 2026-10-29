@@ -11,7 +11,7 @@ The system trust store must not trust emSign ECC Root CA - G3 and must keep the
 three emSign roots that are not affected (GHSA-6q48-6c7w-9gw2).
 
 Node.js compiles its own root store into the binary, so the pa11y runtime is
-checked separately: Node 24.22.1 and later drop the root, and node-trust-store
+checked separately: Node 24.22.1, 26.12.1 and later drop the root, and node-trust-store
 fails if the installed Node still trusts it (#726).
 
 Usage: verify_final_os_packages.py [packages | trust-store | node-trust-store]

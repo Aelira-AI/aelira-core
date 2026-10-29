@@ -208,15 +208,18 @@ release schedule.
   The Playwright Python package (1.64.1) and the dashboard and CLI Playwright
   packages (1.64.1) still pin their own driver and test browser. Playwright
   1.64.1's bundled driver is Node 24.22.1.
-- **Node.** The `pa11y-node` stage uses the `node:24-bookworm-slim` multi-arch
-  index digest `sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205`,
-  which carries Node 24.22.1 and OpenSSL 3.5.9 on both architectures. Node
-  24.22.1 (2026-10-21) is the security release for CVE-2026-105481,
-  CVE-2026-105482, CVE-2026-105483, CVE-2026-106069, CVE-2026-106073,
-  CVE-2026-106074 and CVE-2026-111497. The smoke gate rejects an older Node or
-  OpenSSL. The dashboard image uses `node:22-alpine` only to build static files
-  that nginx serves, so no Node runtime from it ships; the CLI declares
-  `engines.node >=22`, a floor that users meet with their own Node.
+- **Node.** The `pa11y-node` stage uses the `node:26-bookworm-slim` multi-arch
+  index digest `sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9`,
+  which carries Node 26.13.0, the first 26.x LTS release, and OpenSSL 3.5.9 on
+  both architectures. Node 26.12.1 (2026-10-21) is the 26.x security release for
+  CVE-2026-105481, CVE-2026-105482, CVE-2026-105483, CVE-2026-106069,
+  CVE-2026-106073, CVE-2026-106074 and CVE-2026-111497, and 26.13.0 adds no
+  other changes. The smoke gate rejects a Node older than 26.12.1 or another
+  major line, and an older OpenSSL. Node 25 and later link `libatomic.so.1`, so
+  the API images install `libatomic1` explicitly. The dashboard image uses
+  `node:26-alpine` only to build static files that nginx serves, so no Node
+  runtime from it ships; the CLI declares `engines.node >=22`, a floor that
+  users meet with their own Node and that CI still tests.
 
 ### CPython Expat in API images
 
@@ -401,8 +404,8 @@ link, has that fingerprint, or if one of the three retained emSign roots is
 missing from either. CI and publication run it against the API image, and the
 developer build runs `verify_final_os_packages.py trust-store`. Node.js carries
 its own root store, compiled into the binary. Node 24.21.0 still trusted the
-root (121 roots, including all four emSign roots), and Node 24.22.1 does not
-(118 roots, with only `emSign Root CA - G1` left of the four).
+root (121 roots, including all four emSign roots), and Node 24.22.1 and 26.13.0
+do not (118 roots, with only `emSign Root CA - G1` left of the four).
 `verify_final_os_packages.py node-trust-store` reads `tls.rootCertificates` from
 the image's Node and fails if it holds the distrusted fingerprint or has lost
 `emSign Root CA - G1`
