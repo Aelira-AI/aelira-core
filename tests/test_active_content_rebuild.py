@@ -25,7 +25,7 @@ from src.security.document_validator import (
     ThreatLevel,
     sanitize_document,
 )
-from tests.vba_fixtures import ooxml_with_vba, vba_project_bin
+from tests.vba_fixtures import vba_project_bin
 
 pytestmark = pytest.mark.unit
 
