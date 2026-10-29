@@ -200,7 +200,9 @@ class PDFUADetector:
 
         except Exception as e:
             logger.error(f"[PDFUADetector] Error detecting PDF/UA version: {e}")
-            default_result.ua2_issues.append(f"Error reading PDF: {str(e)}")
+            default_result.ua2_issues.append(
+                "The PDF could not be read, so its PDF/UA version was not checked."
+            )
             return default_result
 
     # ------------------------------------------------------------------

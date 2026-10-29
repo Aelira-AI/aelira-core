@@ -22,6 +22,7 @@ import { RemediationStatusLink } from '../components/results/RemediationStatusLi
 import { useToast } from '../context/toast-context';
 import { FeatureGate } from '../components/FeatureGate';
 import { trackEvent } from '../utils/analytics';
+import { issueCountLabel } from '../utils/displayText';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
 import {
   createBulkWorkerPool,
@@ -143,7 +144,7 @@ function FileRow({ file, onRemove, onView }: FileRowProps): React.ReactElement {
             {file.result.compliance_score}/100
           </span>}
           <span className="text-xs text-tertiary">
-            {file.result.issues?.length || 0} issues
+            {issueCountLabel(file.result.issues?.length || 0)}
           </span>
         </div>
       )}

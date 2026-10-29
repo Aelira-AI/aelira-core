@@ -20,6 +20,59 @@ class LayoutAmbiguous(ValueError):
     pass
 
 
+GENERIC_REFUSAL_REASON = (
+    "the page layout could not be ordered with certainty, so it needs a manual check."
+)
+
+# Plain wording for every refusal code. The codes themselves are internal and
+# stay as the exception text; only these sentences are shown to users.
+REFUSAL_REASONS = {
+    "reading_order_atom_limit_or_duplicate": (
+        "the page has too many separate pieces of text, or repeated text that "
+        "cannot be told apart, to order automatically."
+    ),
+    "reading_order_invalid_page_geometry": (
+        "the page size could not be read reliably."
+    ),
+    "reading_order_invalid_atom_geometry": (
+        "some text on the page has a position that could not be read reliably."
+    ),
+    "reading_order_region_depth_limit": (
+        "the page layout has too many nested regions to order automatically."
+    ),
+    "reading_order_region_work_limit": (
+        "the page layout is too complex to order automatically."
+    ),
+    "reading_order_column_limit": (
+        "the page has more columns than can be ordered automatically."
+    ),
+    "reading_order_overlapping_spanning_regions": (
+        "text that spans several columns overlaps other text on the page."
+    ),
+    "reading_order_crossing_regions": (
+        "text regions on the page cross each other, so the order is unclear."
+    ),
+    "reading_order_ambiguous_matrix": (
+        "the page has a grid-like layout whose reading order is unclear."
+    ),
+    "reading_order_overlapping_content": (
+        "text on the page overlaps, so the order is unclear."
+    ),
+    "reading_order_ambiguous_trailing_atom": (
+        "some text at the end of the page could not be placed in the order."
+    ),
+    "reading_order_incomplete_plan": (
+        "not all of the text on the page could be placed in the order."
+    ),
+}
+
+
+def plain_refusal_reason(code):
+    """A user-facing sentence for a refusal code, never the code itself."""
+    sentence = REFUSAL_REASONS.get(str(code), GENERIC_REFUSAL_REASON)
+    return sentence[0].upper() + sentence[1:]
+
+
 @dataclass(frozen=True)
 class Atom:
     identity: object

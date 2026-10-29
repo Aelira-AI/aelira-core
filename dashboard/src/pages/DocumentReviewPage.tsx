@@ -525,7 +525,7 @@ function DocumentReviewContent({ scanId, cloudFileId: suppliedCloudId, backPath,
 
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0">
-        {scanId && cloudContext.kind !== 'invalid' && <ArtifactReviewPanel key={`${scanId}:${cloudFileId ?? ''}`} scanId={scanId} scanType={review.scan_type} cloudFileId={cloudFileId} resultPath={resultPath} refreshToken={artifactRefresh} editing={editSaving} rebuildSupported={pdfToolsAvailable} canRebuild={review.fixes.some(fix => ['approved', 'edited', 'auto_approved', 'applied'].includes(fix.review_status)) && !review.fixes.some(fix => isPendingReviewStatus(fix.review_status))} />}
+        {scanId && cloudContext.kind !== 'invalid' && <ArtifactReviewPanel key={`${scanId}:${cloudFileId ?? ''}`} scanId={scanId} scanType={review.scan_type} fileName={review.file_name} cloudFileId={cloudFileId} resultPath={resultPath} refreshToken={artifactRefresh} editing={editSaving} rebuildSupported={pdfToolsAvailable} canRebuild={review.fixes.some(fix => ['approved', 'edited', 'auto_approved', 'applied'].includes(fix.review_status)) && !review.fixes.some(fix => isPendingReviewStatus(fix.review_status))} />}
         {review.scan_type.toLowerCase() === 'pdf' && !pdfToolsAvailable && <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-secondary" role="status">PDF structure editing and reviewed rebuilds are unavailable in this Brightspace launch. Download the working file for further manual corrections.</p>}
         {review.scan_type.toLowerCase() === 'pdf' && pdfToolsAvailable && (cloudContext.kind === 'invalid' ?
           <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--feature-danger-content)]" role="alert">This Review link has invalid file context. PDF structure editing is unavailable here.</p> : <>
@@ -630,17 +630,19 @@ function DocumentReviewContent({ scanId, cloudFileId: suppliedCloudId, backPath,
         </div>
       </div>
 
-      {/* Bottom bar - Matterhorn results */}
-      <div className="shrink-0">
-        <MatterhornResultsBar
-          total={review.matterhorn_total}
-          passed={review.matterhorn_passed}
-          failed={review.matterhorn_failed}
-          warnings={review.matterhorn_warnings}
-          result={review.validator_result}
-          validatedAt={review.matterhorn_validated_at}
-        />
-      </div>
+      {/* Bottom bar - Matterhorn results (the PDF/UA checkpoints, so PDFs only) */}
+      {review.scan_type.toLowerCase() === 'pdf' && (
+        <div className="shrink-0">
+          <MatterhornResultsBar
+            total={review.matterhorn_total}
+            passed={review.matterhorn_passed}
+            failed={review.matterhorn_failed}
+            warnings={review.matterhorn_warnings}
+            result={review.validator_result}
+            validatedAt={review.matterhorn_validated_at}
+          />
+        </div>
+      )}
     </div>
   );
 }

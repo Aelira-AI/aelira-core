@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
+import { shouldShowApiKeyRetirementNotice } from '../utils/apiKeyRetirementNotice';
 
 const RETIREMENT_NOTICE_VERSION = 'v1';
 
@@ -45,6 +46,6 @@ function SessionRetirementBanner({ userId }: { userId: string }): React.ReactEle
 
 export function APIKeyRetirementBanner(): React.ReactElement | null {
   const { authMethod, user } = useAuth();
-  if (authMethod !== 'session' || !user) return null;
+  if (!user || !shouldShowApiKeyRetirementNotice(authMethod, user)) return null;
   return <SessionRetirementBanner key={`${RETIREMENT_NOTICE_VERSION}:${user.id}`} userId={user.id} />;
 }

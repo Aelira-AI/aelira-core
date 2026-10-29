@@ -4,6 +4,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
 import { batchRemediationReceiptIsConfirmed } from '../utils/batchRemediationReceipt';
 import { describeIssueFinding } from '../utils/issueFindingDescription';
+import { wcagBadgeLabel } from '../utils/wcagCriterion';
+import { CATEGORY_LABELS, categoryLabel, issueCategory, issueCountLabel } from '../utils/displayText';
 import {
   authorizedTrackedIssueScanIds,
   withTrackedIssueScanIds,
@@ -142,35 +144,6 @@ const SEVERITY_CONFIG: Record<SeverityLevel, SeverityConfig> = {
   },
 };
 
-const CATEGORY_LABELS: Record<string, string> = {
-  alt_text: 'Alt Text',
-  heading: 'Heading Structure',
-  contrast: 'Color Contrast',
-  language: 'Language',
-  table: 'Tables',
-  list: 'Lists',
-  link: 'Links',
-  navigation: 'Navigation',
-  structure: 'Document Structure',
-  form: 'Forms',
-  media: 'Media',
-  title: 'Document Title',
-  sheet_name: 'Sheet Name',
-  table_header: 'Table Headers',
-  other: 'Other',
-  // Extended content-type categories
-  shadow_dom: 'Shadow DOM',
-  aria: 'ARIA Attributes',
-  animation: 'Animation',
-  pivot_table: 'Pivot Tables',
-  conditional_format: 'Conditional Formatting',
-  smartart: 'SmartArt',
-  embedded_object: 'Embedded Objects',
-  flashing: 'Flashing Content',
-  color: 'Color Usage',
-  reading_order: 'Reading Order',
-};
-
 const STATUS_CONFIG: Record<IssueStatus, StatusConfig> = {
   OPEN: {
     label: 'Open',
@@ -235,7 +208,7 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
                 {statusConfig.label}
               </span>
               <span className="text-xs text-tertiary">
-                {CATEGORY_LABELS[issue.category] || issue.category}
+                {categoryLabel(issue.category)}
               </span>
               {scanInfo && (
                 <span className="text-xs text-tertiary flex items-center gap-1">
@@ -537,10 +510,10 @@ export function Issues(): React.ReactElement {
           id: `${scan.id}-${index}`,
           description,
           severity: ((rawIssue.severity as string) || 'medium') as SeverityLevel,
-          category: (rawIssue.type as string) || 'other',
+          category: issueCategory(rawIssue),
           status: (rawIssue.status as IssueStatus) || undefined,
           location: location || undefined,
-          wcag_criteria: (rawIssue.criterion as string) || (rawIssue.rule as string) || undefined,
+          wcag_criteria: wcagBadgeLabel(rawIssue.criterion || rawIssue.wcag_criterion || rawIssue.wcag_criteria) || (rawIssue.rule as string) || undefined,
           recommendation: suggestedFix || undefined,
           autoFixCapability: normalizeFindingAutoFix(rawIssue),
           assigned_to_name: (rawIssue.assigned_to as string) || undefined,
@@ -829,7 +802,7 @@ export function Issues(): React.ReactElement {
               <option value="all">All Categories</option>
               {categories.map((cat) => (
                 <option key={cat} value={cat}>
-                  {CATEGORY_LABELS[cat] || cat}
+                  {categoryLabel(cat)}
                 </option>
               ))}
             </select>
@@ -883,7 +856,7 @@ export function Issues(): React.ReactElement {
         {/* Results count */}
         {filteredIssues.length > 0 && (
           <p className="text-sm text-tertiary mt-4 text-center">
-            Showing {filteredIssues.length} of {allIssues.length} issues
+            Showing {filteredIssues.length} of {issueCountLabel(allIssues.length)}
           </p>
         )}
       </div>

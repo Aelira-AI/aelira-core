@@ -1665,10 +1665,11 @@ async def scan_code(
     db.add(scan)
     db.flush()
 
-    from ...utils.file_storage import save_uploaded_file
+    from ...utils.file_storage import save_scan_bytes
 
-    await file.seek(0)
-    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    # Store the bytes the validator returned. When it rebuilt the file, those
+    # are the sanitised copy, and the queued input hash is taken from them.
+    storage_path = save_scan_bytes(content, department_id, scan.id, file.filename)
     scan.storage_path = storage_path
 
     from ...jobs.local_scan_job import enqueue_local_scan_job

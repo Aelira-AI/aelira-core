@@ -21,6 +21,7 @@ import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { trackEvent } from '../utils/analytics';
+import { issueCountLabel } from '../utils/displayText';
 import {
   normalizeCurrentComplianceStats,
   type CurrentDashboardStats,
@@ -454,7 +455,7 @@ export function Dashboard(): React.ReactElement {
                 <StatCard
                   label="CVD Accessibility"
                   value={stats.cvdAccessibilityRate == null ? 'Unverified' : `${Math.round(stats.cvdAccessibilityRate)}%`}
-                  sublabel={stats.cvdFilesAnalyzed === 0 ? 'No CVD-analyzed documents' : `${stats.cvdAffectedFiles} affected · ${stats.cvdIssuesTotal} issues`}
+                  sublabel={stats.cvdFilesAnalyzed === 0 ? 'No CVD-analyzed documents' : `${stats.cvdAffectedFiles} affected · ${issueCountLabel(stats.cvdIssuesTotal)}`}
                 />
 
                 {/* Days to deadline — accent variant */}
@@ -695,7 +696,7 @@ export function Dashboard(): React.ReactElement {
                         onKeyDown={(e) => e.key === 'Enter' && navigate(`/scan/${issue.scan_id}`)}
                         aria-label={
                           typeof issue.issue_count === 'number'
-                            ? `View ${issue.file_name} — ${issue.issue_count} issues`
+                            ? `View ${issue.file_name} — ${issueCountLabel(issue.issue_count)}`
                             : `View ${issue.file_name}`
                         }
                       >
@@ -708,7 +709,7 @@ export function Dashboard(): React.ReactElement {
                             {issue.file_name}
                           </div>
                           <div className="text-xs text-[var(--content-tertiary)]">
-                            {typeof issue.issue_count === 'number' && `${issue.issue_count} issues · `}
+                            {typeof issue.issue_count === 'number' && `${issueCountLabel(issue.issue_count)} · `}
                             {issue.scan_type.toUpperCase()}
                           </div>
                         </div>
@@ -760,7 +761,7 @@ export function Dashboard(): React.ReactElement {
                               {scan.filename}
                             </div>
                             <div className="text-xs text-[var(--content-tertiary)] font-mono uppercase">
-                              {scan.type} · {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                              {scan.type} · {scan.issues_count == null ? 'Issues unavailable' : issueCountLabel(scan.issues_count)}
                             </div>
                           </div>
                         ),

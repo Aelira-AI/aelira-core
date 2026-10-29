@@ -1118,8 +1118,11 @@ def verify_pdf_accessibility(file_path: str) -> Dict[str, Any]:
                 results["table_count"] = counts["table"]
 
     except Exception as e:
-        results["error"] = str(e)
-        results["issues"].append(f"Error reading PDF: {e}")
+        logger.warning(f"Error verifying PDF accessibility: {e}")
+        results["error"] = "The PDF could not be read."
+        results["issues"].append(
+            "The PDF could not be read, so its structure was not checked."
+        )
 
     return results
 

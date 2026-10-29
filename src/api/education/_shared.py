@@ -206,7 +206,6 @@ async def validate_uploaded_file(
     - Suspicious PDF elements (JavaScript, auto-actions, etc.)
     - File type spoofing (magic byte validation)
     - Zip bombs and archive attacks
-    - Prompt injection patterns
 
     Args:
         file: The uploaded file
@@ -255,6 +254,13 @@ async def validate_uploaded_file(
         # Validate the document
         result = await validate_document(filename, content)
 
+        # The upload is refused only for CRITICAL results, and for HIGH results
+        # when sanitising is not allowed. Everything else is processed, in its
+        # original or sanitised form, so it is not recorded as blocked.
+        is_blocked = result.threat_level == ThreatLevel.CRITICAL or (
+            result.threat_level == ThreatLevel.HIGH and not allow_sanitized
+        )
+
         # Log security scan result
         security_result = SecurityScanResult(
             id=str(uuid.uuid4()),
@@ -284,10 +290,10 @@ async def validate_uploaded_file(
                 else None
             ),
             was_sanitized=False,
-            was_blocked=not result.is_safe,
+            was_blocked=is_blocked,
             blocked_reason=(
                 result.findings[0].description
-                if result.findings and not result.is_safe
+                if result.findings and is_blocked
                 else None
             ),
         )
@@ -317,18 +323,63 @@ async def validate_uploaded_file(
 
         if result.threat_level == ThreatLevel.HIGH:
             if allow_sanitized:
-                # Try to sanitize the document
-                from ...security.document_validator import sanitize_document
-
-                sanitized_content, sanitized_result = await sanitize_document(
-                    filename, content
+                from ...security.document_validator import (
+                    SanitizationError,
+                    sanitize_document,
                 )
 
-                # Update security result
-                security_result.was_sanitized = True
+                try:
+                    sanitized_content, sanitized_result = await sanitize_document(
+                        filename, content
+                    )
+                except SanitizationError as exc:
+                    # Never process a HIGH file whose active content could not
+                    # be removed, and record that it was refused.
+                    security_result.was_blocked = True
+                    security_result.blocked_reason = next(
+                        (
+                            f.description
+                            for f in result.findings
+                            if f.threat_level == ThreatLevel.HIGH
+                        ),
+                        "The file could not be rebuilt without its high-risk content",
+                    )
+                    db.commit()
+                    logger.warning(
+                        "High-risk document could not be rebuilt (%s)", exc.reason
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "security_threat_detected",
+                            "threat_level": "high",
+                            "message": (
+                                "This file was rated high risk and could not be "
+                                "rebuilt without the content that caused it, so it "
+                                "cannot be processed. The findings below say what "
+                                "to remove before uploading it again."
+                            ),
+                            "findings": [
+                                {
+                                    "category": f.category,
+                                    "description": f.description,
+                                    "remediation": f.remediation,
+                                }
+                                for f in result.findings
+                                if f.threat_level == ThreatLevel.HIGH
+                            ],
+                        },
+                    )
+
+                # Only a file that was rebuilt is recorded as sanitised. Code
+                # files have no rebuild and are processed as uploaded.
+                security_result.was_sanitized = sanitized_result.sanitized
                 db.commit()
 
-                logger.info("High-risk document sanitized")
+                if sanitized_result.sanitized:
+                    logger.info("High-risk document rebuilt without active content")
+                else:
+                    logger.info("High-risk code file processed without a rebuild")
                 return sanitized_content
             else:
                 logger.warning("High document security threat detected")

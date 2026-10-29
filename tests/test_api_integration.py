@@ -231,7 +231,10 @@ class TestFileSizeValidation:
     def test_image_too_large(self, client, auth_headers):
         """Image files exceeding size limit should be rejected."""
         settings = get_settings()
-        large_file = io.BytesIO(b"x" * (settings.max_file_size_image + 1))
+        # A real PNG signature, so the upload is not refused as a type mismatch
+        # before the size check runs.
+        png = b"\x89PNG\r\n\x1a\n"
+        large_file = io.BytesIO(png + b"x" * (settings.max_file_size_image + 1))
 
         files = {"file": ("large.png", large_file, "image/png")}
         response = client.post(
@@ -241,6 +244,18 @@ class TestFileSizeValidation:
         # Should reject for size (400)
         assert response.status_code == 400
         assert "file too large" in response.json()["detail"].lower()
+
+    def test_spoofed_image_is_refused_as_a_security_threat(self, client, auth_headers):
+        """A .png whose content is not a PNG cannot be rebuilt, so it is refused."""
+        files = {"file": ("photo.png", io.BytesIO(b"x" * 100), "image/png")}
+        response = client.post(
+            "/education/image/alt-text", files=files, headers=auth_headers
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert detail["error"] == "security_threat_detected"
+        assert {f["category"] for f in detail["findings"]} == {"file_type_mismatch"}
 
     def test_valid_file_size(self, client, auth_headers):
         """Valid file sizes should be accepted."""

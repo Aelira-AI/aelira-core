@@ -10,6 +10,7 @@ import {
   CalendarClock,
 } from 'lucide-react';
 import { ConfidenceBadge } from './ConfidenceBadge';
+import { fixMethodLabel, humanizeSlug } from '../../utils/displayText';
 
 // ============================================================================
 // Types
@@ -66,13 +67,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   link: 'Link',
   list: 'List',
   media: 'Media',
-};
-
-const METHOD_LABELS: Record<string, string> = {
-  rule: 'Rule',
-  heuristic: 'Heuristic',
-  ai_text: 'AI Text',
-  ai_vision: 'AI Vision',
 };
 
 function getCategoryColor(category: string): { bg: string; text: string } {
@@ -191,7 +185,7 @@ export function FixCard({
         <div className="flex items-center gap-3 min-w-0">
           {/* Category badge */}
           <span className={`text-xs font-medium px-2 py-0.5 rounded ${categoryStyle.bg} ${categoryStyle.text} whitespace-nowrap`}>
-            {CATEGORY_LABELS[fix.category] || fix.category}
+            {CATEGORY_LABELS[fix.category] || humanizeSlug(fix.category)}
           </span>
 
           {/* Confidence */}
@@ -199,7 +193,7 @@ export function FixCard({
 
           {/* Method badge */}
           <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--surface-tertiary)] text-[var(--content-tertiary)] whitespace-nowrap">
-            {METHOD_LABELS[fix.fix_method] || fix.fix_method}
+            {fixMethodLabel(fix.fix_method)}
           </span>
 
           {/* Description */}

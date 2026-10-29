@@ -48,8 +48,8 @@ async def test_upload_message_points_to_registered_progress_route(
         scan_routes, "validate_uploaded_file", AsyncMock(return_value=b"fixture")
     )
     monkeypatch.setattr(
-        "src.utils.file_storage.save_uploaded_file",
-        AsyncMock(return_value="/unused/fixture"),
+        "src.utils.file_storage.save_scan_bytes",
+        lambda *args, **kwargs: "/unused/fixture",
     )
     enqueue = MagicMock()
     monkeypatch.setattr("src.jobs.local_scan_job.enqueue_local_scan_job", enqueue)

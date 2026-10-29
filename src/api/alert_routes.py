@@ -375,7 +375,7 @@ async def send_test_email(
                 file_name="test_document.pdf",
                 compliance_score=85.5,
                 issues_found=12,
-                scan_url=f"{get_settings().dashboard_url}/scans/test",
+                scan_url=f"{get_settings().dashboard_url}/scan/test",
             )
         elif request.email_type == "critical_issues":
             result = await email_service.send_critical_issues(
@@ -395,7 +395,7 @@ async def send_test_email(
                         "count": 3,
                     },
                 ],
-                action_url=f"{get_settings().dashboard_url}/scans/test",
+                action_url=f"{get_settings().dashboard_url}/scan/test",
                 action_text="Review Issues",
                 remediate_url=f"{get_settings().dashboard_url}/remediate/test",
                 department=department,
@@ -614,7 +614,7 @@ async def trigger_scan_complete(
             file_name=request.file_name,
             compliance_score=request.compliance_score,
             issues_found=request.issues_found,
-            scan_url=f"{get_settings().dashboard_url}/scans/{request.scan_id}",
+            scan_url=f"{get_settings().dashboard_url}/scan/{request.scan_id}",
         )
 
         require_delivery_success(result)
@@ -672,7 +672,7 @@ async def trigger_critical_issues(
             to_emails=settings.email_addresses,
             file_name=request.file_name,
             critical_issues=request.critical_issues,
-            action_url=f"{get_settings().dashboard_url}/scans/{request.scan_id}",
+            action_url=f"{get_settings().dashboard_url}/scan/{request.scan_id}",
             action_text="Review Issues",
             remediate_url=f"{get_settings().dashboard_url}/remediate/{request.scan_id}",
             department=department,

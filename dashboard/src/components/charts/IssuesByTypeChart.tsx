@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { issueCountLabel } from '../../utils/displayText';
 import {
   BarChart,
   Bar,
@@ -171,7 +172,7 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
         className="h-64"
         style={{ minHeight: '256px' }}
         role="img"
-        aria-label={`Issues by severity: ${barData.map(d => `${d.name}: ${d.value}`).join(', ')}. Total: ${totalIssues} issues.`}
+        aria-label={`Issues by severity: ${barData.map(d => `${d.name}: ${d.value}`).join(', ')}. Total: ${issueCountLabel(totalIssues)}.`}
       >
         {chartType === 'bar' ? (
           <ResponsiveContainer width="100%" height="100%" minHeight={256}>

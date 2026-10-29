@@ -9,6 +9,7 @@ from src.education.pdf_checks.completeness import (
     IncompletePDFScanError,
     require_complete_pdf_scan,
 )
+from src.education.layout_order import plain_refusal_reason
 from src.education.pdf_checks.reading_order import ReadingOrderVerifier
 
 pytestmark = pytest.mark.unit
@@ -104,7 +105,10 @@ def test_regional_comparison_uses_actual_page_width():
         1, visual, visual, page_width=1000
     )
     assert issue is not None and issue.review_only
-    assert "overlapping_content" in issue.recommendation
+    assert plain_refusal_reason("reading_order_overlapping_content") in (
+        issue.recommendation
+    )
+    assert "reading_order_" not in issue.recommendation
 
 
 def _columns(with_heading=False):
@@ -134,7 +138,10 @@ def test_aligned_single_line_matrix_requires_semantic_review(with_heading):
         1, visual, _blocks(texts), multi_column=True
     )
     assert issue is not None and issue.review_only
-    assert "ambiguous_matrix" in issue.recommendation
+    assert plain_refusal_reason("reading_order_ambiguous_matrix") in (
+        issue.recommendation
+    )
+    assert "reading_order_" not in issue.recommendation
 
 
 @pytest.mark.parametrize(

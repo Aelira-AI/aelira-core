@@ -14,6 +14,7 @@ from .document_validator import (
     ValidationResult,
     ThreatLevel,
     validate_document,
+    SanitizationError,
     sanitize_document,
 )
 from .abuse_detector import (
@@ -27,6 +28,7 @@ __all__ = [
     "ValidationResult",
     "ThreatLevel",
     "validate_document",
+    "SanitizationError",
     "sanitize_document",
     "AbuseDetector",
     "check_signup_abuse",

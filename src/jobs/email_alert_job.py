@@ -9,9 +9,11 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 
+from ..config.settings import get_settings
 from ..db.models import (
     EmailAlertSettings,
     Scan,
+    ScanResult,
     Department,
     CloudFile,
     User,
@@ -25,6 +27,31 @@ from ..services.alert_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+_NOT_AVAILABLE = "Not available"
+
+
+def _issue_severity_bucket(issue: Dict[str, Any]) -> str:
+    """Map a stored issue's severity onto the four weekly-summary buckets.
+
+    Stored findings use either ``severity`` (critical/high/medium/low) or the
+    axe-style ``impact`` (critical/serious/moderate/minor).
+    """
+    severity = str(issue.get("severity") or issue.get("impact") or "minor").lower()
+    if severity in ("critical", "blocker"):
+        return "critical"
+    if severity in ("serious", "major", "high"):
+        return "serious"
+    if severity in ("moderate", "medium"):
+        return "moderate"
+    return "minor"
+
+
+def _result_issues(result: ScanResult | None) -> List[Dict[str, Any]] | None:
+    """Return a result's stored findings, or None when they were not recorded."""
+    if result is None or not isinstance(result.issues, list):
+        return None
+    return [issue for issue in result.issues if isinstance(issue, dict)]
 
 
 def filter_emails_by_user_preference(
@@ -121,18 +148,24 @@ async def send_scan_complete_alert(
 
     try:
         email_service = get_email_service()
-        await email_service.send_scan_complete(
+        result = await email_service.send_scan_complete(
             to_emails=filtered_emails,
             file_name=file_name,
             compliance_score=compliance_score,
             issues_found=issues_found,
-            action_url=scan_url,
-            action_text="View Scan Results",
+            scan_url=scan_url,
         )
+        if not isinstance(result, dict) or result.get("success") is not True:
+            logger.error(f"Scan complete alert for scan {scan_id} was not delivered")
+            return False
         logger.info(f"Sent scan complete alert to {len(filtered_emails)} recipients")
         return True
     except Exception as e:
-        logger.error(f"Failed to send scan complete alert: {e}")
+        logger.error(
+            f"Failed to send scan complete alert for scan {scan_id}: "
+            f"{type(e).__name__}",
+            exc_info=True,
+        )
         return False
 
 
@@ -185,10 +218,12 @@ async def send_critical_issues_alert(
     # Filter critical issues
     critical_issues = []
     for issue in issues:
-        severity = issue.get("severity", issue.get("impact", "minor")).lower()
-        if severity in ("critical", "blocker"):
+        if not isinstance(issue, dict):
+            continue
+        if _issue_severity_bucket(issue) == "critical":
             critical_issues.append(
                 {
+                    "type": issue.get("rule", issue.get("id", "unknown")),
                     "rule": issue.get("rule", issue.get("id", "unknown")),
                     "description": issue.get("description", issue.get("message", "")),
                     "wcag": issue.get("wcag", issue.get("help", "")),
@@ -207,7 +242,7 @@ async def send_critical_issues_alert(
             else None
         )
         email_service = get_email_service()
-        await email_service.send_critical_issues(
+        result = await email_service.send_critical_issues(
             to_emails=filtered_emails,
             file_name=file_name,
             critical_issues=critical_issues,
@@ -216,12 +251,19 @@ async def send_critical_issues_alert(
             remediate_url=remediate_url,
             deadline=deadline,
         )
+        if not isinstance(result, dict) or result.get("success") is not True:
+            logger.error(f"Critical issues alert for scan {scan_id} was not delivered")
+            return False
         logger.info(
             f"Sent critical issues alert ({len(critical_issues)} issues) to {len(filtered_emails)} recipients"
         )
         return True
     except Exception as e:
-        logger.error(f"Failed to send critical issues alert: {e}")
+        logger.error(
+            f"Failed to send critical issues alert for scan {scan_id}: "
+            f"{type(e).__name__}",
+            exc_info=True,
+        )
         return False
 
 
@@ -329,42 +371,52 @@ def build_weekly_summary_payload(
         .all()
     )
 
-    # Calculate metrics
-    scans_this_week = len(scans)
-    total_issues = sum(s.issues_found or 0 for s in scans)
+    # Scores and findings live on each scan's result, not on the scan row.
+    scan_ids = [scan.id for scan in scans]
+    results = (
+        db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
+        if scan_ids
+        else []
+    )
 
-    # Calculate average score
-    scores = [s.compliance_score for s in scans if s.compliance_score is not None]
-    average_score = sum(scores) / len(scores) if scores else 0
+    scans_this_week = len(scans)
+
+    # Average only over scans that have a score; no scored scan means no average.
+    scores = [r.compliance_score for r in results if r.compliance_score is not None]
+    average_score = round(sum(scores) / len(scores), 1) if scores else None
 
     # Get total tracked files
     total_files = (
         db.query(CloudFile).filter(CloudFile.department_id == department_id).count()
     )
 
-    # Count issues by severity (aggregate from all scans)
-    severity_counts = {"critical": 0, "serious": 0, "moderate": 0, "minor": 0}
-    for scan in scans:
-        if scan.issues_data:
-            for issue in scan.issues_data:
-                severity = issue.get("severity", issue.get("impact", "minor")).lower()
-                if severity in ("critical", "blocker"):
-                    severity_counts["critical"] += 1
-                elif severity in ("serious", "major"):
-                    severity_counts["serious"] += 1
-                elif severity in ("moderate", "medium"):
-                    severity_counts["moderate"] += 1
-                else:
-                    severity_counts["minor"] += 1
+    # Count issues by severity across the scans whose findings were recorded.
+    issue_lists = [
+        issues for issues in map(_result_issues, results) if issues is not None
+    ]
+    if scans and not issue_lists:
+        # Scans exist but none recorded findings: say so, do not report zero.
+        total_issues = None
+        severity_counts: Dict[str, int | None] = dict.fromkeys(
+            ("critical", "serious", "moderate", "minor")
+        )
+    else:
+        total_issues = sum(len(issues) for issues in issue_lists)
+        severity_counts = dict.fromkeys(("critical", "serious", "moderate", "minor"), 0)
+        for issues in issue_lists:
+            for issue in issues:
+                severity_counts[_issue_severity_bucket(issue)] += 1
 
     deadline = (
         DeadlineService.for_department(department) if department is not None else None
     )
 
     return {
-        "average_score": round(average_score, 1),
+        "average_score": average_score,
         "critical_count": severity_counts["critical"],
-        "dashboard_url": f"https://dashboard.example.com/dashboard?dept={department_id}",
+        "dashboard_url": (
+            f"{get_settings().dashboard_url}/dashboard?dept={department_id}"
+        ),
         "deadline": deadline,
         "department_name": department_name,
         "issues_fixed": None,
@@ -384,7 +436,7 @@ def build_weekly_summary_payload(
 async def trigger_scan_alerts(
     db: Session,
     scan: Scan,
-    app_base_url: str = "https://dashboard.example.com",
+    app_base_url: str | None = None,
 ) -> Dict[str, bool]:
     """
     Trigger all applicable alerts for a completed scan.
@@ -394,7 +446,8 @@ async def trigger_scan_alerts(
     Args:
         db: Database session
         scan: Completed scan object
-        app_base_url: Base URL of the application
+        app_base_url: Base URL of the application; defaults to the configured
+            dashboard URL
 
     Returns:
         Dict indicating which alerts were sent
@@ -404,35 +457,42 @@ async def trigger_scan_alerts(
         "critical_issues_sent": False,
     }
 
-    # Get file name from scan metadata or target URL
-    file_name = "Unknown file"
-    if scan.metadata:
-        file_name = scan.metadata.get("file_name", file_name)
-    elif scan.target_url:
-        file_name = scan.target_url.split("/")[-1]
+    scan_id = scan.id
+    result = scan.result
+    file_name = scan.file_name or "Unknown file"
+    issues = _result_issues(result)
+    compliance_score = result.compliance_score if result is not None else None
 
-    scan_url = f"{app_base_url}/scans/{scan.id}"
-    remediate_url = f"{app_base_url}/remediate/{scan.id}"
+    base_url = (app_base_url or get_settings().dashboard_url).rstrip("/")
+    scan_url = f"{base_url}/scan/{scan_id}"
+    remediate_url = f"{base_url}/remediate/{scan_id}"
 
-    # Send scan complete alert
-    results["scan_complete_sent"] = await send_scan_complete_alert(
-        db=db,
-        department_id=scan.department_id,
-        scan_id=scan.id,
-        file_name=file_name,
-        compliance_score=scan.compliance_score or 0,
-        issues_found=scan.issues_found or 0,
-        scan_url=scan_url,
-    )
+    # Send scan complete alert. An unscored or finding-less result is not
+    # turned into a zero-score email.
+    if compliance_score is not None and issues is not None:
+        results["scan_complete_sent"] = await send_scan_complete_alert(
+            db=db,
+            department_id=scan.department_id,
+            scan_id=scan_id,
+            file_name=file_name,
+            compliance_score=compliance_score,
+            issues_found=len(issues),
+            scan_url=scan_url,
+        )
+    else:
+        logger.info(
+            f"Skipping scan complete alert for scan {scan_id}: "
+            "score or findings not available"
+        )
 
     # Send critical issues alert if applicable
-    if scan.issues_data:
+    if issues:
         results["critical_issues_sent"] = await send_critical_issues_alert(
             db=db,
             department_id=scan.department_id,
-            scan_id=scan.id,
+            scan_id=scan_id,
             file_name=file_name,
-            issues=scan.issues_data,
+            issues=issues,
             scan_url=scan_url,
             remediate_url=remediate_url,
         )
