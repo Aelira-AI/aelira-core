@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-29
+
+See the [release notes](docs/releases/v0.12.1.md) for operator actions and
+evidence limits.
+
 ### Fixed
 
 - The review evidence PDF let the source and working-file SHA-256 values run past the metadata table's border, listed Matterhorn checkpoints and a validator result for Word, Excel and PowerPoint documents, and labelled its count of review items "Total Issues Found". Hashes now wrap inside the table in a small monospaced font, the Matterhorn lines and scope text appear only for PDFs, and the count is labelled "Review Items Recorded". File, department and institution names containing markup characters are shown as text ([#876](https://github.com/Aelira-AI/aelira-core/issues/876)).
