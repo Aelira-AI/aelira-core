@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- When Canvas answered the course, file or folder listing with an error or could not be reached, the API let the failure escape as an unhandled 500, so users saw a generic server error and the Canvas journey failed whenever Canvas was not ready right after the OAuth callback. These routes now return 502 when Canvas answers with a server error, 503 when Canvas rate-limits, times out or cannot be reached, the existing 409 "reconnect your Canvas account" response when Canvas rejects the token (401), and 403 with a fixed permission message when Canvas denies the request to the connected account (403). The messages are fixed text that names Canvas; the upstream response body, URL, token and exception text are never returned, and the status code is logged at warning level (#736)
+
 ## [0.11.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.11.1.md) for operator actions and
