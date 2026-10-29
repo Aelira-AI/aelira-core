@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, MetaData, create_engine
 from sqlalchemy.orm import Session
 
+from src.config.settings import get_settings
 from src.db.models import (
     CloudFile,
     Department,
@@ -145,8 +146,9 @@ def _issues(*severities: str) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_scan_alert_email_carries_result_score_issue_count_and_file_name(
-    db, send_email
+    db, send_email, monkeypatch
 ):
+    monkeypatch.setattr(get_settings(), "dashboard_url", "https://campus.example.edu")
     _settings(db)
     scan = _scan(db, "scan-1", score=85.0, issues=_issues("medium", "low", "low"))
 
@@ -160,7 +162,94 @@ async def test_scan_alert_email_carries_result_score_issue_count_and_file_name(
     assert "85%" in kwargs["subject"]
     assert "85%" in kwargs["html_content"]
     assert "3 issues found" in kwargs["html_content"]
-    assert "https://dashboard.example.com/scans/scan-1" in kwargs["html_content"]
+    assert "https://campus.example.edu/scans/scan-1" in kwargs["html_content"]
+
+
+@pytest.mark.asyncio
+async def test_clean_scan_with_empty_findings_still_sends_scan_complete(db, send_email):
+    _settings(db)
+    scan = _scan(db, "scan-1", score=100.0, issues=[])
+
+    sent = await email_alert_job.trigger_scan_alerts(db, scan)
+
+    assert sent == {"scan_complete_sent": True, "critical_issues_sent": False}
+    send_email.assert_awaited_once()
+    html = send_email.await_args.kwargs["html_content"]
+    assert "100%" in html
+    assert "0 issues found" in html
+
+
+@pytest.mark.asyncio
+async def test_scan_with_unrecorded_findings_sends_no_scan_complete(db, send_email):
+    _settings(db)
+    scan = _scan(db, "scan-1", score=90.0, issues=None)
+
+    sent = await email_alert_job.trigger_scan_alerts(db, scan)
+
+    assert sent["scan_complete_sent"] is False
+    send_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_alert_links_use_the_configured_dashboard_url(
+    db, send_email, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "dashboard_url", "https://campus.example.edu")
+    settings = _settings(db)
+    scan = _scan(db, "scan-1", score=40.0, issues=_issues("critical"))
+
+    await email_alert_job.trigger_scan_alerts(db, scan)
+
+    scan_html, critical_html = (
+        call.kwargs["html_content"] for call in send_email.await_args_list
+    )
+    assert "https://campus.example.edu/scans/scan-1" in scan_html
+    assert "https://campus.example.edu/scans/scan-1" in critical_html
+    assert "https://campus.example.edu/remediate/scan-1" in critical_html
+    assert "dashboard.example.com" not in scan_html + critical_html
+
+    payload = email_alert_job.build_weekly_summary_payload(
+        db, settings, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert payload["dashboard_url"] == (
+        "https://campus.example.edu/dashboard?dept=dept-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_base_url_overrides_the_configured_dashboard_url(
+    db, send_email, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "dashboard_url", "https://campus.example.edu")
+    _settings(db)
+    scan = _scan(db, "scan-1", score=90.0, issues=[])
+
+    await email_alert_job.trigger_scan_alerts(
+        db, scan, app_base_url="https://other.example.org/"
+    )
+
+    html = send_email.await_args.kwargs["html_content"]
+    assert "https://other.example.org/scans/scan-1" in html
+
+
+@pytest.mark.asyncio
+async def test_file_name_is_escaped_exactly_once_in_scan_emails(db, send_email):
+    _settings(db)
+    name = "Q&A <draft>.pdf"
+    scan = _scan(db, "scan-1", score=40.0, issues=_issues("critical"), file_name=name)
+
+    await email_alert_job.trigger_scan_alerts(db, scan)
+
+    for call in send_email.await_args_list:
+        html = call.kwargs["html_content"]
+        assert "Q&amp;A &lt;draft&gt;.pdf" in html
+        assert "&amp;amp;" not in html
+        assert "&amp;lt;" not in html
+        assert name in call.kwargs["subject"]
+    scan_html = send_email.await_args_list[0].kwargs["html_content"]
+    # The hand-built message is markup, not text shown to the reader.
+    assert "<strong>Q&amp;A &lt;draft&gt;.pdf</strong>" in scan_html
+    assert "&lt;p&gt;" not in scan_html
 
 
 @pytest.mark.asyncio

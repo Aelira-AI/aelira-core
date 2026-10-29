@@ -329,7 +329,9 @@ class EmailService:
         scan_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send scan completion notification."""
-        # Sanitize user-controlled input
+        # render_template escapes every variable that is not *_html or *_url, so
+        # file_name is passed raw there; it is escaped here once only for the
+        # hand-built message_html. The subject is plain text.
         safe_file_name = html_lib.escape(file_name)
 
         # Determine status color and message
@@ -347,14 +349,14 @@ class EmailService:
             "scan_complete",
             {
                 "title": "Scan Complete",
-                "file_name": safe_file_name,
+                "file_name": file_name,
                 "compliance_score": f"{compliance_score:.0f}%",
                 "issues_found": issues_found,
                 "status_color": status_color,
                 "status_text": status_text,
                 "action_url": scan_url or "",
                 "action_text": "View Results",
-                "message": f"""
+                "message_html": f"""
                 <p>The accessibility scan for <strong>{safe_file_name}</strong> has completed.</p>
                 <div style="text-align: center; margin: 24px 0;">
                     <div style="font-size: 48px; font-weight: bold; color: {status_color};">
@@ -369,7 +371,7 @@ class EmailService:
 
         return await self.send_email(
             to_emails=to_emails,
-            subject=f"Scan Complete: {safe_file_name} - {compliance_score:.0f}% Compliance",
+            subject=f"Scan Complete: {file_name} - {compliance_score:.0f}% Compliance",
             html_content=html,
         )
 
@@ -405,7 +407,7 @@ class EmailService:
             "critical_issues",
             {
                 "title": "Critical Accessibility Issues Detected",
-                "file_name": safe_file_name,
+                "file_name": file_name,
                 "critical_count": len(critical_issues),
                 "issues_html": issues_html,
                 "action_url": resolved_action_url,
@@ -428,7 +430,7 @@ class EmailService:
 
         return await self.send_email(
             to_emails=to_emails,
-            subject=f"CRITICAL: {len(critical_issues)} Accessibility Issues in {safe_file_name}",
+            subject=f"CRITICAL: {len(critical_issues)} Accessibility Issues in {file_name}",
             html_content=html,
         )
 

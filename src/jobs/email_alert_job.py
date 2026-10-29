@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 
+from ..config.settings import get_settings
 from ..db.models import (
     EmailAlertSettings,
     Scan,
@@ -413,7 +414,9 @@ def build_weekly_summary_payload(
     return {
         "average_score": average_score,
         "critical_count": severity_counts["critical"],
-        "dashboard_url": f"https://dashboard.example.com/dashboard?dept={department_id}",
+        "dashboard_url": (
+            f"{get_settings().dashboard_url}/dashboard?dept={department_id}"
+        ),
         "deadline": deadline,
         "department_name": department_name,
         "issues_fixed": None,
@@ -433,7 +436,7 @@ def build_weekly_summary_payload(
 async def trigger_scan_alerts(
     db: Session,
     scan: Scan,
-    app_base_url: str = "https://dashboard.example.com",
+    app_base_url: str | None = None,
 ) -> Dict[str, bool]:
     """
     Trigger all applicable alerts for a completed scan.
@@ -443,7 +446,8 @@ async def trigger_scan_alerts(
     Args:
         db: Database session
         scan: Completed scan object
-        app_base_url: Base URL of the application
+        app_base_url: Base URL of the application; defaults to the configured
+            dashboard URL
 
     Returns:
         Dict indicating which alerts were sent
@@ -459,8 +463,9 @@ async def trigger_scan_alerts(
     issues = _result_issues(result)
     compliance_score = result.compliance_score if result is not None else None
 
-    scan_url = f"{app_base_url}/scans/{scan_id}"
-    remediate_url = f"{app_base_url}/remediate/{scan_id}"
+    base_url = (app_base_url or get_settings().dashboard_url).rstrip("/")
+    scan_url = f"{base_url}/scans/{scan_id}"
+    remediate_url = f"{base_url}/remediate/{scan_id}"
 
     # Send scan complete alert. An unscored or finding-less result is not
     # turned into a zero-score email.
