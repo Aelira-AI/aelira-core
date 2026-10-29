@@ -137,13 +137,13 @@ async def test_phrase_makes_no_difference_to_the_outcome(session):
 async def test_structural_threat_the_rebuild_cannot_remove_is_refused(session):
     """Negative control: a flagged file still goes through the sanitiser.
 
-    A .docx with more entries than the archive limit is rated HIGH by the
+    A .docx with more parts than the Office part limit is rated HIGH by the
     archive check. A rebuild cannot lower that rating, so the upload is
     refused and recorded as blocked, not processed as if it were sanitised.
     """
     flagged = make_docx(
         "the valve can act as a buffer",
-        extra_names=[f"word/media/part{i}.xml" for i in range(1001)],
+        extra_names=[f"word/media/part{i}.xml" for i in range(10_001)],
     )
     result = await DocumentValidator().validate("report.docx", flagged)
     assert result.threat_level == ThreatLevel.HIGH
@@ -160,7 +160,7 @@ async def test_structural_threat_the_rebuild_cannot_remove_is_refused(session):
     assert record.threat_level == "high"
     assert record.was_sanitized is False
     assert record.was_blocked is True
-    assert record.blocked_reason.startswith("Archive contains too many files")
+    assert record.blocked_reason.startswith("Office file contains too many parts")
 
 
 @pytest.mark.asyncio
