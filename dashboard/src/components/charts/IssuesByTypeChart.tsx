@@ -15,6 +15,7 @@ import {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import type { PieLabelRenderProps } from 'recharts/types/polar/Pie';
+import { prefersReducedMotion } from '../../utils/motion';
 
 // ============================================================================
 // Types
@@ -56,6 +57,7 @@ const COLORS: Record<string, string> = {
 // ============================================================================
 
 export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.ReactElement {
+  const animate = !prefersReducedMotion();
   const [chartType, setChartType] = useState<ChartType>('bar');
 
   // Count issues by severity/impact
@@ -190,7 +192,7 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
                 cursor={{ fill: 'rgba(99, 102, 241, 0.1)' }}
                 content={renderBarTooltip}
               />
-              <Bar dataKey="value" radius={[8, 8, 0, 0]}>
+              <Bar dataKey="value" radius={[8, 8, 0, 0]} isAnimationActive={animate}>
                 {barData.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={entry.color} />
                 ))}
@@ -201,6 +203,7 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
           <ResponsiveContainer width="100%" height="100%" minHeight={256}>
             <PieChart>
               <Pie
+                isAnimationActive={animate}
                 data={pieData as unknown as Record<string, unknown>[]}
                 cx="50%"
                 cy="50%"

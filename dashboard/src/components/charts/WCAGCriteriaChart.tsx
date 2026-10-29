@@ -13,6 +13,7 @@ import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { wcagCriterion, type CriterionIssue } from '../../utils/wcagCriterion';
 import { issueCountLabel } from '../../utils/displayText';
+import { prefersReducedMotion } from '../../utils/motion';
 
 // ============================================================================
 // Types
@@ -41,6 +42,7 @@ interface CriterionData {
 // ============================================================================
 
 export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.ReactElement {
+  const animate = !prefersReducedMotion();
   // Extract WCAG criterion from issues
   const criterionMap = new Map<string, CriterionData>();
 
@@ -156,10 +158,10 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
               formatter={legendFormatter}
               iconType="square"
             />
-            <Bar dataKey="critical" stackId="a" fill="#A21CAF" radius={[0, 0, 0, 0]} />
-            <Bar dataKey="high" stackId="a" fill="#0284C7" radius={[0, 0, 0, 0]} />
-            <Bar dataKey="medium" stackId="a" fill="#4F46E5" radius={[0, 0, 0, 0]} />
-            <Bar dataKey="low" stackId="a" fill="#6B7280" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="critical" stackId="a" isAnimationActive={animate} fill="#A21CAF" radius={[0, 0, 0, 0]} />
+            <Bar dataKey="high" stackId="a" isAnimationActive={animate} fill="#0284C7" radius={[0, 0, 0, 0]} />
+            <Bar dataKey="medium" stackId="a" isAnimationActive={animate} fill="#4F46E5" radius={[0, 0, 0, 0]} />
+            <Bar dataKey="low" stackId="a" isAnimationActive={animate} fill="#6B7280" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
