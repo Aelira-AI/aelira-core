@@ -175,6 +175,28 @@ SUSPICIOUS_VBA_PATTERNS = [
 ]
 
 
+def _has_vba_part(content: bytes) -> bool:
+    """True if the archive has a part named vbaProject.bin, in any folder."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            return any(
+                name.replace("\\", "/").rsplit("/", 1)[-1].lower() == "vbaproject.bin"
+                for name in zf.namelist()
+            )
+    except Exception:
+        return False
+
+
+def _declares_macros(content: bytes) -> bool:
+    """True if [Content_Types].xml declares a macro-enabled or VBA project type."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            declared = zf.read("[Content_Types].xml").lower()
+        return b"macroenabled" in declared or b"vbaproject" in declared
+    except Exception:
+        return False
+
+
 class DocumentValidator:
     """
     Validates documents for security threats.
@@ -774,10 +796,24 @@ class DocumentValidator:
             return findings
 
         vba_parser = None
+        has_vba_part = _has_vba_part(content)
         try:
             vba_parser = VBA_Parser(filename=f"document{ext}", data=content)
 
             if not vba_parser.detect_vba_macros():
+                if has_vba_part:
+                    # The file carries a VBA project that oletools does not
+                    # recognise. Office may still read it, so do not call the
+                    # file clean.
+                    findings.append(
+                        SecurityFinding(
+                            category="macro_check_failed",
+                            description="Document has a VBA project that could not be read",
+                            threat_level=ThreatLevel.HIGH,
+                            details="A vbaProject.bin part is present but no macros were found in it",
+                            remediation="Remove the VBA project or verify document source",
+                        )
+                    )
                 return findings
 
             findings.append(
@@ -791,7 +827,9 @@ class DocumentValidator:
             )
 
             # Analyze macro content. A failure here is reported, because the
-            # suspicious-code check did not run.
+            # suspicious-code check did not run. It stays MEDIUM because the
+            # HIGH macro finding above already makes the upload path rebuild
+            # the file without the VBA project.
             try:
                 for (
                     filename,
@@ -823,11 +861,18 @@ class DocumentValidator:
 
         except Exception as e:
             logger.warning(f"Office macro analysis error ({type(e).__name__})")
+            # Fail closed for a file that carries a VBA project, so a file built
+            # to make the parser raise is still rebuilt without the project.
+            # Without one, an ordinary document with embedded objects must not
+            # be rebuilt, because that drops the objects (#856).
+            carries_vba = has_vba_part or _declares_macros(content)
             findings.append(
                 SecurityFinding(
                     category="macro_check_failed",
                     description="Macro analysis failed",
-                    threat_level=ThreatLevel.MEDIUM,
+                    threat_level=(
+                        ThreatLevel.HIGH if carries_vba else ThreatLevel.MEDIUM
+                    ),
                     details="The document could not be checked for macros",
                     remediation="Review the document manually",
                 )
@@ -895,11 +940,14 @@ class DocumentValidator:
             logger.warning("oletools not installed, skipping OLE macro analysis")
         except Exception as e:
             logger.warning(f"OLE macro analysis error ({type(e).__name__})")
+            # Fail closed: a legacy file that cannot be checked may hold macros.
+            # HIGH legacy files are not yet rebuilt by sanitize_document, see
+            # #863, so for now this keeps the finding and the recorded level.
             findings.append(
                 SecurityFinding(
                     category="macro_check_failed",
                     description="Macro analysis failed",
-                    threat_level=ThreatLevel.MEDIUM,
+                    threat_level=ThreatLevel.HIGH,
                     details="The document could not be checked for macros",
                     remediation="Review the document manually",
                 )

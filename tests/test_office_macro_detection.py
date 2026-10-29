@@ -86,17 +86,30 @@ async def test_macro_with_suspicious_call_is_critical(source):
     assert categories(result) == {"office_macros_detected", "office_macro_suspicious"}
 
 
-@pytest.mark.asyncio
-async def test_document_without_macros_gets_no_macro_finding():
-    content = ooxml_with_vba(BENIGN)
-    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+def plain_docx(extra_parts=None):
+    """The macro fixture's package with the VBA project part taken out."""
+    with zipfile.ZipFile(io.BytesIO(ooxml_with_vba(BENIGN))) as zf:
         parts = {n: zf.read(n) for n in zf.namelist() if n != "word/vbaProject.bin"}
+    parts.update(extra_parts or {})
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         for name, data in parts.items():
             zf.writestr(name, data)
+    return buffer.getvalue()
 
-    result = await DocumentValidator().validate("a.docx", buffer.getvalue())
+
+def raise_in(monkeypatch, method):
+    from oletools.olevba import VBA_Parser
+
+    def boom(self):
+        raise RuntimeError("synthetic parser failure")
+
+    monkeypatch.setattr(VBA_Parser, method, boom)
+
+
+@pytest.mark.asyncio
+async def test_document_without_macros_gets_no_macro_finding():
+    result = await DocumentValidator().validate("a.docx", plain_docx())
 
     assert result.findings == []
     assert result.threat_level == ThreatLevel.SAFE
@@ -150,32 +163,116 @@ async def test_upload_with_suspicious_macro_is_refused(session, source):
     assert record.was_sanitized is False
 
 
+def vba_part_with(binary):
+    """A package whose vbaProject.bin part is replaced with the given bytes."""
+    with zipfile.ZipFile(io.BytesIO(ooxml_with_vba(BENIGN))) as zf:
+        parts = {n: zf.read(n) for n in zf.namelist()}
+    parts["word/vbaProject.bin"] = binary
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for name, data in parts.items():
+            zf.writestr(name, data)
+    return buffer.getvalue()
+
+
+GOOD_VBA = vba_project_bin(BENIGN)
+UNREADABLE_VBA = {
+    # oletools raises on these
+    "truncated": GOOD_VBA[:700],
+    "magic_only": GOOD_VBA[:8] + b"\x00" * 600,
+    # oletools reads these without error and finds nothing
+    "not_ole": b"not an ole file at all" * 10,
+    "zeroed_directory": GOOD_VBA[:512] + b"\x00" * (len(GOOD_VBA) - 512),
+}
+
+
 @pytest.mark.asyncio
-async def test_parser_failure_is_reported_not_treated_as_clean(monkeypatch):
-    from oletools.olevba import VBA_Parser
+@pytest.mark.parametrize("kind", sorted(UNREADABLE_VBA))
+async def test_unreadable_vba_project_fails_closed_and_is_removed(session, kind):
+    original = vba_part_with(UNREADABLE_VBA[kind])
 
-    def boom(self):
-        raise RuntimeError("synthetic parser failure")
+    result = await DocumentValidator().validate("a.docx", original)
+    assert categories(result) == {"macro_check_failed"}
+    assert result.threat_level == ThreatLevel.HIGH
 
-    monkeypatch.setattr(VBA_Parser, "detect_vba_macros", boom)
+    returned = await _shared.validate_uploaded_file(
+        upload(original, "report.docx"), session, "workspace"
+    )
+    assert "word/vbaProject.bin" in names(original)
+    assert "word/vbaProject.bin" not in names(returned)
+    assert session.added[0].was_sanitized is True
+
+
+@pytest.mark.asyncio
+async def test_parser_failure_on_a_file_with_a_vba_part_is_high(monkeypatch):
+    raise_in(monkeypatch, "detect_vba_macros")
 
     result = await DocumentValidator().validate("a.docx", ooxml_with_vba(BENIGN))
 
     assert categories(result) == {"macro_check_failed"}
+    assert result.threat_level == ThreatLevel.HIGH
+
+
+@pytest.mark.asyncio
+async def test_parser_failure_on_a_macro_enabled_package_is_high(monkeypatch):
+    raise_in(monkeypatch, "detect_vba_macros")
+    macro_enabled = plain_docx(
+        {
+            "[Content_Types].xml": '<Types><Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/>'
+            "</Types>"
+        }
+    )
+
+    result = await DocumentValidator().validate("a.docx", macro_enabled)
+
+    assert result.threat_level == ThreatLevel.HIGH
+
+
+@pytest.mark.asyncio
+async def test_parser_failure_without_a_vba_part_keeps_embedded_objects(
+    session, monkeypatch
+):
+    """A parser hiccup on an ordinary document must not strip its objects (#856)."""
+    raise_in(monkeypatch, "detect_vba_macros")
+    embedding = "word/embeddings/oleObject1.bin"
+    original = plain_docx({embedding: b"\xd0\xcf\x11\xe0 synthetic equation"})
+
+    result = await DocumentValidator().validate("a.docx", original)
+    assert categories(result) == {"macro_check_failed"}
     assert result.threat_level == ThreatLevel.MEDIUM
-    assert result.is_safe is False
+
+    returned = await _shared.validate_uploaded_file(
+        upload(original, "report.docx"), session, "workspace"
+    )
+    assert returned == original
+    assert embedding in names(returned)
+    assert session.added[0].was_sanitized is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_office_analysis_failure_is_high(monkeypatch):
+    raise_in(monkeypatch, "detect_vba_macros")
+
+    result = await DocumentValidator().validate("a.doc", vba_project_bin(BENIGN))
+
+    assert categories(result) == {"macro_check_failed"}
+    assert result.threat_level == ThreatLevel.HIGH
+
+
+@pytest.mark.asyncio
+async def test_legacy_office_file_oletools_cannot_open_is_high():
+    result = await DocumentValidator().validate("a.doc", GOOD_VBA[:8] + b"\x00" * 600)
+
+    assert categories(result) == {"macro_check_failed"}
+    assert result.threat_level == ThreatLevel.HIGH
 
 
 @pytest.mark.asyncio
 async def test_unreadable_macro_code_is_reported_beside_the_macro_finding(
     monkeypatch,
 ):
-    from oletools.olevba import VBA_Parser
-
-    def boom(self):
-        raise RuntimeError("synthetic parser failure")
-
-    monkeypatch.setattr(VBA_Parser, "extract_macros", boom)
+    raise_in(monkeypatch, "extract_macros")
 
     result = await DocumentValidator().validate("a.docx", ooxml_with_vba(BENIGN))
 
