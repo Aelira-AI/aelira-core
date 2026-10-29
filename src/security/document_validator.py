@@ -21,6 +21,13 @@ from pathlib import Path
 from typing import BinaryIO, List, Optional, Set, Tuple, Union
 import hashlib
 
+from .active_content import (
+    SanitizationError,
+    find_active_content,
+    rebuild_ooxml,
+    rebuild_pdf,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,6 +149,9 @@ ALLOWED_EXTENSIONS = {
 # Code file extensions that need malware scanning
 CODE_FILE_EXTENSIONS = {".html", ".htm", ".js", ".css", ".svg"}
 
+OOXML_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm"}
+OFFICE_EXTENSIONS = OOXML_OFFICE_EXTENSIONS | {".doc", ".xls", ".ppt"}
+
 # Suspicious PDF keywords (based on pdfid analysis)
 SUSPICIOUS_PDF_KEYWORDS = {
     "/JavaScript": (ThreatLevel.HIGH, "PDF contains JavaScript code"),
@@ -159,6 +169,24 @@ SUSPICIOUS_PDF_KEYWORDS = {
     "/ObjStm": (ThreatLevel.LOW, "PDF uses object streams (can hide content)"),
     "/Annot": (ThreatLevel.LOW, "PDF contains annotations"),
 }
+
+
+_PDF_NAME = re.compile(r"/[^\s()<>\[\]{}/%]*")
+
+
+def _pdf_names(pdf_text: str) -> List[str]:
+    """Every PDF name in the text, with #hh escapes decoded.
+
+    A name may spell any character as #hh, so /J#61vaScript is /JavaScript.
+    """
+    return [
+        re.sub(
+            r"#([0-9A-Fa-f]{2})",
+            lambda escape: chr(int(escape.group(1), 16)),
+            match.group(0),
+        )
+        for match in _PDF_NAME.finditer(pdf_text)
+    ]
 
 
 # Calls in macro code that make a macro CRITICAL rather than HIGH
@@ -360,9 +388,10 @@ class DocumentValidator:
             findings.extend(zip_findings)
 
             # Check for Office macros if it's an Office file
-            if ext in [".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm"]:
+            if ext in OOXML_OFFICE_EXTENSIONS:
                 macro_findings = await self._analyze_office_macros(content, ext)
                 findings.extend(macro_findings)
+                findings.extend(self._analyze_active_content(content))
         elif detected_type == "ole_compound":
             # Legacy Office format - always check for macros
             macro_findings = await self._analyze_ole_macros(content)
@@ -405,10 +434,11 @@ class DocumentValidator:
             # Convert to string for keyword search
             # PDF can have binary content, so we use latin-1 encoding
             pdf_text = content.decode("latin-1", errors="ignore")
+            names = _pdf_names(pdf_text)
 
             for keyword, (threat_level, description) in SUSPICIOUS_PDF_KEYWORDS.items():
-                # Count occurrences
-                count = pdf_text.count(keyword)
+                # Count whole names, so /JS does not match /JSomething
+                count = names.count(keyword)
                 if count > 0:
                     findings.append(
                         SecurityFinding(
@@ -949,6 +979,43 @@ class DocumentValidator:
 
         return findings
 
+    def _analyze_active_content(self, content: bytes) -> List[SecurityFinding]:
+        """Report Excel 4 macro sheets and content loaded from outside the file."""
+        found = find_active_content(content)
+        if found is None:
+            return [
+                SecurityFinding(
+                    category="office_package_unreadable",
+                    description="Document package structure could not be read",
+                    threat_level=ThreatLevel.HIGH,
+                    details="Its content types or relationships could not be parsed",
+                    remediation="Save the document again from Office and upload that copy",
+                )
+            ]
+        findings = []
+        if found.macro_sheets:
+            findings.append(
+                SecurityFinding(
+                    category="office_xlm_macros",
+                    description="Workbook contains Excel 4 (XLM) macro sheets",
+                    threat_level=ThreatLevel.HIGH,
+                    details=f"{len(found.macro_sheets)} macro sheet(s)",
+                    remediation="Remove the macro sheets or verify document source",
+                )
+            )
+        if found.external_loaders:
+            findings.append(
+                SecurityFinding(
+                    category="office_external_content",
+                    description="Document loads content from outside the file when opened",
+                    threat_level=ThreatLevel.HIGH,
+                    details="External relationship types: "
+                    + ", ".join(sorted(found.external_loaders)),
+                    remediation="Remove the attached template or linked objects",
+                )
+            )
+        return findings
+
     async def _analyze_ole_macros(self, content: bytes) -> List[SecurityFinding]:
         """Analyze legacy Office (OLE) documents for macros."""
         findings = []
@@ -1046,131 +1113,63 @@ async def validate_document(
     return await validator.validate(filename, content)
 
 
+# Office formats the upload routes accept and the rebuild supports.
+REBUILDABLE_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
+
+
 async def sanitize_document(
     filename: str,
     content: bytes,
     output_path: Optional[str] = None,
 ) -> Tuple[bytes, ValidationResult]:
     """
-    Sanitize a document by removing potentially dangerous elements.
+    Rebuild a document without its active content.
+
+    PDF and Office Open XML files are rebuilt and validated again, and the
+    rebuilt copy is returned with ``sanitized`` set. A legacy Office file, an
+    Office file in another format, or a rebuild that cannot be read or is
+    still rated HIGH raises SanitizationError; the original bytes are never
+    returned as if they were sanitised. Code and text files have no rebuild:
+    they are returned unchanged with ``sanitized`` False.
 
     Args:
         filename: Original filename
         content: File content
-        output_path: Optional path to save sanitized document
+        output_path: Optional path to save the rebuilt document
 
     Returns:
-        Tuple of (sanitized_content, validation_result)
+        Tuple of (content, validation_result)
+
+    Raises:
+        SanitizationError: if the file needs a rebuild that cannot be made
     """
     validator = DocumentValidator()
     result = await validator.validate(filename, content)
-
     ext = Path(filename).suffix.lower()
-    sanitized_content = content
 
-    # Sanitize based on file type
     if result.file_type == "pdf":
-        sanitized_content = await _sanitize_pdf(content)
-    elif result.file_type == "zip_archive" and ext in [".docx", ".xlsx", ".pptx"]:
-        sanitized_content = await _sanitize_ooxml(content)
+        rebuild = rebuild_pdf
+    elif result.file_type == "zip_archive" and ext in REBUILDABLE_OFFICE_EXTENSIONS:
+        rebuild = rebuild_ooxml
+    elif result.file_type == "ole_compound" or ext in OFFICE_EXTENSIONS:
+        raise SanitizationError("office_format_not_rebuildable")
+    else:
+        return content, result
 
-    result.sanitized = True
+    try:
+        rebuilt = rebuild(content)
+    except SanitizationError:
+        raise
+    except Exception as exc:
+        raise SanitizationError("rebuild_failed") from exc
+
+    rebuilt_result = await validator.validate(filename, rebuilt)
+    if rebuilt_result.threat_level.rank >= ThreatLevel.HIGH.rank:
+        raise SanitizationError("rebuild_still_high")
+    rebuilt_result.sanitized = True
 
     if output_path:
-        Path(output_path).write_bytes(sanitized_content)
-        result.sanitized_path = output_path
+        Path(output_path).write_bytes(rebuilt)
+        rebuilt_result.sanitized_path = output_path
 
-    return sanitized_content, result
-
-
-async def _sanitize_pdf(content: bytes) -> bytes:
-    """
-    Sanitize PDF by removing JavaScript and other active content.
-
-    Note: For production, consider using pikepdf or qpdf for proper sanitization.
-    This is a basic implementation that removes common threats.
-    """
-    try:
-        # Basic sanitization: remove JavaScript objects
-        # For production, use a proper PDF library
-        pdf_text = content.decode("latin-1", errors="ignore")
-
-        # Remove JavaScript
-        pdf_text = re.sub(r"/JavaScript\s*<<[^>]*>>", "", pdf_text)
-        pdf_text = re.sub(r"/JS\s*\([^)]*\)", "", pdf_text)
-
-        # Remove OpenAction
-        pdf_text = re.sub(r"/OpenAction\s*<<[^>]*>>", "", pdf_text)
-        pdf_text = re.sub(r"/OpenAction\s*\d+\s+\d+\s+R", "", pdf_text)
-
-        # Remove Launch actions
-        pdf_text = re.sub(r"/Launch\s*<<[^>]*>>", "", pdf_text)
-
-        return pdf_text.encode("latin-1")
-
-    except Exception as e:
-        logger.warning(f"PDF sanitization error: {e}")
-        return content
-
-
-async def _sanitize_ooxml(content: bytes) -> bytes:
-    """
-    Sanitize Office Open XML by removing macros and external references.
-
-    Parts are removed by name pattern only (see skip_patterns below). A VBA
-    project stored under another name and found through the package's content
-    types or relationships is rated HIGH by the validator but is not yet
-    removed here (#863).
-    """
-    try:
-        sanitized_buffer = io.BytesIO()
-
-        with zipfile.ZipFile(io.BytesIO(content), "r") as zf_in:
-            with zipfile.ZipFile(sanitized_buffer, "w", zipfile.ZIP_DEFLATED) as zf_out:
-                for item in zf_in.namelist():
-                    # Skip macro-related files
-                    skip_patterns = [
-                        "vbaProject.bin",
-                        "vbaData.xml",
-                        ".bin",  # Skip all binary files (potential macros)
-                        "activeX",
-                        "embeddings",
-                    ]
-
-                    should_skip = any(
-                        pattern in item.lower() for pattern in skip_patterns
-                    )
-
-                    if not should_skip:
-                        data = zf_in.read(item)
-
-                        # If XML, sanitize external references
-                        if item.endswith(".xml") or item.endswith(".rels"):
-                            data = _sanitize_xml_content(data)
-
-                        zf_out.writestr(item, data)
-
-        return sanitized_buffer.getvalue()
-
-    except Exception as e:
-        logger.warning(f"OOXML sanitization error: {e}")
-        return content
-
-
-def _sanitize_xml_content(content: bytes) -> bytes:
-    """Sanitize XML content by removing external references."""
-    try:
-        text = content.decode("utf-8")
-
-        # Remove external entity declarations
-        text = re.sub(r"<!ENTITY\s+[^>]+>", "", text)
-
-        # Remove external references in relationships
-        text = re.sub(
-            r'TargetMode\s*=\s*"External"[^>]*>', 'TargetMode="Internal">', text
-        )
-
-        return text.encode("utf-8")
-
-    except Exception:
-        return content
+    return rebuilt, rebuilt_result

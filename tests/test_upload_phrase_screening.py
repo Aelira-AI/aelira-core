@@ -13,6 +13,7 @@ import zipfile
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi import UploadFile
 
 from src.api.education import _shared
@@ -133,12 +134,12 @@ async def test_phrase_makes_no_difference_to_the_outcome(session):
 
 
 @pytest.mark.asyncio
-async def test_structural_threat_is_still_rebuilt_without_embedded_objects(session):
+async def test_structural_threat_the_rebuild_cannot_remove_is_refused(session):
     """Negative control: a flagged file still goes through the sanitiser.
 
     A .docx with more entries than the archive limit is rated HIGH by the
-    archive check. Without this the tests above could pass because the upload
-    path no longer rebuilds anything.
+    archive check. A rebuild cannot lower that rating, so the upload is
+    refused and recorded as blocked, not processed as if it were sanitised.
     """
     flagged = make_docx(
         "the valve can act as a buffer",
@@ -148,19 +149,18 @@ async def test_structural_threat_is_still_rebuilt_without_embedded_objects(sessi
     assert result.threat_level == ThreatLevel.HIGH
     assert "archive_file_count" in {f.category for f in result.findings}
 
-    returned = await _shared.validate_uploaded_file(
-        upload(flagged), session, "workspace"
-    )
+    with pytest.raises(HTTPException) as caught:
+        await _shared.validate_uploaded_file(upload(flagged), session, "workspace")
 
-    assert returned != flagged
-    assert EMBEDDING in names(flagged)
-    assert EMBEDDING not in names(returned)
+    assert caught.value.status_code == 400
+    assert {f["category"] for f in caught.value.detail["findings"]} == {
+        "archive_file_count"
+    }
     record = session.added[0]
     assert record.threat_level == "high"
-    assert record.was_sanitized is True
-    # Sanitised and processed, so it is not recorded as blocked.
-    assert record.was_blocked is False
-    assert record.blocked_reason is None
+    assert record.was_sanitized is False
+    assert record.was_blocked is True
+    assert record.blocked_reason.startswith("Archive contains too many files")
 
 
 @pytest.mark.asyncio

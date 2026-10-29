@@ -323,11 +323,21 @@ def test_relationship_target_is_resolved_against_the_source_part_folder():
     ],
     ids=["content_types", "rels"],
 )
-async def test_unreadable_package_structure_fails_closed(broken):
-    result = await DocumentValidator().validate("a.docx", plain_docx(broken))
+async def test_unreadable_package_structure_fails_closed(broken, session):
+    original = plain_docx(broken)
+    result = await DocumentValidator().validate("a.docx", original)
 
-    assert categories(result) == {"macro_check_failed"}
+    assert categories(result) == {"macro_check_failed", "office_package_unreadable"}
     assert result.threat_level == ThreatLevel.HIGH
+
+    # The rebuild cannot read the structure either, so the upload is refused.
+    with pytest.raises(HTTPException) as caught:
+        await _shared.validate_uploaded_file(
+            upload(original, "report.docx"), session, "workspace"
+        )
+    assert caught.value.status_code == 400
+    assert session.added[0].was_blocked is True
+    assert session.added[0].was_sanitized is False
 
 
 @pytest.mark.asyncio
