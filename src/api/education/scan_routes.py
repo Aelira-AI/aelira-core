@@ -257,11 +257,11 @@ async def scan_pdf(
     db.flush()
 
     # Save to persistent storage for remediation
-    from ...utils.file_storage import save_uploaded_file
+    from ...utils.file_storage import save_scan_bytes
 
-    # Rewind file to beginning for save
-    await file.seek(0)
-    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    # Store the bytes the validator returned. When it rebuilt the file, those
+    # are the sanitised copy, and the queued input hash is taken from them.
+    storage_path = save_scan_bytes(content, department_id, scan.id, file.filename)
     scan.storage_path = storage_path
 
     from ...jobs.local_scan_job import enqueue_local_scan_job
@@ -544,10 +544,11 @@ async def scan_powerpoint(
     db.flush()
 
     # Save to persistent storage for remediation
-    from ...utils.file_storage import save_uploaded_file
+    from ...utils.file_storage import save_scan_bytes
 
-    await file.seek(0)
-    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    # Store the bytes the validator returned. When it rebuilt the file, those
+    # are the sanitised copy, and the queued input hash is taken from them.
+    storage_path = save_scan_bytes(content, department_id, scan.id, file.filename)
     scan.storage_path = storage_path
 
     from ...jobs.local_scan_job import enqueue_local_scan_job
@@ -804,10 +805,11 @@ async def scan_word_document(
     db.flush()
 
     # Save to persistent storage for remediation
-    from ...utils.file_storage import save_uploaded_file
+    from ...utils.file_storage import save_scan_bytes
 
-    await file.seek(0)
-    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    # Store the bytes the validator returned. When it rebuilt the file, those
+    # are the sanitised copy, and the queued input hash is taken from them.
+    storage_path = save_scan_bytes(content, department_id, scan.id, file.filename)
     scan.storage_path = storage_path
 
     from ...jobs.local_scan_job import enqueue_local_scan_job
@@ -1073,10 +1075,11 @@ async def scan_excel_spreadsheet(
     db.flush()
 
     # Save to persistent storage for remediation
-    from ...utils.file_storage import save_uploaded_file
+    from ...utils.file_storage import save_scan_bytes
 
-    await file.seek(0)
-    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    # Store the bytes the validator returned. When it rebuilt the file, those
+    # are the sanitised copy, and the queued input hash is taken from them.
+    storage_path = save_scan_bytes(content, department_id, scan.id, file.filename)
     scan.storage_path = storage_path
 
     from ...jobs.local_scan_job import enqueue_local_scan_job
@@ -1576,10 +1579,11 @@ async def convert_latex_document(
     db.flush()
 
     # Save to persistent storage for remediation
-    from ...utils.file_storage import save_uploaded_file
+    from ...utils.file_storage import save_scan_bytes
 
-    await file.seek(0)
-    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    # Store the bytes the validator returned. When it rebuilt the file, those
+    # are the sanitised copy, and the queued input hash is taken from them.
+    storage_path = save_scan_bytes(content, department_id, scan.id, file.filename)
     scan.storage_path = storage_path
 
     from ...jobs.local_scan_job import enqueue_local_scan_job
