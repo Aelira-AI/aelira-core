@@ -6,19 +6,19 @@ Validates uploaded documents for security threats including:
 - Suspicious PDF elements (JavaScript, auto-actions)
 - File type spoofing (magic byte validation)
 - Zip bombs and archive attacks
-- Prompt injection patterns
 
 Uses oletools for Office analysis and custom PDF inspection.
 """
 
 import io
 import logging
+import posixpath
 import re
 import zipfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, List, Optional, Tuple, Union
+from typing import BinaryIO, List, Optional, Set, Tuple, Union
 import hashlib
 
 logger = logging.getLogger(__name__)
@@ -160,37 +160,113 @@ SUSPICIOUS_PDF_KEYWORDS = {
     "/Annot": (ThreatLevel.LOW, "PDF contains annotations"),
 }
 
-# Prompt injection patterns to detect
-PROMPT_INJECTION_PATTERNS = [
-    # Direct instruction overrides
-    r"ignore\s+(previous|all|above|prior)\s+(instructions?|prompts?|rules?)",
-    r"disregard\s+(previous|all|above|prior)\s+(instructions?|prompts?)",
-    r"forget\s+(previous|all|everything|above)",
-    r"new\s+instructions?:",
-    r"system\s*:\s*",
-    r"assistant\s*:\s*",
-    r"user\s*:\s*",
-    # Role manipulation
-    r"you\s+are\s+now\s+",
-    r"act\s+as\s+(if\s+you\s+are\s+)?",
-    r"pretend\s+(to\s+be|you\s+are)",
-    r"roleplay\s+as",
-    # Jailbreak attempts
-    r"DAN\s*mode",
-    r"developer\s*mode",
-    r"jailbreak",
-    r"bypass\s+(restrictions?|filters?|safety)",
-    # Data exfiltration
-    r"output\s+(all|your|the)\s+(instructions?|prompts?|system)",
-    r"reveal\s+(your|the)\s+(instructions?|prompts?|system)",
-    r"print\s+(your|the)\s+(instructions?|prompts?|system)",
-    r"show\s+me\s+(your|the)\s+(instructions?|prompts?)",
+
+# Calls in macro code that make a macro CRITICAL rather than HIGH
+SUSPICIOUS_VBA_PATTERNS = [
+    (r"Shell\s*\(", "Shell command execution"),
+    (r"CreateObject\s*\(", "COM object creation"),
+    (r"WScript\.Shell", "Windows Script Host"),
+    (r"PowerShell", "PowerShell execution"),
+    (r"cmd\.exe", "Command prompt execution"),
+    (r"Environ\s*\(", "Environment variable access"),
+    (r"DownloadFile", "File download"),
+    (r"URLDownloadToFile", "URL file download"),
+    (r"ADODB\.Stream", "Binary stream operations"),
+    (r"RegWrite|RegDelete", "Registry modification"),
 ]
+
+
+_MAX_PACKAGE_XML_BYTES = 4 * 1024 * 1024
+
+
+def _vba_project_parts(content: bytes) -> Optional[Set[str]]:
+    """Parts an Office Open XML package declares as a VBA project.
+
+    A package finds its parts through [Content_Types].xml and the .rels
+    relationships, not through file names, so this reads both and also keeps a
+    part named vbaProject.bin in any folder. An empty set means the package
+    declares none. None means the package structure could not be read, which
+    callers must treat as possibly carrying a project.
+    """
+    from defusedxml import ElementTree
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except Exception:
+        return set()  # not a package; the archive checks report that
+
+    with zf:
+        members = zf.namelist()
+        found: Set[str] = {
+            name
+            for name in members
+            if name.replace("\\", "/").rsplit("/", 1)[-1].lower() == "vbaproject.bin"
+        }
+        by_lower = {name.lower(): name for name in members}
+
+        def read_xml(name):
+            if zf.getinfo(name).file_size > _MAX_PACKAGE_XML_BYTES:
+                raise ValueError("package XML too large")
+            return ElementTree.fromstring(zf.read(name))
+
+        try:
+            content_types = by_lower.get("[content_types].xml")
+            if content_types is not None:
+                for element in read_xml(content_types):
+                    kind = element.tag.rsplit("}", 1)[-1]
+                    if "vbaproject" not in element.get("ContentType", "").lower():
+                        continue
+                    if kind == "Override":
+                        found.add(element.get("PartName", "").lstrip("/"))
+                    elif kind == "Default":
+                        extension = "." + element.get("Extension", "").lower()
+                        found.update(
+                            name for name in members if name.lower().endswith(extension)
+                        )
+
+            for name in members:
+                if not name.lower().endswith(".rels"):
+                    continue
+                # A .rels file describes the part beside its _rels folder.
+                source_folder = posixpath.dirname(posixpath.dirname(name))
+                for relationship in read_xml(name):
+                    kind = relationship.get("Type", "").lower()
+                    if not kind.endswith("/vbaproject"):
+                        continue
+                    if relationship.get("TargetMode", "").lower() == "external":
+                        continue
+                    target = relationship.get("Target", "")
+                    if target.startswith("/"):
+                        found.add(posixpath.normpath(target.lstrip("/")))
+                    else:
+                        found.add(
+                            posixpath.normpath(posixpath.join(source_folder, target))
+                        )
+        except Exception:
+            return None
+
+    return found
+
+
+def _declares_macros(content: bytes) -> bool:
+    """True if [Content_Types].xml declares a macro-enabled or VBA project type."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            declared = zf.read("[Content_Types].xml").lower()
+        return b"macroenabled" in declared or b"vbaproject" in declared
+    except Exception:
+        return False
 
 
 class DocumentValidator:
     """
     Validates documents for security threats.
+
+    The checks are structural: file size, magic bytes against the extension,
+    archive shape, macros, active content and code. The validator does not
+    screen document text for phrases. Wording cannot change what a document
+    contains, and document text reaches a model only inside a delimiter it
+    cannot close, so a phrase list would only rebuild ordinary documents.
 
     Usage:
         validator = DocumentValidator()
@@ -211,16 +287,10 @@ class DocumentValidator:
         self.max_archive_files = max_archive_files
         self.max_archive_ratio = max_archive_ratio
 
-        # Compile prompt injection patterns
-        self.prompt_injection_patterns = [
-            re.compile(pattern, re.IGNORECASE) for pattern in PROMPT_INJECTION_PATTERNS
-        ]
-
     async def validate(
         self,
         filename: str,
         content: Union[bytes, BinaryIO],
-        check_prompt_injection: bool = True,
     ) -> ValidationResult:
         """
         Validate a document for security threats.
@@ -228,7 +298,6 @@ class DocumentValidator:
         Args:
             filename: Original filename
             content: File content as bytes or file-like object
-            check_prompt_injection: Whether to check for prompt injection
 
         Returns:
             ValidationResult with findings
@@ -303,11 +372,6 @@ class DocumentValidator:
         if ext in CODE_FILE_EXTENSIONS:
             code_findings = self._scan_standalone_code(content, filename)
             findings.extend(code_findings)
-
-        # 5. Check for prompt injection in text content
-        if check_prompt_injection:
-            injection_findings = self._check_prompt_injection(content, detected_type)
-            findings.extend(injection_findings)
 
         # Determine overall threat level
         max_threat = ThreatLevel.SAFE
@@ -778,65 +842,7 @@ class DocumentValidator:
         findings = []
 
         try:
-            # Try to import oletools
-            from oletools.olevba import VBA_Parser, detect_vba_macros
-
-            # Check for VBA macros
-            vba_detected = detect_vba_macros(content)
-
-            if vba_detected:
-                findings.append(
-                    SecurityFinding(
-                        category="office_macros_detected",
-                        description="Document contains VBA macros",
-                        threat_level=ThreatLevel.HIGH,
-                        details="Macros can execute arbitrary code",
-                        remediation="Remove macros or verify document source",
-                    )
-                )
-
-                # Analyze macro content
-                try:
-                    vba_parser = VBA_Parser(filename=f"document{ext}", data=content)
-
-                    if vba_parser.detect_vba_macros():
-                        for (
-                            filename,
-                            stream_path,
-                            vba_filename,
-                            vba_code,
-                        ) in vba_parser.extract_macros():
-                            # Check for suspicious VBA patterns
-                            suspicious_patterns = [
-                                (r"Shell\s*\(", "Shell command execution"),
-                                (r"CreateObject\s*\(", "COM object creation"),
-                                (r"WScript\.Shell", "Windows Script Host"),
-                                (r"PowerShell", "PowerShell execution"),
-                                (r"cmd\.exe", "Command prompt execution"),
-                                (r"Environ\s*\(", "Environment variable access"),
-                                (r"DownloadFile", "File download"),
-                                (r"URLDownloadToFile", "URL file download"),
-                                (r"ADODB\.Stream", "Binary stream operations"),
-                                (r"RegWrite|RegDelete", "Registry modification"),
-                            ]
-
-                            for pattern, desc in suspicious_patterns:
-                                if re.search(pattern, vba_code, re.IGNORECASE):
-                                    findings.append(
-                                        SecurityFinding(
-                                            category="office_macro_suspicious",
-                                            description=f"Macro contains suspicious code: {desc}",
-                                            threat_level=ThreatLevel.CRITICAL,
-                                            details=f"Found in {vba_filename}",
-                                            remediation="Do not open this document",
-                                        )
-                                    )
-
-                    vba_parser.close()
-
-                except Exception as e:
-                    logger.warning(f"Macro analysis error: {e}")
-
+            from oletools.olevba import VBA_Parser
         except ImportError:
             # oletools not installed - log warning but continue
             logger.warning("oletools not installed, skipping macro analysis")
@@ -848,14 +854,105 @@ class DocumentValidator:
                     details="Install oletools for full security scanning",
                 )
             )
+            return findings
+
+        vba_parser = None
+        vba_parts = _vba_project_parts(content)
+        # None means the package structure was unreadable: possibly a project.
+        carries_vba_project = vba_parts is None or bool(vba_parts)
+        try:
+            vba_parser = VBA_Parser(filename=f"document{ext}", data=content)
+
+            if not vba_parser.detect_vba_macros():
+                if carries_vba_project:
+                    # The package declares a VBA project, or its structure
+                    # cannot be read, and oletools found no macros. Office may
+                    # still read it, so do not call the file clean.
+                    findings.append(
+                        SecurityFinding(
+                            category="macro_check_failed",
+                            description="Document has a VBA project that could not be read",
+                            threat_level=ThreatLevel.HIGH,
+                            details="The package declares a VBA project or cannot be read, and no macros were found",
+                            remediation="Remove the VBA project or verify document source",
+                        )
+                    )
+                return findings
+
+            findings.append(
+                SecurityFinding(
+                    category="office_macros_detected",
+                    description="Document contains VBA macros",
+                    threat_level=ThreatLevel.HIGH,
+                    details="Macros can execute arbitrary code",
+                    remediation="Remove macros or verify document source",
+                )
+            )
+
+            # Analyze macro content. A failure here is reported, because the
+            # suspicious-code check did not run. It stays MEDIUM because the
+            # HIGH macro finding above already makes the upload path rebuild
+            # the file without the VBA project.
+            try:
+                for (
+                    filename,
+                    stream_path,
+                    vba_filename,
+                    vba_code,
+                ) in vba_parser.extract_macros():
+                    for pattern, desc in SUSPICIOUS_VBA_PATTERNS:
+                        if re.search(pattern, vba_code, re.IGNORECASE):
+                            findings.append(
+                                SecurityFinding(
+                                    category="office_macro_suspicious",
+                                    description=f"Macro contains suspicious code: {desc}",
+                                    threat_level=ThreatLevel.CRITICAL,
+                                    details=f"Found in {vba_filename}",
+                                    remediation="Do not open this document",
+                                )
+                            )
+            except Exception as e:
+                logger.warning(f"Macro content analysis error ({type(e).__name__})")
+                findings.append(
+                    SecurityFinding(
+                        category="macro_analysis_failed",
+                        description="Macro code could not be analyzed",
+                        threat_level=ThreatLevel.MEDIUM,
+                        details="The macros were detected but their code could not be read",
+                    )
+                )
+
         except Exception as e:
-            logger.warning(f"Office macro analysis error: {e}")
+            logger.warning(f"Office macro analysis error ({type(e).__name__})")
+            # Fail closed for a file that carries a VBA project, so a file built
+            # to make the parser raise is still rebuilt without the project.
+            # Without one, an ordinary document with embedded objects must not
+            # be rebuilt, because that drops the objects (#856).
+            carries_vba = carries_vba_project or _declares_macros(content)
+            findings.append(
+                SecurityFinding(
+                    category="macro_check_failed",
+                    description="Macro analysis failed",
+                    threat_level=(
+                        ThreatLevel.HIGH if carries_vba else ThreatLevel.MEDIUM
+                    ),
+                    details="The document could not be checked for macros",
+                    remediation="Review the document manually",
+                )
+            )
+        finally:
+            if vba_parser is not None:
+                try:
+                    vba_parser.close()
+                except Exception:
+                    pass
 
         return findings
 
     async def _analyze_ole_macros(self, content: bytes) -> List[SecurityFinding]:
         """Analyze legacy Office (OLE) documents for macros."""
         findings = []
+        vba_parser = None
 
         try:
             from oletools.olevba import VBA_Parser
@@ -902,61 +999,28 @@ class DocumentValidator:
                             )
                             break
 
-            vba_parser.close()
-
         except ImportError:
             logger.warning("oletools not installed, skipping OLE macro analysis")
         except Exception as e:
-            logger.warning(f"OLE macro analysis error: {e}")
-
-        return findings
-
-    def _check_prompt_injection(
-        self, content: bytes, file_type: str
-    ) -> List[SecurityFinding]:
-        """Check for prompt injection patterns in document text."""
-        findings = []
-
-        try:
-            # Extract text based on file type
-            text = ""
-
-            if file_type == "pdf":
-                # Basic text extraction from PDF
-                text = content.decode("latin-1", errors="ignore")
-            elif file_type == "zip_archive":
-                # Extract text from OOXML documents
+            logger.warning(f"OLE macro analysis error ({type(e).__name__})")
+            # Fail closed: a legacy file that cannot be checked may hold macros.
+            # HIGH legacy files are not yet rebuilt by sanitize_document, see
+            # #863, so for now this keeps the finding and the recorded level.
+            findings.append(
+                SecurityFinding(
+                    category="macro_check_failed",
+                    description="Macro analysis failed",
+                    threat_level=ThreatLevel.HIGH,
+                    details="The document could not be checked for macros",
+                    remediation="Review the document manually",
+                )
+            )
+        finally:
+            if vba_parser is not None:
                 try:
-                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                        for name in zf.namelist():
-                            if name.endswith(".xml"):
-                                xml_content = zf.read(name).decode(
-                                    "utf-8", errors="ignore"
-                                )
-                                # Strip XML tags for text content
-                                text += re.sub(r"<[^>]+>", " ", xml_content)
+                    vba_parser.close()
                 except Exception:
                     pass
-            else:
-                text = content.decode("utf-8", errors="ignore")
-
-            # Check for prompt injection patterns
-            for pattern in self.prompt_injection_patterns:
-                matches = pattern.findall(text)
-                if matches:
-                    findings.append(
-                        SecurityFinding(
-                            category="prompt_injection",
-                            description="Document contains potential prompt injection",
-                            threat_level=ThreatLevel.HIGH,
-                            details=f"Pattern matched: {matches[0][:50]}...",
-                            remediation="Review document content for malicious instructions",
-                        )
-                    )
-                    break  # One finding is enough
-
-        except Exception as e:
-            logger.warning(f"Prompt injection check error: {e}")
 
         return findings
 
@@ -1052,6 +1116,11 @@ async def _sanitize_pdf(content: bytes) -> bytes:
 async def _sanitize_ooxml(content: bytes) -> bytes:
     """
     Sanitize Office Open XML by removing macros and external references.
+
+    Parts are removed by name pattern only (see skip_patterns below). A VBA
+    project stored under another name and found through the package's content
+    types or relationships is rated HIGH by the validator but is not yet
+    removed here (#863).
     """
     try:
         sanitized_buffer = io.BytesIO()
