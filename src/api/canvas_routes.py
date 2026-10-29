@@ -10,9 +10,11 @@ SECURITY:
 
 import logging
 import os
+from contextlib import contextmanager
 from urllib.parse import quote
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -451,7 +453,8 @@ async def list_canvas_courses(
     credential, api_client = await _get_canvas_client(dept_id, db)
 
     try:
-        courses = await api_client.list_courses(enrollment_state="active")
+        with _canvas_upstream_errors("course listing", CANVAS_FORBIDDEN_LIST_DETAIL):
+            courses = await api_client.list_courses(enrollment_state="active")
         if principal.auth_method == "lti" and not principal.lti_account_wide:
             courses = [
                 course
@@ -494,10 +497,13 @@ async def list_canvas_course_files(
     credential, api_client = await _get_canvas_client(dept_id, db)
 
     try:
-        files = await api_client.list_course_files(
-            course_id=course_id,
-            search_term=search_term,
-        )
+        with _canvas_upstream_errors(
+            "course file listing", CANVAS_FORBIDDEN_COURSE_DETAIL
+        ):
+            files = await api_client.list_course_files(
+                course_id=course_id,
+                search_term=search_term,
+            )
 
         return [_format_file_info(file) for file in files]
     finally:
@@ -527,7 +533,10 @@ async def list_canvas_course_folders(
     credential, api_client = await _get_canvas_client(department_id, db)
 
     try:
-        folders = await api_client.list_course_folders(course_id=course_id)
+        with _canvas_upstream_errors(
+            "course folder listing", CANVAS_FORBIDDEN_COURSE_DETAIL
+        ):
+            folders = await api_client.list_course_folders(course_id=course_id)
 
         return [
             {
@@ -808,6 +817,62 @@ async def remediate_canvas_file(
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+CANVAS_RECONNECT_DETAIL = (
+    "Canvas rejected the saved connection. Please reconnect your Canvas account."
+)
+CANVAS_FORBIDDEN_COURSE_DETAIL = (
+    "Canvas did not allow this request for the connected account. "
+    "Check that your Canvas role can access this course."
+)
+CANVAS_FORBIDDEN_LIST_DETAIL = (
+    "Canvas did not allow the connected account to list courses."
+)
+CANVAS_ERROR_DETAIL = "Canvas returned an error. Please try again shortly."
+CANVAS_UNAVAILABLE_DETAIL = "Canvas is unavailable right now. Please try again shortly."
+
+
+@contextmanager
+def _canvas_upstream_errors(operation: str, forbidden_detail: str):
+    """Map upstream Canvas failures to handled responses with fixed messages.
+
+    A rejected token (401) reuses the 409 reconnect contract that
+    ``_get_canvas_client`` already uses, so the dashboard's 401 handling is not
+    triggered for a Canvas credential problem. A 403 is a permission denial
+    and passes through as 403 with ``forbidden_detail``. Rate limiting,
+    timeouts and transport failures become 503, and any other upstream error
+    becomes 502.
+    The upstream body, URL, token and exception text are logged at most as a
+    status code and exception type, and never returned to the caller.
+    """
+    try:
+        yield
+    except httpx.HTTPStatusError as exc:
+        upstream_status = exc.response.status_code
+        logger.warning(
+            "Canvas upstream error during %s",
+            operation,
+            extra={"upstream_status": upstream_status},
+        )
+        if upstream_status == 401:
+            raise HTTPException(
+                status_code=409, detail=CANVAS_RECONNECT_DETAIL
+            ) from None
+        if upstream_status == 403:
+            raise HTTPException(status_code=403, detail=forbidden_detail) from None
+        if upstream_status == 429:
+            raise HTTPException(
+                status_code=503, detail=CANVAS_UNAVAILABLE_DETAIL
+            ) from None
+        raise HTTPException(status_code=502, detail=CANVAS_ERROR_DETAIL) from None
+    except httpx.TransportError as exc:
+        logger.warning(
+            "Canvas transport failure during %s",
+            operation,
+            extra={"error_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=503, detail=CANVAS_UNAVAILABLE_DETAIL) from None
 
 
 async def _get_canvas_client(
