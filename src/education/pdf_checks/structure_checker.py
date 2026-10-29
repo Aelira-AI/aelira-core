@@ -124,6 +124,7 @@ class StructureTreeChecker:
             if not has_language:
                 issues.append(
                     {
+                        "category": "language",
                         "severity": "high",
                         "rule": "WCAG 3.1.1",
                         "message": "PDF document language not set",
@@ -162,6 +163,7 @@ class StructureTreeChecker:
             if not has_title:
                 issues.append(
                     {
+                        "category": "title",
                         "severity": "medium",
                         "rule": "WCAG 2.4.2",
                         "message": "PDF document title not set in metadata",
@@ -176,6 +178,7 @@ class StructureTreeChecker:
             elif not displays_title:
                 issues.append(
                     {
+                        "category": "title",
                         "severity": "low",
                         "rule": "WCAG 2.4.2",
                         "message": "PDF title exists but not configured to display in title bar",
@@ -204,6 +207,7 @@ class StructureTreeChecker:
             if not has_struct_tree:
                 issues.append(
                     {
+                        "category": "structure",
                         "severity": "critical",
                         "rule": "PDF/UA",
                         "message": "PDF has no structure tree (untagged PDF)",
@@ -218,6 +222,7 @@ class StructureTreeChecker:
             elif not struct_tree_valid:
                 issues.append(
                     {
+                        "category": "structure",
                         "severity": "high",
                         "rule": "PDF/UA",
                         "message": "PDF structure tree is empty",
@@ -243,6 +248,7 @@ class StructureTreeChecker:
             elif has_struct_tree and not is_marked:
                 issues.append(
                     {
+                        "category": "structure",
                         "severity": "medium",
                         "rule": "PDF/UA",
                         "message": "PDF has structure tree but is not marked as tagged",
@@ -269,6 +275,7 @@ class StructureTreeChecker:
             if not has_bookmarks and page_count >= 5:
                 issues.append(
                     {
+                        "category": "navigation",
                         "severity": "low",
                         "rule": "WCAG 2.4.5",
                         "message": f"PDF has {page_count} pages but no bookmarks/outline",
@@ -306,6 +313,7 @@ class StructureTreeChecker:
                 if not has_content_marking:
                     issues.append(
                         {
+                            "category": "structure",
                             "severity": "critical",
                             "rule": "PDF/UA 7.2",
                             "message": "Structure tree exists but content streams have no marked content (BDC/EMC)",
@@ -331,6 +339,7 @@ class StructureTreeChecker:
                 if struct_tree_valid and not has_parent_tree:
                     issues.append(
                         {
+                            "category": "structure",
                             "severity": "critical",
                             "rule": "PDF/UA 7.2",
                             "message": "Structure tree has no ParentTree mapping (empty /Nums)",
@@ -378,6 +387,7 @@ class StructureTreeChecker:
                 if not has_document_root:
                     issues.append(
                         {
+                            "category": "structure",
                             "severity": "high",
                             "rule": "PDF/UA 7.1",
                             "message": "Structure tree missing /Document or /Part root element",
@@ -409,6 +419,7 @@ class StructureTreeChecker:
             if not has_pdfua_id:
                 issues.append(
                     {
+                        "category": "structure",
                         "severity": "medium",
                         "rule": "PDF/UA 6.6.4",
                         "message": "PDF/UA identifier not set in XMP metadata",
@@ -482,6 +493,7 @@ class StructureTreeChecker:
             if text_list_items >= 3 and list_elem_count == 0:
                 issues.append(
                     {
+                        "category": "list",
                         "severity": "high",
                         "rule": "WCAG 1.3.1",
                         "message": f"Document has ~{text_list_items} list items but no List structure tags (L/LI)",
@@ -633,6 +645,7 @@ class StructureTreeChecker:
             if fonts_missing_unicode > 0:
                 issues.append(
                     {
+                        "category": "structure",
                         "severity": "high",
                         "rule": "PDF/UA 7.21.3.1",
                         "message": f"{fonts_missing_unicode} of {fonts_checked} fonts missing /ToUnicode mapping",
@@ -705,6 +718,7 @@ class StructureTreeChecker:
                 if unmapped and role_map is None:
                     issues.append(
                         {
+                            "category": "structure",
                             "severity": "medium",
                             "rule": "PDF/UA 7.1",
                             "message": f"Non-standard structure tags found without /RoleMap: {', '.join(sorted(unmapped)[:5])}",
@@ -726,6 +740,7 @@ class StructureTreeChecker:
                     if unmapped_and_missing:
                         issues.append(
                             {
+                                "category": "structure",
                                 "severity": "medium",
                                 "rule": "PDF/UA 7.1",
                                 "message": f"Non-standard tags not in /RoleMap: {', '.join(sorted(unmapped_and_missing)[:5])}",

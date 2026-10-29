@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Most PDF findings recorded no category, so the Issues page showed them as "Other". Findings for alt text, reading order, contrast, forms, links, language, the document title, bookmarks, lists, tables, the structure tree and mathematics now record the category the remediation classifier already derives from their other fields, so the Issues page can group and filter them and remediation treats them as before. Five findings whose fields classify as Other, including "Document should start with H1 heading" and the AI alt text quality review, keep no category until their remediation category is decided ([#873](https://github.com/Aelira-AI/aelira-core/issues/873), [#887](https://github.com/Aelira-AI/aelira-core/issues/887)).
+
 ## [0.12.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.12.1.md) for operator actions and

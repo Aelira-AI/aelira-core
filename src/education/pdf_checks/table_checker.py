@@ -110,6 +110,7 @@ class TableAccessibilityChecker:
                 )
                 issues.append(
                     {
+                        "category": "table",
                         "severity": severity,
                         "rule": "WCAG 1.3.1",
                         "message": (
