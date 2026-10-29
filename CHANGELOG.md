@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A PDF whose first heading was an H1 could still get a "Document should start with H1 heading" finding when the heading scan stopped early, for example because a later heading was empty. The finding had no heading to repair and lowered the score. The finding now appears only when the whole heading structure was read, and a heading scan stopped by a size or work limit, or by an unexpected error, now counts as an incomplete check, so a strict scan fails instead of returning a score ([#830](https://github.com/Aelira-AI/aelira-core/issues/830)).
+- The PDF reading-order check re-read the text of up to 100 pages for every page it analysed, to confirm that printed page numbers matched, so work grew towards pages times pages on long documents with sparse page numbers. The page-number result is now kept per page for the whole document, so each page is read once. The findings are unchanged ([#831](https://github.com/Aelira-AI/aelira-core/issues/831)).
 
 ## [0.11.1] - 2026-10-29
 

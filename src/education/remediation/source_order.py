@@ -192,6 +192,28 @@ def _page_number_box(page, number):
     return text, box
 
 
+class PageNumberBoxes:
+    """Per-document cache of `_page_number_box` results, one extraction per page."""
+
+    def __init__(self, document):
+        self.document = document
+        self._boxes = {}
+
+    def box(self, index):
+        if index not in self._boxes:
+            self._boxes[index] = _page_number_box(self.document[index], index + 1)
+        return self._boxes[index]
+
+    def corroborated(self, minimum=3):
+        """True once `minimum` pages carry a verified printed page ordinal."""
+        found = 0
+        for index in range(len(self.document)):
+            found += self.box(index) is not None
+            if found >= minimum:
+                return True
+        return False
+
+
 def repair_page(pdf, page_number, *, generated_owner_ids=frozenset()):
     """Return (changed sibling count, repair class); refuse without side effects."""
     if (
@@ -292,15 +314,9 @@ def repair_page(pdf, page_number, *, generated_owner_ids=frozenset()):
 
                 # Moving a corroborated ordinal preserves all other semantics,
                 # including table cells, images, columns and nested groups.
-                margin = _page_number_box(page, page_number)
-                corroborated = (
-                    margin
-                    and sum(
-                        _page_number_box(document[index], index + 1) is not None
-                        for index in range(len(document))
-                    )
-                    >= 3
-                )
+                ordinals = PageNumberBoxes(document)
+                margin = ordinals.box(target)
+                corroborated = margin and ordinals.corroborated()
                 method = "single_column_siblings"
                 if corroborated:
                     printed = margin[0]
@@ -370,7 +386,9 @@ def repair_page(pdf, page_number, *, generated_owner_ids=frozenset()):
                         for line in block.get("lines", [])
                     ):
                         raise OrderRefusal("reading_order_unsupported_text_direction")
-                    blocks = ReadingOrderVerifier()._get_visual_text_order(page)
+                    blocks = ReadingOrderVerifier()._get_visual_text_order(
+                        page, ordinals=ordinals
+                    )
                     from ..layout_order import block_plan, LayoutAmbiguous
 
                     try:
