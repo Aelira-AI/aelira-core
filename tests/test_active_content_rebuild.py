@@ -798,3 +798,50 @@ async def test_xhtml_is_not_an_extension_mismatch():
     result = await DocumentValidator().validate("page.html", page)
 
     assert "file_type_mismatch" not in {f.category for f in result.findings}
+
+
+@pytest.mark.asyncio
+async def test_unfinished_walk_of_object_streams_fails_closed(monkeypatch):
+    from src.security import document_validator
+
+    with pikepdf.open(io.BytesIO(scripted_pdf())) as pdf:
+        pdf.Root.OpenAction = pikepdf.Array([pdf.pages[0].obj, pikepdf.Name.Fit])
+        del pdf.Root["/Names"]
+        del pdf.pages[0].obj["/AA"]
+        pdf.pages[0].obj.Annots = pikepdf.Array([])
+        buffer = io.BytesIO()
+        pdf.save(buffer, object_stream_mode=pikepdf.ObjectStreamMode.generate)
+    clean_with_streams = buffer.getvalue()
+    assert b"/ObjStm" in clean_with_streams
+    validator = DocumentValidator()
+    assert (await validator.validate("a.pdf", clean_with_streams)).threat_level.rank < (
+        ThreatLevel.HIGH.rank
+    )
+
+    monkeypatch.setattr(document_validator, "_MAX_PDF_OBJECTS", 1)
+    result = await validator.validate("a.pdf", clean_with_streams)
+    assert "pdf_structure_unchecked" in {f.category for f in result.findings}
+    assert result.threat_level == ThreatLevel.HIGH
+
+    # The rebuild writes no object streams, so the byte scan sees everything.
+    rebuilt, rebuilt_result = await sanitize_document("a.pdf", clean_with_streams)
+    assert b"/ObjStm" not in rebuilt
+    assert rebuilt_result.sanitized is True
+
+
+@pytest.mark.asyncio
+async def test_unfinished_walk_without_object_streams_is_not_a_finding(monkeypatch):
+    from src.security import document_validator
+
+    monkeypatch.setattr(document_validator, "_MAX_PDF_OBJECTS", 1)
+    with pikepdf.open(io.BytesIO(scripted_pdf())) as pdf:
+        pdf.Root.OpenAction = pikepdf.Array([pdf.pages[0].obj, pikepdf.Name.Fit])
+        del pdf.Root["/Names"]
+        del pdf.pages[0].obj["/AA"]
+        pdf.pages[0].obj.Annots = pikepdf.Array([])
+        buffer = io.BytesIO()
+        pdf.save(buffer, object_stream_mode=pikepdf.ObjectStreamMode.disable)
+
+    result = await DocumentValidator().validate("a.pdf", buffer.getvalue())
+
+    assert "pdf_structure_unchecked" not in {f.category for f in result.findings}

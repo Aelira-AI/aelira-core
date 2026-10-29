@@ -176,6 +176,8 @@ SUSPICIOUS_PDF_KEYWORDS = {
 # delimiter. Python's \s is a different set, so the bytes are matched directly.
 _PDF_NAME = re.compile(rb"/[^\x00\x09\x0a\x0c\x0d\x20()<>\[\]{}/%]*")
 _MAX_PDF_OBJECTS = 200_000
+_MAX_PDF_NODES = 2_000_000
+_MAX_PDF_DEPTH = 64
 
 
 def _pdf_names(content: bytes) -> List[str]:
@@ -193,12 +195,15 @@ def _pdf_names(content: bytes) -> List[str]:
     ]
 
 
-def _pdf_structural_keywords(content: bytes) -> Dict[str, int]:
+def _pdf_structural_keywords(content: bytes) -> Tuple[Dict[str, int], bool]:
     """Keywords found by parsing the PDF, including inside object streams.
 
     The byte scan cannot see into compressed object streams. This counts the
-    keywords as dictionary keys and name values in every object. A PDF that
-    cannot be parsed returns an empty count, and the byte scan still applies.
+    keywords as dictionary keys and name values in every object, and returns
+    whether every object was walked. An object that cannot be read is skipped
+    and makes the walk incomplete, as do the object, node and depth limits. A
+    PDF that cannot be parsed at all returns no counts and a complete walk:
+    the byte scan then sees everything that is not compressed.
     """
     counts: Dict[str, int] = {}
     try:
@@ -206,43 +211,50 @@ def _pdf_structural_keywords(content: bytes) -> Dict[str, int]:
 
         pdf = pikepdf.open(io.BytesIO(content))
     except Exception:
-        return counts
+        return counts, True
 
     def add(name: str) -> None:
         counts[name] = counts.get(name, 0) + 1
 
-    def visit(obj, depth: int) -> None:
-        if depth > 32:
-            return
-        if isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
-            for key in obj.keys():
-                if key in SUSPICIOUS_PDF_KEYWORDS:
-                    add(key)
-                value = obj[key]
-                if isinstance(value, pikepdf.Name) and str(value) in (
-                    SUSPICIOUS_PDF_KEYWORDS
-                ):
-                    add(str(value))
-                if not getattr(value, "is_indirect", True):
-                    visit(value, depth + 1)
-        elif isinstance(obj, pikepdf.Array):
-            for value in obj:
-                if isinstance(value, pikepdf.Name) and str(value) in (
-                    SUSPICIOUS_PDF_KEYWORDS
-                ):
-                    add(str(value))
-                if not getattr(value, "is_indirect", True):
-                    visit(value, depth + 1)
-
+    complete = True
+    nodes = 0
     with pdf:
-        try:
-            for index, obj in enumerate(pdf.objects):
-                if index >= _MAX_PDF_OBJECTS:
-                    break
-                visit(obj, 0)
-        except Exception:
-            pass
-    return counts
+        for index, root in enumerate(pdf.objects):
+            if index >= _MAX_PDF_OBJECTS:
+                complete = False
+                break
+            stack = [(root, 0)]
+            try:
+                while stack:
+                    obj, depth = stack.pop()
+                    nodes += 1
+                    if nodes > _MAX_PDF_NODES or depth > _MAX_PDF_DEPTH:
+                        complete = False
+                        stack.clear()
+                        break
+                    if isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
+                        children = []
+                        for key in obj.keys():
+                            if key in SUSPICIOUS_PDF_KEYWORDS:
+                                add(key)
+                            children.append(obj[key])
+                    elif isinstance(obj, pikepdf.Array):
+                        children = list(obj)
+                    else:
+                        continue
+                    for value in children:
+                        if isinstance(value, pikepdf.Name) and str(value) in (
+                            SUSPICIOUS_PDF_KEYWORDS
+                        ):
+                            add(str(value))
+                        # Indirect objects are walked on their own.
+                        if not getattr(value, "is_indirect", True):
+                            stack.append((value, depth + 1))
+            except Exception:
+                complete = False
+            if nodes > _MAX_PDF_NODES:
+                break
+    return counts, complete
 
 
 def _vba_call(name: str) -> str:
@@ -547,7 +559,18 @@ class DocumentValidator:
             # Whole names, so /JS does not match /JSomething. The parsed count
             # can only add to the byte count, for keywords in object streams.
             names = _pdf_names(content)
-            parsed = _pdf_structural_keywords(content)
+            parsed, walked = _pdf_structural_keywords(content)
+            if not walked and "/ObjStm" in names:
+                # Object streams are the one place the byte scan cannot see.
+                findings.append(
+                    SecurityFinding(
+                        category="pdf_structure_unchecked",
+                        description="PDF object streams could not be fully checked",
+                        threat_level=ThreatLevel.HIGH,
+                        details="Some objects could not be read or the PDF is too large to walk",
+                        remediation="Save the PDF again from its source application",
+                    )
+                )
 
             for keyword, (threat_level, description) in SUSPICIOUS_PDF_KEYWORDS.items():
                 count = max(names.count(keyword), parsed.get(keyword, 0))
