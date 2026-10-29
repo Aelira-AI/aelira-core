@@ -797,8 +797,11 @@ class CloudScanJob:
                     raise
                 except Exception as e:
                     # Don't fail the scan if email alerts fail
-                    logger.warning(
-                        f"Failed to send email alerts for cloud file {self.cloud_file.id} (dept={self.credential.department_id}): {e}"
+                    logger.error(
+                        f"Failed to send email alerts for scan {scan.id} "
+                        f"(cloud file {self.cloud_file.id}, "
+                        f"dept={self.credential.department_id}): {type(e).__name__}",
+                        exc_info=True,
                     )
 
             return {

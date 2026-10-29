@@ -438,8 +438,8 @@ class EmailService:
         department_name: str,
         total_files: int,
         files_scanned: Optional[int] = None,
-        average_score: float = 0,
-        total_issues: int = 0,
+        average_score: Optional[float] = 0,
+        total_issues: Optional[int] = 0,
         issues_fixed: Optional[int] = None,
         dashboard_url: str = None,
         unsubscribe_url: str = None,
@@ -472,6 +472,14 @@ class EmailService:
             issues_fixed if issues_fixed is not None else "Not available"
         )
 
+        # None means the figure was not measured; show that instead of a zero.
+        average_score_display = (
+            f"{average_score:.0f}%" if average_score is not None else "Not available"
+        )
+        total_issues_display: int | str = (
+            total_issues if total_issues is not None else "Not available"
+        )
+
         severity_counts = (critical_count, serious_count, moderate_count, minor_count)
         severity_total = (
             sum(severity_counts) if all(c is not None for c in severity_counts) else 0
@@ -498,8 +506,8 @@ class EmailService:
                 "total_files": total_files,
                 "files_scanned": weekly_scans,
                 "scans_this_week": weekly_scans,
-                "average_score": f"{average_score:.0f}",
-                "total_issues": total_issues,
+                "average_score": average_score_display,
+                "total_issues": total_issues_display,
                 "issues_fixed": issues_fixed_display,
                 "score_change": score_change,
                 "critical_count": measured_count(critical_count),
@@ -536,12 +544,12 @@ class EmailService:
                         <tr>
                             <td style="padding: 8px 0;"><strong>Average Scan Score:</strong></td>
                             <td style="text-align: right; color: #2563eb;">
-                                {average_score:.0f}%
+                                {average_score_display}
                             </td>
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Total Issues Found:</strong></td>
-                            <td style="text-align: right;">{total_issues}</td>
+                            <td style="text-align: right;">{total_issues_display}</td>
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Issues Fixed:</strong></td>

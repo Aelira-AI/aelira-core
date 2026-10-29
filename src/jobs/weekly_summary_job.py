@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,6 +15,8 @@ from src.mailer import get_email_service
 
 from .contracts import JobContext, JobFailure, JobResult, JobSuccess, LostJobOwnership
 from .email_alert_job import build_weekly_summary_payload
+
+logger = logging.getLogger(__name__)
 
 SCHEDULER_CURSOR_KEY = "weekly_summary_schedule"
 SCHEDULER_RECOVERY_HOURS = 168
@@ -190,7 +193,14 @@ async def handle_weekly_summary_job(
             window_start=window[0],
             window_end=window[1],
         )
-    except Exception:
+    except Exception as exc:
+        logger.error(
+            "Weekly summary preparation failed for job %s (department %s): %s",
+            context.job_id,
+            job.department_id,
+            type(exc).__name__,
+            exc_info=True,
+        )
         return JobFailure.retryable("weekly_summary_preparation_failed")
     if delivery is None:
         return JobSuccess({"status": "no_op", "success": True})

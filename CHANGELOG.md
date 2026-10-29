@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Scan-complete alert emails and the weekly summary now read the compliance score and findings from the scan's result, and the file name from the scan's `file_name` column. The jobs read `compliance_score`, `issues_found`, `issues_data` and `metadata` from the `Scan` row, which has none of them, and called the scan-complete email with `action_url` and `action_text` arguments it does not accept. Every scan-complete alert therefore failed and the weekly summary raised, with the failure logged only at warning level (alerts) or not at all (weekly summary). A scan with no result, no score or no recorded findings now sends no scan-complete email and shows "Not available" in the weekly summary instead of a zero, findings of severity "high" count as serious, and critical-issue emails list the rule names. Failures in both jobs are now logged at error level with the scan or job id ([#816](https://github.com/Aelira-AI/aelira-core/issues/816)).
+
 ## [0.11.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.11.1.md) for operator actions and
