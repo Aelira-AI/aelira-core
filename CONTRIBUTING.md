@@ -19,7 +19,7 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 ### Prerequisites
 
 - **Python 3.14** — Backend API (`.python-version`, `Dockerfile`, `Dockerfile.dev`, and CI all pin this)
-- **Node.js 22+** — Dashboard frontend (`dashboard/Dockerfile`, CI)
+- **Node.js 22+** — Dashboard frontend and CLI; `dashboard/Dockerfile` and CI build on Node 26
 - **Docker with the Compose plugin** (`docker compose`, not legacy `docker-compose`) and **jq** — For the development setup script
 - **PostgreSQL 16** — Database (or use Docker)
 - **Redis** — Cache and session store (or use Docker)

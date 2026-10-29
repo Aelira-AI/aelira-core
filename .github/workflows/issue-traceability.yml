@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
       - name: Invalidate previous statuses before tests or API validation
         env:
           GITHUB_TOKEN: ${{ github.token }}

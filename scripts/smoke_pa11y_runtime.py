@@ -23,12 +23,13 @@ from src.security.browser_runtime import chromium_launch_options
 
 EXPECTED_PA11Y_VERSION = "9.0.1"
 EXPECTED_BROWSERS_VERSION = "3.2.4"
-SUPPORTED_NODE_MAJORS = {24}
-# Node 24.22.1 (2026-10-21) is the security release for CVE-2026-105481,
+SUPPORTED_NODE_MAJORS = {26}
+# Node 26.12.1 (2026-10-21) is the 26.x security release for CVE-2026-105481,
 # CVE-2026-105482, CVE-2026-105483, CVE-2026-106069, CVE-2026-106073,
-# CVE-2026-106074 and CVE-2026-111497, and carries OpenSSL 3.5.9. It also
-# drops emSign ECC Root CA - G3 from the built-in root store (#726).
-MINIMUM_NODE = (24, 22, 1)
+# CVE-2026-106074 and CVE-2026-111497, the same day as 24.22.1, and carries
+# OpenSSL 3.5.9. Its built-in root store no longer trusts emSign ECC Root CA -
+# G3 (#726). 26.13.0 marks the line as LTS with no other changes.
+MINIMUM_NODE = (26, 12, 1)
 MINIMUM_NODE_OPENSSL = (3, 5, 9)
 ROOT = Path(__file__).resolve().parents[1]
 CHROME_MANIFEST = ROOT / "scripts" / "chrome-for-testing.json"

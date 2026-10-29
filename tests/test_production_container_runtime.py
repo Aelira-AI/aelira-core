@@ -29,7 +29,7 @@ def test_pa11y_runtime_excludes_debian_npm_toolchain():
     dockerfile = (ROOT / "Dockerfile").read_text()
     runtime = dockerfile.split(" AS runtime", 1)[1]
 
-    assert "FROM node:24-bookworm-slim@sha256:" in dockerfile
+    assert "FROM node:26-bookworm-slim@sha256:" in dockerfile
     assert "COPY --from=pa11y-node /usr/local/bin/node" in runtime
     assert "COPY --from=pa11y-node /opt/pa11y-runtime/node_modules" in runtime
     assert "\n    nodejs \\" not in runtime

@@ -154,7 +154,7 @@ RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Resolve the reviewed, locked production tree
 # separately and copy only Node and those dependencies into the API image.
-FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS pa11y-node
+FROM node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 WORKDIR /opt/pa11y-runtime
@@ -212,6 +212,8 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     poppler-utils \
     libpq5 \
     curl \
+    # The Pa11y runtime's Node 26 binary links libatomic.so.1.
+    libatomic1 \
     # Playwright Chromium dependencies
     libnss3 \
     libnspr4 \

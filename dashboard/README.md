@@ -45,7 +45,7 @@ Versions below are read directly from [`package.json`](package.json); check ther
 
 ### Prerequisites
 
-- Node.js 22+ (matches CI and `dashboard/Dockerfile`)
+- Node.js 22+ (CI and `dashboard/Dockerfile` use Node 26)
 - npm
 
 ### Setup
@@ -204,7 +204,7 @@ Vite environment variables are baked in at build time via `ARG`/`ENV` in the Doc
 
 | Stage | Image | What it does |
 |---|---|---|
-| Build | `node:22-alpine` | Runs `npm ci && npm run build` |
+| Build | `node:26-alpine` | Runs `npm ci && npm run build` |
 | Runtime | `nginx:alpine` | Copies `dist/` and `nginx.conf`, which handles SPA fallback routing, gzip, cache headers for `/assets/`, and a `/health` endpoint |
 
 ## API integration

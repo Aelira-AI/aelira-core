@@ -16,7 +16,7 @@
 | Pa11y | 9.0.1 |
 | HTML_CodeSniffer | 2.5.1 |
 | `@puppeteer/browsers` (exact override) | 3.2.4 |
-| Node | 22.12 or newer required by the override; the images use pinned Node 24, at 24.22.1 or later |
+| Node | 22.12 or newer required by the override; the images use pinned Node 26, at 26.12.1 or later |
 
 ## Why the override exists
 
