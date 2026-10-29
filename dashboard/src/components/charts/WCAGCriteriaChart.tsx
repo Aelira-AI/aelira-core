@@ -12,6 +12,7 @@ import {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { wcagCriterion, type CriterionIssue } from '../../utils/wcagCriterion';
+import { issueCountLabel } from '../../utils/displayText';
 
 // ============================================================================
 // Types
@@ -136,7 +137,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
       <div
         className="h-80 min-h-[320px]"
         role="img"
-        aria-label={`Top WCAG criteria issues chart showing ${chartData.length} criteria. Most common: ${chartData[0]?.criterion || 'none'} with ${chartData[0]?.total || 0} issues.`}
+        aria-label={`Top WCAG criteria issues chart showing ${chartData.length} criteria. Most common: ${chartData[0]?.criterion || 'none'} with ${issueCountLabel(chartData[0]?.total || 0)}.`}
       >
         <ResponsiveContainer width="100%" height="100%" minHeight={320}>
           <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
@@ -169,7 +170,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
         <ul>
           {chartData.map((item) => (
             <li key={item.criterion}>
-              Criterion {item.criterion}: {item.total} total issues
+              Criterion {item.criterion}: {item.total} total {item.total === 1 ? 'issue' : 'issues'}
               ({item.critical} critical, {item.high} high, {item.medium} medium, {item.low} low)
             </li>
           ))}
@@ -184,7 +185,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
             <div key={item.criterion} className="flex items-center justify-between text-sm">
               <span className="text-secondary">
                 <span className="font-mono font-medium text-primary">{item.criterion}</span> (
-                {item.total} issues)
+                {issueCountLabel(item.total)})
               </span>
               <div className="flex space-x-2 text-xs">
                 {item.critical > 0 && (

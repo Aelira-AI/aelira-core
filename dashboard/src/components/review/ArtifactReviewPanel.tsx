@@ -4,11 +4,12 @@ import { Button } from '../ui/Button';
 import { approveManagedArtifact, downloadManagedArtifact, getManagedArtifact, getCurrentWorkingArtifact, rebuildReviewedPDF, writeBackManagedArtifact } from '../../api/managedArtifacts';
 import type { ManagedArtifactMetadata } from '../../api/managedArtifacts';
 import { useAbortableRequestOwner } from '../../hooks/useAbortableRequestOwner';
+import { workingFileName } from '../../utils/remediationDownloadName';
 import { approvalBlockerMessage, lacksRemediationEvidence, manualCandidateGuidance } from './artifactReviewGuidance';
 
 /** Viewing or downloading a candidate never grants permission to publish it. */
-export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath: suppliedResultPath, refreshToken, editing, canRebuild, rebuildSupported = true }: {
-  scanId: string; scanType: string; cloudFileId: string | null; resultPath?: string; refreshToken: number; editing: boolean; canRebuild: boolean; rebuildSupported?: boolean;
+export function ArtifactReviewPanel({ scanId, scanType, fileName, cloudFileId, resultPath: suppliedResultPath, refreshToken, editing, canRebuild, rebuildSupported = true }: {
+  scanId: string; scanType: string; fileName?: string; cloudFileId: string | null; resultPath?: string; refreshToken: number; editing: boolean; canRebuild: boolean; rebuildSupported?: boolean;
 }): React.ReactElement {
   const navigate = useNavigate();
   const [loaded, setLoaded] = useState<{ key: string; artifact: ManagedArtifactMetadata | null } | null>(null);
@@ -22,6 +23,7 @@ export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath:
   const resultPath = suppliedResultPath ?? `/remediate/${encodeURIComponent(scanId)}${cloudFileId ? `?cloud_file_id=${encodeURIComponent(cloudFileId)}` : ''}`;
   const artifact = loaded?.key === requestKey ? loaded.artifact : null;
   const confirmed = artifact !== null && confirmedKey === `${requestKey}:${artifact.sha256}`;
+  const workingName = artifact ? workingFileName(fileName, artifact.filename) : '';
   const manualEdits = artifact?.has_manual_edits === true || artifact?.reviewed_rebuild_blocker === 'manual_pdf_edits_require_review';
   const rebuildBlocked = manualEdits || artifact?.reviewed_rebuild_available === false;
   const missingRemediationEvidence = manualEdits && artifact !== null && lacksRemediationEvidence(artifact.approval_blockers);
@@ -45,7 +47,7 @@ export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath:
       const blob = await downloadManagedArtifact(scanId, artifact.id);
       if (!owner.isCurrent(attempt)) return;
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a'); link.href = url; link.download = artifact.filename;
+      const link = document.createElement('a'); link.href = url; link.download = workingName;
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
     } catch { if (owner.isCurrent(attempt)) setError('This working file could not be downloaded. Its availability or review requirements may have changed.'); }
     finally { if (owner.finish(attempt)) setBusy(false); }
@@ -91,7 +93,7 @@ export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath:
         : 'Complete the pending decisions first. Rebuilding applies accepted edits and leaves rejected changes out of a new working file, which must pass its saved-file checks.'}</p>
     </div>}
     {artifact ? <>
-      <p className="mt-3 text-sm text-primary">{artifact.filename} · SHA-256 {artifact.sha256.slice(0, 12)}… · {artifact.review_status === 'approved' ? 'Approved for publication' : artifact.review_status === 'rejected' ? 'Rejected for publication' : 'Publication approval pending'}</p>
+      <p className="mt-3 text-sm text-primary">{workingName} · SHA-256 {artifact.sha256.slice(0, 12)}… · {artifact.review_status === 'approved' ? 'Approved for publication' : artifact.review_status === 'rejected' ? 'Rejected for publication' : 'Publication approval pending'}</p>
       <div className="mt-3 flex flex-wrap gap-3">
         <Button variant="secondary" size="sm" onClick={() => void download()} disabled={busy || editing}>Download improved working file</Button>
         <Link className="btn-secondary text-sm" to={resultPath}>{suppliedResultPath ? 'View scan findings' : 'View remaining findings'}</Link>

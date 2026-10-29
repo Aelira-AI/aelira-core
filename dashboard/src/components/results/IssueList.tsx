@@ -3,6 +3,7 @@ import { AlertCircle, AlertTriangle, Info, Zap, Search, Eye, LucideIcon } from '
 import { shouldRenderGenericLocation } from './issueLocation';
 import { findingDisplayText } from '../../utils/remediationIssueOutcomes';
 import { isUnscoredAltReview, type AIReviewMarker } from '../../utils/aiReviewFindings';
+import { wcagBadgeLabel } from '../../utils/wcagCriterion';
 
 // ============================================================================
 // Types
@@ -307,8 +308,8 @@ export function IssueList({
           issue.rule ||
           'Accessibility Issue';
 
-        // WCAG criterion badge (e.g., "1.3.1")
-        const wcagCriterion = issue.criterion || issue.wcag_criterion;
+        // Criterion badge (e.g., "WCAG 1.3.1"); scanners record it with or without the prefix
+        const criterionBadge = wcagBadgeLabel(issue.criterion || issue.wcag_criterion);
 
         // Description text - cascade through all possible fields
         // LaTeX uses error/reason, video uses message, code uses description
@@ -334,9 +335,9 @@ export function IssueList({
                     <h3 className="font-semibold text-primary text-base">
                       {unscoredReview ? 'AI alt-text assessment' : issueTitle}
                     </h3>
-                    {wcagCriterion && (
+                    {criterionBadge && (
                       <span className="text-xs font-mono font-medium px-2 py-0.5 rounded bg-[var(--surface-tertiary)] text-secondary border border-[var(--border-primary)]">
-                        WCAG {wcagCriterion}
+                        {criterionBadge}
                       </span>
                     )}
                   </div>

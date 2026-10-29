@@ -1819,6 +1819,14 @@ async def validate_session(
         db.query(Department).filter(Department.id == user.department_id).first()
     )
 
+    # Read-only hint for the dashboard: only an account that owns (or once
+    # owned) programmatic keys is told that dashboard API-key sign-in was
+    # retired. A fresh account has no such history and needs no notice.
+    has_api_keys = (
+        resolved.principal.auth_method == "session"
+        and db.query(APIKey).filter(APIKey.user_id == user.id).first() is not None
+    )
+
     return {
         "valid": True,
         "auth_method": resolved.principal.auth_method,
@@ -1828,6 +1836,7 @@ async def validate_session(
             "name": user.name,
             "role": user.role.value if user.role else "faculty",
             "email_verified": user.email_verified,
+            "has_api_keys": has_api_keys,
         },
         "department": {
             "id": department.id if department else None,

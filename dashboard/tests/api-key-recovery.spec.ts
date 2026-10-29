@@ -5,13 +5,14 @@ const FULL_KEY = 'aelira_live_visible_once_123';
 
 const department = { id: 'dept-1', name: 'Accessibility', tier: 'trial' };
 
-function user(id: string) {
+function user(id: string, hasApiKeys = true) {
   return {
     id,
     email: `${id}@example.edu`,
     name: `User ${id}`,
     role: 'faculty',
     email_verified: true,
+    has_api_keys: hasApiKeys,
   };
 }
 
@@ -47,6 +48,7 @@ async function installApiMocks(
   options: {
     authMethod?: 'session' | 'lti' | 'api_key';
     userId?: () => string;
+    hasApiKeys?: boolean;
     onRequest?: (request: Request) => void;
     keys?: () => ReturnType<typeof keyMetadata>[];
     revokedCurrentKey?: boolean;
@@ -66,7 +68,7 @@ async function installApiMocks(
         json: {
           valid: true,
           auth_method: options.authMethod ?? 'session',
-          user: user(options.userId?.() ?? 'user-1'),
+          user: user(options.userId?.() ?? 'user-1', options.hasApiKeys ?? true),
           department,
           expires_at: 1999999999,
         },
@@ -294,6 +296,16 @@ test.describe('API-key retirement recovery', () => {
     currentUser = 'user-2';
     await page.reload();
     await expect(banner).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test('an account without API keys never sees the retirement banner', async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await installApiMocks(page, { hasApiKeys: false });
+
+    await page.goto('/dashboard');
+    await expect(page.getByRole('banner')).toBeVisible();
+    await expect(page.getByText('Legacy dashboard API keys have been retired')).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 

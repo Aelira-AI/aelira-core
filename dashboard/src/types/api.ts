@@ -74,6 +74,8 @@ export interface User {
   department?: Department;
   created_at?: string;
   last_login?: string;
+  /** Session validation only: whether this account owns, or once owned, programmatic API keys. */
+  has_api_keys?: boolean;
 }
 
 /** Whether the server can queue this document; does not promise automatic fixes. */

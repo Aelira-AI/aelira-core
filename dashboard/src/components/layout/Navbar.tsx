@@ -7,41 +7,7 @@ import { ThemeToggle } from '../ThemeToggle';
 import { Breadcrumb } from '../ui/Breadcrumb';
 import { Button } from '../ui/Button';
 import type { BreadcrumbItem } from '../ui/Breadcrumb';
-
-// ---------------------------------------------------------------------------
-// Route → page label mapping for breadcrumb
-// ---------------------------------------------------------------------------
-
-const ROUTE_LABELS: Record<string, string> = {
-  '/dashboard': 'Overview',
-  '/upload': 'New Scan',
-  '/bulk-upload': 'Bulk Upload',
-  '/history': 'Scan History',
-  '/issues': 'Issues',
-  '/compliance': 'Compliance',
-  '/integrations': 'Integrations',
-  '/integrations/settings': 'Integration Settings',
-  '/integrations/files': 'Cloud Files',
-  '/integrations/canvas': 'Canvas',
-  '/integrations/brightspace': 'Brightspace',
-  '/settings': 'Settings',
-  '/admin': 'Admin',
-  '/review-queue': 'Review Queue',
-};
-
-function derivePageLabel(pathname: string): string {
-  if (ROUTE_LABELS[pathname]) return ROUTE_LABELS[pathname];
-  if (pathname.startsWith('/scan/')) return 'Scan Details';
-  if (pathname.startsWith('/focus-order/')) return 'Focus Order';
-  if (pathname.startsWith('/remediate/')) return 'Remediate';
-  if (pathname.startsWith('/canvas/courses/')) {
-    return pathname.endsWith('/review') ? 'Content Review' : 'Course Content';
-  }
-  const segment = pathname.split('/').filter(Boolean).pop() ?? '';
-  return segment
-    ? segment.charAt(0).toUpperCase() + segment.slice(1).replace(/-/g, ' ')
-    : 'Dashboard';
-}
+import { derivePageLabel } from '../../utils/pageLabel';
 
 // ---------------------------------------------------------------------------
 // Avatar helper — initials from name or email

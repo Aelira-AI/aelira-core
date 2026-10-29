@@ -3,6 +3,7 @@ import { FileText } from "lucide-react";
 import type { RemediationJobStatus } from "../../api/scans";
 import { issueDescription, findingDisplayText, outcomeExplanation, outcomePresentation, outcomeGroup, reviewRequirement } from "../../utils/remediationIssueOutcomes";
 import type { RemediationIssueRow } from "../../utils/remediationIssueOutcomes";
+import { categoryLabel } from "../../utils/displayText";
 
 export function AggregateResults({ job, rows }: { job: RemediationJobStatus; rows?: RemediationIssueRow[] }): React.ReactElement | null {
   const acceptedOrderOutcomes = job.issue_outcomes?.length && job.issue_outcomes.every(
@@ -66,7 +67,7 @@ export function RecordedIssueRow(row: RemediationIssueRow): React.ReactElement {
             {findingDisplayText(issueDescription(issue))}
           </p>
           <p className="mt-1 text-xs leading-4 text-tertiary">
-            {issue.category || issue.severity || issue.rule || 'Recorded scan finding'}
+            {categoryLabel(issue.category || issue.severity || issue.rule || 'Recorded scan finding')}
             {issue.page_number != null && ` · Page ${issue.page_number}`}
           </p>
           {explanation && (

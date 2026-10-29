@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dashboard: finding badges on the scan page read "WCAG WCAG 1.3.1", the most common violations list said "1 issues", the review header showed the scan id with its hyphens as spaces, the approved working file was shown and saved as the internal name `source_remediated.docx`, Word documents carried a PDF-only Matterhorn Protocol results bar, every account saw the retired dashboard API key banner, review items showed the raw method `rule_based` and the remediation page showed raw categories such as `font_size`, and every Word, PDF, Excel and PowerPoint finding on the Issues page was categorised "Other". Badges now show "WCAG 1.3.1", counts use the singular, the header says "Document Review", the working file takes its name from the uploaded file (for example `remediated-course-overview.docx`), the Matterhorn bar appears only for PDFs, the API key banner appears only to an account that owns or once owned API keys (the session check now reports a read-only `has_api_keys` flag, with no stored-data change), method and category values show readable labels, and findings use their recorded category. (#859)
+
 ## [0.11.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.11.1.md) for operator actions and
