@@ -190,7 +190,7 @@ wheels for both architectures. The historical `pi_heif` gap and its removal are 
 ### New scanner findings in the subsequent 0.9.13 candidate
 
 The following review-bound `not_affected` dispositions target ImageMagick
-`8:7.1.1.43+dfsg1-1+deb13u12` and `libcups2t64 2.4.10-3+deb13u2` on
+`8:7.1.1.43+dfsg1-1+deb13u13` and `libcups2t64 2.4.10-3+deb13u2` on
 native amd64 and arm64 candidates through 2027-01-16. The scanner findings
 remain visible.
 
@@ -241,7 +241,7 @@ functions, requires a fresh assessment.
 ### ImageMagick advisories published after the 0.9.13 candidate review
 
 Eight further ImageMagick advisories affect the reviewed
-`8:7.1.1.43+dfsg1-1+deb13u12` packages on both architectures. Upstream fixed
+`8:7.1.1.43+dfsg1-1+deb13u13` packages on both architectures. Upstream fixed
 them in 7.1.2-30, 7.1.2-31 and 7.1.2-32; Debian has no fixed package for this release.
 The dispositions were reviewed on 2026-10-22 and expire on 2027-01-20. The
 scanner findings remain visible.
@@ -350,7 +350,7 @@ same run with `$HOME` set to the conversion directory renders it.
 ### ImageMagick bzip2 advisory published on 2026-10-25
 
 One further ImageMagick advisory affects the reviewed
-`8:7.1.1.43+dfsg1-1+deb13u12` packages on both architectures. Upstream fixed it
+`8:7.1.1.43+dfsg1-1+deb13u13` packages on both architectures. Upstream fixed it
 in 7.1.2-33; Debian has no fixed package for this release. The disposition was
 reviewed on 2026-10-26 and expires on 2027-01-24. The scanner findings remain
 visible.

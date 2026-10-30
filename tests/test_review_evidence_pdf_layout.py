@@ -2,9 +2,13 @@
 counts for what they measure, and lists Matterhorn results for PDFs only."""
 
 import hashlib
+import io
+import shutil
 
 import pymupdf as fitz
+import pytesseract
 import pytest
+from PIL import Image
 
 from src.education.reports.compliance_report import AuditReportGenerator
 from tests.test_audit_export import (
@@ -72,3 +76,30 @@ def test_markup_in_names_is_shown_as_text():
     scan = _make_scan(file_name="notes <b>&amp; draft.pdf")
     text = _text(_render(scan))
     assert "notes <b>&amp; draft.pdf" in text
+
+
+def _header_logo(pdf_bytes):
+    """The first page's logo: its placed rectangle and a 4x rendering."""
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        page = doc[0]
+        xref = page.get_images(full=True)[0][0]
+        rect = page.get_image_rects(xref)[0]
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=rect)
+        return rect, pixmap.tobytes("png")
+
+
+def test_header_logo_is_the_wordmark_without_a_tagline():
+    rect, _ = _header_logo(_render(_make_scan()))
+    # The wordmark alone is about 3.4 times as wide as it is tall; the logo
+    # with the tagline under it was about 2.5.
+    assert rect.width / rect.height > 3
+    assert rect.height <= 0.42 * 72 + 0.5
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="needs tesseract")
+def test_header_logo_carries_no_compliance_claim():
+    _, png = _header_logo(_render(_make_scan()))
+    text = pytesseract.image_to_string(Image.open(io.BytesIO(png))).upper()
+    # The stylised a is not read reliably; "LIRA" shows the OCR saw the wordmark.
+    assert "LIRA" in text
+    assert "COMPLIANCE" not in text

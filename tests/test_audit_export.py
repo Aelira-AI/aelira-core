@@ -26,12 +26,14 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_department(name: str = "Computer Science", institution: str = "MIT"):
+def _make_department(
+    name: str = "Computer Science", institution: str = "Example University"
+):
     dept = MagicMock()
     dept.id = "dept-001"
     dept.name = name
     dept.institution = institution
-    dept.contact_email = "cs@mit.edu"
+    dept.contact_email = "cs@example.edu"
     return dept
 
 
@@ -272,10 +274,10 @@ class TestGenerateJSON:
             fixes=[],
             audit_entries=[],
             matterhorn_results=[],
-            department=_make_department("Physics", "Stanford"),
+            department=_make_department("Physics", "State University"),
         )
         assert result["department"]["name"] == "Physics"
-        assert result["department"]["institution"] == "Stanford"
+        assert result["department"]["institution"] == "State University"
 
     def test_json_contains_all_fixes(self):
         from src.education.reports.compliance_report import AuditReportGenerator
@@ -800,7 +802,7 @@ class TestGeneratePDF:
             fixes=[],
             audit_entries=[],
             matterhorn_results=[],
-            department=_make_department("Chemistry", "Harvard"),
+            department=_make_department("Chemistry", "State University"),
         )
         # PDF content is compressed, so we verify it generates successfully
         assert isinstance(result, bytes)
@@ -1006,7 +1008,9 @@ class TestExportEndpoint:
         client, mock_db = self._setup_app()
         self._setup_db_for_export(mock_db)
 
-        mock_gen_cls.generate_csv.return_value = "Department,Name\nCS,MIT\n"
+        mock_gen_cls.generate_csv.return_value = (
+            "Department,Name\nCS,Example University\n"
+        )
 
         response = client.get("/api/reviews/scan-001/audit/export?format=csv")
         assert response.status_code == 200
