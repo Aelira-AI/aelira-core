@@ -516,7 +516,10 @@ class ReadingOrderVerifier:
                         if not isinstance(mapped_role, pikepdf.Name):
                             resolver.fail("table_role_map")
                             break
-                        role = str(mapped_role)
+                        next_role = str(mapped_role)
+                        if next_role == role:
+                            break
+                        role = next_role
                     is_table = role == "/Table"
                     descendants = (
                         collect_text(
