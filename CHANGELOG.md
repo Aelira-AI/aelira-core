@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- The review evidence PDF's header logo carried the tagline "ADA compliance that actually works". An evidence record describes a review and makes no compliance claim, so the header now uses the Aelira wordmark from the website without the tagline, drawn at the size the wordmark had before.
+- The review evidence PDF's header logo carried the tagline "ADA compliance that actually works". An evidence record describes a review and makes no compliance claim, so the header now uses the Aelira wordmark from the website without the tagline, drawn at the size the wordmark had before ([#889](https://github.com/Aelira-AI/aelira-core/issues/889)).
+
+### Security
+
+- The API image's reviewed ImageMagick package version moves to Debian `8:7.1.1.43+dfsg1-1+deb13u13`, which fixes twelve of the thirteen previously disclosed ImageMagick advisories in `trixie-security`; the remaining advisory (`CVE-2026-116149`) and the existing policy and compressed-input refusal checks stay in place ([known unfixed advisories](docs/security/known-unfixed-advisories-0.9.12.md)).
 
 ## [0.12.1] - 2026-10-29
 
