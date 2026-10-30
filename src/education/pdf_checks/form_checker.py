@@ -95,6 +95,7 @@ class FormFieldChecker:
             if unlabeled_count > 0:
                 issues.append(
                     {
+                        "category": "form",
                         "severity": "critical",
                         "rule": "WCAG 4.1.2",
                         "message": f"{unlabeled_count} of {total_fields} form fields missing accessible labels (/TU tooltip)",
@@ -127,6 +128,7 @@ class FormFieldChecker:
                     if page_has_widgets:
                         issues.append(
                             {
+                                "category": "form",
                                 "severity": "medium",
                                 "rule": "WCAG 2.1.1",
                                 "message": f"Page {page_num + 1} has form fields but no tab order defined",
@@ -219,6 +221,7 @@ class FormFieldChecker:
             if links_without_alt > 0:
                 issues.append(
                     {
+                        "category": "link",
                         "severity": "high",
                         "rule": "WCAG 2.4.4",
                         "message": f"{links_without_alt} of {total_links} link annotations missing accessible text (/Contents)",
@@ -234,6 +237,7 @@ class FormFieldChecker:
             if vague_links > 0:
                 issues.append(
                     {
+                        "category": "link",
                         "severity": "medium",
                         "rule": "WCAG 2.4.4",
                         "message": f"{vague_links} link(s) have vague text like 'click here' or 'read more'",

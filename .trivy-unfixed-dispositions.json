@@ -590,31 +590,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "affected",
@@ -629,31 +629,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "affected",
@@ -768,31 +768,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -808,31 +808,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -848,31 +848,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -888,31 +888,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "affected",
@@ -927,31 +927,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -967,31 +967,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -1007,31 +1007,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -1047,31 +1047,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -1087,31 +1087,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -1127,31 +1127,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",
@@ -1167,31 +1167,31 @@
       "packages": [
         {
           "name": "imagemagick",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7-common",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "imagemagick-7.q16",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libimage-magick-q16-perl",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickcore-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         },
         {
           "name": "libmagickwand-7.q16-10",
-          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u12"
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
         }
       ],
       "status": "not_affected",

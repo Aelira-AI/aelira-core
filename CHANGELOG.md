@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-30
+
+See the [release notes](docs/releases/v0.12.2.md) for operator actions and
+evidence limits.
+
+### Fixed
+
+- Large Word, Excel and PowerPoint files were refused at upload for having too many parts. An Office file is a zip archive with a part for each slide, notes page, relationship set and picture, so a deck of about 200 slides with speaker notes and a picture on each passed the 1,000-entry archive limit, was rated high and was refused, because a rebuild cannot lower that rating. Office files now have their own limit of 10,000 parts, enough for a deck of around 2,000 such slides. Past it they are refused with "Office file contains too many parts" and advice to split the document. Other zip archives keep the 1,000-file limit, and the compression-ratio check applies to both ([#874](https://github.com/Aelira-AI/aelira-core/issues/874)).
+- Most PDF findings recorded no category, so the Issues page showed them as "Other". Findings for alt text, reading order, contrast, forms, links, language, the document title, bookmarks, lists, tables, the structure tree and mathematics now record the category the remediation classifier already derives from their other fields, so the Issues page can group and filter them and remediation treats them as before. Five findings whose fields classify as Other, including "Document should start with H1 heading" and the AI alt text quality review, keep no category until their remediation category is decided ([#873](https://github.com/Aelira-AI/aelira-core/issues/873), [#887](https://github.com/Aelira-AI/aelira-core/issues/887)).
+- The review evidence PDF's header logo carried the tagline "ADA compliance that actually works". An evidence record describes a review and makes no compliance claim, so the header now uses the Aelira wordmark from the website without the tagline, drawn at the size the wordmark had before ([#889](https://github.com/Aelira-AI/aelira-core/issues/889)).
+
+### Security
+
+- The API image's reviewed ImageMagick package version moves to Debian `8:7.1.1.43+dfsg1-1+deb13u13`, which fixes twelve of the thirteen previously disclosed ImageMagick advisories in `trixie-security`; the remaining advisory (`CVE-2026-116149`) and the existing policy and compressed-input refusal checks stay in place ([#750](https://github.com/Aelira-AI/aelira-core/issues/750), [known unfixed advisories](docs/security/known-unfixed-advisories-0.9.12.md)).
+
 ## [0.12.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.12.1.md) for operator actions and

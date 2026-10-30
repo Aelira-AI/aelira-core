@@ -277,6 +277,7 @@ class MathEquationChecker:
         if is_latex_pdf:
             issues.append(
                 {
+                    "category": "structure",
                     "severity": "high",
                     "rule": "WCAG 1.1.1",
                     "message": "LaTeX-compiled PDF detected - equations may not be accessible",
@@ -297,6 +298,7 @@ class MathEquationChecker:
         if has_math_content and not is_latex_pdf:
             issues.append(
                 {
+                    "category": "structure",
                     "severity": "medium",
                     "rule": "WCAG 1.1.1",
                     "message": "Document contains mathematical content that may not be accessible",
@@ -318,6 +320,7 @@ class MathEquationChecker:
             if re.search(pattern, text):
                 issues.append(
                     {
+                        "category": "structure",
                         "severity": "critical",
                         "rule": "WCAG 1.1.1",
                         "message": message,
@@ -337,6 +340,7 @@ class MathEquationChecker:
             # Add recommendation for MathML conversion
             issues.append(
                 {
+                    "category": "structure",
                     "severity": "low",
                     "rule": "Best Practice",
                     "message": "Consider converting equations to MathML for optimal accessibility",

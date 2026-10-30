@@ -103,7 +103,7 @@ class Settings(BaseSettings):
 
     # API Configuration
     api_title: str = "Aelira ADA Compliance API"
-    api_version: str = "0.12.1"
+    api_version: str = "0.12.2"
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
 
     # Where this deployment is reachable. Everything user-facing derives from

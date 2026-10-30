@@ -16,7 +16,7 @@ export const imageMagickPackages = [
   'libimage-magick-perl', 'libimage-magick-q16-perl',
   'libmagickcore-7.q16-10', 'libmagickwand-7.q16-10',
 ];
-export const imageMagickVersion = '8:7.1.1.43+dfsg1-1+deb13u12';
+export const imageMagickVersion = '8:7.1.1.43+dfsg1-1+deb13u13';
 export const cupsVersion = '2.4.10-3+deb13u2';
 export const debianFfmpegPackages = [
   'ffmpeg', 'libavcodec61', 'libavdevice61', 'libavfilter10', 'libavformat61',

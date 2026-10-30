@@ -1,4 +1,4 @@
-"""Release metadata and operator notices must agree for v0.12.1."""
+"""Release metadata and operator notices must agree for v0.12.2."""
 
 import ast
 import hashlib
@@ -8,10 +8,11 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.12.1"
-RELEASE_HEADING = "## [0.12.1] - 2026-10-29"
-RELEASE_BODY = ROOT / "docs/releases/v0.12.1.md"
-PREVIOUS_HEADING = "## [0.12.0] - 2026-10-29"
+VERSION = "0.12.2"
+RELEASE_HEADING = "## [0.12.2] - 2026-10-30"
+RELEASE_BODY = ROOT / "docs/releases/v0.12.2.md"
+PREVIOUS_HEADING = "## [0.12.1] - 2026-10-29"
+V0120_HEADING = "## [0.12.0] - 2026-10-29"
 V0111_HEADING = "## [0.11.1] - 2026-10-29"
 V0110_HEADING = "## [0.11.0] - 2026-10-28"
 V0100_HEADING = "## [0.10.0] - 2026-10-25"
@@ -19,7 +20,7 @@ V0913_HEADING = "## [0.9.13] - 2026-10-20"
 V0912_HEADING = "## [0.9.12] - 2026-10-15"
 
 
-def test_authoritative_release_versions_are_0_12_1():
+def test_authoritative_release_versions_are_0_12_2():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -57,8 +58,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.12\.1\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.12\.0\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.12\.2\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.12\.1\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -69,7 +70,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_dates_v0_12_1_and_preserves_history():
+def test_changelog_dates_v0_12_2_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
@@ -84,6 +85,7 @@ def test_changelog_dates_v0_12_1_and_preserves_history():
     # Unreleased is empty or holds only Keep a Changelog subsections.
     assert pending == "" or pending.startswith("### ")
     previous = changelog.index(PREVIOUS_HEADING)
+    v0120 = changelog.index(V0120_HEADING)
     v0111 = changelog.index(V0111_HEADING)
     v0110 = changelog.index(V0110_HEADING)
     v0100 = changelog.index(V0100_HEADING)
@@ -95,6 +97,7 @@ def test_changelog_dates_v0_12_1_and_preserves_history():
         unreleased
         < release
         < previous
+        < v0120
         < v0111
         < v0110
         < v0100
@@ -105,6 +108,23 @@ def test_changelog_dates_v0_12_1_and_preserves_history():
     )
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
     for phrase in (
+        "docs/releases/v0.12.2.md",
+        "### Fixed",
+        "### Security",
+        "[#874]",
+        "[#873]",
+        "[#887]",
+        "[#889]",
+        "[#750]",
+    ):
+        assert phrase in current_notes
+    # A patch section carries only fixes and security updates here.
+    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {
+        "Fixed",
+        "Security",
+    }
+    v0121_notes = changelog[previous:v0120]
+    for phrase in (
         "docs/releases/v0.12.1.md",
         "### Fixed",
         "### Dependencies",
@@ -112,13 +132,12 @@ def test_changelog_dates_v0_12_1_and_preserves_history():
         "[#877]",
         "[#878]",
     ):
-        assert phrase in current_notes
-    # A patch section carries only fixes and dependency updates.
-    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {
+        assert phrase in v0121_notes
+    assert set(re.findall(r"^### (.+)$", v0121_notes, re.MULTILINE)) == {
         "Fixed",
         "Dependencies",
     }
-    v0120_notes = changelog[previous:v0111]
+    v0120_notes = changelog[v0120:v0111]
     for phrase in (
         "docs/releases/v0.12.0.md",
         "### Changed",
@@ -213,6 +232,13 @@ def test_historical_v0_12_0_release_body_is_unchanged():
     )
 
 
+def test_historical_v0_12_1_release_body_is_unchanged():
+    body = (ROOT / "docs/releases/v0.12.1.md").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "20798616233cb5578a875b82d3a4239312a1a090d525da990a5168254ec6dbe7"
+    )
+
+
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
@@ -257,19 +283,18 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#375]",
         "[#377]",
         "## Fixes",
-        "## Dependencies",
+        "## Security",
         "It is a patch release",
         "v0.12.0.md#operator-action-required",
-        "[#876]",
-        "[#877]",
-        "[#878]",
-        "Node.js 26.13.0",
-        "libatomic1",
-        "Review Items Recorded",
+        "[#874]",
+        "[#873]",
+        "[#887]",
+        "[#889]",
+        "10,000 parts",
+        "8:7.1.1.43+dfsg1-1+deb13u13",
+        "CVE-2026-116149",
         "## Known limits and open security items",
         "[#866]",
-        "[#873]",
-        "[#874]",
         "CVE-2026-94283",
         "CVE-2026-94284",
         "CVE-2026-94285",
