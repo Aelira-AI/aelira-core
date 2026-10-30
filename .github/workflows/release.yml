@@ -222,3 +222,60 @@ jobs:
             --verify-tag \
             --title "$TAG_NAME" \
             --notes-file "$RELEASE_BODY_PATH"
+
+      - name: Sync release metadata to marketing site
+        env:
+          SITE_TOKEN: ${{ secrets.AELIRA_SITE_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SITE_TOKEN:-}" ]; then
+            echo "AELIRA_SITE_TOKEN secret is not configured; skipping marketing site sync."
+            exit 0
+          fi
+
+          SITE_REPO="rdcrampton/aelira-site"
+          TEMP_DIR="$RUNNER_TEMP/site-sync"
+          rm -rf "$TEMP_DIR"
+          mkdir -p "$TEMP_DIR"
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG_NAME" > "$TEMP_DIR/release.json"
+          cp cli/package.json "$TEMP_DIR/package.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$TAG_NAME" > "$TEMP_DIR/commit.json"
+
+          git clone "https://x-access-token:${SITE_TOKEN}@github.com/${SITE_REPO}.git" "$TEMP_DIR/aelira-site"
+          cd "$TEMP_DIR/aelira-site"
+
+          node scripts/open-core-release.mjs \
+            --release-file "$TEMP_DIR/release.json" \
+            --package-file "$TEMP_DIR/package.json" \
+            --commit-file "$TEMP_DIR/commit.json" \
+            --output data/open-core-release.json
+
+          if git diff --quiet -- data/open-core-release.json; then
+            echo "Site release metadata already matches $TAG_NAME."
+            exit 0
+          fi
+
+          BRANCH="automation/open-core-release-$TAG_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          git add data/open-core-release.json
+          git commit -m "chore: update open-core release metadata to $TAG_NAME"
+          git push --force-with-lease origin "HEAD:refs/heads/$BRANCH"
+
+          export GH_TOKEN="$SITE_TOKEN"
+          TITLE="chore: update open-core release metadata to $TAG_NAME"
+          BODY="Updates the website-owned release artifact from the latest validated immutable stable aelira-core release ($TAG_NAME).
+
+          Triggered automatically by aelira-core release publication."
+
+          PR_NUMBER="$(gh pr list --repo "$SITE_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr edit "$PR_NUMBER" --repo "$SITE_REPO" --title "$TITLE" --body "$BODY"
+          else
+            gh pr create --repo "$SITE_REPO" --base main --head "$BRANCH" --title "$TITLE" --body "$BODY"
+          fi
