@@ -126,6 +126,7 @@ class ColorContrastChecker:
                     pages_str += f" (+{len(low_contrast_pages) - 5} more)"
                 issues.append(
                     {
+                        "category": "contrast",
                         "severity": "high",
                         "rule": "WCAG 1.4.3",
                         "message": f"Low contrast text detected on {len(low_contrast_pages)} page(s): {pages_str}",

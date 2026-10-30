@@ -273,6 +273,9 @@ class PDFProcessor:
                         else "missing_alt_text"
                     ),
                     "has_alt_text": img_issue.has_alt_text,
+                    # A quality review is review-only and records no category,
+                    # so it is not routed to alt text remediation.
+                    "category": None if quality_review else "alt_text",
                     "severity": "medium" if quality_review else "high",
                     "rule": "WCAG 1.1.1",
                     "message": message,
@@ -402,6 +405,7 @@ class PDFProcessor:
                         continue
                     issues.append(
                         {
+                            "category": "reading_order",
                             "severity": (
                                 "high" if ro_issue.severity == "critical" else "medium"
                             ),
