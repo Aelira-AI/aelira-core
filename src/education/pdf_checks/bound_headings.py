@@ -80,7 +80,10 @@ def effective_role(role, root):
         value = roles[role]
         if not isinstance(value, pikepdf.Name):
             raise ValueError("heading_invalid_role_map")
-        role = str(value)
+        next_role = str(value)
+        if next_role == role:
+            break
+        role = next_role
     return role
 
 

@@ -149,6 +149,14 @@ def test_bounded_rolemap_chain_resolves_h1(tmp_path):
     assert scan(title_pdf(tmp_path, change=change)).has_h1
 
 
+def test_identity_rolemap_resolves_h1(tmp_path):
+    def change(pdf, group, owners):
+        owners[0].S = Name.H1
+        pdf.Root.StructTreeRoot.RoleMap = Dictionary(H1=Name.H1)
+
+    assert scan(title_pdf(tmp_path, change=change)).has_h1
+
+
 @pytest.mark.parametrize("ancestor", ["group", "document"])
 @pytest.mark.parametrize("replacement", ["ActualText", "Alt"])
 def test_ancestor_replacement_cannot_clear_heading_findings(

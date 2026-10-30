@@ -289,6 +289,14 @@ def test_table_role_map_requires_pdf_name(tmp_path):
     assert ReadingOrderVerifier().check(str(path)).issues
 
 
+def test_identity_table_role_map_is_not_treated_as_cycle(tmp_path):
+    pdf, path = build_table_pdf(tmp_path)
+    pdf.Root.StructTreeRoot.RoleMap = Dictionary(Table=Name.Table)
+    pdf.save(path)
+    with require_complete_pdf_scan(True):
+        assert ReadingOrderVerifier().check(str(path)).issues == []
+
+
 @pytest.mark.parametrize("mapped", [False, True])
 def test_table_structure_role_requires_pdf_name(tmp_path, mapped):
     pdf, path = build_table_pdf(tmp_path, defect="role_map" if mapped else None)
