@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Large Word, Excel and PowerPoint files were refused at upload for having too many parts. An Office file is a zip archive with a part for each slide, notes page, relationship set and picture, so a deck of about 200 slides with speaker notes and a picture on each passed the 1,000-entry archive limit, was rated high and was refused, because a rebuild cannot lower that rating. Office files now have their own limit of 10,000 parts, enough for a deck of around 2,000 such slides. Past it they are refused with "Office file contains too many parts" and advice to split the document. Other zip archives keep the 1,000-file limit, and the compression-ratio check applies to both ([#874](https://github.com/Aelira-AI/aelira-core/issues/874)).
+
 ## [0.12.1] - 2026-10-29
 
 See the [release notes](docs/releases/v0.12.1.md) for operator actions and

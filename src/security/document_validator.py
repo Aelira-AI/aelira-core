@@ -436,10 +436,14 @@ class DocumentValidator:
         max_archive_depth: int = 3,
         max_archive_files: int = 1000,
         max_archive_ratio: float = 100.0,  # Compression ratio limit (zip bomb detection)
+        # An Office file has a part for each slide, notes page, relationship
+        # set and picture: a slide with notes and one picture is five parts.
+        max_office_parts: int = 10_000,
     ):
         self.max_file_size = max_file_size
         self.max_archive_depth = max_archive_depth
         self.max_archive_files = max_archive_files
+        self.max_office_parts = max_office_parts
         self.max_archive_ratio = max_archive_ratio
 
     async def validate(
@@ -635,14 +639,24 @@ class DocumentValidator:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
                 # Check file count
                 file_count = len(zf.namelist())
-                if file_count > self.max_archive_files:
+                if ext in OOXML_OFFICE_EXTENSIONS:
+                    limit = self.max_office_parts
+                    description = (
+                        f"Office file contains too many parts ({file_count:,})"
+                    )
+                    remediation = "Split the document into smaller files"
+                else:
+                    limit = self.max_archive_files
+                    description = f"Archive contains too many files ({file_count:,})"
+                    remediation = "Reduce the number of files in the archive"
+                if file_count > limit:
                     findings.append(
                         SecurityFinding(
                             category="archive_file_count",
-                            description=f"Archive contains too many files ({file_count})",
+                            description=description,
                             threat_level=ThreatLevel.HIGH,
                             details="Potential zip bomb or archive attack",
-                            remediation="Reduce the number of files in the archive",
+                            remediation=remediation,
                         )
                     )
 
