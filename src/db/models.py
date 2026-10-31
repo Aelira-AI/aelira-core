@@ -23,6 +23,7 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     JSON,
+    LargeBinary,
     Enum as SQLEnum,
     Index,
     UniqueConstraint,
@@ -146,6 +147,7 @@ class AuthProvider(str, Enum):
     MICROSOFT = "microsoft"
     API_KEY = "api_key"  # For programmatic access tracking
     LTI = "lti"  # LTI 1.3 launches from Canvas, Blackboard, etc.
+    PASSKEY = "passkey"  # WebAuthn / FIDO2 passkeys
 
 
 # Database Models
@@ -475,6 +477,9 @@ class User(Base):
     sessions = relationship(
         "UserSession", back_populates="user", cascade="all, delete-orphan"
     )
+    passkeys = relationship(
+        "WebAuthnCredential", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class APIKey(Base):
@@ -585,6 +590,52 @@ class UserSession(Base):
 
     # Relationships
     user = relationship("User", back_populates="sessions")
+
+
+class WebAuthnCredential(Base):
+    """Registered WebAuthn passkeys and hardware authenticators"""
+
+    __tablename__ = "webauthn_credentials"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Credential identifier (base64url encoded string from authenticator)
+    credential_id = Column(String(512), unique=True, nullable=False, index=True)
+
+    # Stored COSE public key bytes (for signature verification)
+    public_key = Column(LargeBinary, nullable=False)
+
+    # Sign count to detect credential cloning / replay attacks
+    sign_count = Column(Integer, default=0, nullable=False)
+
+    # Allowed transports: ["internal", "hybrid", "usb", "ble", "nfc"]
+    transports = Column(JSON, nullable=True)
+
+    # Authenticator Attestation GUID (identifies make/model, e.g. Apple Touch ID vs YubiKey)
+    aaguid = Column(String(36), nullable=True)
+
+    # User-editable friendly name (e.g., "RD's MacBook Pro", "Work YubiKey")
+    friendly_name = Column(String(100), default="Passkey", nullable=False)
+
+    # Backup eligibility and state flags from authenticator data
+    backup_eligible = Column(Boolean, default=False, nullable=False)
+    backup_state = Column(Boolean, default=False, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="passkeys")
 
 
 class Scan(Base):
