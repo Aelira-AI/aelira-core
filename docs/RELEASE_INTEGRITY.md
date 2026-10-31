@@ -65,7 +65,7 @@ against the shipped programs. Because the FFmpeg build is not a distribution
 package, the image scanner does not inventory it; its advisories are tracked by
 upstream version.
 
-The existing fixed/actionable blocking scan remains an additional gate, using `ignore-unfixed: true` and the repository `.trivyignore`. Findings are not silently exempted: `scripts/verify_trivy_allowlist.py` requires a nonempty owner and justification plus an ISO-formatted future expiry for each entry. Its two active bounded false-positive exemptions cover historical lower-layer attributions: `GHSA-6v7p-g79w-8964` for `msgpack==1.1.2` and `CVE-2025-47273` for `setuptools==70.3.0`, owned by Security Engineering and expiring on 2026-10-31. Their earlier ARM64 reassessment is documented in issue #160. That reassessment used Trivy 0.74.0 and Syft 1.52.0: Syft reported only `msgpack==1.2.2` and `setuptools==84.0.0` in both squashed and all-layer scopes of the then-tested image. It did not rebuild current main or scan AMD64, and excluded JAR files from the reassessment scan; the release scan remains unchanged. This historical evidence does not establish the state of a later image. These `.trivyignore` exemptions cannot bypass the complete-inventory gate, which applies only the unfixed-package dispositions described above. Passing either scan alone does not satisfy release acceptance.
+The existing fixed/actionable blocking scan remains an additional gate, using `ignore-unfixed: true` and the repository `.trivyignore`. Findings are not silently exempted: `scripts/verify_trivy_allowlist.py` requires a nonempty owner and justification plus an ISO-formatted future expiry for each entry. Its two active bounded false-positive exemptions cover historical lower-layer attributions: `GHSA-6v7p-g79w-8964` for `msgpack==1.1.2` and `CVE-2025-47273` for `setuptools==70.3.0`, owned by Security Engineering and expiring on 2026-11-30. Their earlier ARM64 reassessment is documented in issue #160. That reassessment used Trivy 0.74.0 and Syft 1.52.0: Syft reported only `msgpack==1.2.2` and `setuptools==84.0.0` in both squashed and all-layer scopes of the then-tested image. It did not rebuild current main or scan AMD64, and excluded JAR files from the reassessment scan; the release scan remains unchanged. This historical evidence does not establish the state of a later image. These `.trivyignore` exemptions cannot bypass the complete-inventory gate, which applies only the unfixed-package dispositions described above. Passing either scan alone does not satisfy release acceptance.
 
 After each immutable API image is built and pushed, the release workflow pulls that exact digest and runs `scripts/verify_final_python_packages.py` with both the global interpreter and the copied virtualenv. Global and virtualenv msgpack must match the exact requirements pin, currently `1.2.3`. Global pip, setuptools and urllib3 must be absent. The virtualenv retains the exact reviewed runtime pins, including `urllib3==2.8.0`, `piper-tts==1.8.0` and `setuptools==84.2.1`, with pip absent. The verifier inspects package metadata and pip-vendored copies in each interpreter's site-packages. This final-filesystem check runs before SBOM generation, vulnerability scanning, attestation, signing, or receipt creation.
 
@@ -87,9 +87,9 @@ CI runs both production Dockerfiles natively on `linux/amd64` and `linux/arm64`.
 
 ## Requirements hash evaluation
 
-`requirements.txt` contains **154** runtime dependency entries.
+`requirements.txt` contains **158** runtime dependency entries.
 `requirements-dev.txt` includes that runtime file and adds **30** development-only
-entries. All 184 application dependencies use exact `==` pins. There are no hashes.
+entries. All 188 application dependencies use exact `==` pins. There are no hashes.
 Hashes are deferred; they must not be fabricated from one
 workstation or one platform. Exact pins plus the strict `pip-audit` gates are
 the current controls, but they are not represented as hash-locked installs.

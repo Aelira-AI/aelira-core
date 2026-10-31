@@ -7,6 +7,7 @@ import { Key, Moon, Sun, Mail, ChevronDown, ChevronUp, Loader2 } from 'lucide-re
 import { Logo } from '../components/Logo';
 import { trackEvent } from '../utils/analytics';
 import { buildAuthContinuationUrl, resolveSafeNext } from '../utils/safeNext';
+import { loginWithPasskey, isPasskeySupported } from '../api/passkey';
 
 interface IconProps {
   className?: string;
@@ -54,6 +55,7 @@ export function Login(): React.ReactElement {
   );
   const [success, setSuccess] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
+  const [passkeyLoading, setPasskeyLoading] = useState<boolean>(false);
   const [showApiKeyLogin, setShowApiKeyLogin] = useState<boolean>(false);
   const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
   const [checkingOauth, setCheckingOauth] = useState<boolean>(false);
@@ -150,6 +152,23 @@ export function Login(): React.ReactElement {
       setError(errorMessage);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePasskeyLogin = async (): Promise<void> => {
+    setError('');
+    setPasskeyLoading(true);
+    try {
+      trackEvent('dash-login-method', { method: 'passkey' });
+      const result = await loginWithPasskey(email);
+      if (result.success) {
+        navigate(resolveSafeNext(searchParams.get('next')));
+      }
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : 'Passkey authentication failed';
+      setError(errorMsg);
+    } finally {
+      setPasskeyLoading(false);
     }
   };
 
@@ -275,6 +294,41 @@ export function Login(): React.ReactElement {
 
           {!success && (
             <>
+              {/* Passkey Fast Path */}
+              {isPasskeySupported() && (
+                <div className="mb-4">
+                  <button
+                    type="button"
+                    onClick={handlePasskeyLogin}
+                    disabled={loading || passkeyLoading}
+                    className="btn-primary w-full flex items-center justify-center gap-2"
+                  >
+                    {passkeyLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                        Authenticating with passkey...
+                      </>
+                    ) : (
+                      <>
+                        <Key className="w-4 h-4" aria-hidden="true" />
+                        Sign in with Passkey
+                      </>
+                    )}
+                  </button>
+
+                  <div className="relative my-5">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t" style={{ borderColor: 'var(--border-secondary)' }}></div>
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase tracking-wider">
+                      <span className="px-2 text-tertiary" style={{ backgroundColor: 'var(--surface-primary)' }}>
+                        or continue with email
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Magic Link Form */}
               <form onSubmit={handleMagicLinkRequest} className="space-y-4">
                 <div>
@@ -290,7 +344,7 @@ export function Login(): React.ReactElement {
                     placeholder="you@university.edu"
                     required
                     disabled={loading}
-                    autoComplete="email"
+                    autoComplete="username webauthn"
                   />
                 </div>
 

@@ -1066,7 +1066,7 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     owners = re.findall(r"(?m)^# owner: (.+)$", allowlist)
     assert owners == ["security-team", "security-team"]
     assert all("@" not in owner for owner in owners)
-    assert allowlist.count("# expires: 2026-10-31") == 2
+    assert allowlist.count("# expires: 2026-11-30") == 2
     justifications = re.findall(r"(?m)^# justification: (.+)$", allowlist)
     assert len(justifications) == 2
     assert all("#160" in justification for justification in justifications)
@@ -1080,7 +1080,7 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     assert "two active bounded false-positive exemptions" in documentation
     assert "GHSA-6v7p-g79w-8964" in documentation
     assert "CVE-2025-47273" in documentation
-    assert "2026-10-31" in documentation
+    assert "2026-11-30" in documentation
     assert "issue #160" in documentation
     assert "Trivy 0.74.0" in documentation
     assert "Syft 1.52.0" in documentation
@@ -1206,7 +1206,7 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
     ]
 
     assert development_lines[0] == "-r requirements.txt"
-    assert len(runtime_requirements) == 154
+    assert len(runtime_requirements) == 158
     assert len(development_requirements) == 30
     assert (
         f"**{len(runtime_requirements)}** runtime dependency entries" in documentation

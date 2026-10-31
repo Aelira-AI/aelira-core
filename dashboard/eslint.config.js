@@ -74,6 +74,7 @@ export default [
       ],
       // Use TypeScript's no-unused-vars instead
       'no-unused-vars': 'off',
+      'no-undef': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^_' }],
     },
   },
