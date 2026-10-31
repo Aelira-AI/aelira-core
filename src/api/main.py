@@ -34,6 +34,7 @@ from src.ai.providers import (
 from src.api.education import router as education_router
 from src.api.auth_routes import router as auth_router
 from src.api.passkey_routes import router as passkey_router
+from src.api.totp_routes import router as totp_router
 from src.api.oauth_routes import (
     router as oauth_router,
 )  # OAuth login for department tier
@@ -209,6 +210,7 @@ app = FastAPI(
 # Include routers
 app.include_router(auth_router)
 app.include_router(passkey_router)
+app.include_router(totp_router)
 app.include_router(oauth_router)  # OAuth for department tier users
 app.include_router(education_router)
 app.include_router(analytics_router)

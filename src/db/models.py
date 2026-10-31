@@ -148,6 +148,7 @@ class AuthProvider(str, Enum):
     API_KEY = "api_key"  # For programmatic access tracking
     LTI = "lti"  # LTI 1.3 launches from Canvas, Blackboard, etc.
     PASSKEY = "passkey"  # WebAuthn / FIDO2 passkeys
+    TOTP = "totp"  # RFC 6238 Authenticator apps (Google Authenticator, Duo, 1Password)
 
 
 # Database Models
@@ -480,6 +481,12 @@ class User(Base):
     passkeys = relationship(
         "WebAuthnCredential", back_populates="user", cascade="all, delete-orphan"
     )
+    totp_credential = relationship(
+        "TOTPCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 
 class APIKey(Base):
@@ -636,6 +643,34 @@ class WebAuthnCredential(Base):
 
     # Relationships
     user = relationship("User", back_populates="passkeys")
+
+
+class TOTPCredential(Base):
+    """RFC 6238 Time-based One-Time Password (TOTP) authenticator credential."""
+
+    __tablename__ = "totp_credentials"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    encrypted_secret = Column(Text, nullable=False)
+    is_confirmed = Column(Boolean, default=False, nullable=False)
+    backup_codes = Column(JSON, nullable=True)
+    friendly_name = Column(String(100), default="Authenticator App", nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="totp_credential")
 
 
 class Scan(Base):

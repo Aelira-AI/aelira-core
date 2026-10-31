@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - WebAuthn passkey authentication (FIDO2 / biometrics / hardware security keys) for passwordless dashboard sign-in and credential management, with automatic fallback to email magic links ([#905](https://github.com/Aelira-AI/aelira-core/issues/905)).
+- Authenticator App (RFC 6238 TOTP) multi-factor authentication with single-use backup recovery codes for institutional and virtual desktop environments ([#907](https://github.com/Aelira-AI/aelira-core/issues/907)).
 
 ### Fixed
 
