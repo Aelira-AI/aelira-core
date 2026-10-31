@@ -382,7 +382,9 @@ class PasskeyService:
 
         user = (
             db.query(User)
-            .filter(User.id == stored_cred.user_id, User.is_active == True)  # noqa: E712
+            .filter(
+                User.id == stored_cred.user_id, User.is_active == True
+            )  # noqa: E712
             .first()
         )
         if not user:

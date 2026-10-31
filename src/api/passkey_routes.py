@@ -151,9 +151,9 @@ async def verify_registration(
         "credential": {
             "id": credential.id,
             "friendly_name": credential.friendly_name,
-            "created_at": credential.created_at.isoformat()
-            if credential.created_at
-            else None,
+            "created_at": (
+                credential.created_at.isoformat() if credential.created_at else None
+            ),
         },
     }
 
