@@ -109,7 +109,7 @@ pymupdf-layout==2.0
 pymupdf4llm==2.0
 pyOpenSSL==26.4.0
 pyparsing==3.3.3
-pypdf==6.21.2
+pypdf==6.21.4
 pypdfium2==5.14.0
 pytesseract==0.3.13
 python-dateutil==2.9.0.post0
