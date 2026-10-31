@@ -19,6 +19,8 @@ interface ValidateResponse {
   auth_method: 'session' | 'lti';
 }
 
+export { useAuth } from './auth-context';
+
 export function AuthProvider({ children }: AuthProviderProps): React.ReactElement {
   const isExpiredLogin =
     window.location.pathname === '/login' && window.location.search === '?expired=1';
