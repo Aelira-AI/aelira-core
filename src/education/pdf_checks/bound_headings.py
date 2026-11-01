@@ -102,7 +102,7 @@ def _is_incomplete_check(reason):
 
 def inventory(pdf, source_path):
     # Shared traversal enforces parent, page, unique owner and work-limit rules.
-    from ..remediation.source_order import _tree, _nodes
+    from ..remediation.source_order import MAX_MATCH_WORK, _tree, _nodes
 
     result = HeadingInventory(
         source_sha256=sha256(Path(source_path).read_bytes()).hexdigest()
@@ -132,6 +132,8 @@ def inventory(pdf, source_path):
         if resolver.failed or any(value is None for value in decoded.values()):
             raise ValueError("heading_unresolved_content")
         with fitz.open(source_path) as document:
+            page_lines: dict[int, list] = {}
+            match_work = 0
             for node in nodes:
                 if not node.role:
                     continue
@@ -204,14 +206,23 @@ def inventory(pdf, source_path):
                 for native in boxes:
                     box |= fitz.Rect(native) * page.transformation_matrix
                 target.bounds = tuple(box)
+                if target.pages[0] not in page_lines:
+                    page_lines[target.pages[0]] = [
+                        line
+                        for block in page.get_text("dict")["blocks"]
+                        for line in block.get("lines", [])
+                    ]
+                candidates = page_lines[target.pages[0]]
+                match_work += len(candidates)
+                if match_work > MAX_MATCH_WORK:
+                    raise ValueError("heading_work_limit")
                 lines = []
-                for block in page.get_text("dict")["blocks"]:
-                    for line in block.get("lines", []):
-                        lb = fitz.Rect(line["bbox"])
-                        if lb.intersects(box):
-                            if tuple(line.get("dir", (1, 0))) != (1, 0):
-                                target.reason = "heading_unsupported_direction"
-                            lines.append(line)
+                for line in candidates:
+                    lb = fitz.Rect(line["bbox"])
+                    if lb.intersects(box):
+                        if tuple(line.get("dir", (1, 0))) != (1, 0):
+                            target.reason = "heading_unsupported_direction"
+                        lines.append(line)
                 sizes = [
                     s["size"]
                     for line in lines

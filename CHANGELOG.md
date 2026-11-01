@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bound heading inventory extraction work on PDFs with many candidate targets by caching per-page line extraction and enforcing `MAX_MATCH_WORK` limits to prevent worker starvation ([#828](https://github.com/Aelira-AI/aelira-core/issues/828)).
 - Tagged tables and headings with identity mappings in `/RoleMap` (such as `/Table` mapped to `/Table` or `/H1` mapped to `/H1`) were treated as cycles, failing required checks and withholding scores on valid academic papers and tagged PDFs. Identity mappings are now recognized as resolved structure types ([#803](https://github.com/Aelira-AI/aelira-core/issues/803)).
 
 ### Security
