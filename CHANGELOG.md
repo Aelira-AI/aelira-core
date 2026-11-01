@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The regional reading-order planner only refused an ambiguous matrix when every atom was a single line, allowing multi-line wrapped table cells to plan column-by-column into prose and reorder tagged content into columns. The row-alignment guard now uses tolerance matching across arbitrary line counts, refusing column reordering when column top edges align within half a line height ([#829](https://github.com/Aelira-AI/aelira-core/issues/829)).
 - Tagged tables and headings with identity mappings in `/RoleMap` (such as `/Table` mapped to `/Table` or `/H1` mapped to `/H1`) were treated as cycles, failing required checks and withholding scores on valid academic papers and tagged PDFs. Identity mappings are now recognized as resolved structure types ([#803](https://github.com/Aelira-AI/aelira-core/issues/803)).
 
 ### Security
