@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Speech-to-text engines commonly produce zero-length segments or trailing cues that overrun media duration, causing generated WebVTT caption files to be rejected by strict structural verification. Caption generation now drops zero-length cues, drops cues starting at or after media duration, and clamps cue ends to the media duration before writing output ([#818](https://github.com/Aelira-AI/aelira-core/issues/818)).
 - Tagged tables and headings with identity mappings in `/RoleMap` (such as `/Table` mapped to `/Table` or `/H1` mapped to `/H1`) were treated as cycles, failing required checks and withholding scores on valid academic papers and tagged PDFs. Identity mappings are now recognized as resolved structure types ([#803](https://github.com/Aelira-AI/aelira-core/issues/803)).
 
 ### Security
