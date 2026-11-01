@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Disposition Debian 13 `libsqlite3-0` advisories CVE-2026-119373 and CVE-2026-119586 with VEX justifications, and harden TIFF native package download with curl retry flags ([#924](https://github.com/Aelira-AI/aelira-core/issues/924)).
 - Upgrade `cbor2` to 5.9.0, `pyasn1` to 0.6.5, and `pypdf` to 6.21.4 to address known vulnerability disclosures.
 
 ## [0.12.2] - 2026-10-30
