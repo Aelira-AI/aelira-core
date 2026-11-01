@@ -16,9 +16,9 @@ apt-get install -y --no-install-recommends \
   > /provenance/tool-install.log 2>&1
 cd /source-input
 apt-get source --download-only tiff=4.7.0-3ubuntu5 > /provenance/source-fetch.log 2>&1
-curl -fsSLo tiff_4.7.2.orig.tar.xz https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz
-curl -fsSLo tiff_4.7.2.orig.tar.xz.sig https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz.sig
-curl -fsSLo rouault-gitlab.gpg https://gitlab.com/rouault.gpg
+curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 -o tiff_4.7.2.orig.tar.xz https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz
+curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 -o tiff_4.7.2.orig.tar.xz.sig https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz.sig
+curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 -o rouault-gitlab.gpg https://gitlab.com/rouault.gpg
 printf '%s  %s\n' \
   '2b8b5c4e79cb2a4651796602e45d6179b7f18bc283feab417b8e881ef7e81862' tiff_4.7.0.orig.tar.bz2 \
   '92bdb0cfa5541b772d6f5105e21594147e0d728730f010a947dbef375aed7dd0' tiff_4.7.0-3ubuntu5.debian.tar.xz \
