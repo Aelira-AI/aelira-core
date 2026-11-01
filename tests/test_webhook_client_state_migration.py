@@ -35,7 +35,7 @@ def test_revision_is_the_single_head_after_media_captions():
     assert migration.revision == "20261028_webhook_secret"
     assert migration.down_revision == "20261020_media_captions"
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert scripts.get_heads() == ["20261028_webhook_secret"]
+    assert scripts.get_heads() == ["20261031_totp_mfa"]
     column = CloudWebhookSubscription.__table__.c.client_state_hash
     assert column.nullable is True
     assert column.server_default is None

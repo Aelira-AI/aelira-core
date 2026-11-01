@@ -22,7 +22,7 @@ MIGRATION_PATH = (
 ROOT = Path(__file__).parents[1]
 PRIOR_REVISION = "2026_03_19_lti_auth"
 TARGET_REVISION = "2026_08_18_canvas_content"
-EXPECTED_HEAD = "20261028_webhook_secret"
+EXPECTED_HEAD = "20261031_totp_mfa"
 MIGRATION_DATABASE_URL = os.getenv("TEST_MIGRATION_DATABASE_URL")
 DOWNGRADE_REFUSAL = (
     "Downgrade from 2026_08_18_canvas_content is refused: "
@@ -100,7 +100,16 @@ def test_canvas_revision_is_on_the_single_linear_head_chain():
 
     assert scripts.get_heads() == [EXPECTED_HEAD]
     assert (
-        scripts.get_revision(EXPECTED_HEAD).down_revision == "20261020_media_captions"
+        scripts.get_revision(EXPECTED_HEAD).down_revision
+        == "20261031_webauthn_passkeys"
+    )
+    assert (
+        scripts.get_revision("20261031_webauthn_passkeys").down_revision
+        == "20261028_webhook_secret"
+    )
+    assert (
+        scripts.get_revision("20261028_webhook_secret").down_revision
+        == "20261020_media_captions"
     )
     assert (
         scripts.get_revision("20261020_media_captions").down_revision

@@ -525,7 +525,15 @@ def test_revision_migration_is_reversible_and_single_head(monkeypatch):
     engine.dispose()
 
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert scripts.get_heads() == ["20261028_webhook_secret"]
+    assert scripts.get_heads() == ["20261031_totp_mfa"]
+    assert (
+        scripts.get_revision("20261031_totp_mfa").down_revision
+        == "20261031_webauthn_passkeys"
+    )
+    assert (
+        scripts.get_revision("20261031_webauthn_passkeys").down_revision
+        == "20261028_webhook_secret"
+    )
     assert (
         scripts.get_revision("20261028_webhook_secret").down_revision
         == "20261020_media_captions"

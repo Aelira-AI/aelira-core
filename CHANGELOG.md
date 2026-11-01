@@ -11,10 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - WebAuthn passkey authentication (FIDO2 / biometrics / hardware security keys) for passwordless dashboard sign-in and credential management, with automatic fallback to email magic links ([#905](https://github.com/Aelira-AI/aelira-core/issues/905)).
 - Authenticator App (RFC 6238 TOTP) multi-factor authentication with single-use backup recovery codes for institutional and virtual desktop environments ([#907](https://github.com/Aelira-AI/aelira-core/issues/907)).
+- Post-login passkey recommendation banner on the dashboard encouraging one-click biometric enrollment for users without enrolled credentials ([#911](https://github.com/Aelira-AI/aelira-core/issues/911)).
 
 ### Fixed
 
 - Tagged tables and headings with identity mappings in `/RoleMap` (such as `/Table` mapped to `/Table` or `/H1` mapped to `/H1`) were treated as cycles, failing required checks and withholding scores on valid academic papers and tagged PDFs. Identity mappings are now recognized as resolved structure types ([#803](https://github.com/Aelira-AI/aelira-core/issues/803)).
+
+### Security
+
+- Upgrade `cbor2` to 5.9.0, `pyasn1` to 0.6.5, and `pypdf` to 6.21.4 to address known vulnerability disclosures.
 
 ## [0.12.2] - 2026-10-30
 
