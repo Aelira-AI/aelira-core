@@ -70,6 +70,54 @@ class HeadingInventory:
         return bool(self.headings) and self.headings[0].role == "/H1"
 
 
+_DOCUMENT_REASON_WORDING = {
+    "heading_unbound_or_empty": "a heading tag is empty or not bound to page content",
+    "heading_unresolved_content": "some tagged content could not be resolved",
+    "heading_replacement_content_ambiguous": (
+        "a heading's replacement text does not match its content"
+    ),
+    "heading_unsupported_namespace": "the structure tree uses unsupported namespaces",
+    "heading_invalid_role_map": "the structure tree's role map is invalid",
+    "reading_order_invalid_parent_relation": (
+        "the structure tree has an invalid parent relation"
+    ),
+}
+
+
+_STRUCTURE_TREE_REASONS = frozenset(
+    {
+        "reading_order_missing_structure",
+        "reading_order_invalid_reference",
+        "reading_order_ambiguous_mcid_ownership",
+        "reading_order_invalid_structure",
+        "reading_order_invalid_page_reference",
+        "reading_order_form_stream_scope",
+        "reading_order_object_reference",
+        "reading_order_cyclic_or_shared_structure",
+        "reading_order_invalid_parent_relation",
+        "reading_order_invalid_structure_type",
+        "reading_order_invalid_role",
+    }
+)
+# Reasons that describe the document. Anything else (limits, an unexpected
+# failure, or an unrecognised error from a dependency) means the check did not
+# finish and is recorded as incomplete, so strict scans fail closed.
+DOCUMENT_REASONS = frozenset(_DOCUMENT_REASON_WORDING) | _STRUCTURE_TREE_REASONS
+
+
+def inventory_check_incomplete(reason: str | None) -> bool:
+    """True when an incomplete inventory means the check did not run."""
+    return reason not in DOCUMENT_REASONS
+
+
+def inventory_reason_wording(reason: str | None) -> str:
+    if reason in _STRUCTURE_TREE_REASONS and reason not in _DOCUMENT_REASON_WORDING:
+        return "the structure tree is invalid or uses unsupported features"
+    return _DOCUMENT_REASON_WORDING.get(
+        str(reason), "the heading structure could not be read completely"
+    )
+
+
 def effective_role(role, root):
     roles = root.get("/RoleMap", {})
     seen = set()
@@ -87,22 +135,9 @@ def effective_role(role, root):
     return role
 
 
-def _is_incomplete_check(reason):
-    """Work or size limits and unexpected errors leave the scan unfinished.
-
-    Document-structure refusals (empty or unbound headings, bad parent
-    relations) are findings about the document, not a failed check.
-    """
-    if reason == "heading_inventory_failed" or reason.endswith("_limit"):
-        return True
-    # Coded refusals are structure findings; any other ValueError text came
-    # from an unexpected resolver error.
-    return not reason.startswith(("heading_", "reading_order_"))
-
-
 def inventory(pdf, source_path):
     # Shared traversal enforces parent, page, unique owner and work-limit rules.
-    from ..remediation.source_order import _tree, _nodes
+    from ..remediation.source_order import MAX_MATCH_WORK, _tree, _nodes
 
     result = HeadingInventory(
         source_sha256=sha256(Path(source_path).read_bytes()).hexdigest()
@@ -132,6 +167,8 @@ def inventory(pdf, source_path):
         if resolver.failed or any(value is None for value in decoded.values()):
             raise ValueError("heading_unresolved_content")
         with fitz.open(source_path) as document:
+            page_lines: dict[int, list] = {}
+            match_work = 0
             for node in nodes:
                 if not node.role:
                     continue
@@ -204,14 +241,23 @@ def inventory(pdf, source_path):
                 for native in boxes:
                     box |= fitz.Rect(native) * page.transformation_matrix
                 target.bounds = tuple(box)
+                if target.pages[0] not in page_lines:
+                    page_lines[target.pages[0]] = [
+                        line
+                        for block in page.get_text("dict")["blocks"]
+                        for line in block.get("lines", [])
+                    ]
+                candidates = page_lines[target.pages[0]]
+                match_work += len(candidates)
+                if match_work > MAX_MATCH_WORK:
+                    raise ValueError("heading_work_limit")
                 lines = []
-                for block in page.get_text("dict")["blocks"]:
-                    for line in block.get("lines", []):
-                        lb = fitz.Rect(line["bbox"])
-                        if lb.intersects(box):
-                            if tuple(line.get("dir", (1, 0))) != (1, 0):
-                                target.reason = "heading_unsupported_direction"
-                            lines.append(line)
+                for line in candidates:
+                    lb = fitz.Rect(line["bbox"])
+                    if lb.intersects(box):
+                        if tuple(line.get("dir", (1, 0))) != (1, 0):
+                            target.reason = "heading_unsupported_direction"
+                        lines.append(line)
                 sizes = [
                     s["size"]
                     for line in lines
@@ -292,11 +338,10 @@ def inventory(pdf, source_path):
         result.reason = (
             str(exc) if isinstance(exc, ValueError) else "heading_inventory_failed"
         )
-        if _is_incomplete_check(result.reason):
-            record_incomplete_check("heading_inventory")
-        # A failed inventory never clears a finding about a heading it did not
-        # prove. Existing scanners report broken structure separately; keep the
-        # unresolved heading observable.
+        if inventory_check_incomplete(result.reason):
+            record_incomplete_check(f"bound_headings.{result.reason}")
+        # A failed inventory never clears a finding. Existing scanners report
+        # broken structure separately; keep the unresolved heading observable.
         return result
 
 
