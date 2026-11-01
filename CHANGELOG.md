@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Upgrade transitive `minimatch` to 11.0.3 via package overrides in the dashboard and CLI to resolve denial of service via pattern amplification (CVE-2026-118764, [#922](https://github.com/Aelira-AI/aelira-core/issues/922)).
 - Upgrade `cbor2` to 5.9.0, `pyasn1` to 0.6.5, and `pypdf` to 6.21.4 to address known vulnerability disclosures.
 
 ## [0.12.2] - 2026-10-30
