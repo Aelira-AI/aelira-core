@@ -18,7 +18,6 @@ ROOT = Path(__file__).parents[1]
 PREVIOUS_HEAD = "20260822_task21_provenance"
 V095_HEAD = "20260822_v095_job_quarantine"
 HEAD = "20261031_totp_mfa"
-TOTP_MFA_HEAD = "20261031_totp_mfa"
 WEBAUTHN_HEAD = "20261031_webauthn_passkeys"
 WEBHOOK_SECRET_HEAD = "20261028_webhook_secret"
 MEDIA_CAPTIONS_HEAD = "20261020_media_captions"
@@ -47,7 +46,9 @@ def test_v095_quarantine_is_single_head_after_v094_invariants():
     assert scripts.get_heads() == [HEAD]
     assert scripts.get_revision(HEAD).down_revision == WEBAUTHN_HEAD
     assert scripts.get_revision(WEBAUTHN_HEAD).down_revision == WEBHOOK_SECRET_HEAD
-    assert scripts.get_revision(WEBHOOK_SECRET_HEAD).down_revision == MEDIA_CAPTIONS_HEAD
+    assert scripts.get_revision(WEBHOOK_SECRET_HEAD).down_revision == (
+        MEDIA_CAPTIONS_HEAD
+    )
     assert scripts.get_revision(MEDIA_CAPTIONS_HEAD).down_revision == MEDIA_TRUTH_HEAD
     assert scripts.get_revision(MEDIA_TRUTH_HEAD).down_revision == PREVIOUS_CURRENT_HEAD
     assert (

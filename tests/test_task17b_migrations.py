@@ -15,7 +15,6 @@ from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
 HEAD = "20261031_totp_mfa"
-TOTP_MFA_HEAD = "20261031_totp_mfa"
 WEBAUTHN_HEAD = "20261031_webauthn_passkeys"
 WEBHOOK_SECRET_HEAD = "20261028_webhook_secret"
 MEDIA_CAPTIONS_HEAD = "20261020_media_captions"
@@ -50,7 +49,9 @@ def test_task17b_migrations_are_one_linear_reversible_head():
     assert scripts.get_heads() == [HEAD]
     assert scripts.get_revision(HEAD).down_revision == WEBAUTHN_HEAD
     assert scripts.get_revision(WEBAUTHN_HEAD).down_revision == WEBHOOK_SECRET_HEAD
-    assert scripts.get_revision(WEBHOOK_SECRET_HEAD).down_revision == MEDIA_CAPTIONS_HEAD
+    assert scripts.get_revision(WEBHOOK_SECRET_HEAD).down_revision == (
+        MEDIA_CAPTIONS_HEAD
+    )
     assert scripts.get_revision(MEDIA_CAPTIONS_HEAD).down_revision == MEDIA_TRUTH_HEAD
     assert scripts.get_revision(MEDIA_TRUTH_HEAD).down_revision == PREVIOUS_HEAD
     assert scripts.get_revision(PREVIOUS_HEAD).down_revision == "20260928_pdf_edit_pub"
