@@ -33,7 +33,7 @@ RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
     /tmp/debian-backports/libxrender /out/libxrender
 
 # Stage 1: Builder
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS builder
 
 ARG SOURCE_DATE_EPOCH=0
 
@@ -125,11 +125,11 @@ RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
 # The official image's bundled Expat modules must not occur in any shipped
 # layer. Remove both before copying its otherwise unchanged /usr/local tree
 # into the fresh Debian runtime.
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-clean
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS python-expat-clean
 RUN rm /usr/local/lib/python3.14/lib-dynload/pyexpat.cpython-314-*.so \
        /usr/local/lib/python3.14/lib-dynload/_elementtree.cpython-314-*.so
 
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-modules
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS python-expat-modules
 ARG EXPAT_DEB_VERSION=2.9.0-1~deb13u1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc make libc6-dev libexpat1=${EXPAT_DEB_VERSION} \
@@ -144,7 +144,7 @@ RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
 # bundled build can trail Chrome stable by weeks. Use the exact Chrome for
 # Testing release pinned in scripts/chrome-for-testing.json, checked against
 # its SHA-256 before it is unpacked, for each architecture of the image.
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS chrome-for-testing
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS chrome-for-testing
 ARG TARGETARCH
 COPY scripts/chrome-for-testing.json scripts/install_chrome_for_testing.py /opt/cft-installer/
 RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
