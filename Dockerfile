@@ -10,7 +10,7 @@ FROM scratch AS build-inputs
 # Rebuild Debian's libxml2, libX11 and libXrender from their pinned trixie
 # source packages with reviewed security patches. See
 # docs/security/debian-backports-0.10.0.md. These stages never ship.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS debian-backport-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential dpkg-dev perl quilt \
     && rm -rf /var/lib/apt/lists/*
@@ -165,7 +165,7 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
 
 # A fresh Debian root excludes the old modules from every shipped layer,
 # while the official /usr/local tree keeps the interpreter ABI.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS python-expat-base
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS python-expat-base
 
 ARG SOURCE_DATE_EPOCH=0
 ARG EXPAT_DEB_VERSION=2.9.0-1~deb13u1
