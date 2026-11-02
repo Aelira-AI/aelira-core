@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The cJSON native package job intermittently failed during the installed-consumers validation stage when subprocess commands timed out on loaded shared runners. Subprocess timeouts for dpkg-deb and symbol extraction have been increased to 120 seconds with exact step attribution on timeout ([#834](https://github.com/Aelira-AI/aelira-core/issues/834)).
+- Speech-to-text engines commonly produce zero-length segments or trailing cues that overrun media duration, causing generated WebVTT caption files to be rejected by strict structural verification. Caption generation now drops zero-length cues, drops cues starting at or after media duration, and clamps cue ends to the media duration before writing output ([#818](https://github.com/Aelira-AI/aelira-core/issues/818)).
 - Bound heading inventory extraction work on PDFs with many candidate targets by caching per-page line extraction and enforcing `MAX_MATCH_WORK` limits to prevent worker starvation ([#828](https://github.com/Aelira-AI/aelira-core/issues/828)).
 - Tagged tables and headings with identity mappings in `/RoleMap` (such as `/Table` mapped to `/Table` or `/H1` mapped to `/H1`) were treated as cycles, failing required checks and withholding scores on valid academic papers and tagged PDFs. Identity mappings are now recognized as resolved structure types ([#803](https://github.com/Aelira-AI/aelira-core/issues/803)).
 
