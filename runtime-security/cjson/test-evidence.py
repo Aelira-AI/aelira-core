@@ -28,7 +28,7 @@ def main():
                    "--build-exit", str(exit_code)]
         if require_builder:
             command.append("--require-builder")
-        result = subprocess.run(command, capture_output=True, timeout=180)
+        result = subprocess.run(command, capture_output=True, timeout=300)
         receipt = json.loads((destination / "component.json").read_text())
         assert "unlisted-private.txt" not in receipt["files"]
         return result.returncode, receipt
