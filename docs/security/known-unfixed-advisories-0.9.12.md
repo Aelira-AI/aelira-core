@@ -120,6 +120,8 @@ handled directly:
 | CVE-2026-88807 | libxrender1 | `vulnerable_code_not_in_execute_path` | libXrender responses from a malicious X server. The container has no X server and the browser runs headless without an X connection. Repaired in 0.10.0 by a rebuilt libXrender ([correction](#libxml2-libx11-and-libxrender-repaired-in-0100)). |
 | CVE-2026-93990 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | The application Python uses a separate bundled Expat 2.8.5; its advisory status is assessed independently below. The distribution libexpat is used directly only by the unused system Python and is otherwise loaded through fontconfig, which parses image-provided font configuration. |
 | CVE-2026-9538 | libperl5.40, perl, perl-base, perl-modules-5.40 | `vulnerable_code_not_in_execute_path` | Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar. |
+| CVE-2026-119373 | libsqlite3-0 | `vulnerable_code_not_in_execute_path` | SQLite FTS5 heap buffer overflow in fts5MergeRowidLists. The application uses PostgreSQL and does not use SQLite FTS5 prefix doclists or negative rowids. |
+| CVE-2026-119586 | libsqlite3-0 | `vulnerable_code_not_in_execute_path` | SQLite CLI .recover command injection. The image contains only the libsqlite3-0 library; the sqlite3 CLI tool is not installed and the application never runs .recover. |
 
 ## Corrections after publication
 
