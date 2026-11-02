@@ -479,12 +479,38 @@ class PDFProcessor:
                 and item.get("rule") == "WCAG 1.3.1"
             )
 
-        if heading_inventory.proven_first_is_h1:
+        if not heading_inventory.complete:
+            # A partial inventory can neither clear nor raise the first-heading
+            # rule: its heading list may be missing the document's real first
+            # heading, so existing findings stand. A limit or failure means the
+            # check did not run (strict scans fail closed); a structural reason
+            # describes the document and goes to human review.
+            from .pdf_checks.bound_headings import (
+                inventory_check_incomplete,
+                inventory_reason_wording,
+            )
+
+            if inventory_check_incomplete(heading_inventory.reason):
+                record_incomplete_check(
+                    f"bound_headings.{heading_inventory.reason or 'incomplete'}"
+                )
+            else:
+                review_requirements.append(
+                    "Heading structure could not be fully verified: "
+                    + inventory_reason_wording(heading_inventory.reason)
+                    + "."
+                )
+                # The inventory walks the structure tree in document order and
+                # stops at the failing node, so headings before it were fully
+                # checked. A bound, non-empty H1 there is provably the first
+                # heading; only then does it override the visual heuristic.
+                partial = heading_inventory.headings
+                if partial and partial[0].role == "/H1" and partial[0].text:
+                    issues = [item for item in issues if not first_rule(item)]
+        elif heading_inventory.first_is_h1:
             issues = [item for item in issues if not first_rule(item)]
-        elif (
-            heading_inventory.complete
-            and heading_inventory.headings
-            and not any(first_rule(item) for item in issues)
+        elif heading_inventory.headings and not any(
+            first_rule(item) for item in issues
         ):
             issues.append(
                 {
