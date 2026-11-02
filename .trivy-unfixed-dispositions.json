@@ -1228,6 +1228,38 @@
       "reviewed": "2026-10-15",
       "expires": "2027-01-12",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-119373",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libsqlite3-0",
+          "installedVersion": "3.46.1-7+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "SQLite FTS5 heap buffer overflow in fts5MergeRowidLists. The application uses PostgreSQL and does not use SQLite FTS5 prefix doclists or negative rowids.",
+      "reviewed": "2026-11-01",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-119586",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libsqlite3-0",
+          "installedVersion": "3.46.1-7+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "SQLite CLI .recover command injection. The image contains only the libsqlite3-0 library; the sqlite3 CLI tool is not installed and the application never runs .recover.",
+      "reviewed": "2026-11-01",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
