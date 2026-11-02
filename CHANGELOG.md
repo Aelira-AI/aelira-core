@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Surface bound-heading inventory document-structure refusals (empty or unbound headings, invalid parent relations, and unsupported role maps) to the reviewer as plain-words review requirements so reviewers know what to inspect, while allowing strict scans to complete ([#866](https://github.com/Aelira-AI/aelira-core/issues/866)).
 - WebAuthn passkey authentication (FIDO2 / biometrics / hardware security keys) for passwordless dashboard sign-in and credential management, with automatic fallback to email magic links ([#905](https://github.com/Aelira-AI/aelira-core/issues/905)).
 - Authenticator App (RFC 6238 TOTP) multi-factor authentication with single-use backup recovery codes for institutional and virtual desktop environments ([#907](https://github.com/Aelira-AI/aelira-core/issues/907)).
 - Post-login passkey recommendation banner on the dashboard encouraging one-click biometric enrollment for users without enrolled credentials ([#911](https://github.com/Aelira-AI/aelira-core/issues/911)).
 
 ### Fixed
 
+- The cJSON native package job intermittently failed during the installed-consumers validation stage when subprocess commands timed out on loaded shared runners. Subprocess timeouts for dpkg-deb and symbol extraction have been increased to 120 seconds with exact step attribution on timeout ([#834](https://github.com/Aelira-AI/aelira-core/issues/834)).
 - The regional reading-order planner only refused an ambiguous matrix when every atom was a single line, allowing multi-line wrapped table cells to plan column-by-column into prose and reorder tagged content into columns. The row-alignment guard now uses tolerance matching across arbitrary line counts, refusing column reordering when column top edges align within half a line height ([#829](https://github.com/Aelira-AI/aelira-core/issues/829)).
 - Tagged tables and headings with identity mappings in `/RoleMap` (such as `/Table` mapped to `/Table` or `/H1` mapped to `/H1`) were treated as cycles, failing required checks and withholding scores on valid academic papers and tagged PDFs. Identity mappings are now recognized as resolved structure types ([#803](https://github.com/Aelira-AI/aelira-core/issues/803)).
 

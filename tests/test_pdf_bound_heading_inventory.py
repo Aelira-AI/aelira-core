@@ -321,3 +321,122 @@ def test_mixed_size_leaf_does_not_nominate_body_as_title(tmp_path):
     found = scan(title_pdf(tmp_path, change=change))
     assert found.complete
     assert nominate_title(found) is None
+
+
+def _first_heading_findings(result):
+    return [
+        issue
+        for issue in result.issues
+        if str(issue.get("message", "")).startswith("Document should start with H1")
+    ]
+
+
+def _empty_h2_elsewhere(pdf, group, owners):
+    owners[0].S = Name.H1
+    document = owners[2].P
+    # An empty H2 elsewhere describes the document; the inventory is partial.
+    empty = pdf.make_indirect(
+        Dictionary(Type=Name.StructElem, S=Name.H2, P=document, K=Array([]))
+    )
+    document.K = Array([*document.K, empty])
+
+
+def test_partial_inventory_goes_to_review_without_a_first_heading_finding(tmp_path):
+    from src.education.pdf_processor import PDFProcessor
+
+    path = title_pdf(tmp_path, change=_empty_h2_elsewhere)
+    found = scan(path)
+    assert found.complete is False
+    assert found.reason == "heading_unbound_or_empty"
+
+    # Strict mode completes: the structure, not the check, is the problem.
+    result = PDFProcessor(
+        require_complete_scan=True, generate_alt_text=False, validate_alt_text=False
+    ).process_pdf(str(path))
+
+    assert _first_heading_findings(result) == []
+    assert (
+        "Heading structure could not be fully verified: a heading tag is empty "
+        "or not bound to page content."
+    ) in result.review_requirements
+    assert not any("heading_" in item for item in result.review_requirements)
+
+
+def test_heading_work_limit_fails_a_strict_scan_closed(tmp_path, monkeypatch):
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.remediation import source_order
+    from src.education.scan_completeness import IncompleteScanError
+
+    path = title_pdf(tmp_path, change=lambda p, g, o: setattr(o[0], "S", Name.H1))
+    monkeypatch.setattr(source_order, "MAX_MATCH_WORK", 1)
+
+    with pytest.raises(IncompleteScanError, match="bound_headings.heading_work_limit"):
+        PDFProcessor(
+            require_complete_scan=True,
+            generate_alt_text=False,
+            validate_alt_text=False,
+        ).process_pdf(str(path))
+
+
+def test_partial_inventory_keeps_findings_when_h1_is_not_proven_first(tmp_path):
+    from src.education.pdf_processor import PDFProcessor
+
+    def change(pdf, group, owners):
+        _empty_h2_elsewhere(pdf, group, owners)
+        owners[0].S = Name.H2
+
+    path = title_pdf(tmp_path, change=change)
+    result = PDFProcessor(
+        require_complete_scan=True, generate_alt_text=False, validate_alt_text=False
+    ).process_pdf(str(path))
+
+    # Nothing proves the first heading is H1, so the existing finding stands.
+    assert len(_first_heading_findings(result)) == 1
+    assert any(
+        item.startswith("Heading structure could not be fully verified")
+        for item in result.review_requirements
+    )
+
+
+def test_rejected_h1_never_proves_the_first_heading(tmp_path):
+    from src.education.pdf_processor import PDFProcessor
+
+    def change(pdf, group, owners):
+        owners[0].S = Name.H1
+        # An ancestor replacement makes the H1's content ambiguous.
+        group.ActualText = String("Replacement for the group")
+
+    path = title_pdf(tmp_path, change=change)
+    found = scan(path)
+    assert found.complete is False
+    assert found.reason == "heading_replacement_content_ambiguous"
+    assert all(target.role != "/H1" for target in found.targets)
+
+    result = PDFProcessor(
+        require_complete_scan=True, generate_alt_text=False, validate_alt_text=False
+    ).process_pdf(str(path))
+    assert len(_first_heading_findings(result)) == 1
+    assert (
+        "Heading structure could not be fully verified: a heading's replacement "
+        "text does not match its content."
+    ) in result.review_requirements
+
+
+def test_unexpected_value_error_is_an_incomplete_check(tmp_path, monkeypatch):
+    from src.education.pdf_checks import marked_content
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.scan_completeness import IncompleteScanError
+
+    def failing_bounds(self, ref):
+        raise ValueError("resolver geometry fault")
+
+    monkeypatch.setattr(marked_content.MarkedContentResolver, "bounds", failing_bounds)
+    path = title_pdf(tmp_path, change=lambda p, g, o: setattr(o[0], "S", Name.H1))
+    assert scan(path).reason == "resolver geometry fault"
+
+    with pytest.raises(IncompleteScanError, match="bound_headings"):
+        PDFProcessor(
+            require_complete_scan=True,
+            generate_alt_text=False,
+            validate_alt_text=False,
+        ).process_pdf(str(path))
