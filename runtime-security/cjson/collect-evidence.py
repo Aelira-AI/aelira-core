@@ -140,6 +140,7 @@ def export(args):
         rows[relative] = {"sha256": sha.hexdigest(), "size": destination.stat().st_size}
 
     validation_stage = "checkout"
+    step = None
     try:
         if args.arch not in ("amd64", "arm64"):
             raise ValueError("Invalid architecture")
@@ -148,11 +149,14 @@ def export(args):
         for ref, expected in (("HEAD", args.revision), ("HEAD^{tree}", args.tree)):
             if not re.fullmatch(r"[a-f0-9]{40}", expected):
                 raise ValueError("Invalid checkout identity")
+            step = "git:rev-parse"
             actual = subprocess.check_output(['git', '-C', str(args.repo), 'rev-parse', ref], text=True).strip()
             if actual != expected:
                 raise ValueError("Checkout identity mismatch")
+        step = "git:status"
         dirty = subprocess.check_output(['git', '-C', str(args.repo), 'status', '--porcelain', '--',
                                          'runtime-security/cjson', '.github/workflows/ci.yml'], text=True)
+        step = None
         if dirty:
             raise ValueError("Recipe checkout is dirty")
         validation_stage = "build-status"
@@ -205,11 +209,15 @@ def export(args):
             raise ValueError('Invalid frozen builder ID')
         builder = builder_bytes.decode().strip()
         copy('provenance/builder-id.txt')
+        step = 'docker:inspect:arch'
         builder_arch = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Architecture}}', builder], text=True, timeout=30).strip()
         if builder_arch != args.arch:
             raise ValueError('Frozen builder architecture mismatch')
+        step = 'docker:inspect:base'
         base_layers = decode_json(subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{json .RootFS.Layers}}', BASE], timeout=30))
+        step = 'docker:inspect:builder'
         builder_layers = decode_json(subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{json .RootFS.Layers}}', builder], timeout=30))
+        step = None
         if not base_layers or builder_layers[:len(base_layers)] != base_layers:
             raise ValueError('Builder does not descend from pinned base')
         validation_stage = "toolchain"
@@ -222,10 +230,12 @@ def export(args):
             seen_packages.add(match[1])
         if not seen_packages or len(seen_packages) > 2000:
             raise ValueError('Invalid toolchain package count')
+        step = 'docker:dpkg-query'
         actual_inventory = subprocess.check_output(['docker', 'run', '--rm', '--entrypoint', '/usr/bin/dpkg-query',
             '--user', f'{os.getuid()}:{os.getgid()}', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges', '--memory', '256m', '--pids-limit', '64', builder,
             '-W', '-f=${Package}\t${Version}\t${Architecture}\n'], timeout=30)
+        step = None
         if inventory != actual_inventory:
             raise ValueError('Toolchain inventory differs from frozen builder')
         copy('provenance/toolchain-packages.tsv')
@@ -309,7 +319,8 @@ def export(args):
             raise ValueError('Installed libraries mismatch')
         multiarch = {'arm64': 'aarch64-linux-gnu', 'amd64': 'x86_64-linux-gnu'}[args.arch]
         package = args.source / ('build-a/artifacts/libcjson1_1.7.19-2+aelira3_' + args.arch + '.deb')
-        payload = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', str(package)], timeout=30)
+        step = "dpkg-deb"
+        payload = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', str(package)], timeout=120)
         with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
             for soname, baseline, count in [('libcjson.so.1', 'baseline-core.so', 78), ('libcjson_utils.so.1', 'baseline-utils.so', 14)]:
                 library = installed['libraries'][soname]
@@ -325,9 +336,11 @@ def export(args):
                     raise ValueError('Installed library differs from package')
                 copy('build-a/' + baseline, library['baseline_sha256'])
                 symbols = library['public_symbols']
-                expected_symbols = sorted([line.split()[:2] for line in subprocess.check_output(['nm', '-D', '--defined-only', '--format=posix', str(args.source / ('build-a/' + baseline))], text=True, timeout=30).splitlines()])
+                step = f"nm:{baseline}"
+                expected_symbols = sorted([line.split()[:2] for line in subprocess.check_output(['nm', '-D', '--defined-only', '--format=posix', str(args.source / ('build-a/' + baseline))], text=True, timeout=120).splitlines()])
                 if symbols != expected_symbols or len(symbols) != count:
                     raise ValueError('Installed symbol contract mismatch')
+        step = None
         receipt["installed"] = installed
         receipt["upstream_tests_per_build"] = 22
         receipt["allocation_outcomes_per_native_run"] = 768
@@ -346,8 +359,10 @@ def export(args):
             # archive; no input archive member is extracted or copied publicly.
             with tempfile.TemporaryDirectory(prefix='aelira-cjson-builder-') as work:
                 fresh = Path(work) / 'builder.tar'
+                step = "docker-save"
                 subprocess.run(['docker', 'save', builder, '-o', str(fresh)],
                                check=True, capture_output=True, timeout=180)
+                step = None
                 if saved_image_contents(fresh) != saved_image_contents(original_archive):
                     raise ValueError('Saved builder differs from immutable image')
                 if fresh.stat().st_size > MAX_FILE:
@@ -356,7 +371,10 @@ def export(args):
         validation_stage = "complete"
         receipt["status"] = "pass"
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as error:
-        errors.append(type(error).__name__)
+        if isinstance(error, subprocess.TimeoutExpired):
+            errors.append(f"TimeoutExpired: {step}" if step else "TimeoutExpired")
+        else:
+            errors.append(type(error).__name__)
     receipt["validation_stage"] = validation_stage
     receipt["errors"] = errors
     receipt["files"] = rows
