@@ -70,6 +70,54 @@ class HeadingInventory:
         return bool(self.headings) and self.headings[0].role == "/H1"
 
 
+_DOCUMENT_REASON_WORDING = {
+    "heading_unbound_or_empty": "a heading tag is empty or not bound to page content",
+    "heading_unresolved_content": "some tagged content could not be resolved",
+    "heading_replacement_content_ambiguous": (
+        "a heading's replacement text does not match its content"
+    ),
+    "heading_unsupported_namespace": "the structure tree uses unsupported namespaces",
+    "heading_invalid_role_map": "the structure tree's role map is invalid",
+    "reading_order_invalid_parent_relation": (
+        "the structure tree has an invalid parent relation"
+    ),
+}
+
+
+_STRUCTURE_TREE_REASONS = frozenset(
+    {
+        "reading_order_missing_structure",
+        "reading_order_invalid_reference",
+        "reading_order_ambiguous_mcid_ownership",
+        "reading_order_invalid_structure",
+        "reading_order_invalid_page_reference",
+        "reading_order_form_stream_scope",
+        "reading_order_object_reference",
+        "reading_order_cyclic_or_shared_structure",
+        "reading_order_invalid_parent_relation",
+        "reading_order_invalid_structure_type",
+        "reading_order_invalid_role",
+    }
+)
+# Reasons that describe the document. Anything else (limits, an unexpected
+# failure, or an unrecognised error from a dependency) means the check did not
+# finish and is recorded as incomplete, so strict scans fail closed.
+DOCUMENT_REASONS = frozenset(_DOCUMENT_REASON_WORDING) | _STRUCTURE_TREE_REASONS
+
+
+def inventory_check_incomplete(reason: str | None) -> bool:
+    """True when an incomplete inventory means the check did not run."""
+    return reason not in DOCUMENT_REASONS
+
+
+def inventory_reason_wording(reason: str | None) -> str:
+    if reason in _STRUCTURE_TREE_REASONS and reason not in _DOCUMENT_REASON_WORDING:
+        return "the structure tree is invalid or uses unsupported features"
+    return _DOCUMENT_REASON_WORDING.get(
+        str(reason), "the heading structure could not be read completely"
+    )
+
+
 def effective_role(role, root):
     roles = root.get("/RoleMap", {})
     seen = set()
@@ -85,19 +133,6 @@ def effective_role(role, root):
             break
         role = next_role
     return role
-
-
-def _is_incomplete_check(reason):
-    """Work or size limits and unexpected errors leave the scan unfinished.
-
-    Document-structure refusals (empty or unbound headings, bad parent
-    relations) are findings about the document, not a failed check.
-    """
-    if reason == "heading_inventory_failed" or reason.endswith("_limit"):
-        return True
-    # Coded refusals are structure findings; any other ValueError text came
-    # from an unexpected resolver error.
-    return not reason.startswith(("heading_", "reading_order_"))
 
 
 def inventory(pdf, source_path):
@@ -303,11 +338,10 @@ def inventory(pdf, source_path):
         result.reason = (
             str(exc) if isinstance(exc, ValueError) else "heading_inventory_failed"
         )
-        if _is_incomplete_check(result.reason):
-            record_incomplete_check("heading_inventory")
-        # A failed inventory never clears a finding about a heading it did not
-        # prove. Existing scanners report broken structure separately; keep the
-        # unresolved heading observable.
+        if inventory_check_incomplete(result.reason):
+            record_incomplete_check(f"bound_headings.{result.reason}")
+        # A failed inventory never clears a finding. Existing scanners report
+        # broken structure separately; keep the unresolved heading observable.
         return result
 
 
