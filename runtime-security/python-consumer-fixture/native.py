@@ -20,6 +20,16 @@ from integrity import HEX64, pins, read_archive, sha256, strict_json, validate_m
 
 BASE = "ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
 BASE_KEYRING_SHA256 = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
+EXPECTED_WHEEL_DIGESTS = {
+    "amd64": {
+        "pillow-13.0.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": "e91c2b1cbeae768c98752e67e717e283d68dae45717b41f2d91eaee648e37b7d",
+        "psycopg2_binary-2.9.13-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": "190c18b97d9ef72f2e88c451b6588af90d6bd7bf54cb94b963280dc86a2c7076",
+    },
+    "arm64": {
+        "pillow-13.0.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl": "5933fcea5a5ba64c686f55c886a115cbfd92f2900460784a1e79909fdbafd7b6",
+        "psycopg2_binary-2.9.13-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl": "c00ebe9a2f31151aade0db233dc1446513a95e92c39ce055ee097af0ae86be1c",
+    },
+}
 MODULE_PATHS = {
     "src.education.remediation.pdf_remediator": "src/education/remediation/pdf_remediator.py",
     "src.education.handwritten_math_suitability": "src/education/handwritten_math_suitability.py",
@@ -183,6 +193,15 @@ def authenticate_pypi(
         ):
             raise ValueError("wheel architecture differs from native host")
         published = candidates[wheel.name]
+        if name in {"pillow", "psycopg2-binary"}:
+            expected_digests = EXPECTED_WHEEL_DIGESTS.get(arch, {})
+            if wheel.name not in expected_digests:
+                raise ValueError(f"unpinned native wheel for {arch}: {wheel.name}")
+            expected_digest = expected_digests[wheel.name]
+            if published != expected_digest:
+                raise ValueError("official metadata digest differs from committed wheel pin")
+            if digest(wheel) != expected_digest:
+                raise ValueError("wheel digest differs from committed wheel pin")
         if digest(wheel) != published:
             raise ValueError("downloaded wheel differs from official PyPI digest")
         owned.add(wheel.name)
