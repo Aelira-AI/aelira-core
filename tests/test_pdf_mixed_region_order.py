@@ -26,10 +26,14 @@ def atoms(columns, scale=1, footer=True):
     result = [Atom("heading", (20, 10, columns * 150, 35), 25)]
     for col in range(columns):
         x = 20 + col * 150
+        # Prose columns: paragraph tops differ between columns by more than
+        # half a line. Tops that line up across columns, within that tolerance,
+        # are a table (see the matrix tests).
+        dy = 11 * col
         result.extend(
             [
-                Atom(f"{col}:label", (x, 80, x + 80, 100), 20),
-                Atom(f"{col}:body", (x, 112, x + 110, 165 + col * 2), 16, 3),
+                Atom(f"{col}:label", (x, 80 + dy, x + 80, 100 + dy), 20),
+                Atom(f"{col}:body", (x, 112 + dy, x + 110, 165 + col * 2 + dy), 16, 3),
             ]
         )
     if footer:
@@ -105,7 +109,25 @@ def test_ambiguity_and_work_refusal(damage):
         plan_order(sample, 500)
 
 
-def column_pdf(tmp_path, columns=4, reverse=True, repeat=False):
+# Per-column offset (points) for prose rows; more than half a 10pt line.
+STAGGER = 9
+
+
+def column_pdf(
+    tmp_path,
+    columns=4,
+    reverse=True,
+    repeat=False,
+    stagger=True,
+    *,
+    offset=None,
+    rows=2,
+    skip=None,
+):
+    # offset overrides the per-column stagger (0 gives an exact table); skip
+    # omits one (column, row) cell to model an empty table cell.
+    if offset is None:
+        offset = STAGGER if stagger else 0
     pdf = pikepdf.new()
     page = pdf.add_blank_page(page_size=(columns * 150 + 40, 450))
     page.obj.StructParents = 0
@@ -125,10 +147,14 @@ def column_pdf(tmp_path, columns=4, reverse=True, repeat=False):
     expected = []
     for col in range(columns):
         # Wrapped body is one MCID, preserving a complete indivisible owner.
-        for row in range(2):
+        for row in range(rows):
+            if (col, row) == skip:
+                continue
             i = len(owners)
             x = 20 + 150 * col
-            y = 360 - row * 35
+            # Staggered paragraph tops keep this a prose column layout; without
+            # the stagger the rows align across columns and it is a table.
+            y = 360 - row * 35 - offset * col
             label = (
                 "Repeated label"
                 if repeat and row == 0
@@ -184,7 +210,7 @@ def test_saved_source_occurrences_in_independent_expected_order(
 
 
 def test_ambiguous_matrix_has_explicit_reviewer_permutation(tmp_path):
-    pdf, path, _ = column_pdf(tmp_path, 2)
+    pdf, path, _ = column_pdf(tmp_path, 2, stagger=False)
     pdf.pages[0].Contents = pdf.make_stream(
         pdf.pages[0]
         .Contents.read_bytes()
@@ -192,7 +218,7 @@ def test_ambiguous_matrix_has_explicit_reviewer_permutation(tmp_path):
         .replace(b"0 -14 Td (Continued column 1) Tj ", b"")
     )
     pdf.save(path)
-    with pytest.raises(OrderRefusal, match="ambiguous_matrix"):
+    with pytest.raises(OrderRefusal, match="reading_order_ambiguous_matrix"):
         repair_page(pdf, 1)
     content = path.read_bytes()
     digest = sha256(content).hexdigest()
@@ -281,3 +307,77 @@ def test_generated_whole_run_owners_use_same_regional_plan(tmp_path, columns):
         " ".join(t.split()) for t in expected
     ]
     assert not ReadingOrderVerifier().check(str(path)).issues
+
+
+def test_wrapped_table_cells_are_not_planned_column_by_column():
+    # A 2x3 table: header row, then two rows whose cells wrap to three lines.
+    # Reading it column by column would give h1, r1c1, r2c1, h2, r1c2, r2c2.
+    sample = [
+        Atom("h1", (20, 20, 120, 32), 12),
+        Atom("h2", (220, 20, 320, 32), 12),
+    ]
+    for row, y in enumerate((60, 110), 1):
+        for col, x in enumerate((20, 220), 1):
+            sample.append(Atom(f"r{row}c{col}", (x, y, x + 100, y + 36), 12, 3))
+    with pytest.raises(LayoutAmbiguous, match="reading_order_ambiguous_matrix"):
+        plan_order(sample, 400)
+
+
+@pytest.mark.parametrize("columns", [2, 3])
+def test_wrapped_cell_table_tagged_as_paragraphs_is_not_reordered(tmp_path, columns):
+    from src.education.pdf_review_candidate import _graph_digest
+
+    pdf, path, _expected = column_pdf(tmp_path, columns, stagger=False)
+    original = _graph_digest(pdf)
+    with pytest.raises(OrderRefusal, match="reading_order_ambiguous_matrix"):
+        repair_page(pdf, 1)
+    assert _graph_digest(pdf) == original
+
+
+def _table_atoms(skip=None, jitter=0.0):
+    # Header row, then three rows of two-line cells (line height 12).
+    sample = [
+        Atom("h1", (72, 100, 250, 112), 12),
+        Atom("h2", (300, 100, 500, 112), 12),
+    ]
+    for row, y in enumerate((120, 150, 180), 1):
+        for col, x in enumerate((72, 300), 1):
+            if (row, col) == skip:
+                continue
+            top = y + (jitter if col == 2 else 0)
+            sample.append(Atom(f"r{row}c{col}", (x, top, x + 178, top + 24), 12, 2))
+    return sample
+
+
+@pytest.mark.parametrize(
+    "variant", [{}, {"skip": (2, 2)}, {"jitter": 1.6}], ids=["exact", "empty", "1.6pt"]
+)
+def test_tolerant_table_guard_refuses_imperfect_tables(variant):
+    with pytest.raises(LayoutAmbiguous, match="reading_order_ambiguous_matrix"):
+        plan_order(_table_atoms(**variant), 612)
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [{"offset": 0}, {"offset": 0, "skip": (1, 2)}, {"offset": 1.6}],
+    ids=["exact", "empty", "1.6pt"],
+)
+def test_imperfect_tables_tagged_as_paragraphs_are_not_reordered(tmp_path, variant):
+    from src.education.pdf_review_candidate import _graph_digest
+
+    pdf, _path, _expected = column_pdf(tmp_path, 2, rows=3, **variant)
+    original = _graph_digest(pdf)
+    with pytest.raises(OrderRefusal, match="reading_order_ambiguous_matrix"):
+        repair_page(pdf, 1)
+    assert _graph_digest(pdf) == original
+
+
+@pytest.mark.parametrize("columns", [2, 3, 4])
+def test_staggered_prose_columns_still_plan_and_repair(tmp_path, columns):
+    pdf, path, expected = column_pdf(tmp_path, columns, rows=3)
+    count, method = repair_page(pdf, 1)
+    assert count and method == "regional_siblings"
+    pdf.save(path)
+    assert [" ".join(t.split()) for t in texts(path)] == [
+        " ".join(t.split()) for t in expected
+    ]

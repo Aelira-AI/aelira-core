@@ -178,16 +178,31 @@ def plan_order(atoms, page_width):
             columns = [
                 sorted(c, key=lambda a: (a.bbox[1], a.bbox[0])) for c in columns if c
             ]
-            if (
-                len(columns) > 1
-                and all(len(c) >= 2 for c in columns)
-                and all(a.lines == 1 for a in items)
-            ):
-                rows = [
-                    tuple(round(a.bbox[1] / max(lh * 0.25, 1)) for a in c)
-                    for c in columns
-                ]
-                if all(row == rows[0] for row in rows[1:]):
+            # Columns whose top edges line up row by row are a table, whatever
+            # the cells' line counts, a missing cell or small offsets: wrapped
+            # cells must not turn a table into column-by-column prose. A column
+            # votes "table" when most of its atoms have a top within half a
+            # line height of an atom in another column; every column with two
+            # or more atoms must vote that way. Such grids remain semantic review.
+            populated = [i for i, c in enumerate(columns) if len(c) >= 2]
+            if len(columns) > 1 and len(populated) >= 2:
+                tolerance = 0.5 * lh
+                tops = [[a.bbox[1] for a in c] for c in columns]
+
+                def aligned_majority(index):
+                    others = [
+                        top
+                        for j, column_tops in enumerate(tops)
+                        if j != index
+                        for top in column_tops
+                    ]
+                    hits = sum(
+                        any(abs(top - other) <= tolerance for other in others)
+                        for top in tops[index]
+                    )
+                    return hits * 2 > len(tops[index])
+
+                if all(aligned_majority(i) for i in populated):
                     raise LayoutAmbiguous("reading_order_ambiguous_matrix")
             ordered = []
             for col in columns:
