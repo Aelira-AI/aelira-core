@@ -270,14 +270,9 @@ class MultimediaRemediator(BaseRemediator):
 
             if result and result.transcription:
                 self._media_duration = getattr(result, "duration", None)
-                self._transcription = [
-                    {
-                        "start": seg.start_time,
-                        "end": seg.end_time,
-                        "text": seg.text,
-                    }
-                    for seg in result.transcription
-                ]
+                self._transcription = self._clean_caption_segments(
+                    result.transcription, self._media_duration
+                )
 
                 # Generate VTT caption file
                 vtt_content = self._generate_vtt(self._transcription)
@@ -317,14 +312,10 @@ class MultimediaRemediator(BaseRemediator):
                     generate_transcript=True,
                 )
                 if result and result.transcription:
-                    self._transcription = [
-                        {
-                            "start": seg.start_time,
-                            "end": seg.end_time,
-                            "text": seg.text,
-                        }
-                        for seg in result.transcription
-                    ]
+                    self._media_duration = getattr(result, "duration", None)
+                    self._transcription = self._clean_caption_segments(
+                        result.transcription, self._media_duration
+                    )
 
             if self._transcription:
                 # Generate plain text transcript
@@ -396,11 +387,55 @@ class MultimediaRemediator(BaseRemediator):
         output = Path(self._get_output_path())
         return str(output.with_name(output.stem + suffix))
 
+    def _clean_caption_segments(
+        self, segments: Any, duration: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Drop zero-length cues and clamp cue ends to measured media duration.
+
+        Whisper and faster-whisper can emit zero-length segments or trailing
+        segments that overrun the media duration. Cues starting at or after the
+        duration are dropped, cue ends are clamped to the duration, and cues
+        whose start and end collapse to the same millisecond are dropped so the
+        generator and strict verifier agree.
+        """
+        cleaned: List[Dict[str, Any]] = []
+        for seg in segments:
+            if isinstance(seg, dict):
+                raw_start = seg.get("start", 0.0)
+                raw_end = seg.get("end", 0.0)
+                raw_text = seg.get("text", "")
+            else:
+                raw_start = getattr(seg, "start_time", getattr(seg, "start", 0.0))
+                raw_end = getattr(seg, "end_time", getattr(seg, "end", 0.0))
+                raw_text = getattr(seg, "text", "")
+
+            if not cue_text(raw_text):
+                continue
+
+            start = float(raw_start)
+            end = float(raw_end)
+
+            if duration is not None and duration > 0:
+                if start >= duration:
+                    continue
+                if end > duration:
+                    end = float(duration)
+
+            start_ms = max(0, int(round(start * 1000)))
+            end_ms = max(0, int(round(end * 1000)))
+            if start_ms >= end_ms:
+                continue
+
+            cleaned.append({"start": start, "end": end, "text": raw_text})
+        return cleaned
+
     def _generate_vtt(self, segments: List[Dict]) -> str:
         """Generate WebVTT caption file content."""
         vtt = "WEBVTT\n\n"
+        cleaned = self._clean_caption_segments(segments, self._media_duration)
         # One cue line per segment; blank segments would make invalid cues.
-        cues = [(seg, text) for seg in segments if (text := cue_text(seg["text"]))]
+        cues = [(seg, text) for seg in cleaned if (text := cue_text(seg["text"]))]
 
         for i, (seg, text) in enumerate(cues, 1):
             start = self._format_timestamp(seg["start"])

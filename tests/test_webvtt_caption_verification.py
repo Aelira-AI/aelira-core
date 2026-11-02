@@ -227,3 +227,64 @@ def test_timestamps_are_formatted_from_whole_milliseconds(tmp_path, seconds, exp
     source.write_bytes(b"media")
     remediator = MultimediaRemediator(str(source), [], RemediationConfig(use_ai=False))
     assert remediator._format_timestamp(seconds) == expected
+
+
+class _MessyProcessor:
+    """Stands in for speech recognition emitting zero-length and overrun segments."""
+
+    def __init__(self, duration=5.2):
+        self.duration = duration
+
+    def process_media(self, path, **options):
+        return type(
+            "Result",
+            (),
+            {
+                "duration": self.duration,
+                "transcription": [
+                    _Segment(0.0, 0.4, "Okay."),
+                    _Segment(0.4001, 0.4004, "Millisecond collapse."),
+                    _Segment(0.4, 2.0, "Welcome to the <biology> lab & more."),
+                    _Segment(2.0, 5.0, "Today we measure plant growth."),
+                    _Segment(5.0, 6.5, "Overrun cue."),
+                    _Segment(5.2, 5.8, "Post duration cue."),
+                    _Segment(6.5, 6.5, "Zero-length trailing segment."),
+                ],
+                "audio_descriptions": [],
+            },
+        )()
+
+
+def test_generator_drops_zero_length_and_clamps_overrun_segments(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"media")
+    issues = [
+        {
+            "rule": "WCAG 1.2.2",
+            "severity": "critical",
+            "message": "Missing captions/transcription for multimedia content",
+        },
+    ]
+    config = RemediationConfig(
+        use_ai=True,
+        fix_alt_text=True,
+        verify_fixes=True,
+        create_backup=False,
+        output_directory=str(tmp_path),
+    )
+    remediator = MultimediaRemediator(str(source), issues, config)
+    remediator._processor = _MessyProcessor(duration=5.2)
+
+    result = remediator.remediate()
+
+    assert result.fixed_count == 1
+    assert result.verification_passed is True
+    assert result.output_file.endswith(".vtt")
+
+    cues = parse_webvtt(open(result.output_file, encoding="utf-8").read())
+    assert [(c.start, c.end, c.text) for c in cues] == [
+        (0.0, 0.4, "Okay."),
+        (0.4, 2.0, "Welcome to the &lt;biology&gt; lab &amp; more."),
+        (2.0, 5.0, "Today we measure plant growth."),
+        (5.0, 5.2, "Overrun cue."),
+    ]
