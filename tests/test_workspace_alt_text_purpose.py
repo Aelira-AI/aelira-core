@@ -292,6 +292,8 @@ def test_local_pdf_reaches_equation_recognition_and_describes_its_other_image(
     ]
     assert [fix.fixed_content for fix in chart_fixes] == [DESCRIPTION]
     assert chart_fixes[0].needs_review is True
+    assert chart_fixes[0].provider_used == "ollama"
+    assert chart_fixes[0].model_used == VISION_MODEL
     assert not [
         manual
         for manual in result.manual_issues
@@ -892,6 +894,8 @@ def test_workspace_equation_with_disagreeing_readings_stays_manual(
         assert "/Formula" not in [role for role, _ in _structure(result.output_file)]
         other = _fixed(result, _issue_ids(remediator, OTHER_INDEX)["missing_alt_text"])
         assert other.fixed_content == DESCRIPTION
+        assert other.provider_used == "ollama"
+        assert other.model_used == VISION_MODEL
     finally:
         result.close_output_claim()
 
@@ -924,5 +928,165 @@ def test_bare_runtime_as_alt_text_client_never_reads_the_equation(
         # described by the same client.
         other = _fixed(result, _issue_ids(remediator, OTHER_INDEX)["missing_alt_text"])
         assert other.fixed_content == DESCRIPTION
+        assert other.provider_used == "ollama"
+        assert other.model_used == VISION_MODEL
     finally:
         result.close_output_claim()
+
+
+def test_workspace_without_vision_provider_reports_provider_unavailable(
+    tmp_path, monkeypatch
+):
+    """Issue #735: A workspace with no image provider reports provider unavailable."""
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.remediation.base import IssueCategory
+    from src.education.remediation.outcome_explanations import manual_explanation
+    from src.jobs import remediation_subprocess
+
+    source = tmp_path / "lecture_no_provider.pdf"
+    _equation_and_chart_pdf(source)
+    issues = (
+        PDFProcessor(generate_alt_text=False, validate_alt_text=False)
+        .process_pdf(str(source))
+        .issues
+    )
+
+    snapshot = WorkspaceProviderSnapshot(
+        workspace_id=WORKSPACE,
+        primary=None,
+        fallback=None,
+        rows={},
+    )
+    runtime = WorkspaceProviderRuntime(
+        WORKSPACE,
+        snapshot_loader=lambda workspace_id: (
+            snapshot if workspace_id == WORKSPACE else None
+        ),
+        decryptor=lambda _ciphertext: pytest.fail("no credential"),
+        provider_factory=lambda _provider_type, _config: pytest.fail("no provider"),
+    )
+    monkeypatch.setattr(
+        "src.ai.workspace_provider_runtime.workspace_provider_runtime",
+        lambda _workspace_id: runtime,
+    )
+
+    remediator = remediation_subprocess._build_remediator(
+        {
+            "scan_type": "PDF",
+            "issues": issues,
+            "options": {"use_ai": True},
+            "workspace_id": WORKSPACE,
+            "lms_binding": None,
+        },
+        source,
+        tmp_path,
+    )
+    result = remediator.remediate()
+
+    assert result.success is True
+    alt_manuals = [
+        manual
+        for manual in result.manual_issues
+        if manual.category is IssueCategory.ALT_TEXT
+        and manual.metadata.get("issue_type") != IMAGE_EQUATION_ISSUE_TYPE
+    ]
+    assert len(alt_manuals) >= 1
+    for manual in alt_manuals:
+        assert manual.reason == "Alt-text AI provider unavailable"
+        assert (
+            manual_explanation(manual)["reason_code"] == "alt_text_provider_unavailable"
+        )
+
+
+def test_pdf_alt_text_response_without_identity_records_unknown(tmp_path, monkeypatch):
+    """Issue #734: PDF alt-text response without identity records unknown, not config default."""
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.remediation.base import IssueCategory
+    from src.jobs import remediation_subprocess
+
+    source = tmp_path / "chart_only.pdf"
+    chart = _png(
+        lambda draw: [
+            draw.rectangle((20 + 40 * index, 50 - 10 * index, 45 + 40 * index, 55))
+            for index in range(4)
+        ]
+    )
+    with fitz.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 50), "Quarterly report chart overview.", fontsize=12)
+        page.insert_image(CHART_RECT, stream=chart)
+        page.insert_textbox(
+            fitz.Rect(72, 200, 540, 700),
+            "Document content with enough readable text to pass OCR checks. " * 20,
+            fontsize=11,
+        )
+        pdf.save(source)
+
+    issues = (
+        PDFProcessor(generate_alt_text=False, validate_alt_text=False)
+        .process_pdf(str(source))
+        .issues
+    )
+
+    class _NoIdentityVisionProvider:
+        def __init__(self, config, ledger):
+            pass
+
+        async def initialize(self):
+            return True
+
+        async def close(self):
+            pass
+
+        async def analyze_image(self, *, image_data, prompt, max_tokens=500):
+            return LLMResponse.success_response(
+                content="A bar chart showing quarterly metrics.",
+                provider="",
+                model="",
+                inference_time=0.01,
+            )
+
+    snapshot = WorkspaceProviderSnapshot(
+        workspace_id=WORKSPACE,
+        primary="ollama",
+        fallback=None,
+        rows={
+            "ollama": WorkspaceProviderRow(
+                provider="ollama",
+                api_key_encrypted=None,
+                text_model=None,
+                code_model=None,
+                vision_model=None,
+            )
+        },
+    )
+    runtime = WorkspaceProviderRuntime(
+        WORKSPACE,
+        snapshot_loader=lambda wid: snapshot if wid == WORKSPACE else None,
+        decryptor=lambda _c: None,
+        provider_factory=lambda _pt, cfg: _NoIdentityVisionProvider(cfg, {}),
+    )
+    monkeypatch.setattr(
+        "src.ai.workspace_provider_runtime.workspace_provider_runtime",
+        lambda _wid: runtime,
+    )
+
+    remediator = remediation_subprocess._build_remediator(
+        {
+            "scan_type": "PDF",
+            "issues": issues,
+            "options": {"use_ai": True},
+            "workspace_id": WORKSPACE,
+            "lms_binding": None,
+        },
+        source,
+        tmp_path,
+    )
+    result = remediator.remediate()
+
+    assert result.success is True, result.error_message
+    fixed = [f for f in result.fixed_issues if f.category is IssueCategory.ALT_TEXT]
+    assert len(fixed) == 1
+    assert fixed[0].provider_used == "unknown"
+    assert fixed[0].model_used == "unknown"
