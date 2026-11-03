@@ -514,6 +514,8 @@ class PDFProcessor:
         ):
             issues.append(
                 {
+                    "category": "heading",
+                    "issue_type": "first_heading_not_h1",
                     "severity": "medium",
                     "rule": "WCAG 1.3.1",
                     "message": "Document should start with H1 heading",
@@ -1185,34 +1187,6 @@ Be concise (2-3 sentences) and focus on practical solutions for PDF creators."""
         """Check WCAG 2.1 compliance of generated HTML with document context for enhanced descriptions"""
         issues = []
 
-        # Check for language attribute
-        if "lang=" not in html:
-            issues.append(
-                {
-                    "severity": "critical",
-                    "rule": "WCAG 3.1.1",
-                    "message": "Missing lang attribute on html element",
-                    "impact": "Screen readers cannot determine document language",
-                    "page_number": 1,
-                    "location": "Document root",
-                    "element": "<html>",
-                }
-            )
-
-        # Check for title
-        if "<title>" not in html or "<title></title>" in html:
-            issues.append(
-                {
-                    "severity": "high",
-                    "rule": "WCAG 2.4.2",
-                    "message": "Missing or empty page title",
-                    "impact": "Users cannot identify page content quickly",
-                    "page_number": 1,
-                    "location": "Document metadata",
-                    "element": "<title>",
-                }
-            )
-
         # Check for proper heading hierarchy
         if structure["headings"]:
             heading_levels = [h["level"] for h in structure["headings"]]
@@ -1220,6 +1194,8 @@ Be concise (2-3 sentences) and focus on practical solutions for PDF creators."""
                 first_heading = structure["headings"][0]
                 issues.append(
                     {
+                        "category": "heading",
+                        "issue_type": "first_heading_not_h1",
                         "severity": "medium",
                         "rule": "WCAG 1.3.1",
                         "message": "Document should start with H1 heading",

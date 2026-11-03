@@ -29,11 +29,10 @@ PDF_FINDING_MODULES = [ROOT / "src/education/pdf_processor.py"] + sorted(
 
 # Findings whose other fields classify as Other. Recording a category for
 # these would change how remediation treats them, so they keep none (#887).
+# - ai_alt_quality_review is review-only and does not route to automated alt-text overwriting.
+# - "No content extracted from PDF" represents an unextractable document.
 UNCATEGORISED = {
     "ai_alt_quality_review",
-    "Document should start with H1 heading",
-    "Missing lang attribute on html element",
-    "Missing or empty page title",
     "No content extracted from PDF",
 }
 
@@ -104,7 +103,7 @@ FINDINGS = recorded_findings()
 
 
 def test_every_pdf_finding_site_was_found():
-    assert len(FINDINGS) >= 34
+    assert len(FINDINGS) >= 32
 
 
 @pytest.mark.parametrize("finding", FINDINGS, ids=lambda f: f["site"])

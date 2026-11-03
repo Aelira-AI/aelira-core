@@ -122,6 +122,11 @@ handled directly:
 | CVE-2026-9538 | libperl5.40, perl, perl-base, perl-modules-5.40 | `vulnerable_code_not_in_execute_path` | Perl Archive::Tar. LaTeX conversion processes LaTeX sources; nothing in the application reads tar archives with Archive::Tar. |
 | CVE-2026-119373 | libsqlite3-0 | `vulnerable_code_not_in_execute_path` | SQLite FTS5 heap buffer overflow in fts5MergeRowidLists. The application uses PostgreSQL and does not use SQLite FTS5 prefix doclists or negative rowids. |
 | CVE-2026-119586 | libsqlite3-0 | `vulnerable_code_not_in_execute_path` | SQLite CLI .recover command injection. The image contains only the libsqlite3-0 library; the sqlite3 CLI tool is not installed and the application never runs .recover. |
+| CVE-2026-119123 | imagemagick, imagemagick-7-common, imagemagick-7.q16, libimage-magick-perl, libimage-magick-q16-perl, libmagickcore-7.q16-10, libmagickwand-7.q16-10 | `vulnerable_code_cannot_be_controlled_by_adversary` | ImageMagick TIFF decoder stack overflow. ImageMagick policy denies the TIFF coder (rights="none" pattern="*"), allowing only PNG and JPEG formats; TIFF processing in the application is handled by Pillow built against libtiff 4.7.2. |
+| CVE-2026-117610 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | libexpat 2.9.0 NULL pointer dereference. The application parses only validated XML and HTML documents within configured size and depth limits; untrusted external entities and DTD parsing are disabled across all XML parsers. |
+| CVE-2026-118370 | libexpat1 | `vulnerable_code_cannot_be_controlled_by_adversary` | libexpat 2.9.0 signed integer overflow. The application parses only validated XML and HTML documents within configured size and depth limits; untrusted external entities and DTD parsing are disabled across all XML parsers. |
+| CVE-2026-109089 | libxi6 | `vulnerable_code_not_in_execute_path` | libXi client-side buffer overflow handling DEVICE_RESOLUTION from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
+| CVE-2026-109090 | libxi6 | `vulnerable_code_not_in_execute_path` | libXi client-side heap overflow handling DEVICE_RESOLUTION from a malicious X server. The container has no X server and the browser runs headless without an X connection. |
 
 ## Corrections after publication
 
