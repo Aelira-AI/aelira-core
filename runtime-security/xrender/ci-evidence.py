@@ -316,7 +316,7 @@ def export(args):
         with tempfile.TemporaryDirectory(prefix='aelira-xrender-abi-') as work:
             for label, package in [('original', args.source / 'provenance/toolchain-debs' / original_deb),
                                    ('candidate', args.source / 'build-a' / runtime_deb)]:
-                payload = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', str(package)], timeout=30)
+                payload = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', str(package)], timeout=120)
                 with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
                     library_dir = './usr/lib/' + triplet + '/'
                     link = archive.getmember(library_dir + 'libXrender.so.1')
@@ -328,17 +328,17 @@ def export(args):
                     data = archive.extractfile(member).read()
                 path = Path(work) / (label + '.so')
                 path.write_bytes(data)
-                header = subprocess.check_output(['readelf', '-h', str(path)], text=True, timeout=30)
+                header = subprocess.check_output(['readelf', '-h', str(path)], text=True, timeout=120)
                 machine = {'arm64': 'AArch64', 'amd64': 'Advanced Micro Devices X86-64'}[args.arch]
                 if re.findall(r'Machine:\s+([^\n]+)', header) != [machine] or re.findall(r'Class:\s+([^\n]+)', header) != ['ELF64']:
                     raise ValueError('Packaged library architecture mismatch')
                 if label == 'candidate' and (hashlib.sha256(data).hexdigest() != installed_hash or installed_path != '/usr/lib/' + triplet + '/' + link.linkname):
                     raise ValueError('Installed library differs from package')
-                dynamic = subprocess.check_output(['readelf', '-d', str(path)], text=True, timeout=30)
+                dynamic = subprocess.check_output(['readelf', '-d', str(path)], text=True, timeout=120)
                 if re.findall(r'\(SONAME\).*\[([^]]+)\]', dynamic) != ['libXrender.so.1']:
                     raise ValueError('Packaged SONAME mismatch')
                 symbols.append(sorted([line.split()[:2] for line in subprocess.check_output(
-                    ['nm', '-D', '--defined-only', '--format=posix', str(path)], text=True, timeout=30).splitlines()]))
+                    ['nm', '-D', '--defined-only', '--format=posix', str(path)], text=True, timeout=120).splitlines()]))
         if symbols[0] != symbols[1] or len(symbols[0]) != 47:
             raise ValueError('Public ABI mismatch')
         receipt['installed'] = {'version': '1:0.9.12-1build1+aelira1', 'library_sha256': installed_hash,

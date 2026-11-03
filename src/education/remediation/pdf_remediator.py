@@ -1811,7 +1811,10 @@ class PdfRemediator(BaseRemediator):
                 reason=(
                     (
                         "Alt-text AI provider unavailable"
-                        if self.alt_text_client is None
+                        if (
+                            self.alt_text_client is None
+                            or self._alt_text_provider_unavailable(issue)
+                        )
                         else (
                             IMAGE_DESCRIPTION_MATH_NOT_SPEAKABLE_REASON
                             if self._math_description_refused(issue)
@@ -1830,7 +1833,7 @@ class PdfRemediator(BaseRemediator):
             return
 
         # Determine fix method, confidence, and model BEFORE applying
-        fix_method, confidence, model_used = self._compute_fix_metadata(
+        fix_method, confidence, model_used, provider_used = self._compute_fix_metadata(
             issue, fix_content
         )
 
@@ -1851,6 +1854,7 @@ class PdfRemediator(BaseRemediator):
                     or bool(issue.metadata.get("heading_needs_review"))
                     or issue.category == IssueCategory.READING_ORDER
                 ),
+                provider_used=provider_used,
                 model_used=model_used,
                 wcag_criteria=wcag,
                 page_number=page_num,
@@ -1904,24 +1908,26 @@ class PdfRemediator(BaseRemediator):
             )
             self.result.failed_count += 1
 
-    def _compute_fix_metadata(self, issue: RemediationIssue, fix_content: str) -> tuple:
-        """Determine the FixMethod, confidence score, and model_used for an issue.
+    def _compute_fix_metadata(
+        self, issue: RemediationIssue, fix_content: str
+    ) -> tuple[FixMethod, float, Optional[str], Optional[str]]:
+        """Determine the FixMethod, confidence score, model_used, and provider_used for an issue.
 
         Returns:
-            (FixMethod, confidence: float, model_used: Optional[str])
+            (FixMethod, confidence: float, model_used: Optional[str], provider_used: Optional[str])
         """
         # --- Rule-based categories ---
         if issue.category == IssueCategory.LANGUAGE:
             confidence = self._confidence.calculate(FixMethod.RULE, verified=True)
-            return FixMethod.RULE, confidence, None
+            return FixMethod.RULE, confidence, None, None
 
         if issue.category == IssueCategory.TITLE:
             confidence = self._confidence.calculate(FixMethod.RULE, verified=True)
-            return FixMethod.RULE, confidence, None
+            return FixMethod.RULE, confidence, None, None
 
         if issue.category == IssueCategory.STRUCTURE:
             confidence = self._confidence.calculate(FixMethod.RULE, verified=True)
-            return FixMethod.RULE, confidence, None
+            return FixMethod.RULE, confidence, None, None
 
         # --- Heuristic categories ---
         if issue.category == IssueCategory.HEADING:
@@ -1935,7 +1941,7 @@ class PdfRemediator(BaseRemediator):
             confidence = self._confidence.calculate(
                 FixMethod.HEURISTIC, signal_strength=signal
             )
-            return FixMethod.HEURISTIC, confidence, None
+            return FixMethod.HEURISTIC, confidence, None, None
 
         if issue.category == IssueCategory.NAVIGATION:
             # Bookmarks are heuristic — derived from heading detection
@@ -1944,23 +1950,23 @@ class PdfRemediator(BaseRemediator):
             confidence = self._confidence.calculate(
                 FixMethod.HEURISTIC, signal_strength=signal
             )
-            return FixMethod.HEURISTIC, confidence, None
+            return FixMethod.HEURISTIC, confidence, None, None
 
         # --- Reading order (heuristic) ---
         if issue.category == IssueCategory.READING_ORDER:
             # Confidence comes from the ReadingOrderFixResult stored on the issue
             ro_confidence = issue.metadata.get("reading_order_confidence", 0.7)
-            return FixMethod.HEURISTIC, ro_confidence, None
+            return FixMethod.HEURISTIC, ro_confidence, None, None
 
         # --- Table (heuristic + optional AI vision) ---
         if issue.category == IssueCategory.TABLE:
             # Confidence comes from the TableTagResult stored on the issue
             table_confidence = issue.metadata.get("table_confidence", 0.7)
-            return FixMethod.HEURISTIC, table_confidence, None
+            return FixMethod.HEURISTIC, table_confidence, None, None
 
         # --- List (heuristic) ---
         if issue.category == IssueCategory.LIST:
-            return FixMethod.HEURISTIC, 0.8, None
+            return FixMethod.HEURISTIC, 0.8, None, None
 
         # --- AI categories ---
         if issue.category == IssueCategory.ALT_TEXT:
@@ -1974,7 +1980,7 @@ class PdfRemediator(BaseRemediator):
                 confidence = self._confidence.calculate(
                     FixMethod.AI_TEXT, context_quality=0.6
                 )
-                return FixMethod.AI_TEXT, confidence, None
+                return FixMethod.AI_TEXT, confidence, None, None
 
             if self.config.fix_alt_text and self.alt_text_client:
                 # We used AI to generate the alt text
@@ -1987,18 +1993,33 @@ class PdfRemediator(BaseRemediator):
                 confidence = self._confidence.calculate(
                     FixMethod.AI_VISION, context_quality=context_quality
                 )
-                model_name = getattr(self.config, "ai_model", "gemini")
-                return FixMethod.AI_VISION, confidence, model_name
+                provider_name = (
+                    issue.metadata.get("alt_text_provider_used")
+                    or issue.metadata.get("provider_used")
+                    or self._bounded_identity(
+                        getattr(self.alt_text_client, "provider", None), 64
+                    )
+                    or "unknown"
+                )
+                model_name = (
+                    issue.metadata.get("alt_text_model_used")
+                    or issue.metadata.get("model_used")
+                    or self._bounded_identity(
+                        getattr(self.alt_text_client, "model", None), 50
+                    )
+                    or "unknown"
+                )
+                return FixMethod.AI_VISION, confidence, model_name, provider_name
 
             # Fallback alt text (generic placeholder)
             confidence = self._confidence.calculate(
                 FixMethod.AI_TEXT, context_quality=0.2
             )
-            return FixMethod.AI_TEXT, confidence, None
+            return FixMethod.AI_TEXT, confidence, None, None
 
         # Default fallback
         confidence = self._confidence.calculate(FixMethod.HEURISTIC)
-        return FixMethod.HEURISTIC, confidence, None
+        return FixMethod.HEURISTIC, confidence, None, None
 
     # ------------------------------------------------------------------
     # Working-copy staging and OCR preprocessing
@@ -5547,6 +5568,25 @@ class PdfRemediator(BaseRemediator):
         does not succeed. A description is never generated from the surrounding
         page text, so the issue stays open for human review instead.
         """
+        if client is None or not hasattr(client, "analyze_image_sync"):
+            self._record_alt_text_provider_unavailable(issue)
+            return None
+
+        if hasattr(client, "health_check"):
+            try:
+                health = client.health_check()
+                if isinstance(health, dict) and health.get("error") in {
+                    "workspace_provider_not_selected",
+                    "workspace_provider_unavailable",
+                    "primary_provider_not_selected",
+                    "alt_text_provider_unavailable",
+                    "provider_unavailable",
+                }:
+                    self._record_alt_text_provider_unavailable(issue)
+                    return None
+            except Exception:
+                pass
+
         page_num = issue.metadata.get("page_number", 1)
         image_xref = issue.metadata.get("image_xref")
 
@@ -5555,7 +5595,7 @@ class PdfRemediator(BaseRemediator):
             try:
                 img_info = self._pdf.extract_image(image_xref)
                 image_bytes = img_info.get("image") if img_info else None
-                if image_bytes and hasattr(client, "analyze_image_sync"):
+                if image_bytes:
                     vision_prompt = (
                         f"Generate concise, descriptive alt text for this image from a PDF document "
                         f"(page {page_num}). Be concise (under 125 characters). "
@@ -5570,7 +5610,18 @@ class PdfRemediator(BaseRemediator):
                         prompt=vision_prompt,
                         max_tokens=200,
                     )
-                    if result.get("success") and result.get("content"):
+                    if not result.get("success"):
+                        if result.get("error") in {
+                            "workspace_provider_not_selected",
+                            "workspace_provider_unavailable",
+                            "primary_provider_not_selected",
+                            "alt_text_provider_unavailable",
+                            "provider_unavailable",
+                        }:
+                            self._record_alt_text_provider_unavailable(issue)
+                        return None
+
+                    if result.get("content"):
                         alt_text = result["content"].strip().strip("\"'")
                         if alt_text:
                             # A description that carries mathematical markup
@@ -5579,6 +5630,22 @@ class PdfRemediator(BaseRemediator):
                             if refuse_math_markup(alt_text) is None:
                                 self._record_math_description_refusal(issue)
                                 return None
+                            provider_used = (
+                                self._bounded_identity(result.get("provider"), 64)
+                                or self._bounded_identity(
+                                    getattr(client, "provider", None), 64
+                                )
+                                or "unknown"
+                            )
+                            model_used = (
+                                self._bounded_identity(result.get("model"), 50)
+                                or self._bounded_identity(
+                                    getattr(client, "model", None), 50
+                                )
+                                or "unknown"
+                            )
+                            issue.metadata["alt_text_provider_used"] = provider_used
+                            issue.metadata["alt_text_model_used"] = model_used
                             return alt_text[:125]
             except Exception as e:
                 logger.warning(

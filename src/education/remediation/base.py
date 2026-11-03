@@ -1679,6 +1679,33 @@ class BaseRemediator(ABC):
         """Whether this issue's proposed description was refused for mathematics."""
         return issue.id in self.__dict__.get("_math_description_refusals", ())
 
+    def _record_alt_text_provider_unavailable(self, issue: RemediationIssue) -> None:
+        """Note that no alt-text AI provider was available for this issue."""
+        self.__dict__.setdefault("_alt_text_provider_unavailable_issues", set()).add(
+            issue.id
+        )
+
+    def _alt_text_provider_unavailable(self, issue: RemediationIssue) -> bool:
+        """Whether this issue could not obtain an alt-text AI provider."""
+        return issue.id in self.__dict__.get(
+            "_alt_text_provider_unavailable_issues", ()
+        )
+
+    @staticmethod
+    def _bounded_identity(value: Any, max_length: int = 200) -> Optional[str]:
+        """Validate and return a bounded printable identity string."""
+        if hasattr(value, "value") and isinstance(value.value, str):
+            value = value.value
+        if not isinstance(value, str) or not value or len(value) > max_length:
+            return None
+        if value != value.strip():
+            return None
+        if not value.isprintable() or "\x00" in value:
+            return None
+        if value.casefold() == "cached":
+            return None
+        return value
+
     def _get_client_for_issue(self, issue: RemediationIssue) -> Optional[Any]:
         """Return the only client permitted for an issue's AI purpose."""
         if issue.category in {IssueCategory.ALT_TEXT, IssueCategory.CHART}:
