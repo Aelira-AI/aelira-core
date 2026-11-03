@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Pin expected SHA-256 digests in native test fetchers for Pillow, consumer wheels, and the Python consumer fixture instead of trusting reported PyPI digests ([#839](https://github.com/Aelira-AI/aelira-core/issues/839)).
 - Disposition Debian 13 `libsqlite3-0` advisories CVE-2026-119373 and CVE-2026-119586 with VEX justifications, and harden TIFF native package download with curl retry flags ([#924](https://github.com/Aelira-AI/aelira-core/issues/924)).
 - Upgrade transitive `minimatch` to 11.0.3 via package overrides in the dashboard and CLI to resolve denial of service via pattern amplification (CVE-2026-118764, [#922](https://github.com/Aelira-AI/aelira-core/issues/922)).
 - Upgrade `cbor2` to 5.9.0, `pyasn1` to 0.6.5, and `pypdf` to 6.21.4 to address known vulnerability disclosures.
