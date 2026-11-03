@@ -741,13 +741,12 @@ Connect Google Workspace, Microsoft 365, Canvas LMS, Blackboard Learn, Moodle LM
 
 **Privacy first:** after connecting Google Workspace or Microsoft 365, you must explicitly select which folders to sync. By default, NO files are synced until you choose folders with `aelira integrations folders`.
 
-> **Known limitation:** the API's Blackboard and Moodle connect endpoints require a `department_id` in the request body, and this command does not send one, so `aelira integrations connect blackboard` and `aelira integrations connect moodle` are rejected with a validation error. Google, Microsoft, Canvas, and Brightspace do not need it.
-
 ```bash
 aelira integrations connect [provider]
   --api-url <url>
   --api-key <key>
   --instance-url <url>      # LMS instance URL (required for Canvas, Blackboard, Moodle, Brightspace)
+  --department <id>         # Department ID (required for Blackboard and Moodle; defaults to configured department)
 ```
 
 | Provider | What it connects | Status |
@@ -848,24 +847,31 @@ Folder access:
 
 ### `aelira integrations sync`
 
-Trigger file sync. Background sync covers Google Workspace and Microsoft 365 only; the API rejects any other provider. Sync jobs discover new files, detect changes, and queue accessibility scans.
-
-> **Known limitation:** the API's `POST /integrations/sync` endpoint requires a `provider` (`google` or `microsoft`) and a list of selected `folder_ids`, and this command currently sends an empty body, so the API rejects it with a validation error. Until the command is updated, call the endpoint directly with both fields.
+Trigger file sync. Background sync covers Google Workspace and Microsoft 365; sync jobs discover new files, detect changes, and queue accessibility scans. When `--folder-ids` is omitted, the command syncs all active sync folders configured via `aelira integrations folders`.
 
 ```bash
 aelira integrations sync
   --api-url <url>
   --api-key <key>
+  --provider google|microsoft
+  --folder-ids <id1,id2>    # Optional explicit sync folder IDs
+  --format console|json
 ```
 
 Examples:
 
 ```bash
-# Trigger sync (currently rejected by the API; see the limitation above)
+# Trigger sync for all active folders across connected providers
 aelira integrations sync
 
-# Sync with a specific API endpoint
-aelira integrations sync --api-url http://localhost:8000 --api-key your-api-key
+# Sync active folders for Google Workspace
+aelira integrations sync --provider google
+
+# Sync specific folders for Microsoft 365
+aelira integrations sync --provider microsoft --folder-ids folder-1,folder-2
+
+# Sync with a specific API endpoint and output JSON
+aelira integrations sync --provider google --format json --api-url http://localhost:8000 --api-key your-api-key
 ```
 
 <details>

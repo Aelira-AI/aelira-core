@@ -3,7 +3,7 @@ import { Args, Command, Flags } from '@oclif/core'
 import pc from 'picocolors'
 
 import { ApiClient } from '../../utils/api-client.js'
-import { getApiUrl } from '../../utils/config.js'
+import { getApiUrl, getDepartment } from '../../utils/config.js'
 
 interface LmsProvider {
   bodyField: string
@@ -84,8 +84,15 @@ static flags = {
     'api-url': Flags.string({
       description: 'Aelira API URL',
     }),
+    department: Flags.string({
+      description: 'Department ID (required for Blackboard and Moodle; defaults to configured department)',
+    }),
     'instance-url': Flags.string({
-      description: 'LMS instance URL (required for Canvas/Blackboard/Moodle)',
+      description: 'LMS instance URL (required for Canvas/Blackboard/Moodle/Brightspace)',
+    }),
+    open: Flags.boolean({
+      allowNo: true,
+      description: 'Automatically open the authorization URL in your browser',
     }),
   }
 
@@ -123,12 +130,22 @@ static flags = {
       const apiUrl = await getApiUrl(flags['api-url'])
       const api = new ApiClient({ apiKey: flags['api-key'], apiUrl })
 
-      const body: any = {
-        redirect_uri: `${apiUrl}/${provider}/callback`,
+      const department = flags.department || (await getDepartment())
+      const redirectUri =
+        provider === 'blackboard'
+          ? `${apiUrl}/blackboard/oauth/callback`
+          : `${apiUrl}/${provider}/callback`
+
+      const body: Record<string, unknown> = {
+        redirect_uri: redirectUri,
       }
 
       if (lms && instanceUrl) {
         body[lms.bodyField] = instanceUrl
+      }
+
+      if (provider === 'blackboard' || provider === 'moodle' || provider === 'brightspace') {
+        body.department_id = department
       }
 
       const response = await api.post(`/${provider}/connect`, body)
@@ -150,9 +167,17 @@ static flags = {
         'Next Steps'
       )
 
-      const shouldOpen = await confirm({
-        message: 'Would you like to open the authorization URL in your browser now?',
-      })
+      let shouldOpen = flags.open
+      if (shouldOpen === undefined) {
+        if (process.stdin.isTTY && process.env.NODE_ENV !== 'test') {
+          const answer = await confirm({
+            message: 'Would you like to open the authorization URL in your browser now?',
+          })
+          shouldOpen = answer === true
+        } else {
+          shouldOpen = false
+        }
+      }
 
       if (shouldOpen === true) {
         const { default: open } = await import('open')
