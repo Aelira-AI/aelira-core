@@ -1260,6 +1260,110 @@
       "reviewed": "2026-11-01",
       "expires": "2027-01-30",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-119123",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "ImageMagick TIFF decoder stack overflow. ImageMagick policy denies the TIFF coder (rights=\"none\" pattern=\"*\"), allowing only PNG and JPEG formats; TIFF processing in the application is handled by Pillow built against libtiff 4.7.2.",
+      "reviewed": "2026-11-03",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-117610",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.9.0-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "libexpat 2.9.0 NULL pointer dereference. The application parses only validated XML and HTML documents within configured size and depth limits; untrusted external entities and DTD parsing are disabled across all XML parsers.",
+      "reviewed": "2026-11-03",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-118370",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.9.0-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "libexpat 2.9.0 signed integer overflow. The application parses only validated XML and HTML documents within configured size and depth limits; untrusted external entities and DTD parsing are disabled across all XML parsers.",
+      "reviewed": "2026-11-03",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-109089",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxi6",
+          "installedVersion": "2:1.8.2-1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libXi client-side buffer overflow handling DEVICE_RESOLUTION from a malicious X server. The container has no X server and the browser runs headless without an X connection.",
+      "reviewed": "2026-11-03",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-109090",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libxi6",
+          "installedVersion": "2:1.8.2-1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libXi client-side heap overflow handling DEVICE_RESOLUTION from a malicious X server. The container has no X server and the browser runs headless without an X connection.",
+      "reviewed": "2026-11-03",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
