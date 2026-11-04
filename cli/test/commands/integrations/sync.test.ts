@@ -1,17 +1,17 @@
 import { runCommand } from '@oclif/test'
 import { expect } from 'chai'
-import { createServer, Server, IncomingMessage, ServerResponse } from 'node:http'
+import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http'
 import { AddressInfo } from 'node:net'
 
 describe('integrations sync command', () => {
   let server: Server
   let apiUrl: string
   let lastSyncRequest: {
-    url?: string
-    method?: string
     body?: any
+    method?: string
+    url?: string
   } = {}
-  let syncFoldersResponse: any = {
+  const syncFoldersResponse: any = {
     folders: [
       { id: 'f-1', provider: 'google', is_active: true },
       { id: 'f-2', provider: 'google', is_active: true },

@@ -6,14 +6,12 @@ import { ApiClient, ApiError } from '../../utils/api-client.js'
 
 export default class IntegrationsSync extends Command {
   static description = 'Trigger file sync from connected cloud providers'
-
   static examples = [
     '<%= config.bin %> <%= command.id %>',
     '<%= config.bin %> <%= command.id %> --provider google',
     '<%= config.bin %> <%= command.id %> --provider microsoft --folder-ids folder-1,folder-2',
     '<%= config.bin %> <%= command.id %> --format json',
   ]
-
   static flags = {
     'api-key': Flags.string({
       description: 'API key for authentication (optional in development)',

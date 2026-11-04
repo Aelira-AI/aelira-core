@@ -1,15 +1,15 @@
 import { runCommand } from '@oclif/test'
 import { expect } from 'chai'
-import { createServer, Server, IncomingMessage, ServerResponse } from 'node:http'
+import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http'
 import { AddressInfo } from 'node:net'
 
 describe('integrations connect command', () => {
   let server: Server
   let apiUrl: string
   let lastRequest: {
-    url?: string
-    method?: string
     body?: any
+    method?: string
+    url?: string
   } = {}
 
   beforeEach(async () => {

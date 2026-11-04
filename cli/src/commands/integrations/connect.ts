@@ -173,13 +173,13 @@ static flags = {
           const answer = await confirm({
             message: 'Would you like to open the authorization URL in your browser now?',
           })
-          shouldOpen = answer === true
+          shouldOpen = Boolean(answer)
         } else {
           shouldOpen = false
         }
       }
 
-      if (shouldOpen === true) {
+      if (shouldOpen) {
         const { default: open } = await import('open')
         await open(authUrl)
         outro(`Browser opened! Complete the authorization flow to continue.`)
