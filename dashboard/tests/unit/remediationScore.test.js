@@ -137,4 +137,65 @@ describe('measured remediation scores', () => {
     assert.equal(freshScoreComparison({ ...mismatched,
       fresh_score_comparison: { ...fresh, output_sha256: 'invalid' } }), null);
   });
+  it('explains when score is held at the 49-point critical finding cap', () => {
+    const cappedJob = {
+      ...job,
+      original_score: 49.0,
+      remediated_score: 49.0,
+      score_measurement: {
+        ...job.score_measurement,
+        source_score: 49.0,
+        output_score: 49.0,
+      },
+      issue_outcomes: [
+        { source_index: 0, status: 'manual' },
+        { source_index: 1, status: 'fixed' },
+      ],
+    };
+    const cappedScan = {
+      compliance_score: 49.0,
+      issues: [
+        { description: 'Image missing alternative text', severity: 'critical' },
+        { description: 'Document title missing', severity: 'medium' },
+      ],
+    };
+    const result = remediationScore(cappedJob, cappedScan);
+    assert.equal(result.before, 49.0);
+    assert.equal(result.after, 49.0);
+    assert.equal(result.deltaLabel, '0.0 points');
+    assert.equal(result.title, 'Score unchanged — held at critical-finding cap');
+    assert.equal(result.remediatedCapped, true);
+    assert.equal(result.originalCapped, true);
+    assert.deepEqual(result.criticalFindings, ['Image missing alternative text']);
+    assert.match(result.description, /held at the 49\/100 cap because critical findings remain/);
+    assert.match(result.description, /Image missing alternative text/);
+  });
+  it('notes when resolving all critical findings lifts the cap', () => {
+    const liftedJob = {
+      ...job,
+      original_score: 49.0,
+      remediated_score: 95.0,
+      score_measurement: {
+        ...job.score_measurement,
+        source_score: 49.0,
+        output_score: 95.0,
+      },
+      issue_outcomes: [
+        { source_index: 0, status: 'fixed' },
+        { source_index: 1, status: 'fixed' },
+      ],
+    };
+    const cappedScan = {
+      compliance_score: 49.0,
+      issues: [
+        { description: 'Image missing alternative text', severity: 'critical' },
+        { description: 'Document title missing', severity: 'medium' },
+      ],
+    };
+    const result = remediationScore(liftedJob, cappedScan);
+    assert.equal(result.originalCapped, true);
+    assert.equal(result.remediatedCapped, false);
+    assert.deepEqual(result.criticalFindings, []);
+    assert.match(result.description, /lifted the cap/);
+  });
 });
