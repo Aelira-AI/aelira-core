@@ -276,8 +276,9 @@ test.describe('document journeys', () => {
     expect(job.fixed_count, 'only the title could be fixed').toBe(1);
     expect(job.manual_count, 'the picture is left to a person').toBe(1);
     expect(job.remaining_count).toBe(1);
-    await expect(page.getByRole('heading', { name: /Manual work remaining \(1\)/ })).toBeVisible();
-    await expect(page.getByText('Image 1 is missing alternative text')).toBeVisible();
+    const manual = page.getByRole('region', { name: /Manual work remaining \(1\)/ });
+    await expect(manual.getByRole('heading', { name: /Manual work remaining \(1\)/ })).toBeVisible();
+    await expect(manual.getByText('Image 1 is missing alternative text')).toBeVisible();
     await assertNoBlockingViolations(page, 'remediation-partial-picture-without-alt.docx', testInfo);
 
     // The saved package: the title was added, and the picture still has no description at all.
