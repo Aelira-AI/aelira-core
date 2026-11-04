@@ -1364,6 +1364,221 @@
       "reviewed": "2026-11-03",
       "expires": "2027-01-30",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-109258",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        }
+      ],
+      "status": "not_affected",
+      "reason": "ImageMagick invalid free when FX runtime entry initialization fails. The FX engine runs only for the -fx operator or the fx coder; no application code path issues -fx, and the shipped policy denies every coder except {PNG,JPEG,JPG} read/write, so the fx coder is unreachable.",
+      "reviewed": "2026-11-04",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md",
+      "justification": "vulnerable_code_not_in_execute_path"
+    },
+    {
+      "id": "CVE-2026-109260",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        }
+      ],
+      "status": "affected",
+      "reason": "ImageMagick PNG encoder memory leak when libpng initialization fails. PNG encoding is an allowed path; the leak occurs only on libpng initialization failure and is a denial of service only, bounded by the worker container memory limit and MAGICK_TIME_LIMIT. No integrity or confidentiality impact; acceptance pending the Debian trixie backport of upstream 7.1.2-32.",
+      "reviewed": "2026-11-04",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-109262",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        }
+      ],
+      "status": "not_affected",
+      "reason": "ImageMagick SVG encoder (WriteSVGImage) memory leak. SVG encoding requires write rights on the SVG coder; the shipped policy denies every coder except {PNG,JPEG,JPG} read/write, so the SVG encoder is unreachable.",
+      "reviewed": "2026-11-04",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md",
+      "justification": "vulnerable_code_not_in_execute_path"
+    },
+    {
+      "id": "CVE-2026-109263",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        }
+      ],
+      "status": "not_affected",
+      "reason": "ImageMagick YUV encoder memory leak. YUV encoding requires write rights on the YUV coder; the shipped policy denies every coder except {PNG,JPEG,JPG} read/write, so the YUV encoder is unreachable.",
+      "reviewed": "2026-11-04",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md",
+      "justification": "vulnerable_code_not_in_execute_path"
+    },
+    {
+      "id": "CVE-2026-109268",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "imagemagick",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7-common",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "imagemagick-7.q16",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libimage-magick-q16-perl",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickcore-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        },
+        {
+          "name": "libmagickwand-7.q16-10",
+          "installedVersion": "8:7.1.1.43+dfsg1-1+deb13u13"
+        }
+      ],
+      "status": "not_affected",
+      "reason": "ImageMagick PDF writer use-after-free writing CMYK images with JPEG2000 compression. Triggering requires PDF write rights; the shipped policy grants PDF read only (rights=\"read\" pattern=\"{EPS,PDF,PAM}\"), so the PDF writer is unreachable.",
+      "reviewed": "2026-11-04",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md",
+      "justification": "vulnerable_code_not_in_execute_path"
+    },
+    {
+      "id": "CVE-2026-113351",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.9.0-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "libexpat denial of service via XML_ParserReset accumulating tracked heap allocations across documents. Exploitation requires reusing one reset parser instance across documents; the image parses XML only through CPython pyexpat, which instantiates a fresh parser per parse and is never reset and reused across documents.",
+      "reviewed": "2026-11-04",
+      "expires": "2027-01-30",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
