@@ -39,12 +39,28 @@ export function ScoreComparison({ job, scan }: {
       <div className="rounded-lg border border-[var(--border-primary)] p-4">
         <p className="text-sm text-tertiary">Original score</p>
         <p className="mt-2 text-xl font-semibold text-primary">{displayScore(comparison.before)}</p>
+        {comparison.originalCapped && (
+          <p className="mt-1 text-xs font-medium text-[var(--feature-warning-content)]">Held at 49/100 critical cap</p>
+        )}
       </div>
       <div className="rounded-lg border border-[var(--border-primary)] p-4">
         <p className="text-sm text-tertiary">Remediated score</p>
         <p className="mt-2 text-xl font-semibold text-primary">{displayScore(comparison.after)}</p>
+        {comparison.remediatedCapped && (
+          <p className="mt-1 text-xs font-medium text-[var(--feature-warning-content)]">Held at 49/100 critical cap</p>
+        )}
       </div>
       <p className="text-sm text-secondary sm:col-span-2">Measured score change: {comparison.deltaLabel}. {comparison.description}</p>
+      {comparison.remediatedCapped && comparison.criticalFindings.length > 0 && (
+        <div className="rounded-lg border border-[var(--border-warning)] bg-[var(--bg-warning-subtle)] p-3 sm:col-span-2">
+          <p className="text-sm font-semibold text-primary">Critical findings holding score at 49/100:</p>
+          <ul className="mt-1 list-inside list-disc text-sm text-secondary">
+            {comparison.criticalFindings.map((finding, idx) => (
+              <li key={idx}>{finding}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {comparison.reasonCode && (
         <p className="text-sm text-tertiary sm:col-span-2">Verification reason: <code>{comparison.reasonCode}</code></p>
       )}

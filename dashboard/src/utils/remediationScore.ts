@@ -1,9 +1,25 @@
-import type { RemediationJobStatus } from '../api/scans';
+import type { RecordedRemediationOutcome, RemediationJobStatus } from '../api/scans';
+
+export interface RemediationIssueLike {
+  id?: string;
+  description?: string;
+  title?: string;
+  severity?: string;
+  issue_type?: string;
+}
+
+export type RemediationScanLike = {
+  compliance_score?: number | null;
+  result?: { compliance_score?: number | null; issues?: RemediationIssueLike[] };
+  issues?: RemediationIssueLike[];
+};
 
 export type RemediationScoreJob = Partial<Pick<RemediationJobStatus,
   'original_score' | 'remediated_score' | 'score_verified' | 'human_review_required'
   | 'score_verification_reason' | 'score_measurement' | 'download_available'
-  | 'fresh_score_comparison'>>;
+  | 'fresh_score_comparison'>> & {
+    issue_outcomes?: RecordedRemediationOutcome[] | null;
+  };
 
 const REASONS = {
   original_file_missing: 'The original file is unavailable, so its score could not be measured.',
@@ -49,8 +65,10 @@ export function freshScoreComparison(job: RemediationScoreJob) {
   };
 }
 
-export function remediationScore(job: RemediationScoreJob,
-  scan: { compliance_score?: number | null; result?: { compliance_score?: number | null } }) {
+export function remediationScore(
+  job: RemediationScoreJob,
+  scan: RemediationScanLike
+) {
   const persisted = measuredScore(scan.compliance_score) ?? measuredScore(scan.result?.compliance_score);
   const original = measuredScore(job.original_score);
   const output = measuredScore(job.remediated_score);
@@ -76,15 +94,66 @@ export function remediationScore(job: RemediationScoreJob,
   const after = reasonCode === null && job.score_verified === true && hasMeasurement ? output : null;
   const delta = before !== null && after !== null ? after - before : null;
   const success = delta !== null && delta > 0 && job.human_review_required === false;
-  const title = delta === null ? (job.download_available === true ? 'Output needs review' : 'Manual review required')
-    : delta < 0 ? 'Score decreased — review required'
-    : delta === 0 ? 'Score unchanged' : 'Measured score increased';
-  const description = delta === null
+
+  const scanIssues = scan.issues || scan.result?.issues || [];
+  const originalCriticalIssues = scanIssues.filter(
+    (issue) => String(issue?.severity || '').toLowerCase() === 'critical'
+  );
+
+  const outcomes = job.issue_outcomes || [];
+  const remainingCriticalIssues = originalCriticalIssues.filter((issue, index) => {
+    const isFixed = outcomes.some(
+      (outcome) =>
+        ((outcome.issue_id && issue.id && outcome.issue_id === issue.id) ||
+         (outcome.source_index === index)) &&
+        outcome.status === 'fixed'
+    );
+    return !isFixed;
+  });
+
+  const criticalFindings = remainingCriticalIssues
+    .map((issue) => issue.description || issue.title || issue.issue_type || 'Critical accessibility finding')
+    .filter(Boolean);
+
+  const CRITICAL_CAP = 49.0;
+  const originalCapped = before !== null && Number(before.toFixed(1)) <= CRITICAL_CAP && (originalCriticalIssues.length > 0 || Number(before.toFixed(1)) === CRITICAL_CAP);
+  const remediatedCapped = after !== null && Number(after.toFixed(1)) <= CRITICAL_CAP && (remainingCriticalIssues.length > 0 || (originalCriticalIssues.length === 0 && Number(after.toFixed(1)) === CRITICAL_CAP));
+
+  const title = delta === null
+    ? (job.download_available === true ? 'Output needs review' : 'Manual review required')
+    : delta < 0
+    ? 'Score decreased — review required'
+    : delta === 0
+    ? (remediatedCapped ? 'Score unchanged — held at critical-finding cap' : 'Score unchanged')
+    : 'Measured score increased';
+
+  const criticalFindingsList = criticalFindings.length > 0 ? `: ${criticalFindings.join(', ')}` : '';
+  const capExplanation = remediatedCapped
+    ? `The remediated score is held at the 49/100 cap because critical findings remain${criticalFindingsList}. The score cannot exceed 49 until all critical findings are resolved.`
+    : originalCapped && after !== null && after > CRITICAL_CAP
+    ? 'The original score was held at the 49/100 critical cap; resolving all critical findings lifted the cap.'
+    : '';
+
+  const defaultDescription = delta === null
     ? `${reasonCode ? REASONS[reasonCode] : REASONS.incomplete_comparison} ${job.download_available === true
       ? 'Review the output before use.' : 'Review the original document and unresolved findings; no downloadable output is available.'}`
-    : delta < 0 ? 'The output scored lower on the same scanner. Review the remaining findings and changes before use.'
+    : delta < 0
+    ? 'The output scored lower on the same scanner. Review the remaining findings and changes before use.'
     : 'Both scores use the same scanner. Automated scores do not establish accessibility conformance. Review all changes before use.';
+
+  const description = capExplanation ? `${capExplanation} ${defaultDescription}` : defaultDescription;
   const roundedDelta = delta === null ? null : Number(delta.toFixed(1));
-  return { before, after, success, title, description, reasonCode,
-    deltaLabel: roundedDelta === null ? 'Not available' : `${roundedDelta > 0 ? '+' : ''}${roundedDelta.toFixed(1)} points` };
+
+  return {
+    before,
+    after,
+    success,
+    title,
+    description,
+    reasonCode,
+    originalCapped,
+    remediatedCapped,
+    criticalFindings,
+    deltaLabel: roundedDelta === null ? 'Not available' : `${roundedDelta > 0 ? '+' : ''}${roundedDelta.toFixed(1)} points`,
+  };
 }
