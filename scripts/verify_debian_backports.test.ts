@@ -5,6 +5,7 @@ const hash = 'a'.repeat(64);
 const backports = loadBackports();
 const libxml2 = backports.find((item) => item.source === 'libxml2')!;
 const libx11 = backports.find((item) => item.source === 'libx11')!;
+const zlib = backports.find((item) => item.source === 'zlib')!;
 
 /** The receipt build-backport.sh writes for a recipe, with placeholder build hashes. */
 function receiptFor(backport: Backport, arch = 'arm64'): string {
@@ -24,6 +25,7 @@ function receiptFor(backport: Backport, arch = 'arm64'): string {
     ...backport.binaries.map((name) =>
       `package_sha256=${name}_${debVersion}_${name === 'libx11-data' || name === 'libx11-doc' ? 'all' : arch}.deb ${hash}`),
     ...backport.libraries.map((library) => `library=${library.pkg} /usr/lib/${multiarch}/${library.file} ${hash}`),
+    ...backport.preseeded.map((entry) => `preseeded=${entry.pkg} ${entry.file}`),
   ].join('\n');
 }
 
@@ -36,6 +38,10 @@ describe('backport recipes', () => {
     expect(libx11.fixed).toEqual(['CVE-2026-88806', 'CVE-2026-94283', 'CVE-2026-94284', 'CVE-2026-94285']);
     expect(backports.find((item) => item.source === 'libxrender')!.fixed).toEqual(['CVE-2026-88807']);
     expect(backports.find((item) => item.source === 'zlib')!.fixed).toEqual(['CVE-2026-76844']);
+    expect(zlib.preseeded).toEqual([{ pkg: 'zlib1g', file: 'libz.so.1.3.1' }]);
+    for (const backport of backports.filter((item) => item.source !== 'zlib')) {
+      expect(backport.preseeded).toEqual([]);
+    }
     for (const backport of backports) {
       expect(backport.disclosure).toBe(backport.source === 'zlib'
         ? 'docs/security/debian-backports-0.13.0.md'
@@ -66,6 +72,9 @@ describe('backport recipes', () => {
       raw.replace(/^patch .*\n/m, ''),
       `${raw}mystery directive\n`,
       `${raw}source y\n`,
+      `${raw}preseeded x1 libz.so.9\n`,
+      `${raw}preseeded x1 libx.so.1.0.0 libextra\n`,
+      `${raw}preseeded x1 notalib\n`,
     ]) expect(() => parseBackportConf(bad)).toThrow();
   });
 });
@@ -102,6 +111,19 @@ describe('backport receipts', () => {
     expect(() => parseReceipt(receipt.replace(/^library=libx11-xcb1 .*\n?/m, ''), libx11)).toThrow();
     expect(() => parseReceipt(receipt.replace('source=libx11', 'source=libxrender'), libx11)).toThrow();
     expect(() => parseReceipt(`${receipt}\nsurprise=1`, libx11)).toThrow();
+  });
+
+  test('binds preseeded entries to the recipe on both sides', () => {
+    const zlibReceipt = receiptFor(zlib);
+    expect(parseReceipt(zlibReceipt, zlib).preseeded).toEqual([{ pkg: 'zlib1g', file: 'libz.so.1.3.1' }]);
+    // A preseeded library may not be silently dropped from, added to, or
+    // retargeted inside the receipt, and recipes without one may not gain
+    // the base-image tolerance.
+    expect(() => parseReceipt(zlibReceipt.replace(/^preseeded=.*(\n|$)/m, ''), zlib)).toThrow();
+    expect(() => parseReceipt(`${zlibReceipt}\npreseeded=zlib1g libz.so.9`, zlib)).toThrow();
+    expect(() => parseReceipt(zlibReceipt.replace('preseeded=zlib1g libz.so.1.3.1',
+      'preseeded=zlib1g-dev libz.so.1.3.1'), zlib)).toThrow();
+    expect(() => parseReceipt(`${receiptFor(libxml2)}\npreseeded=libxml2 libxml2.so.2.9.14`, libxml2)).toThrow();
   });
 
   test('rejects missing, duplicate and stock library layer payloads', () => {

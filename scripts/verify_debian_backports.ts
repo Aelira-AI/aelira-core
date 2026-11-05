@@ -33,6 +33,7 @@ export type Backport = {
   controls: string[];
   binaries: string[];
   libraries: Array<{ pkg: string; file: string }>;
+  preseeded: Array<{ pkg: string; file: string }>;
   runtime: string[];
   dev: string[];
 };
@@ -41,6 +42,7 @@ export type Receipt = {
   architecture: 'arm64' | 'amd64';
   packages: Map<string, string>;
   libraries: Array<{ pkg: string; path: string; sha256: string }>;
+  preseeded: Array<{ pkg: string; file: string }>;
 };
 
 export type VerifiedBackport = {
@@ -58,7 +60,7 @@ function fail(message: string): never {
 export function parseBackportConf(raw: string): Backport {
   const single = new Map<string, string>();
   const backport: Omit<Backport, 'source' | 'sourceVersion' | 'rebuiltVersion' | 'disclosure' | 'fixed'> = {
-    inputs: [], patches: [], assertions: [], controls: [], binaries: [], libraries: [], runtime: [], dev: [],
+    inputs: [], patches: [], assertions: [], controls: [], binaries: [], libraries: [], preseeded: [], runtime: [], dev: [],
   };
   let dsc = 0;
   for (const line of raw.split('\n')) {
@@ -114,6 +116,11 @@ export function parseBackportConf(raw: string): Backport {
         if (fields.length !== 2 || !/^lib[\w+.-]+\.so\.\d+(\.\d+)*$/.test(fields[1])) fail('invalid library in backport recipe');
         backport.libraries.push({ pkg: fields[0], file: fields[1] });
         break;
+      case 'preseeded':
+        if (fields.length !== 2 || !/^lib[\w+.-]+\.so\.\d+(\.\d+)*$/.test(fields[1])) fail('invalid preseeded in backport recipe');
+        if (backport.preseeded.some((item) => item.pkg === fields[0])) fail('duplicate preseeded package in backport recipe');
+        backport.preseeded.push({ pkg: fields[0], file: fields[1] });
+        break;
       case 'runtime': case 'dev':
         if (!fields.length || backport[key].length) fail(`invalid ${key} in backport recipe`);
         backport[key].push(...fields);
@@ -134,6 +141,11 @@ export function parseBackportConf(raw: string): Backport {
   if (dsc !== 1 || backport.patches.length === 0) fail('backport recipe needs a .dsc and at least one patch');
   for (const library of backport.libraries) {
     if (!backport.binaries.includes(library.pkg)) fail(`library package ${library.pkg} is not built`);
+  }
+  for (const preseeded of backport.preseeded) {
+    if (!backport.libraries.some((library) => library.pkg === preseeded.pkg && library.file === preseeded.file)) {
+      fail(`preseeded ${preseeded.pkg} ${preseeded.file} is not a recipe library`);
+    }
   }
   for (const pkg of [...backport.runtime, ...backport.dev]) {
     if (!backport.binaries.includes(pkg)) fail(`installed package ${pkg} is not built`);
@@ -163,7 +175,7 @@ export function loadBackports(root = backportRoot): Backport[] {
 export function parseReceipt(raw: string, backport: Backport): Receipt {
   const single = new Map<string, string>();
   const lists = new Map<string, string[]>(
-    ['input_sha256', 'patch_sha256', 'fixed', 'assertion', 'control', 'package_sha256', 'library'].map((key) => [key, []]));
+    ['input_sha256', 'patch_sha256', 'fixed', 'assertion', 'control', 'package_sha256', 'library', 'preseeded'].map((key) => [key, []]));
   for (const line of raw.trim().split('\n')) {
     const match = /^([a-z0-9_]+)=(.+)$/.exec(line);
     if (!match) fail(`invalid ${backport.source} receipt line: ${line}`);
@@ -185,7 +197,8 @@ export function parseReceipt(raw: string, backport: Backport): Receipt {
       !same(lists.get('patch_sha256')!, backport.patches.map((patch) => `${patch.file} ${patch.sha256} ${patch.cves.join(',')}`)) ||
       !same(lists.get('fixed')!, backport.fixed) ||
       !same(lists.get('assertion')!, backport.assertions.map(([cve, file]) => `${cve} ${file}`)) ||
-      !same(lists.get('control')!, backport.controls)) {
+      !same(lists.get('control')!, backport.controls) ||
+      !same(lists.get('preseeded')!, backport.preseeded.map((item) => `${item.pkg} ${item.file}`))) {
     fail(`${backport.source} receipt differs from the reviewed source, patch and control pins`);
   }
   const debVersion = backport.rebuiltVersion.replace(/^\d+:/, '');
@@ -210,7 +223,12 @@ export function parseReceipt(raw: string, backport: Backport): Receipt {
     backport.libraries.map((item) => `${item.pkg} /usr/lib/${multiarch[architecture]}/${item.file}`))) {
     fail(`${backport.source} receipt libraries differ from the recipe`);
   }
-  return { architecture, packages, libraries };
+  const preseeded = lists.get('preseeded')!.map((value) => {
+    const match = /^(\S+) (\S+)$/.exec(value);
+    if (!match) fail(`invalid ${backport.source} preseeded entry in receipt`);
+    return { pkg: match[1]!, file: match[2]! };
+  });
+  return { architecture, packages, libraries, preseeded };
 }
 
 export function verified(backport: Backport): VerifiedBackport {
@@ -450,8 +468,10 @@ function checkXConsumers(image: string, receipts: Map<string, Receipt>): void {
 
 function checkLayers(image: string, receipts: Map<string, Receipt>): void {
   const expected = new Map<string, string>();
+  const preseededFiles = new Set<string>();
   for (const receipt of receipts.values()) {
     for (const library of receipt.libraries) expected.set(library.path.split('/').pop()!, library.sha256);
+    for (const entry of receipt.preseeded) preseededFiles.add(entry.file);
   }
   const member = new RegExp(`^usr/lib/(?:aarch64|x86_64)-linux-gnu/(${[...expected.keys()]
     .map((file) => file.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')).join('|')})$`);
@@ -465,6 +485,7 @@ function checkLayers(image: string, receipts: Map<string, Receipt>): void {
       throw new Error('invalid Docker image manifest');
     }
     const found = new Map<string, string[]>([...expected.keys()].map((file) => [file, []]));
+    const inherited: string[] = [];
     for (const layer of manifests[0].Layers) {
       if (typeof layer !== 'string' || layer.startsWith('/') || layer.split('/').includes('..')) {
         throw new Error('unsafe Docker layer name');
@@ -480,9 +501,23 @@ function checkLayers(image: string, receipts: Map<string, Receipt>): void {
           throw new Error(`cannot extract ${match[1]} from layer ${layer}`);
         }
         const hash = createHash('sha256').update(bytes.stdout).digest('hex');
-        if (hash !== expected.get(match[1])) throw new Error(`unpatched ${match[1]} occurs in shipped layer ${layer}`);
+        if (hash !== expected.get(match[1])) {
+          // A library preseeded in the pinned Debian base image can be
+          // replaced but never expunged from inherited layers: stock copies
+          // are tolerated strictly before the layer holding the patched
+          // file, and anywhere else they remain an error.
+          if (preseededFiles.has(match[1]!) && found.get(match[1]!)!.length === 0) {
+            inherited.push(`${match[1]} in ${layer}`);
+            continue;
+          }
+          throw new Error(`unpatched ${match[1]} occurs in shipped layer ${layer}`);
+        }
         found.get(match[1])!.push(hash);
       }
+    }
+    if (inherited.length) {
+      console.log(`tolerated ${inherited.length} inherited stock cop${inherited.length === 1 ? 'y' : 'ies'} ` +
+        `from the pinned base image, before the patched layer: ${inherited.join(', ')}`);
     }
     for (const [file, hashes] of found) checkLayerHashes(hashes, expected.get(file)!, file);
   } finally { rmSync(work, { recursive: true, force: true }); }

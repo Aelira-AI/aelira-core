@@ -121,6 +121,35 @@ scanned against trixie's `zlib1g` is the one covering the code 1.3.1
 actually contains, which is why this rebuild exists and the earlier
 not-affected disposition did not cover it.
 
+## Layer purity and the pinned base image copy
+
+The image check (`scripts/verify_debian_backports.ts`) requires every Docker
+layer of the shipped image that contains a backported library file to carry
+the patched bytes. `libxml2`, `libX11` and `libXrender` enter the image only
+through this build, so their unpatched forms are never written to any layer:
+they are installed and replaced inside the same `RUN`, before the layer
+commits.
+
+`zlib1g` is different. The runtime stage inherits the pinned
+`debian:trixie-slim` base image, whose single layer
+(`sha256:258ba1f62b513e7bb7492d3cc8ce445e4ef176a14980f193f789b6d7270ae61c`)
+already ships the stock `libz.so.1.3.1`. Docker layers are immutable history:
+the backport replaces the file — the effective, loaded, dpkg-owned library is
+the patched one — but no build step can delete bytes from a base layer it
+merely inherits.
+
+The guarantee for this library is therefore explicitly scoped, and recorded
+as `preseeded zlib1g libz.so.1.3.1` in the recipe and receipt: stock copies
+are tolerated strictly in layers *before* the layer holding the patched file,
+and any stock occurrence after it — a later reinstall, a stray copy — still
+fails the check, as does a missing patched occurrence. What remains enforced
+without exception: the merged filesystem the container actually loads is
+patched (`install-backports.sh` verifies the receipt's `library=` hash against
+the installed file in the same layer that replaces it, and the scanner reports
+the CVE patched from that state). The residual exposure is a historical base
+layer identical to the one every `debian:trixie-slim`-derived image carries;
+removing it would mean rebuilding Debian's base image itself.
+
 ## Updating this rebuild
 
 As with the other recipes: when Debian publishes a fixed trixie `zlib`, the

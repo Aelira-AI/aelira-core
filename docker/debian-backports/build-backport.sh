@@ -222,6 +222,7 @@ mkdir "$work/extracted"
         printf 'library=%s %s %s\n' "$package" "$path" \
             "$(sha256sum "$work/extracted/$package$path" | cut -d' ' -f1)"
     done
+    awk '$1 == "preseeded" { print "preseeded=" $2 " " $3 }' "$conf"
 } > "$out/receipt.txt"
 cp "$conf" "$out/backport.conf"
 cat "$out/receipt.txt"
