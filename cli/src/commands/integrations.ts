@@ -20,7 +20,8 @@ const PROVIDER_ROWS: ProviderRow[] = [
 ]
 
 export default class Integrations extends Command {
-  static description = 'Show cloud integration status for Google Workspace and Microsoft 365'
+  static description =
+    'Show cloud integration status for Google Workspace, Microsoft 365, Canvas LMS, Blackboard Learn, Moodle LMS, and D2L Brightspace'
 static examples = [
     '<%= config.bin %> <%= command.id %>',
     '<%= config.bin %> <%= command.id %> --api-url http://localhost:8000',
