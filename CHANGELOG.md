@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-05
+
+See the [release notes](docs/releases/v0.13.0.md) for operator actions and
+evidence limits.
+
 ### Added
 
 - Surface bound-heading inventory document-structure refusals (empty or unbound headings, invalid parent relations, and unsupported role maps) to the reviewer as plain-words review requirements so reviewers know what to inspect, while allowing strict scans to complete ([#866](https://github.com/Aelira-AI/aelira-core/issues/866)).

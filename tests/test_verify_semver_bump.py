@@ -385,6 +385,31 @@ def test_real_changelog_passes_as_0_12_2_after_0_12_1() -> None:
     assert report.required == "patch"
 
 
+MIGRATIONS_SINCE_V0_12_2 = ["alembic/versions/20261031_webauthn_passkeys.py"]
+
+
+def test_real_changelog_passes_as_0_13_0_after_0_12_2() -> None:
+    report = gate.check_release(
+        "0.13.0", "0.12.2", REAL_CHANGELOG, MIGRATIONS_SINCE_V0_12_2
+    )
+    assert report.errors == []
+    assert report.actual == "minor"
+    assert report.required == "minor"
+
+
+def test_negative_control_0_13_0_is_refused_as_a_patch() -> None:
+    report = gate.check_release(
+        "0.12.3",
+        "0.12.2",
+        REAL_CHANGELOG.replace("## [0.13.0] - ", "## [0.12.3] - ", 1),
+        MIGRATIONS_SINCE_V0_12_2,
+    )
+    assert report.errors
+    message = "\n".join(report.errors)
+    assert "'### Added'" in message
+    assert MIGRATIONS_SINCE_V0_12_2[0] in message
+
+
 def test_negative_control_0_12_2_is_refused_with_a_migration() -> None:
     report = gate.check_release(
         "0.12.2", "0.12.1", REAL_CHANGELOG, MIGRATIONS_SINCE_V0_10_0
