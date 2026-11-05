@@ -1,0 +1,4 @@
+                /* CVE-2026-76844: drop the caller's buffer from the stream state
+                   so a cleared stream never derives positions from it. */
+                state->strm.avail_in = 0;
+                state->strm.next_in = state->in;

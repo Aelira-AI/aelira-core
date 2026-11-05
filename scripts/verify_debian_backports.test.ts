@@ -29,13 +29,18 @@ function receiptFor(backport: Backport, arch = 'arm64'): string {
 
 describe('backport recipes', () => {
   test('the repository recipes cover the reviewed CVEs and nothing else', () => {
-    expect(backports.map((item) => item.source)).toEqual(['libx11', 'libxml2', 'libxrender']);
+    expect(backports.map((item) => item.source)).toEqual(['libx11', 'libxml2', 'libxrender', 'zlib']);
     expect(libxml2.fixed).toEqual(['CVE-2026-6653', 'CVE-2026-74860', 'CVE-2026-86138', 'CVE-2026-86140',
       'CVE-2026-86142', 'CVE-2026-86143', 'CVE-2026-86144']);
     expect(libxml2.assertions).toEqual([['CVE-2026-86139', 'uri.c']]);
     expect(libx11.fixed).toEqual(['CVE-2026-88806', 'CVE-2026-94283', 'CVE-2026-94284', 'CVE-2026-94285']);
     expect(backports.find((item) => item.source === 'libxrender')!.fixed).toEqual(['CVE-2026-88807']);
-    for (const backport of backports) expect(backport.disclosure).toBe('docs/security/debian-backports-0.10.0.md');
+    expect(backports.find((item) => item.source === 'zlib')!.fixed).toEqual(['CVE-2026-76844']);
+    for (const backport of backports) {
+      expect(backport.disclosure).toBe(backport.source === 'zlib'
+        ? 'docs/security/debian-backports-0.13.0.md'
+        : 'docs/security/debian-backports-0.10.0.md');
+    }
   });
 
   test('rejects malformed recipes', () => {

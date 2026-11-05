@@ -38,6 +38,7 @@ evidence limits.
 - Disposition Debian 13 `libsqlite3-0` advisories CVE-2026-119373 and CVE-2026-119586 with VEX justifications, and harden TIFF native package download with curl retry flags ([#924](https://github.com/Aelira-AI/aelira-core/issues/924)).
 - Upgrade transitive `minimatch` to 11.0.3 via package overrides in the dashboard and CLI to resolve denial of service via pattern amplification (CVE-2026-118764, [#922](https://github.com/Aelira-AI/aelira-core/issues/922)).
 - Upgrade `cbor2` to 5.9.0, `pyasn1` to 0.6.5, and `pypdf` to 6.21.4 to address known vulnerability disclosures.
+- Rebuild Debian 13 `zlib` as `1:1.3.dfsg+really1.3.1-1+b1+aelira1` in both images to fix CVE-2026-76844, a heap buffer overflow where `gz_write()` keeps the caller's buffer after a failed write and a later write following `gzclearerr()` overruns the heap; the upstream commit targets the 1.4 development line, so the fix ships adapted to the 1.3.1 source, proven through a sanitizer control on the exact patched code ([#934](https://github.com/Aelira-AI/aelira-core/issues/934), [backport disclosure](docs/security/debian-backports-0.13.0.md)).
 
 ## [0.12.2] - 2026-10-30
 
