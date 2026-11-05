@@ -16,7 +16,11 @@ export const imageMagickPackages = [
   'libimage-magick-perl', 'libimage-magick-q16-perl',
   'libmagickcore-7.q16-10', 'libmagickwand-7.q16-10',
 ];
-export const imageMagickVersion = '8:7.1.1.43+dfsg1-1+deb13u13';
+// Reviewed 2026-11-06: Debian's security pocket moved trixie from deb13u13 to
+// deb13u14 — the same upstream 7.1.1.43+dfsg1 with Debian security patches.
+// Verified via packages.debian.org (trixie [security]) and OSV (no upstream
+// version drift); the dispositioned CVE set is unchanged by the revision bump.
+export const imageMagickVersion = '8:7.1.1.43+dfsg1-1+deb13u14';
 export const cupsVersion = '2.4.10-3+deb13u2';
 export const debianFfmpegPackages = [
   'ffmpeg', 'libavcodec61', 'libavdevice61', 'libavfilter10', 'libavformat61',
