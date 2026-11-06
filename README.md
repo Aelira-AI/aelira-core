@@ -23,6 +23,7 @@
   <a href="#try-it-in-one-command">Quickstart</a> ·
   <a href="docs/deployment/self-hosting.md">Self-hosting</a> ·
   <a href="docs/releases/v0.13.0.md">Release notes</a> ·
+  <a href="cli/README.md">CLI reference</a> ·
   <a href="SECURITY.md">Security policy</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
