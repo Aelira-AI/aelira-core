@@ -457,3 +457,22 @@ upload, 7:9.0.2-1 (checked 2026-10-23). Whether every fix is in the upstream
 9.0.2 release archive, rather than a Debian patch, was not checked commit by
 commit. The application's input whitelist still applies to every ffmpeg and
 ffprobe input, and PyAV and OpenCV link the same FFmpeg 9.0.2 libraries.
+
+## Advisory drift indexed 2026-11-06
+
+Advisory feeds indexed new findings overnight and turned the image gates red
+on main run 42178347824. The dashboard fix is a real upgrade: its Dockerfile
+now also upgrades `zlib`, taking Alpine 3.24's 1.3.2-r1, which carries the
+fix for CVE-2026-85091. The five API-image advisories below have no vendor
+fix at review time. Each is reviewed, listed in
+`.trivy-unfixed-dispositions.json` (reviewed 2026-11-06, expires 2027-02-02),
+and accepted by the release gate only while that review is current. Every
+finding stays in the published scan reports.
+
+| Advisory | Package | Assessment |
+| --- | --- | --- |
+| CVE-2026-115506 | libexpat1 2.9.0-1~deb13u1 | Not affected: entity amplification detection is unreachable; DTD processing and external entities are disabled and documents are size- and depth-limited. |
+| CVE-2026-14741 | libhttp-date-perl 6.06-1 | Not affected: no Perl HTTP client runs in the image, and the LaTeX stages have no network access to answer one. |
+| CVE-2026-119374 | libsqlite3-0 3.46.1-7+deb13u2 | Not affected: the application uses PostgreSQL; no user-supplied SQLite database is opened, so no corrupted FTS5 index is ever loaded. |
+| CVE-2026-119379 | libsqlite3-0 3.46.1-7+deb13u2 | Not affected: no code path opens a user-supplied SQLite database or applies session changesets. |
+| CVE-2026-85091 | zlib1g 1:1.3.dfsg+really1.3.1-1+b1+aelira1 | Not affected: `gz_vacate()` is reachable only through the gz* gzip-file interface; every zlib consumer in the image — libpng, libtiff, the Python zlib and gzip modules, libcurl — uses the raw inflate and deflate API. |
