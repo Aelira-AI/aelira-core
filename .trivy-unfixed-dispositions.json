@@ -1579,6 +1579,86 @@
       "reviewed": "2026-11-04",
       "expires": "2027-01-30",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-115506",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libexpat1",
+          "installedVersion": "2.9.0-1~deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "reason": "libexpat 2.9.0 denial of service via delayed entity amplification detection. Exploitation requires a document using entity expansion; the image parses XML only through CPython pyexpat with DTD processing and external entities disabled and with configured size and depth limits, so no parser path reaches entity amplification detection.",
+      "reviewed": "2026-11-06",
+      "expires": "2027-02-02",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-14741",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libhttp-date-perl",
+          "installedVersion": "6.06-1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "HTTP::Date denial of service via crafted HTTP date headers. Triggering requires a Perl HTTP client consuming a remote response. The application is Python and Node.js services; the image's Perl exists only as a LaTeX and ImageMagick toolchain dependency, the LaTeX stages run without network access, and no shipped code path performs an HTTP request from Perl.",
+      "reviewed": "2026-11-06",
+      "expires": "2027-02-02",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-119374",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libsqlite3-0",
+          "installedVersion": "3.46.1-7+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "SQLite arbitrary code execution via a corrupted FTS5 index. The application uses PostgreSQL; libsqlite3-0 is reachable only through CPython's sqlite3 module, and no code path opens a user-supplied SQLite database, so an attacker-controlled FTS5 index is never loaded.",
+      "reviewed": "2026-11-06",
+      "expires": "2027-02-02",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-119379",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libsqlite3-0",
+          "installedVersion": "3.46.1-7+deb13u2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "SQLite arbitrary code execution via crafted session changesets. Exploitation requires an application that loads the session extension and applies changesets from an adversary to a database it opens. The application uses PostgreSQL; no shipped code path opens a user-supplied SQLite database or calls the session or changeset APIs.",
+      "reviewed": "2026-11-06",
+      "expires": "2027-02-02",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-85091",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "zlib1g",
+          "installedVersion": "1:1.3.dfsg+really1.3.1-1+b1+aelira1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "zlib heap buffer overflow in gz_vacate(), reached only when releasing gzip-file stream state written through the gz* interface, that is gzclose after gzopen or gzwrite. Every zlib consumer in the image uses the raw inflate and deflate API instead: libpng and libtiff pass raw streams, as do the Python zlib and gzip modules, which implement the gzip container in Python over raw deflate, and libcurl's content-encoding decoder. No shipped code calls the gz* gzip-file entry points. Alpine ships fixed zlib 1.3.2-r1 and the dashboard image upgrades to it; the rebuilt Debian package takes the same upstream fix when the zlib backport is next re-cut.",
+      "reviewed": "2026-11-06",
+      "expires": "2027-02-02",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
