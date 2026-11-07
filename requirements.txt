@@ -11,7 +11,7 @@ bcrypt==5.0.0
 beautifulsoup4==4.15.0
 brotli==1.2.1
 cachetools==7.2.4
-cbor2==5.9.0
+cbor2==6.2.0.post2
 certifi==2026.10.23
 cffi==2.1.1
 chardet==7.7.0
