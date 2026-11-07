@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The CLI development dependency tree no longer resolves the vulnerable `minimatch` 10.x releases affected by GHSA-g3hv-75wg-m249 / CVE-2026-118764 (denial of service via globparts amplification): `cli/package.json` now carries a blanket `minimatch ^11.0.3` override instead of the two scoped ones, and `eslint-plugin-import-x` is bumped to 4.18.0, which drops the `makeRe` import that previously made the blanket override crash ESLint at config load. Every resolved `minimatch` copy is now ≥ 11.0.1 ([#943](https://github.com/Aelira-AI/aelira-core/issues/943)).
+
 ## [0.13.0] - 2026-11-05
 
 See the [release notes](docs/releases/v0.13.0.md) for operator actions and
