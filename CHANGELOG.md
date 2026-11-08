@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The CLI development dependency tree no longer resolves the vulnerable `minimatch` 10.x releases affected by GHSA-g3hv-75wg-m249 / CVE-2026-118764 (denial of service via globparts amplification): `cli/package.json` now carries a blanket `minimatch ^11.0.3` override instead of the two scoped ones, and `eslint-plugin-import-x` is bumped to 4.18.0, which drops the `makeRe` import that previously made the blanket override crash ESLint at config load. Every resolved `minimatch` copy is now ≥ 11.0.1 ([#943](https://github.com/Aelira-AI/aelira-core/issues/943)).
+- Drop the custom `zlib1g` rebuild: Debian's `1:1.3.dfsg+really1.3.1-1+deb13u1` security update (DSA-6613-1) carries Mark Adler's fix to the same `gz_write` failure path the rebuild shipped — Debian labels it CVE-2026-85091, and the Debian tracker marks CVE-2026-76844 fixed by the same upload — plus a `crc32_combine` negative-length guard (CVE-2026-27171), so both images now install Debian's package directly and the adapted patch, which collides with Debian's own at that hunk, retires with the recipe. This also clears the build failure main has had on every revision since the upload: dpkg sorts the archive's new candidate above the custom build, which made the runtime backport install a refused downgrade, and the CVE-2026-85091 not-affected disposition retires with the rebuilt version ([#957](https://github.com/Aelira-AI/aelira-core/issues/957)).
+- The dashboard image now upgrades `musl` and `musl-utils` to 1.2.6-r3 through the production-stage apk security-upgrade allowlist, clearing the two HIGH CVE-2026-107891 findings the trivy gate reports for Alpine 3.24.1: Alpine secdb ships the fix at 1.2.6-r3, published after the pinned nginx base image was built, so the image kept installing the vulnerable 1.2.6-r2 until now ([#960](https://github.com/Aelira-AI/aelira-core/issues/960)).
+
 ## [0.13.0] - 2026-11-05
 
 See the [release notes](docs/releases/v0.13.0.md) for operator actions and

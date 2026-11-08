@@ -1643,22 +1643,6 @@
       "reviewed": "2026-11-06",
       "expires": "2027-02-02",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
-    },
-    {
-      "id": "CVE-2026-85091",
-      "osFamily": "debian",
-      "packages": [
-        {
-          "name": "zlib1g",
-          "installedVersion": "1:1.3.dfsg+really1.3.1-1+b1+aelira1"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "reason": "zlib heap buffer overflow in gz_vacate(), reached only when releasing gzip-file stream state written through the gz* interface, that is gzclose after gzopen or gzwrite. Every zlib consumer in the image uses the raw inflate and deflate API instead: libpng and libtiff pass raw streams, as do the Python zlib and gzip modules, which implement the gzip container in Python over raw deflate, and libcurl's content-encoding decoder. No shipped code calls the gz* gzip-file entry points. Alpine ships fixed zlib 1.3.2-r1 and the dashboard image upgrades to it; the rebuilt Debian package takes the same upstream fix when the zlib backport is next re-cut.",
-      "reviewed": "2026-11-06",
-      "expires": "2027-02-02",
-      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }

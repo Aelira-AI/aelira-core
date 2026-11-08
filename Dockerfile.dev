@@ -31,11 +31,6 @@ COPY docker/debian-backports/libxrender/ /tmp/debian-backports/libxrender/
 RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
     /tmp/debian-backports/libxrender /out/libxrender
 
-FROM debian-backport-builder AS zlib-backport
-COPY docker/debian-backports/zlib/ /tmp/debian-backports/zlib/
-RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
-    /tmp/debian-backports/zlib /out/zlib
-
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS python-expat-clean
 RUN rm /usr/local/lib/python3.14/lib-dynload/pyexpat.cpython-314-*.so \
        /usr/local/lib/python3.14/lib-dynload/_elementtree.cpython-314-*.so
@@ -94,7 +89,6 @@ ARG SOURCE_DATE_EPOCH=0
 COPY --from=libxml2-backport /out/ /tmp/debian-backports/
 COPY --from=libx11-backport /out/ /tmp/debian-backports/
 COPY --from=libxrender-backport /out/ /tmp/debian-backports/
-COPY --from=zlib-backport /out/ /tmp/debian-backports/
 COPY docker/debian-backports/install-backports.sh /tmp/debian-backports/
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
