@@ -1,5 +1,15 @@
 # Rebuilt Debian zlib for 0.13.0
 
+**Retired (unreleased).** On 1 November 2026 Debian published
+`1:1.3.dfsg+really1.3.1-1+deb13u1` (DSA-6613-1), which carries Mark Adler's
+fix to the `gz_write` failure path documented below — Debian labels it
+CVE-2026-85091, and the Debian tracker marks CVE-2026-76844 fixed by the same
+upload — plus a `crc32_combine` negative-length guard (CVE-2026-27171).
+Following this document's own update path, the recipe was retired rather than
+rebased: Debian's patch and the adapted one collide at the same hunk. The
+images now install Debian's fixed `zlib1g` directly. What follows records the
+0.13.0 build as shipped.
+
 The API and development images run on Debian 13 (trixie). Debian has no fixed
 trixie package for CVE-2026-76844 in `zlib`; the Debian tracker lists the fix
 only for sid (`1:1.3.dfsg+really1.3.2-4`), and Ubuntu shows it unfixed as

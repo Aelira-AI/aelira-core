@@ -7,10 +7,11 @@
 # accept only bytes that match the pinned SHA-256; see docs/RELEASE_INTEGRITY.md.
 FROM scratch AS build-inputs
 
-# Rebuild Debian's libxml2, libX11, libXrender and zlib from their pinned
+# Rebuild Debian's libxml2, libX11 and libXrender from their pinned
 # trixie source packages with reviewed security patches. See
-# docs/security/debian-backports-0.10.0.md and
-# docs/security/debian-backports-0.13.0.md. These stages never ship.
+# docs/security/debian-backports-0.10.0.md. These stages never ship. The
+# zlib rebuild was retired when Debian shipped its own fix; see
+# docs/security/debian-backports-0.13.0.md.
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential dpkg-dev perl quilt \
@@ -32,11 +33,6 @@ FROM debian-backport-builder AS libxrender-backport
 COPY docker/debian-backports/libxrender/ /tmp/debian-backports/libxrender/
 RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
     /tmp/debian-backports/libxrender /out/libxrender
-
-FROM debian-backport-builder AS zlib-backport
-COPY docker/debian-backports/zlib/ /tmp/debian-backports/zlib/
-RUN BACKPORT_INSTALL_BUILD_DEPS=1 sh /tmp/debian-backports/build-backport.sh \
-    /tmp/debian-backports/zlib /out/zlib
 
 # Stage 1: Builder
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
@@ -200,7 +196,6 @@ FROM python-expat-base AS runtime
 COPY --from=libxml2-backport /out/ /tmp/debian-backports/
 COPY --from=libx11-backport /out/ /tmp/debian-backports/
 COPY --from=libxrender-backport /out/ /tmp/debian-backports/
-COPY --from=zlib-backport /out/ /tmp/debian-backports/
 COPY docker/debian-backports/install-backports.sh /tmp/debian-backports/
 COPY requirements.txt /app/requirements.txt
 COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
