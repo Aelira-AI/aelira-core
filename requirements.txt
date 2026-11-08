@@ -131,7 +131,7 @@ setuptools==84.2.1
 shellingham==1.5.4
 six==1.17.0
 soupsieve==3.0.4
-SQLAlchemy==2.1.8
+SQLAlchemy==2.1.6
 starlette==1.10.0
 sympy==1.14.0
 tabulate==0.10.0
