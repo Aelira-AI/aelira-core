@@ -92,6 +92,17 @@ jobs:
           rm -f -- "$POLICY_PATH"
           trap - EXIT
 
+      - name: Test dependency changelog coverage
+        run: node --experimental-strip-types --test scripts/dependency_changelog.test.ts
+
+      - name: Require dependency entries in the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: node --experimental-strip-types scripts/dependency_changelog.ts --check --tag "$TAG_NAME"
+
       - name: Generate dependency CycloneDX JSON SBOMs
         run: |
           set -euo pipefail
