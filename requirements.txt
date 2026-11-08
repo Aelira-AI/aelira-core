@@ -130,7 +130,7 @@ sentry-sdk==2.73.0
 setuptools==84.2.1
 shellingham==1.5.4
 six==1.17.0
-soupsieve==3.0.4
+soupsieve==4.0
 SQLAlchemy==2.1.6
 starlette==1.10.0
 sympy==1.14.0
