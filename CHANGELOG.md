@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Pinned Python dependencies advance through the November minor batch of 35 packages, including `pydantic` 2.14.2 with its companion `pydantic_core` 2.50.2 pin carried into requirements, the python consumer fixture pins, and the dependency documentation; the `PyMuPDF` 2.x trio and `fonttools` are deliberately held back for the review tracked by issue #755 ([#962](https://github.com/Aelira-AI/aelira-core/issues/962)).
+- Pinned Python dependencies advance through the November minor batch of 34 packages, including `pydantic` 2.14.2 with its companion `pydantic_core` 2.50.2 pin carried into requirements, the python consumer fixture pins, and the dependency documentation; the `PyMuPDF` 2.x trio and `fonttools` are deliberately held back for the review tracked by issue #755, and `SQLAlchemy` is held with the reviewed consumer-fixture baseline pin that gates its move ([#962](https://github.com/Aelira-AI/aelira-core/issues/962)).
 
 ### Security
 
