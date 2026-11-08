@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- HTML parsing dependency `soupsieve` advanced to 4.0 with the python consumer fixture pin moved in step, clearing the unresolvable fixture state that blocked the dependabot attempt ([#970](https://github.com/Aelira-AI/aelira-core/issues/970)).
 - The CLI toolchain moves to `eslint` 10.14.0 with its lockfile rebuilt on npm 10, matching the CI Node 22 toolchain, so every optional platform entry is materialized and `npm ci` installs cleanly on the runners ([#963](https://github.com/Aelira-AI/aelira-core/issues/963)).
 
 ### Security
