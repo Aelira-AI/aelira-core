@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Pinned Python dependencies advance through the November minor batch of 35 packages, including `pydantic` 2.14.2 with its companion `pydantic_core` 2.50.2 pin carried into requirements, the python consumer fixture pins, and the dependency documentation; the `PyMuPDF` 2.x trio and `fonttools` are deliberately held back for the review tracked by issue #755 ([#962](https://github.com/Aelira-AI/aelira-core/issues/962)).
+
 ### Security
 
 - The CLI development dependency tree no longer resolves the vulnerable `minimatch` 10.x releases affected by GHSA-g3hv-75wg-m249 / CVE-2026-118764 (denial of service via globparts amplification): `cli/package.json` now carries a blanket `minimatch ^11.0.3` override instead of the two scoped ones, and `eslint-plugin-import-x` is bumped to 4.18.0, which drops the `makeRe` import that previously made the blanket override crash ESLint at config load. Every resolved `minimatch` copy is now ≥ 11.0.1 ([#943](https://github.com/Aelira-AI/aelira-core/issues/943)).
