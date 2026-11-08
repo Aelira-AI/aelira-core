@@ -66,11 +66,11 @@ def test_release_dag_orders_ci_preflight_docker_npm_and_github_release() -> None
 
 def test_docker_registry_logins_use_reviewed_node24_action_pin() -> None:
     text = DOCKER.read_text()
-    expected = "docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0"
+    expected = "docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0"
     login_uses = re.findall(r"docker/login-action@([^\s]+)(?: # ([^\n]+))?", text)
 
     assert text.count(expected) == 3
-    assert login_uses == [("dbcb813823bdd20940b903addbd779551569679f", "v4.6.0")] * 3
+    assert login_uses == [("81c6f93d4bc991e510b342a00b419b3bb4efc5c6", "v4.7.0")] * 3
 
 
 def test_artifact_metadata_write_is_granted_only_across_upload_paths() -> None:
