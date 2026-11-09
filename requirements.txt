@@ -10,7 +10,7 @@ axe-playwright-python==0.1.8
 bcrypt==5.0.0
 beautifulsoup4==4.15.0
 brotli==1.2.1
-cachetools==7.2.8
+cachetools==7.3.0
 cbor2==6.2.0.post2
 certifi==2026.10.23
 cffi==2.1.1
@@ -139,7 +139,7 @@ tinycss2==1.5.1
 tokenizers==0.23.3
 tqdm==4.70.1
 truststore==0.10.5
-typer==0.27.3
+typer==0.28.0
 typer-slim==0.24.0
 typing-inspection==0.4.5
 typing_extensions==4.16.0

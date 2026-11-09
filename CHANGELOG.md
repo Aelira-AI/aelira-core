@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `typer` advanced to 0.28.0 and `cachetools` to 7.3.0, the safe remainder of the dependabot batch whose held packages remain deferred to their open reviews ([#982](https://github.com/Aelira-AI/aelira-core/issues/982)).
+
 - The CLI `@oclif` runtime dependencies advance through the November npm minor batch, with the lockfile rebuilt on npm 10.9.10 to keep the optional TypeScript platform entries the CI toolchain installs against ([#977](https://github.com/Aelira-AI/aelira-core/issues/977)).
 - Pinned Python dependencies advance through a second November batch, including `pydantic` 2.14.3 with its exact `pydantic_core` companion pin moved in step and the consumer fixture pins kept in phase; the `PyMuPDF` 2.x trio, `fonttools`, and `SQLAlchemy` 2.1.8 remain held for their open reviews ([#978](https://github.com/Aelira-AI/aelira-core/issues/978)).
 
