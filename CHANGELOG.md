@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The CLI `@oclif` runtime dependencies advance through the November npm minor batch, with the lockfile rebuilt on npm 10.9.10 to keep the optional TypeScript platform entries the CI toolchain installs against ([#977](https://github.com/Aelira-AI/aelira-core/issues/977)).
+
 - Pinned Python dependencies advance through the November minor batch of 34 packages, including `pydantic` 2.14.2 with its companion `pydantic_core` 2.50.2 pin carried into requirements, the python consumer fixture pins, and the dependency documentation; the `PyMuPDF` 2.x trio and `fonttools` are deliberately held back for the review tracked by issue #755, and `SQLAlchemy` is held with the reviewed consumer-fixture baseline pin that gates its move ([#962](https://github.com/Aelira-AI/aelira-core/issues/962)).
 - HTML parsing dependency `soupsieve` advanced to 4.0 with the python consumer fixture pin moved in step, clearing the unresolvable fixture state that blocked the dependabot attempt ([#970](https://github.com/Aelira-AI/aelira-core/issues/970)).
 - The CLI toolchain moves to `eslint` 10.14.0 with its lockfile rebuilt on npm 10, matching the CI Node 22 toolchain, so every optional platform entry is materialized and `npm ci` installs cleanly on the runners ([#963](https://github.com/Aelira-AI/aelira-core/issues/963)).
