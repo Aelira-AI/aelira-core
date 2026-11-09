@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The CLI `@oclif` runtime dependencies advance through the November npm minor batch, with the lockfile rebuilt on npm 10.9.10 to keep the optional TypeScript platform entries the CI toolchain installs against ([#977](https://github.com/Aelira-AI/aelira-core/issues/977)).
 - Pinned Python dependencies advance through a second November batch, including `pydantic` 2.14.3 with its exact `pydantic_core` companion pin moved in step and the consumer fixture pins kept in phase; the `PyMuPDF` 2.x trio, `fonttools`, and `SQLAlchemy` 2.1.8 remain held for their open reviews ([#978](https://github.com/Aelira-AI/aelira-core/issues/978)).
 
 - Pinned Python dependencies advance through the November minor batch of 34 packages, including `pydantic` 2.14.2 with its companion `pydantic_core` 2.50.2 pin carried into requirements, the python consumer fixture pins, and the dependency documentation; the `PyMuPDF` 2.x trio and `fonttools` are deliberately held back for the review tracked by issue #755, and `SQLAlchemy` is held with the reviewed consumer-fixture baseline pin that gates its move ([#962](https://github.com/Aelira-AI/aelira-core/issues/962)).
