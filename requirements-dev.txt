@@ -2,7 +2,7 @@
 -r requirements.txt
 
 # Tests and coverage
-coverage==7.17.1
+coverage==7.17.2
 iniconfig==2.3.1
 pytest==9.2.0
 pytest-asyncio==1.4.1.post1
@@ -13,7 +13,7 @@ black==26.10.1
 mypy_extensions==1.2.0
 pathspec==1.1.1
 pytokens==0.4.1
-ruff==0.17.3
+ruff==0.17.4
 
 # Load testing and its exclusive dependency closure
 bidict==0.24.1
