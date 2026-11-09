@@ -13,6 +13,18 @@ updates:
       - dependency-name: "pydantic-core"
       - dependency-name: "mpmath"
         versions: [">=1.4"]
+      # Held pending security and integrity reviews; remove each entry when
+      # its review closes. Tracked in issue #755 and the consumer fixture
+      # integrity baseline (issue #984).
+      # PyMuPDF: CVE-2026-112036 fix is not in any MuPDF release PyMuPDF
+      # ships; MuPDF 1.28.6 lacks the fix commit (issue #755).
+      - dependency-name: "PyMuPDF"
+      # Version-coupled to PyMuPDF, held for the same issue #755 finding.
+      - dependency-name: "pymupdf-layout"
+      - dependency-name: "pymupdf4llm"
+      # Held by the consumer fixture integrity baseline pending separate
+      # review.
+      - dependency-name: "SQLAlchemy"
     groups:
       pip-minor-patch:
         applies-to: version-updates
