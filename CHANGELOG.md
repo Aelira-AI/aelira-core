@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `fonttools` advanced to 4.68.0 together with the reviewed corpus PINNED dict and the consumer fixture pin, closing its hold from the dependency review tracked by issue #755; the `PyMuPDF` 2.x trio remains at 2.0 and `SQLAlchemy` remains at 2.1.6 because that review found the CVE-2026-112036 fix is not yet in any MuPDF release shipped by PyMuPDF ([#755](https://github.com/Aelira-AI/aelira-core/issues/755)).
 - `typer` advanced to 0.28.0 and `cachetools` to 7.3.0, the safe remainder of the dependabot batch whose held packages remain deferred to their open reviews ([#982](https://github.com/Aelira-AI/aelira-core/issues/982)).
 
 - The CLI `@oclif` runtime dependencies advance through the November npm minor batch, with the lockfile rebuilt on npm 10.9.10 to keep the optional TypeScript platform entries the CI toolchain installs against ([#977](https://github.com/Aelira-AI/aelira-core/issues/977)).
