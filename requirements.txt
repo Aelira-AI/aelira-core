@@ -34,7 +34,7 @@ fastapi==0.162.0
 faster-whisper==1.2.1
 filelock==4.2.9
 flatbuffers==25.12.19
-fonttools==4.67.0
+fonttools==4.68.0
 fpdf2==2.9.0
 freetype-py==2.5.1
 fsspec==2026.9.0
@@ -104,9 +104,9 @@ pyee==13.0.0
 Pygments==2.21.0
 PyJWT==2.15.1
 PyLTI1p3==2.0.0
-PyMuPDF==2.0
-pymupdf-layout==2.0
-pymupdf4llm==2.0
+PyMuPDF==2.1
+pymupdf-layout==2.1
+pymupdf4llm==2.1
 pyOpenSSL==26.4.0
 pyparsing==3.3.3
 pypdf==6.21.4
@@ -131,7 +131,7 @@ setuptools==84.2.1
 shellingham==1.5.4
 six==1.17.0
 soupsieve==4.0.1
-SQLAlchemy==2.1.6
+SQLAlchemy==2.1.8
 starlette==1.10.0
 sympy==1.14.0
 tabulate==0.10.0
