@@ -25,13 +25,16 @@ MANIFEST = json.loads((ROOT / "scripts" / "chrome-for-testing.json").read_text()
 # for the CVEs published that day. Playwright's 1.64.x bundles 156.0.8078.4.
 PATCHED_CHROME = (156, 0, 8078, 47)
 # Node 26.13.0 (2026-10-28) is the first 26.x LTS release and includes the
-# 26.12.1 security fixes; its index digest below carries NODE_VERSION=26.13.0
-# for linux/amd64 and linux/arm64.
-NODE_DIGEST = "sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9"
+# 26.12.1 security fixes; the index digest below is the 2026-11-05 refresh of
+# that same 26.13.0 build (updated Debian bookworm base layers, reviewed under
+# issue #997) and carries NODE_VERSION=26.13.0 for linux/amd64 and linux/arm64.
+NODE_DIGEST = "sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68"
 SUPERSEDED_NODE_DIGESTS = (
     # node:24-bookworm-slim at 24.22.1, then at an earlier 24.x.
     "sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205",
     "sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6",
+    # node:26-bookworm-slim at 26.13.0 before the 2026-11 base-layer refresh.
+    "sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9",
 )
 
 

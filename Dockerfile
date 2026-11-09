@@ -156,7 +156,7 @@ RUN --mount=type=bind,from=build-inputs,target=/build-inputs \
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Resolve the reviewed, locked production tree
 # separately and copy only Node and those dependencies into the API image.
-FROM node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS pa11y-node
+FROM node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 WORKDIR /opt/pa11y-runtime
