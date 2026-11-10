@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Four unfixed upstream MIT Kerberos advisories (CVE-2026-112321, CVE-2026-112322, CVE-2026-112323, CVE-2026-119079) carry reviewed not-affected dispositions and disclosure entries; the vulnerable code sits in RPCSEC_GSS server and KDC ASN.1 paths the API image never executes, and no fix version exists in Debian trixie ([#1000](https://github.com/Aelira-AI/aelira-core/issues/1000)).
-- Docker infrastructure pins advance together under the reviewed re-pin tracked by issue #997: the `pa11y-node` base moves to the refreshed `node:26-bookworm-slim` index digest (same Node 26.13.0 source, refreshed Debian base layers), `docker/setup-docker-action` advances to v5.7.0 — security-motivated, it bundles undici 6.29.1 with the CVE-2026-87018 TLS fix — and `docker/login-action` advances to v4.8.0 for the shortened Docker Hub OIDC token lifetime and dependency updates; the contract tests pinning these reviewed values move in step ([#997](https://github.com/Aelira-AI/aelira-core/issues/997)).
-- `pypdf` advanced from 6.21.4 to the 7.0.0 major with the python consumer fixture pin moved in step, completing the dependabot attempt that could not edit the fixture pins file; the application surface is the single `PdfReader` import in the education PDF processor ([#996](https://github.com/Aelira-AI/aelira-core/issues/996)).
+- Docker infrastructure pins advance together under the reviewed re-pin tracked by issue #997: the `pa11y-node` base moves to the refreshed `node:26-bookworm-slim` index digest (same Node 26.13.0 source, refreshed Debian base layers), `docker/setup-docker-action` advances to v5.7.0 — security-motivated, it bundles undici 6.29.1 with the CVE-2026-87018 TLS fix — and `docker/login-action` advances to v4.8.0 for the shortened Docker Hub OIDC token lifetime and dependency updates; the contract tests pinning these reviewed values move in step ([#999](https://github.com/Aelira-AI/aelira-core/pull/999)).
+- `pypdf` advanced from 6.21.4 to the 7.0.0 major with the python consumer fixture pin moved in step, completing the dependabot attempt that could not edit the fixture pins file; the application surface is the single `PdfReader` import in the education PDF processor ([#998](https://github.com/Aelira-AI/aelira-core/pull/998)).
 - `fonttools` advanced to 4.68.0 together with the reviewed corpus PINNED dict and the consumer fixture pin, closing its hold from the dependency review tracked by issue #755; the `PyMuPDF` 2.x trio remains at 2.0 and `SQLAlchemy` remains at 2.1.6 because that review found the CVE-2026-112036 fix is not yet in any MuPDF release shipped by PyMuPDF ([#755](https://github.com/Aelira-AI/aelira-core/issues/755)).
 - `typer` advanced to 0.28.0 and `cachetools` to 7.3.0, the safe remainder of the dependabot batch whose held packages remain deferred to their open reviews ([#982](https://github.com/Aelira-AI/aelira-core/issues/982)).
 
@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CBOR parsing dependency `cbor2` advanced to 6.2.0.post2 ([#950](https://github.com/Aelira-AI/aelira-core/pull/950)).
 - `python-dateutil` advanced to 4.0.0 ([#953](https://github.com/Aelira-AI/aelira-core/pull/953)).
 - The dashboard development dependency group advanced through its November minor batch ([#946](https://github.com/Aelira-AI/aelira-core/pull/946)).
+- The dashboard dependency group advanced through a second late-November npm minor batch of four updates ([#989](https://github.com/Aelira-AI/aelira-core/pull/989)).
+- The CLI toolchain's `playwright` advanced to 1.65.0 with its group, keeping browser acceptance on the driver version the pinned runner expects ([#992](https://github.com/Aelira-AI/aelira-core/pull/992)).
+- `pypdfium2` advanced to 5.15.0 within the pip minor batch; the `PyMuPDF` 2.x trio remains held by the review tracked by issue #755 ([#995](https://github.com/Aelira-AI/aelira-core/pull/995)).
 
 
 ### Security
