@@ -1643,6 +1643,118 @@
       "reviewed": "2026-11-06",
       "expires": "2027-02-02",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112321",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "AUTH_GSSAPI server handler in the legacy MIT krb5 RPCSEC_GSS service interface (lib/rpc/svc_auth_gssapi.c). The API image ships krb5 libraries only as transitive dependencies of the curl/GnuTLS chain; it runs no RPCSEC_GSS service, no gssproxy, and no KDC, and no component links the svc_auth_gssapi server entry points.",
+      "reviewed": "2026-11-10",
+      "expires": "2027-02-06",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112322",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "clean_client() in the legacy MIT krb5 RPCSEC_GSS service interface (lib/rpc/svc_auth_gssapi.c). The API image runs no RPCSEC_GSS service; the krb5 libraries present are client-side transitive dependencies of the curl/GnuTLS chain and this handler is never reached.",
+      "reviewed": "2026-11-10",
+      "expires": "2027-02-06",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112323",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "Variant of the AUTH_GSSAPI server handler in the legacy MIT krb5 RPCSEC_GSS service interface (lib/rpc/svc_auth_gssapi.c). The API image runs no RPCSEC_GSS service and no component links this handler.",
+      "reviewed": "2026-11-10",
+      "expires": "2027-02-06",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-119079",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "decode_sequence_of() in Kerberos ASN.1 message processing (lib/krb5/asn.1/asn1_encode.c) reachable from KDC and admin-server code paths. The container runs no KDC, kadmin, or kprop service, and client-side GSSAPI credential use by curl does not exercise these decode paths.",
+      "reviewed": "2026-11-10",
+      "expires": "2027-02-06",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
