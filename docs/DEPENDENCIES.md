@@ -209,9 +209,11 @@ release schedule.
   packages (1.64.1) still pin their own driver and test browser. Playwright
   1.64.1's bundled driver is Node 24.22.1.
 - **Node.** The `pa11y-node` stage uses the `node:26-bookworm-slim` multi-arch
-  index digest `sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9`,
-  which carries Node 26.13.0, the first 26.x LTS release, and OpenSSL 3.5.9 on
-  both architectures. Node 26.12.1 (2026-10-21) is the 26.x security release for
+  index digest `sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68`,
+  the 2026-11-05 refresh of the same Node 26.13.0 build (updated Debian
+  bookworm base layers with no Node source change, reviewed under issue #997),
+  which carries Node 26.13.0, the first 26.x LTS release, on both
+  architectures. Node 26.12.1 (2026-10-21) is the 26.x security release for
   CVE-2026-105481, CVE-2026-105482, CVE-2026-105483, CVE-2026-106069,
   CVE-2026-106073, CVE-2026-106074 and CVE-2026-111497, and 26.13.0 adds no
   other changes. The smoke gate rejects a Node older than 26.12.1 or another
