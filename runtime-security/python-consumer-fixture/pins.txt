@@ -25,7 +25,7 @@ pydantic-settings==2.16.2
 pydantic_core==2.50.4
 pycparser==3.12
 PyMuPDF==2.0
-pypdf==6.21.4
+pypdf==7.0.0
 python-docx==1.2.0
 python-dotenv==1.2.4
 python-pptx==1.0.2
