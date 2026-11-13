@@ -2035,6 +2035,614 @@
       "reviewed": "2026-11-13",
       "expires": "2027-02-09",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-6460",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in the PostgreSQL server backend after ALTER ... SET DATA TYPE; the vulnerable code runs only in the postmaster/backend process. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-6460/ and https://security-tracker.debian.org/tracker/CVE-2026-6460",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-6467",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Uncontrolled search path element in server-side CREATE/ALTER EXTENSION script execution; the vulnerable code runs only in the postmaster/backend process. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-6467/ and https://security-tracker.debian.org/tracker/CVE-2026-6467",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-14661",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Arbitrary-file append via the sslkeylogfile connection parameter handled by server-side dblink and CREATE/ALTER SUBSCRIPTION; the image runs no server, no dblink and no subscriptions, upstream limits pre-18 branches to installations where the server uses libpq 18 or later, and the application's connection string comes only from its own DATABASE_URL configuration, never from user input. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-14661/ and https://security-tracker.debian.org/tracker/CVE-2026-14661",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-18447",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion on any-type output parameters in SQL-language functions inside the server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-18447/ and https://security-tracker.debian.org/tracker/CVE-2026-18447",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116304",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Use-after-free in server-backend coordination of anonymous RECORD type identifiers among parallel query workers. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116304/ and https://security-tracker.debian.org/tracker/CVE-2026-116304",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116306",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in server-backend composite-value field assignment. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116306/ and https://security-tracker.debian.org/tracker/CVE-2026-116306",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116307",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Prepared-query use-after-free in PL/Perl (plperl), a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116307/ and https://security-tracker.debian.org/tracker/CVE-2026-116307",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116309",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Blessed-reference type confusion in PL/Perl (plperl), a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116309/ and https://security-tracker.debian.org/tracker/CVE-2026-116309",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116313",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Untrusted search path in the vacuumdb command-line tool (--missing-stats-only catalog query). The vulnerable tool is not installed; the API image ships only the libpq5 client library and no application code path runs this tool. Upstream lists only major version 18 as affected, while the Debian tracker flags postgresql-17 source at the package level. The image ships only the libpq5 client library for its psycopg2 driver. Evidence: https://www.postgresql.org/support/security/CVE-2026-116313/ and https://security-tracker.debian.org/tracker/CVE-2026-116313",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116314",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Missing validation of non-plain archive input in the pg_restore command-line tool. The vulnerable tool is not installed; the API image ships only the libpq5 client library and no application code path runs this tool. The image ships only the libpq5 client library for its psycopg2 driver. Evidence: https://www.postgresql.org/support/security/CVE-2026-116314/ and https://security-tracker.debian.org/tracker/CVE-2026-116314",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116315",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Heap buffer overflow in tsvector_delete() in the server backend text-search code. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116315/ and https://security-tracker.debian.org/tracker/CVE-2026-116315",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116316",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Improper protection of an alternate path in server-backend security-restricted operations (pg_temp type creation). The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116316/ and https://security-tracker.debian.org/tracker/CVE-2026-116316",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116317",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Heap buffer overflow in ts_rank_cd() in the server backend text-search code. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116317/ and https://security-tracker.debian.org/tracker/CVE-2026-116317",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116318",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "SQL injection through an inherited column's quoted not-null constraint name in the pg_dump command-line tool. The vulnerable tool is not installed; the API image ships only the libpq5 client library and no application code path runs this tool. Upstream lists only major version 18 as affected, while the Debian tracker flags postgresql-17 source at the package level. The image ships only the libpq5 client library for its psycopg2 driver. Evidence: https://www.postgresql.org/support/security/CVE-2026-116318/ and https://security-tracker.debian.org/tracker/CVE-2026-116318",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116319",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Reentrant return_next() use-after-free in PL/Perl (plperl), a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116319/ and https://security-tracker.debian.org/tracker/CVE-2026-116319",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116320",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Array and hash conversion use-after-free in PL/Perl (plperl), a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116320/ and https://security-tracker.debian.org/tracker/CVE-2026-116320",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116323",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Reentrant result-conversion use-after-free in PL/Tcl (pltcl), a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116323/ and https://security-tracker.debian.org/tracker/CVE-2026-116323",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116325",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "SQL injection through a crafted index name in the reindexdb command-line tool's parallel catalog query. The vulnerable tool is not installed; the API image ships only the libpq5 client library and no application code path runs this tool. The image ships only the libpq5 client library for its psycopg2 driver. Evidence: https://www.postgresql.org/support/security/CVE-2026-116325/ and https://security-tracker.debian.org/tracker/CVE-2026-116325",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116326",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Tied-object exceptions following a stale sigjmp_buf in PL/Perl (plperl), a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116326/ and https://security-tracker.debian.org/tracker/CVE-2026-116326",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116328",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Integer wraparound in generation memory contexts in the server backend memory manager. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116328/ and https://security-tracker.debian.org/tracker/CVE-2026-116328",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116329",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in server-backend extended statistics import. Upstream lists only major version 18 as affected, while the Debian tracker flags postgresql-17 source at the package level. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116329/ and https://security-tracker.debian.org/tracker/CVE-2026-116329",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116330",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Command injection through pg_dump tar-format restore.sql when it is run through psql; neither pg_dump nor psql is installed in the image. The vulnerable tool is not installed; the API image ships only the libpq5 client library and no application code path runs this tool. The image ships only the libpq5 client library for its psycopg2 driver. Evidence: https://www.postgresql.org/support/security/CVE-2026-116330/ and https://security-tracker.debian.org/tracker/CVE-2026-116330",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116331",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in server-backend min/max aggregate optimization. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116331/ and https://security-tracker.debian.org/tracker/CVE-2026-116331",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116332",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Use-after-free in server-backend portal setup. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116332/ and https://security-tracker.debian.org/tracker/CVE-2026-116332",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116335",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in server-backend operator commutator and negator links. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116335/ and https://security-tracker.debian.org/tracker/CVE-2026-116335",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-116336",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Dropped-index operation during REINDEX CONCURRENTLY in the server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-116336/ and https://security-tracker.debian.org/tracker/CVE-2026-116336",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120139",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Integer wraparound in server-backend in-memory tuple-size calculations. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120139/ and https://security-tracker.debian.org/tracker/CVE-2026-120139",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120141",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in server-backend materialized set-returning functions. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120141/ and https://security-tracker.debian.org/tracker/CVE-2026-120141",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120142",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in anonymous RECORD types with dropped attributes in the server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120142/ and https://security-tracker.debian.org/tracker/CVE-2026-120142",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120143",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Cursor-over-transition-table use-after-free in server-backend trigger functions. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120143/ and https://security-tracker.debian.org/tracker/CVE-2026-120143",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120144",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type-cache invalidation gap in the server backend relcache. Upstream lists only major version 18 as affected, while the Debian tracker flags postgresql-17 source at the package level. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120144/ and https://security-tracker.debian.org/tracker/CVE-2026-120144",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120145",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Missing authorization in server-backend logical replication apply on a superuser-owned subscription. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120145/ and https://security-tracker.debian.org/tracker/CVE-2026-120145",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120147",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Reentrant dblink disconnect use-after-free in the dblink contrib extension, which runs inside the PostgreSQL server backend; contrib modules are not installed and no server runs in this image. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120147/ and https://security-tracker.debian.org/tracker/CVE-2026-120147",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120148",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Type confusion in server-backend extended statistics of anonymous RECORD type. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120148/ and https://security-tracker.debian.org/tracker/CVE-2026-120148",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120149",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Heap buffer overflow in server-side foreign-data-wrapper batch inserts; no foreign data wrapper is loaded because the image runs no PostgreSQL server. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120149/ and https://security-tracker.debian.org/tracker/CVE-2026-120149",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120150",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Expanded-record domain-check use-after-free in the server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120150/ and https://security-tracker.debian.org/tracker/CVE-2026-120150",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120151",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "Record-field type confusion in PL/pgSQL, a server-side procedural language that runs only inside the PostgreSQL server backend. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120151/ and https://security-tracker.debian.org/tracker/CVE-2026-120151",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-120153",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libpq5",
+          "installedVersion": "17.11-0+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "reason": "SQL injection through object-name substitution in extension scripts executed by server-backend CREATE EXTENSION processing. The API image ships only libpq5, the PostgreSQL client library psycopg2 links against; the PostgreSQL server binaries, the PL/Perl, PL/Tcl and PL/pgSQL server-side languages, contrib modules, and the PostgreSQL command-line tools are not installed, and the application connects as a client to a managed PostgreSQL service. Evidence: https://www.postgresql.org/support/security/CVE-2026-120153/ and https://security-tracker.debian.org/tracker/CVE-2026-120153",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
