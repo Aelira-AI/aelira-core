@@ -495,7 +495,33 @@ class ReadingOrderVerifier:
                         resolver.fail("structure_reference")
                         return []
                     if kid.get("/Type") == Name.OBJR:
-                        resolver.fail("object_reference")
+                        # ISO 32000-1 14.12.3.4: an OBJR associates an
+                        # annotation with its parent element. When it carries
+                        # no page-stream marked content — the common case of
+                        # a hyperlink or widget whose /K children are owned
+                        # by annotation appearance streams, or no /K at all —
+                        # it contributes nothing to reading order and a
+                        # resolvable dictionary /Obj skips without failing.
+                        # Page-stream MCIDs under an OBJR place content whose
+                        # order cannot be interpreted, and a missing or
+                        # unresolvable /Obj is a broken association; both
+                        # keep failing closed.
+                        objr_kids = kid.get("/K")
+                        objr_ok = isinstance(kid.get("/Obj"), pikepdf.Dictionary)
+                        if isinstance(objr_kids, pikepdf.Dictionary):
+                            objr_kids = pikepdf.Array([objr_kids])
+                        if objr_ok and isinstance(objr_kids, pikepdf.Array):
+                            for objr_kid in objr_kids:
+                                if (
+                                    isinstance(objr_kid, pikepdf.Dictionary)
+                                    and "/MCID" in objr_kid
+                                    and "/Stm" not in objr_kid
+                                    and "/StmOwn" not in objr_kid
+                                ):
+                                    objr_ok = False
+                                    break
+                        if not objr_ok:
+                            resolver.fail("object_reference")
                         return []
                     elem_page = _element_page(kid, inherited_page, page_indices)
                     if elem_page == -2:
