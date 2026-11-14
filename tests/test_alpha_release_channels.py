@@ -33,6 +33,7 @@ def plan(tag: str) -> subprocess.CompletedProcess:
         "0.12.1",
         "0.12.2",
         "0.13.0",
+        "0.14.0",
         "1.0.0",
         "12.34.56",
     ],
@@ -115,7 +116,7 @@ def test_all_publish_boundaries_recompute_the_validated_plan():
 
 def test_default_deployment_refs_remain_stable():
     compose = (ROOT / "docker-compose.prod.yml").read_text()
-    assert compose.count("${AELIRA_VERSION:-0.13.0}") == 3
+    assert compose.count("${AELIRA_VERSION:-0.14.0}") == 3
     assert "alpha" not in compose
 
 

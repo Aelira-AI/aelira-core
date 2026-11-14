@@ -1,4 +1,4 @@
-"""Release metadata and operator notices must agree for v0.13.0."""
+"""Release metadata and operator notices must agree for v0.14.0."""
 
 import ast
 import hashlib
@@ -8,10 +8,11 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.13.0"
-RELEASE_HEADING = "## [0.13.0] - 2026-11-05"
-RELEASE_BODY = ROOT / "docs/releases/v0.13.0.md"
-PREVIOUS_HEADING = "## [0.12.2] - 2026-10-30"
+VERSION = "0.14.0"
+RELEASE_HEADING = "## [0.14.0] - 2026-11-15"
+RELEASE_BODY = ROOT / "docs/releases/v0.14.0.md"
+PREVIOUS_HEADING = "## [0.13.0] - 2026-11-05"
+V0122_HEADING = "## [0.12.2] - 2026-10-30"
 V0121_HEADING = "## [0.12.1] - 2026-10-29"
 V0120_HEADING = "## [0.12.0] - 2026-10-29"
 V0111_HEADING = "## [0.11.1] - 2026-10-29"
@@ -21,7 +22,7 @@ V0913_HEADING = "## [0.9.13] - 2026-10-20"
 V0912_HEADING = "## [0.9.12] - 2026-10-15"
 
 
-def test_authoritative_release_versions_are_0_13_0():
+def test_authoritative_release_versions_are_0_14_0():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -59,8 +60,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.13\.0\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.12\.2\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.14\.0\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.13\.0\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -71,7 +72,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def test_changelog_dates_v0_13_0_and_preserves_history():
+def test_changelog_dates_v0_14_0_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
@@ -85,7 +86,8 @@ def test_changelog_dates_v0_13_0_and_preserves_history():
     pending = changelog[unreleased + len("## [Unreleased]") : release].strip()
     # Unreleased is empty or holds only Keep a Changelog subsections.
     assert pending == "" or pending.startswith("### ")
-    previous = changelog.index(PREVIOUS_HEADING)
+    v0130 = changelog.index(PREVIOUS_HEADING)
+    v0122 = changelog.index(V0122_HEADING)
     v0121 = changelog.index(V0121_HEADING)
     v0120 = changelog.index(V0120_HEADING)
     v0111 = changelog.index(V0111_HEADING)
@@ -98,7 +100,8 @@ def test_changelog_dates_v0_13_0_and_preserves_history():
     assert (
         unreleased
         < release
-        < previous
+        < v0130
+        < v0122
         < v0121
         < v0120
         < v0111
@@ -110,6 +113,38 @@ def test_changelog_dates_v0_13_0_and_preserves_history():
         < historical
     )
     current_notes = _release_notes(changelog, PREVIOUS_HEADING)
+    for phrase in (
+        "docs/releases/v0.14.0.md",
+        "### Changed",
+        "### Fixed",
+        "### Security",
+        "[#1004]",
+        "[#1015]",
+        "[#1016]",
+        "[#1013]",
+        "[#1014]",
+        "[#998]",
+        "[#949]",
+        "[#963]",
+        "[#999]",
+        "[#957]",
+        "[#960]",
+        "[#943]",
+        "[#1011]",
+        "[#1008]",
+        "[#1000]",
+        "[#946]",
+        "[#989]",
+        "[#992]",
+    ):
+        assert phrase in current_notes
+    # A minor section lists its behaviour changes under Changed.
+    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {
+        "Changed",
+        "Fixed",
+        "Security",
+    }
+    v0130_notes = changelog[v0130:v0122]
     for phrase in (
         "docs/releases/v0.13.0.md",
         "### Added",
@@ -133,14 +168,13 @@ def test_changelog_dates_v0_13_0_and_preserves_history():
         "[#924]",
         "[#922]",
     ):
-        assert phrase in current_notes
-    # A minor section lists its new features under Added.
-    assert set(re.findall(r"^### (.+)$", current_notes, re.MULTILINE)) == {
+        assert phrase in v0130_notes
+    assert set(re.findall(r"^### (.+)$", v0130_notes, re.MULTILINE)) == {
         "Added",
         "Fixed",
         "Security",
     }
-    v0122_notes = changelog[previous:v0121]
+    v0122_notes = changelog[v0122:v0121]
     for phrase in (
         "docs/releases/v0.12.2.md",
         "### Fixed",
@@ -191,7 +225,6 @@ def test_changelog_dates_v0_13_0_and_preserves_history():
         "[#873]",
     ):
         assert phrase in v0120_notes
-    # A minor section lists its behaviour changes under Changed.
     assert set(re.findall(r"^### (.+)$", v0120_notes, re.MULTILINE)) == {
         "Changed",
         "Fixed",
@@ -279,6 +312,13 @@ def test_historical_v0_12_2_release_body_is_unchanged():
     )
 
 
+def test_historical_v0_13_0_release_body_is_unchanged():
+    body = (ROOT / "docs/releases/v0.13.0.md").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "309653154250327dc23bafb09936106a21381c587447fab1303813ab09fbbe14"
+    )
+
+
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
@@ -291,20 +331,10 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     assert "Uploads behave differently in this release" not in body
     assert "Check the workflow result and published artifacts before upgrading" in body
     for phrase in (
-        "## New features",
         "## Fixes",
+        "## Changes",
         "## Security",
-        "It is a minor release",
-        "This release adds two database migrations",
-        "20261031_webauthn_passkeys",
-        "20261031_totp_mfa",
-        "20261028_webhook_secret",
-        "20261020_media_captions",
-        "20261018_media_truth",
-        "20261017_canvas_scope",
-        "20260928_pdf_edit_pub",
-        "v0.11.0.md#operator-action-required",
-        "v0.12.0.md#operator-action-required",
+        "It is a minor release under",
         "pause new intake",
         "Drain",
         "coordinated backup",
@@ -312,7 +342,6 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "uploads",
         "artifacts",
         "configuration and encryption keys",
-        "alembic upgrade head",
         "same release",
         "pre-upgrade database",
         "external writebacks",
@@ -333,35 +362,33 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
         "[#376]",
         "[#375]",
         "[#377]",
-        "[#905]",
-        "[#907]",
-        "[#911]",
-        "WebAuthn",
-        "RFC 6238",
-        "[#801]",
-        "[#803]",
-        "[#828]",
-        "[#866]",
-        "[#829]",
-        "[#734]",
-        "[#735]",
-        "[#818]",
-        "[#887]",
-        "[#762]",
-        "[#839]",
-        "[#924]",
-        "[#922]",
-        "CVE-2026-118764",
-        "CVE-2026-119373",
-        "CVE-2026-119586",
-        "11.0.3",
-        "5.9.0",
-        "6.21.4",
+        "[#583]",
+        "OBJR",
+        "hyperlink annotations",
+        "[#1004]",
+        "[#1015]",
+        "[#1016]",
+        "[#1013]",
+        "[#1014]",
+        "[#998]",
+        "[#949]",
+        "[#963]",
+        "[#999]",
+        "[#969]",
+        "[#1017]",
+        "minimatch",
+        "[#943]",
+        "zlib1g",
+        "[#957]",
+        "[#960]",
+        "1.2.6-r3",
+        "[#1011]",
+        "libxslt",
+        "20261031_totp_mfa",
         "## Known limits and open security items",
-        "CVE-2026-94283",
-        "CVE-2026-94284",
-        "CVE-2026-94285",
         "CVE-2026-113022",
+        "159.0.8149.0",
+        "pypdfium2",
         "[#747]",
         "CVE-2026-112036",
         "[#755]",
