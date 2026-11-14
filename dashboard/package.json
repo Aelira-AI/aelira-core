@@ -18,17 +18,17 @@
     "test:all": "node --test tests/unit/*.test.js && playwright test"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "^4.3.4",
-    "@tanstack/react-query": "^5.106.1",
-    "axios": "^1.21.0",
+    "@tailwindcss/postcss": "^4.3.5",
+    "@tanstack/react-query": "^5.107.1",
+    "axios": "^1.21.1",
     "date-fns": "^4.4.0",
     "diff": "^9.0.0",
     "diff2html": "^3.4.56",
     "dompurify": "^3.4.17",
-    "lucide-react": "^1.70.0",
+    "lucide-react": "^1.71.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-dropzone": "^20.1.4",
+    "react-dropzone": "^20.2.0",
     "react-router-dom": "^7.18.5",
     "recharts": "^3.10.1",
     "tailwindcss": "^4.1.17"
@@ -40,16 +40,16 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.72.0",
+    "@typescript-eslint/eslint-plugin": "^8.72.2",
     "@typescript-eslint/parser": "^8.53.1",
-    "@vitejs/plugin-react": "^6.2.1",
+    "@vitejs/plugin-react": "^6.3.0",
     "axe-playwright": "^2.2.2",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.14.0",
     "typescript": "^5.9.3",
-    "vite": "^8.3.6"
+    "vite": "^8.3.8"
   },
   "overrides": {
     "@humanfs/node": "0.16.8",
