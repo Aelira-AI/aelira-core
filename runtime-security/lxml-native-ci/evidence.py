@@ -118,7 +118,12 @@ LIBRARY_OWNERS = {
 XML_LIBRARIES = frozenset({"libxml2.so.16", "libxslt.so.1", "libexslt.so.0"})
 INSTALL_ADDITIONS = frozenset({"INSTALLER", "REQUESTED", "direct_url.json"})
 EXCLUDED = ["verifier/image.tar", "raw logs", "installer-venv.tar"]
-APT_INSTALL = re.compile(r"Inst (\S+)(?: \[[^]]+\])? \((\S+) .* \[([^]]+)\]\)\Z")
+# Must stay byte-identical to verify-apt-closure.py's parser, including the
+# trailing pending-action groups apt appends when an upgrade is pulled in by
+# another package (e.g. " [libc6:arm64 ]" on glibc point releases).
+APT_INSTALL = re.compile(
+    r"Inst (\S+)(?: \[[^]]+\])? \((\S+) .* \[([^]]+)\]\)(?: \[[^]]*\])*\Z"
+)
 
 
 def require(ok: bool, message: str) -> None:

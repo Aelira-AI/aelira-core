@@ -8,7 +8,13 @@ from pathlib import Path
 import re
 import sys
 
-INSTALL = re.compile(r"Inst (\S+)(?: \[[^]]+\])? \((\S+) .* \[([^]]+)\]\)\Z")
+# apt appends a trailing pending-action group (e.g. " [libc6:arm64 ]") to an
+# Inst line when the install/upgrade is pulled in by another package, as with
+# glibc point releases; accept zero or more such groups after the origin
+# paren while keeping every other part of the line strict.
+INSTALL = re.compile(
+    r"Inst (\S+)(?: \[[^]]+\])? \((\S+) .* \[([^]]+)\]\)(?: \[[^]]*\])*\Z"
+)
 
 
 def main() -> None:
