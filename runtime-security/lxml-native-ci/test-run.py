@@ -660,5 +660,106 @@ class OrchestrationTests(Fixture):
         self.assertTrue((scratch / "public-candidate" / "bundle.json").exists())
 
 
+class AptPlanParsingTests(unittest.TestCase):
+    APT_PARSER = MODULE.parent.parent / "lxml" / "verify-apt-closure.py"
+
+    SIMULATION = (
+        "Reading package lists...\n"
+        "Building dependency tree...\n"
+        "Reading state information...\n"
+        "Solving dependencies...\n"
+        "Inst libzstd1 (1.5.7+dfsg-1ubuntu1 Ubuntu:26.04/resolute [arm64])\n"
+        "Inst libc6 [2.43-2ubuntu2.4] (2.43-2ubuntu2.7 Ubuntu:26.04/"
+        "resolute-updates, Ubuntu:26.04/resolute-security [arm64])\n"
+        "Inst libc-gconv-modules-extra [2.43-2ubuntu2.4] (2.43-2ubuntu2.7 "
+        "Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security "
+        "[arm64]) [libc6:arm64 ]\n"
+        "Conf libc-gconv-modules-extra (2.43-2ubuntu2.7 Ubuntu:26.04/"
+        "resolute-updates, Ubuntu:26.04/resolute-security [arm64]) "
+        "[libc6:arm64 ]\n"
+    )
+    DEBS = [
+        ("libzstd1", "1.5.7+dfsg-1ubuntu1", "arm64"),
+        ("libc6", "2.43-2ubuntu2.7", "arm64"),
+        ("libc-gconv-modules-extra", "2.43-2ubuntu2.7", "arm64"),
+    ]
+
+    def run_verifier(
+        self, simulation: str, packages: list[tuple[str, str, str]]
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory(prefix="lxml-apt-plan-") as temp:
+            root = Path(temp).resolve()
+            simulation_path = root / "apt-simulation.txt"
+            simulation_path.write_text(simulation, encoding="utf-8")
+            authenticated = root / "preinstall-authenticated-packages.json"
+            authenticated.write_text(
+                json.dumps(
+                    {
+                        "debs": [
+                            {
+                                "architecture": architecture,
+                                "package": package,
+                                "version": version,
+                            }
+                            for package, version, architecture in packages
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(self.APT_PARSER),
+                    str(simulation_path),
+                    str(authenticated),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+    def test_trailing_pending_action_group_is_accepted(self) -> None:
+        result = self.run_verifier(self.SIMULATION, self.DEBS)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"exact_closure": True, "selected_packages": 3},
+        )
+
+    def test_malformed_and_duplicate_selections_stay_refused(self) -> None:
+        self.assertNotEqual(
+            self.run_verifier(
+                self.SIMULATION + "Inst broken without a plan paren\n",
+                self.DEBS + [("broken", "1", "arm64")],
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_verifier(
+                self.SIMULATION
+                + "Inst libzstd1 (1.5.7+dfsg-1ubuntu1 Ubuntu:26.04/"
+                "resolute [arm64])\n",
+                self.DEBS,
+            ).returncode,
+            0,
+        )
+
+    def test_parser_matches_evidence_copy(self) -> None:
+        parser_spec = importlib.util.spec_from_file_location(
+            "lxml_verify_apt_closure", self.APT_PARSER
+        )
+        assert parser_spec and parser_spec.loader
+        parser = importlib.util.module_from_spec(parser_spec)
+        parser_spec.loader.exec_module(parser)
+        evidence_spec = importlib.util.spec_from_file_location(
+            "lxml_native_evidence", MODULE.with_name("evidence.py")
+        )
+        assert evidence_spec and evidence_spec.loader
+        evidence = importlib.util.module_from_spec(evidence_spec)
+        evidence_spec.loader.exec_module(evidence)
+        self.assertEqual(parser.INSTALL.pattern, evidence.APT_INSTALL.pattern)
+
+
 if __name__ == "__main__":
     unittest.main()
