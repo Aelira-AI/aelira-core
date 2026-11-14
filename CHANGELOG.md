@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-15
+
+See the [release notes](docs/releases/v0.14.0.md) for operator actions and
+evidence limits.
+
 ### Changed
 - Ten newly disclosed unfixed MIT Kerberos advisories (CVE-2026-71199, CVE-2026-71200, CVE-2026-107364, CVE-2026-112315 through CVE-2026-112320, CVE-2026-118380) carry reviewed not-affected dispositions and disclosure entries; the vulnerable code sits in KDC, kadmind, and RPCSEC_GSS server paths the API image never executes, and no fix version exists in Debian trixie ([#1008](https://github.com/Aelira-AI/aelira-core/issues/1008)).
 - Four unfixed upstream MIT Kerberos advisories (CVE-2026-112321, CVE-2026-112322, CVE-2026-112323, CVE-2026-119079) carry reviewed not-affected dispositions and disclosure entries; the vulnerable code sits in RPCSEC_GSS server and KDC ASN.1 paths the API image never executes, and no fix version exists in Debian trixie ([#1000](https://github.com/Aelira-AI/aelira-core/issues/1000)).
@@ -36,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The CLI development dependency tree no longer resolves the vulnerable `minimatch` 10.x releases affected by GHSA-g3hv-75wg-m249 / CVE-2026-118764 (denial of service via globparts amplification): `cli/package.json` now carries a blanket `minimatch ^11.0.3` override instead of the two scoped ones, and `eslint-plugin-import-x` is bumped to 4.18.0, which drops the `makeRe` import that previously made the blanket override crash ESLint at config load. Every resolved `minimatch` copy is now ≥ 11.0.1 ([#943](https://github.com/Aelira-AI/aelira-core/issues/943)).
 - Drop the custom `zlib1g` rebuild: Debian's `1:1.3.dfsg+really1.3.1-1+deb13u1` security update (DSA-6613-1) carries Mark Adler's fix to the same `gz_write` failure path the rebuild shipped — Debian labels it CVE-2026-85091, and the Debian tracker marks CVE-2026-76844 fixed by the same upload — plus a `crc32_combine` negative-length guard (CVE-2026-27171), so both images now install Debian's package directly and the adapted patch, which collides with Debian's own at that hunk, retires with the recipe. This also clears the build failure main has had on every revision since the upload: dpkg sorts the archive's new candidate above the custom build, which made the runtime backport install a refused downgrade, and the CVE-2026-85091 not-affected disposition retires with the rebuilt version ([#957](https://github.com/Aelira-AI/aelira-core/issues/957)).
 - The dashboard image now upgrades `musl` and `musl-utils` to 1.2.6-r3 through the production-stage apk security-upgrade allowlist, clearing the two HIGH CVE-2026-107891 findings the trivy gate reports for Alpine 3.24.1: Alpine secdb ships the fix at 1.2.6-r3, published after the pinned nginx base image was built, so the image kept installing the vulnerable 1.2.6-r2 until now ([#960](https://github.com/Aelira-AI/aelira-core/issues/960)).
+- Pinned the rebuilt `libxslt` revision 4 in the dashboard image, closing the 2026-11-14 review's libxslt runtime findings, and recorded reviewed not-affected dispositions for the dev-only `libxml2`/`libxslt` packages (four advisories; reviewed count 36 -> 40) ([#1011](https://github.com/Aelira-AI/aelira-core/issues/1011)).
 
 ## [0.13.0] - 2026-11-05
 

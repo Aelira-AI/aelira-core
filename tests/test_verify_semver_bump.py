@@ -437,3 +437,22 @@ def test_negative_control_real_changelog_is_refused_as_0_10_1() -> None:
     assert fixed_only.errors
     # Without the rename there is simply no 0.10.1 section to release.
     assert gate.check_release("0.10.1", "0.10.0", REAL_CHANGELOG, []).errors
+
+
+def test_real_changelog_passes_as_0_14_0_after_0_13_0() -> None:
+    report = gate.check_release("0.14.0", "0.13.0", REAL_CHANGELOG, [])
+    assert report.errors == []
+    assert report.actual == "minor"
+    assert report.required == "minor"
+
+
+def test_negative_control_0_14_0_is_refused_as_a_patch() -> None:
+    report = gate.check_release(
+        "0.13.1",
+        "0.13.0",
+        REAL_CHANGELOG.replace("## [0.14.0] - ", "## [0.13.1] - ", 1),
+        [],
+    )
+    assert report.errors
+    message = "\n".join(report.errors)
+    assert "'### Changed'" in message

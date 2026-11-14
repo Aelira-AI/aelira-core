@@ -6,8 +6,8 @@ We release patches for security vulnerabilities in the following versions:
 
 | Version   | Supported          |
 | --------- | ------------------ |
-| 0.13.0    | :white_check_mark: |
-| <= 0.12.2 | :x:                |
+| 0.14.0    | :white_check_mark: |
+| <= 0.13.0 | :x:                |
 
 As a pre-1.0 project, only the current security patch is supported. Earlier 0.x releases are not maintained.
 
