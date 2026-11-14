@@ -37,7 +37,7 @@ from src.education.remediation.pdf_text_inventory import inspect_pdf_text_invent
 MANIFEST = ROOT / "tests/fixtures/pdf_font_recovery/manifest.json"
 PINNED = {
     "pdfminer.six": "20260107",
-    "pikepdf": "10.17.0",
+    "pikepdf": "10.18.0",
     "PyMuPDF": "2.0",
     "fonttools": "4.68.0",
 }
