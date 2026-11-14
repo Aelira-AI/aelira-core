@@ -1755,6 +1755,286 @@
       "reviewed": "2026-11-10",
       "expires": "2027-02-06",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-71199",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "authentication indicator bypass using an unkeyed checksum in the CAMMAC authdata container. Indicators are issued by a KDC and validated by Kerberos application servers; the image runs neither, and consumes no authentication indicators. The krb5 libraries are present only as transitive client-side dependencies of the curl/GnuTLS chain.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-71200",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "NULL pointer dereference in the KDC PKINIT code path when a KDC is configured to allow PKINIT authentication. The image runs no KDC and no PKINIT responder; client-side krb5 use by the curl/GnuTLS chain never reaches the KDC PKINIT handler.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-107364",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "large read overrun in a KDC process triggered by an unauthenticated request. The vulnerable loop is KDC request processing; the image runs no KDC, and the krb5 libraries are transitive client-side dependencies of the curl/GnuTLS chain.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112315",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "RPCSEC_GSS authentication routines in lib/rpc/authgss_prot.c leak partially decoded buffers on failure, a kadmind denial-of-service path. The image runs no kadmind and no RPCSEC_GSS service, and no component links the server-side RPC authentication entry points.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112316",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "xdr_krb5_tl_data() in lib/kadm5/kadm_rpc_xdr.c fails to free partially decoded data on decode failure. This is kadmind-only RPC XDR code; no kadmin service runs in the image and the kadm5 RPC server path is never executed.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112317",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "krb5_ktkdb_get_entry() in lib/kdb/keytab.c fails to free decrypted key material when a post-decryption check fails. The keytab database path is exercised only by the KDC and kadmind, neither of which runs in this image.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112318",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "kadmin policy RPC stubs in kadmin/server/server_stubs.c accept a NULL policy name decoded by xdr_nullstring(). kadmind is absent from the image and these server stubs are never executed.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112319",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "the GSS-RPC layer enforces no size limit on XDR-decoded data, exhausting kadmind memory. The image runs no kadmind and serves no GSS-RPC traffic.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-112320",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "the GSS-RPC transport layer leaks the previous authentication context when a client switches from a GSS flavor to a non-GSS flavor on the same TCP connection. The context-leak denial of service is specific to kadmind, which the image does not run, and no RPCSEC_GSS service is served here.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-118380",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libgssapi-krb5-2",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libk5crypto3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5-3",
+          "installedVersion": "1.21.3-5+deb13u1"
+        },
+        {
+          "name": "libkrb5support0",
+          "installedVersion": "1.21.3-5+deb13u1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "an active network attacker can alter arguments sent by a legitimate client to RPC services protected by RPCSEC_GSS or force return values to plaintext. The image neither calls nor exports RPCSEC_GSS-protected RPC; no component establishes a GSS-RPC channel.",
+      "reviewed": "2026-11-13",
+      "expires": "2027-02-09",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
