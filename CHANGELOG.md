@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The shipped-surface npm audit step now runs through `scripts/npm_audit_gate.ts`, a temporary CI-tooling exception that excepts only the unpatched GHSA-fc5q-39xc-vjpf / CVE-2026-112366 picomatch ReDoS advisory (no fixed release published upstream), prints a loud banner naming the exception and its removal condition on every run, and still fails the gate for every other high or critical advisory or whenever npm audit itself errors; it retires with the picomatch 4.0.8+ lockfile refresh and has no user-facing effect ([#1026](https://github.com/Aelira-AI/aelira-core/issues/1026)).
+
 ## [0.14.0] - 2026-11-15
 
 See the [release notes](docs/releases/v0.14.0.md) for operator actions and
