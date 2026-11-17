@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Alt text that is only a file name (`IMG_0042.jpg`, `nature1.png`) or an authoring-tool placeholder (`Picture 3`, `image001`, `Screenshot`) no longer passes as a description: the DOCX, XLSX and web-code image scanners and the PDF image checker now apply the same placeholder test the PPTX scanner shipped with, so such images are reported as missing alt text with wording that names the existing text as a filename or placeholder, while an explicit empty alt keeps its decorative meaning ([#719](https://github.com/Aelira-AI/aelira-core/issues/719)).
+
 ## [0.14.0] - 2026-11-15
 
 See the [release notes](docs/releases/v0.14.0.md) for operator actions and

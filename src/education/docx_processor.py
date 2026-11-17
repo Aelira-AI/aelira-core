@@ -27,6 +27,7 @@ from PIL import Image
 from io import BytesIO
 import logging
 from .scan_completeness import record_incomplete_check
+from .alt_text_quality import alt_text_is_placeholder
 import re
 
 from src.education.color_blindness_simulator import (
@@ -72,6 +73,9 @@ class ImageIssue(BaseModel):
     image_index: int  # Index within document
     has_alt_text: bool
     existing_alt_text: Optional[str] = None
+    # True when the existing alt text is only a file name or tool placeholder,
+    # which is reported as missing because it does not describe the image
+    alt_text_is_placeholder: bool = False
     suggested_alt_text: Optional[str] = None
     image_path: Optional[str] = None  # ZIP-relative path e.g. word/media/image1.png
     # Smart image analysis
@@ -332,7 +336,16 @@ class DocxProcessingResult(BaseModel):
                     title = "Decorative Image — Needs Empty Alt Text"
                     severity = "low"
                 else:
-                    desc = f"Image {issue.image_index + 1} is missing alternative text"
+                    if issue.alt_text_is_placeholder:
+                        desc = (
+                            f"Image {issue.image_index + 1} is missing alt text: "
+                            "the existing text appears to be a filename or "
+                            "placeholder, not a description"
+                        )
+                    else:
+                        desc = (
+                            f"Image {issue.image_index + 1} is missing alternative text"
+                        )
                     title = "Missing Alt Text"
                     severity = "critical"
             all_issues.append(
@@ -867,7 +880,13 @@ class DocxProcessor:
                         if doc_pr is not None:
                             alt_text = doc_pr.get("descr") or doc_pr.get("title")
 
-                    has_alt = alt_text and alt_text.strip() != ""
+                    has_alt = bool(alt_text and alt_text.strip())
+                    # A file name or tool placeholder in the description field
+                    # is not alt text: it passes a presence check and
+                    # describes nothing.
+                    placeholder_alt = has_alt and alt_text_is_placeholder(alt_text)
+                    if placeholder_alt:
+                        has_alt = False
 
                     # Capture the ZIP-relative path for this image (used by remediator)
                     image_zip_path = None
@@ -972,7 +991,10 @@ class DocxProcessor:
                                 paragraph_index=para_idx,
                                 image_index=image_index,
                                 has_alt_text=False,
-                                existing_alt_text=None,
+                                existing_alt_text=(
+                                    alt_text if placeholder_alt else None
+                                ),
+                                alt_text_is_placeholder=placeholder_alt,
                                 suggested_alt_text=suggested_alt,
                                 image_path=image_zip_path,
                                 detected_image_type=detected_type,
@@ -1787,6 +1809,10 @@ class DocxProcessor:
 
                     match = re.search(r'descr="([^"]*)"', xml)
                     if match and match.group(1):
+                        # A file name or tool placeholder describes nothing,
+                        # so the diagram stays missing alt text.
+                        if alt_text_is_placeholder(match.group(1)):
+                            continue
                         return True, match.group(1)
 
         except Exception as e:

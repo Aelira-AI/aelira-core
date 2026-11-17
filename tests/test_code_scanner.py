@@ -225,6 +225,43 @@ video.play(); // auto-play
         # Should have one image-alt issue
         assert any(i.rule == "image-alt" for i in issues)
 
+    @pytest.mark.parametrize("alt", ["IMG_0042.jpg", "Picture 3"])
+    def test_placeholder_alt_reported_as_missing(self, code_scanner, alt):
+        """A file name or tool placeholder alt counts as missing alt text."""
+        html = f'<img src="photo.jpg" alt="{alt}">'
+        issues, images, _ = code_scanner._scan_html(html, "test.html")
+
+        assert len(images) == 1
+        assert images[0].has_alt is False
+        assert images[0].alt_text_is_placeholder is True
+        assert images[0].is_decorative is False
+
+        alt_issues = [i for i in issues if i.rule == "image-alt"]
+        assert len(alt_issues) == 1
+        assert "the existing text appears to be a filename or placeholder" in (
+            alt_issues[0].description
+        )
+
+    def test_empty_alt_stays_decorative(self, code_scanner):
+        """An explicit empty alt remains decorative with no issue."""
+        html = '<img src="spacer.gif" alt="">'
+        issues, images, _ = code_scanner._scan_html(html, "test.html")
+
+        assert len(images) == 1
+        assert images[0].is_decorative is True
+        assert images[0].alt_text_is_placeholder is False
+        assert not any(i.rule == "image-alt" for i in issues)
+
+    def test_real_description_is_not_flagged(self, code_scanner):
+        """A genuine description passes with no issue."""
+        html = '<img src="barn.jpg" alt="Photo of a red barn">'
+        issues, images, _ = code_scanner._scan_html(html, "test.html")
+
+        assert len(images) == 1
+        assert images[0].has_alt is True
+        assert images[0].alt_text_is_placeholder is False
+        assert not any(i.rule == "image-alt" for i in issues)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

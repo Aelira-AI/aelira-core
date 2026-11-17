@@ -255,6 +255,12 @@ class PDFProcessor:
                     )
                 else:
                     message = "Image missing alternative text"
+                    if img_issue.alt_text_is_placeholder:
+                        message = (
+                            "Image missing alternative text: the existing text "
+                            "appears to be a filename or placeholder, not a "
+                            "description"
+                        )
                     suggested_fix = "Add descriptive alt text for this image"
                     if img_issue.image_type == "decorative":
                         suggested_fix = 'AI suggests this image may be decorative; review whether alt="" is appropriate'
