@@ -639,6 +639,7 @@ def undescribed_figures_are_recorded_manual(
     manual: Sequence[ImageFindingBinding],
     verified: Sequence[ImageFindingBinding],
     failure_details: Any,
+    source_unowned: frozenset[tuple[int, int]] | None = None,
 ) -> bool:
     """Prove that every Figure still missing /Alt is a source image left for review.
 
@@ -648,6 +649,16 @@ def undescribed_figures_are_recorded_manual(
     when the saved output accounts for the source's images exactly, each
     undescribed Figure is a missing-alt finding already recorded as manual work,
     and each described image carries the description of its own verified fix.
+
+    A partially tagged source has the same invisible defect in a different
+    shape: it has a structure tree, but the image sits outside every structure
+    element, so 13-004 passes on the source ("No Figure elements found") and
+    fails only once remediation tags the image. The caller passes the proven
+    set of source images with no structure owner as ``source_unowned``; then
+    every undescribed Figure must additionally be one of those occurrences, so
+    a figure whose source image already had a structure owner is refused. The
+    position is shared ground because ``preserve_image_pages`` proved the
+    output shows each source draw at the same page, index and box.
 
     The output's Figures must each own exactly one displayed image of the
     preserved source inventory, and no image may be left over: every source
@@ -683,6 +694,7 @@ def undescribed_figures_are_recorded_manual(
         or undescribed & saved.accessible
         or images != undescribed | saved.accessible
         or reported is None
+        or (source_unowned is not None and not undescribed <= source_unowned)
         or (int(reported[1]), int(reported[2]))
         != (len(undescribed), figures.figure_count)
     ):

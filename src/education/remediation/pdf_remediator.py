@@ -5977,6 +5977,56 @@ class PdfRemediator(BaseRemediator):
                     )
                     new_failures = after_failures - before_failures
                     persistent = after_failures & before_failures
+                    verified_new_figure_failure = False
+                    if new_failures == Counter({("13-004", None): 1}):
+                        from ..pdf_checks.image_semantics import (
+                            images_without_structure_owners,
+                            missing_figure_occurrences,
+                        )
+
+                        new_figure_records = [
+                            checkpoint
+                            for checkpoint in after_mh.checkpoints
+                            if checkpoint.id == "13-004"
+                            and checkpoint.status == CheckpointStatus.FAIL
+                        ]
+                        after_figures = missing_figure_occurrences(verification_path)
+                        source_unowned = images_without_structure_owners(self.file_path)
+                        fixed_ids = {
+                            fixed.issue_id for fixed in self.result.fixed_issues
+                        }
+                        verified_new_figure_failure = bool(
+                            len(new_figure_records) == 1
+                            and after_figures is not None
+                            and source_unowned is not None
+                            and undescribed_figures_are_recorded_manual(
+                                after_figures,
+                                saved_images,
+                                [
+                                    image_bindings[record.issue_id]
+                                    for record in self.result.manual_issues
+                                    if record.issue_id in image_bindings
+                                    and record.issue_id not in fixed_ids
+                                ],
+                                [
+                                    image_bindings[fixed.issue_id]
+                                    for fixed in self.result.fixed_issues
+                                    if fixed.issue_id in image_bindings
+                                ],
+                                new_figure_records[0].details,
+                                source_unowned=source_unowned,
+                            )
+                        )
+                        if verified_new_figure_failure:
+                            # The only new failure is the source's own defect:
+                            # every undescribed Figure is a source image with no
+                            # structure owner (13-004 passed because it never
+                            # saw them), each recorded as manual work, and every
+                            # described image backed by its own verified fix.
+                            # Like #714's changed evidence for an untagged
+                            # source, a visible existing defect is not a new
+                            # regression.
+                            del new_failures[("13-004", None)]
                     # Checkpoints can aggregate several broken elements. A
                     # repeated ID does not prove unchanged damage. Without
                     # element-level evidence, changed/absent details are unknown.
@@ -6107,12 +6157,19 @@ class PdfRemediator(BaseRemediator):
                     # Publication gates compare the claimed output against
                     # this baseline. Failures with changed evidence are not
                     # attributed to the source.
+                    source_failure_baseline = [
+                        key
+                        for key in before_failures.elements()
+                        if key not in uncertain_failures
+                    ]
+                    if verified_new_figure_failure:
+                        # The accepted new failure is the source's own defect
+                        # made visible by tagging: the gate that reads this
+                        # baseline must see it as pre-existing, exactly as it
+                        # sees proven changed evidence on an untagged source.
+                        source_failure_baseline.append(("13-004", None))
                     self.result.source_matterhorn_failures = sorted(
-                        (
-                            key
-                            for key in before_failures.elements()
-                            if key not in uncertain_failures
-                        ),
+                        source_failure_baseline,
                         key=lambda key: (key[0], -1 if key[1] is None else key[1]),
                     )
                 except Exception as e:
