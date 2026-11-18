@@ -16,6 +16,7 @@ from src.security.browser_ssrf import (
     BLOCKED_CHANNEL_CONSOLE_MARKER,
     BrowserNetworkIsolation,
     BrowserScanIncompleteError,
+    MAX_REDIRECT_HOPS,
     assert_browser_channels_safe,
     install_browser_ssrf_guard,
     make_ssrf_route_handler,
@@ -118,11 +119,16 @@ def test_public_response_preserves_request_and_decoded_body():
     assert calls[0][0:2] == ("POST", "https://public.example/post")
     assert calls[0][2]["data"] == b'{"x":1}'
     assert calls[0][2]["headers"] == {"Content-Type": "application/json"}
-    assert calls[0][2]["follow_redirects"] is False
+    assert calls[0][2]["follow_redirects"] is True
+    assert calls[0][2]["max_redirects"] == MAX_REDIRECT_HOPS
 
 
 @pytest.mark.parametrize("location", ["/next", "http://private.example/secret"])
-def test_browser_redirect_aborts_without_second_fetch(location):
+def test_unfollowed_redirect_is_refused_defensively(location):
+    # Contract (issue #800): the handler asks the validating transport to
+    # follow redirects itself, which never hands back a 3xx with a Location.
+    # An injected transport that does has unchecked hops remaining, so the
+    # handler still refuses to fulfil it rather than leak those hops.
     route = FakeRoute("http://public.example/start")
     calls = []
 
@@ -134,6 +140,46 @@ def test_browser_redirect_aborts_without_second_fetch(location):
     assert route.aborted == BLOCKED_ABORT_CODE
     assert route.fulfilled is None
     assert calls == ["http://public.example/start"]
+
+
+def test_followed_redirect_fulfils_final_body_and_syncs_hop_cookies():
+    class Context:
+        def __init__(self):
+            self.cookies = []
+
+        def add_cookies(self, cookies):
+            self.cookies.extend(cookies)
+
+    redirect = fake_response(
+        "https://public.example/old-logo.png",
+        302,
+        headers={"Location": "https://cdn.example/logo.png"},
+    )
+    redirect.cookies.set("gate", "1", domain="public.example", path="/")
+    final = fake_response("https://cdn.example/logo.png", body=b"png")
+    final.history = [redirect]
+    calls = []
+
+    def fetch(method, url, **kwargs):
+        calls.append(kwargs)
+        return final
+
+    route = FakeRoute("https://public.example/old-logo.png", resource_type="image")
+    blocked = []
+    context = Context()
+    make_ssrf_route_handler(
+        blocklist_validator,
+        fetcher=fetch,
+        context=context,
+        blocked_required=blocked,
+    )(route)
+    assert route.aborted is None
+    assert route.fulfilled is not None
+    assert route.fulfilled["body"] == b"png"
+    assert calls[0]["follow_redirects"] is True
+    assert calls[0]["max_redirects"] == MAX_REDIRECT_HOPS
+    assert blocked == []
+    assert {cookie["name"] for cookie in context.cookies} == {"gate"}
 
 
 def test_failed_fetch_log_does_not_include_url_or_exception(caplog):
@@ -465,6 +511,281 @@ def test_evaluated_page_produces_result(monkeypatch):
     assert result.pages[0].title == "Evaluated"
     assert result.overall_compliance_score == 100.0
     assert closed == ["browser", "playwright"]
+
+
+# ---------------------------------------------------------------------------
+# Subresource redirects over the real transport (issue #800)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def redirect_servers(monkeypatch):
+    """Loopback public/victim servers exercising the production transport.
+
+    The route handler and safe_requests_request run exactly as in production;
+    only the address classification is stubbed (by port) and the adapter's
+    forbidden-address check is relaxed so the loopback fixture can connect,
+    mirroring the browser fixture below.
+    """
+    from src.security import browser_ssrf
+    from src.utils import public_http, security
+
+    public_hits = []
+    victim_hits = []
+
+    class Victim(BaseHTTPRequestHandler):
+        def do_GET(self):
+            victim_hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "5")
+            self.end_headers()
+            self.wfile.write(b"loot!")
+
+        def log_message(self, *args):
+            pass
+
+    victim_server, victim_port = _start_server(Victim)
+
+    class Public(BaseHTTPRequestHandler):
+        def do_GET(self):
+            public_hits.append(self.path)
+            if self.path == "/redirect-private":
+                self._redirect(302, f"http://127.0.0.1:{victim_port}/internal")
+            elif self.path == "/redirect-loop":
+                self._redirect(302, "/redirect-loop")
+            elif self.path == "/redirect-public":
+                self._redirect(301, "/landing")
+            else:  # /landing
+                body = b"landed"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def _redirect(self, status, location):
+            self.send_response(status)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    public_server, public_port = _start_server(Public)
+
+    def validator(url):
+        if f":{victim_port}" in url:
+            raise ValueError("URL target is not allowed")
+        return url
+
+    # The route handler and the transport resolve the classifier through
+    # their module globals at call time, so both names move together.
+    monkeypatch.setattr(browser_ssrf, "validate_url_not_private", validator)
+    monkeypatch.setattr(security, "validate_url_not_private", validator)
+    monkeypatch.setattr(public_http, "_is_forbidden_address", lambda address: False)
+
+    yield {
+        "public_port": public_port,
+        "victim_port": victim_port,
+        "public_hits": public_hits,
+        "victim_hits": victim_hits,
+    }
+    public_server.shutdown()
+    victim_server.shutdown()
+
+
+def test_transport_stops_private_hop_before_connect(redirect_servers):
+    from src.utils import security
+
+    with pytest.raises(ValueError):
+        security.safe_requests_request(
+            "GET",
+            f"http://127.0.0.1:{redirect_servers['public_port']}/redirect-private",
+            timeout=5,
+        )
+    assert redirect_servers["victim_hits"] == []
+
+
+def test_route_handler_follows_public_subresource_redirect(redirect_servers):
+    route = FakeRoute(
+        f"http://127.0.0.1:{redirect_servers['public_port']}/redirect-public",
+        resource_type="image",
+    )
+    blocked = []
+    make_ssrf_route_handler(blocked_required=blocked)(route)
+    assert route.aborted is None
+    assert route.fulfilled is not None
+    assert route.fulfilled["body"] == b"landed"
+    assert blocked == []
+    assert redirect_servers["public_hits"] == ["/redirect-public", "/landing"]
+    assert redirect_servers["victim_hits"] == []
+
+
+def test_route_handler_blocks_subresource_redirect_to_private(redirect_servers):
+    route = FakeRoute(
+        f"http://127.0.0.1:{redirect_servers['public_port']}/redirect-private",
+        resource_type="script",
+    )
+    blocked = []
+    make_ssrf_route_handler(blocked_required=blocked)(route)
+    assert route.aborted == BLOCKED_ABORT_CODE
+    assert route.fulfilled is None
+    assert blocked == [{"resource_type": "script", "reason": "target_refused"}]
+    assert redirect_servers["victim_hits"] == []
+
+
+def test_route_handler_enforces_subresource_hop_cap(redirect_servers):
+    route = FakeRoute(
+        f"http://127.0.0.1:{redirect_servers['public_port']}/redirect-loop",
+        resource_type="stylesheet",
+    )
+    blocked = []
+    make_ssrf_route_handler(blocked_required=blocked)(route)
+    assert route.aborted == BLOCKED_ABORT_CODE
+    assert blocked == [{"resource_type": "stylesheet", "reason": "target_refused"}]
+    # The initial request plus MAX_REDIRECT_HOPS follow-ups, then refusal.
+    assert len(redirect_servers["public_hits"]) == MAX_REDIRECT_HOPS + 1
+
+
+def _scanner_with_route_capture(monkeypatch, public_port, *, image_path):
+    """WebScanner with the real guard installed on a fake browser context.
+
+    Page.goto drives a required image through the installed route handler
+    the way Playwright would, so a redirected subresource is evaluated by
+    the production handler, transport, and completeness assertion together.
+    Only Chromium and URL resolution are stubbed.
+    """
+    from src.education import web_scanner
+
+    scanner = web_scanner.WebScanner(
+        scan_images=False,
+        scan_multimedia=False,
+        scan_math=False,
+        max_depth=0,
+        max_pages=1,
+        use_ai_analysis=False,
+        llm_client=object(),
+        database_url="postgresql://test:***@127.0.0.1/test",
+    )
+    routes = []
+
+    class Session:
+        def send(self, _method, _params):
+            return {"result": {"type": "boolean", "value": False}}
+
+        def detach(self):
+            pass
+
+    class Page:
+        context = type(
+            "PageContext", (), {"new_cdp_session": lambda self, _p: Session()}
+        )()
+        frames = ["main-frame"]
+
+        def goto(self, _url, **_kwargs):
+            routes[0][1](
+                FakeRoute(
+                    f"http://127.0.0.1:{public_port}{image_path}",
+                    resource_type="image",
+                )
+            )
+
+        def title(self):
+            return "Redirected page"
+
+        def close(self):
+            pass
+
+    class Context:
+        def on(self, *args):
+            pass
+
+        def expose_binding(self, *args):
+            pass
+
+        def add_init_script(self, *args):
+            pass
+
+        def route(self, pattern, handler):
+            routes.append((pattern, handler))
+
+        def route_web_socket(self, *args):
+            pass
+
+        def new_page(self):
+            return Page()
+
+    class Browser:
+        def new_context(self, **kwargs):
+            return Context()
+
+        def close(self):
+            pass
+
+    class Isolation:
+        def new_context(self, browser):
+            return browser.new_context(service_workers="block")
+
+        def close(self):
+            pass
+
+    class Chromium:
+        def launch(self, **kwargs):
+            return Browser()
+
+    class Playwright:
+        chromium = Chromium()
+
+        def stop(self):
+            pass
+
+    class Starter:
+        def start(self):
+            return Playwright()
+
+    class FakeAxeResult:
+        response = {"violations": []}
+
+    class FakeAxe:
+        def run(self, _page, options=None):
+            return FakeAxeResult()
+
+    monkeypatch.setattr(web_scanner, "sync_playwright", Starter)
+    monkeypatch.setattr(web_scanner, "BrowserNetworkIsolation", Isolation)
+    monkeypatch.setattr(
+        web_scanner, "resolve_browser_navigation_url", lambda url, context=None: url
+    )
+    monkeypatch.setattr(web_scanner, "Axe", FakeAxe)
+    monkeypatch.setattr(
+        scanner, "_detect_spa_framework", lambda page: web_scanner.SPAFramework.NONE
+    )
+    monkeypatch.setattr(scanner, "_extract_page_structure", lambda page: {})
+    monkeypatch.setattr(scanner, "_find_shadow_roots", lambda page: (0, []))
+    return scanner
+
+
+def test_scan_keeps_page_whose_required_image_redirects_publicly(
+    monkeypatch, redirect_servers
+):
+    scanner = _scanner_with_route_capture(
+        monkeypatch, redirect_servers["public_port"], image_path="/redirect-public"
+    )
+    result = scanner.scan_website("https://public.example/start")
+    assert result.pages_scanned == 1
+    assert redirect_servers["public_hits"] == ["/redirect-public", "/landing"]
+    assert redirect_servers["victim_hits"] == []
+
+
+def test_scan_still_fails_when_required_image_redirects_to_private(
+    monkeypatch, redirect_servers
+):
+    scanner = _scanner_with_route_capture(
+        monkeypatch, redirect_servers["public_port"], image_path="/redirect-private"
+    )
+    with pytest.raises(BrowserScanIncompleteError):
+        scanner.scan_website("https://public.example/start")
+    assert redirect_servers["victim_hits"] == []
 
 
 # ---------------------------------------------------------------------------

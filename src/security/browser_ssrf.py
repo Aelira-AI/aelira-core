@@ -3,8 +3,12 @@
 Every browser HTTP(S) request is fetched through a public-only Requests
 adapter and fulfilled from its bytes. A reject-only local proxy also contains
 Chromium's speculative connections, which can precede route callbacks.
-Redirects are refused because a fulfilled 3xx bypasses route callbacks,
-while directly fulfilling the final body changes URL/origin semantics.
+Subresource redirects are followed inside that transport with a public-address
+check at every hop and a shared hop cap, so a chain touching a private target
+anywhere fails before the offending hop connects. The browser is fulfilled
+with the final body under the original URL: the guard protects reachability,
+not URL bookkeeping, and a fulfilled 3xx instead would let Chromium fetch the
+next hop outside this validated route.
 Scanner contexts block service workers and WebSockets before pages are created.
 """
 
@@ -30,7 +34,7 @@ BROWSER_EGRESS_ARGS = (
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 )
 MAX_REDIRECT_HOPS = (
-    5  # Top-level resolver limit; browser subresource redirects are refused.
+    5  # Shared cap for top-level navigation and browser subresource fetches.
 )
 
 
@@ -237,7 +241,24 @@ def make_ssrf_route_handler(
     context=None,
     blocked_required=None,
 ):
-    """Build a route handler with injectable validation and transport for tests."""
+    """Build a route handler with injectable validation and transport for tests.
+
+    Redirects are followed inside the validated transport: the shared
+    ``safe_requests_request`` helper re-checks the public-address rule at
+    every hop and enforces MAX_REDIRECT_HOPS, dropping credentials and
+    non-essential headers on any cross-origin hop, so a chain touching a
+    private, loopback, link-local, or metadata target is refused before
+    that hop connects. Design decision on
+    URL/origin semantics: the browser is fulfilled with the final body under
+    the original request URL. The guard's security property is reachability
+    (no hop may connect to a private address) and per-hop validation keeps
+    it, even though the browser records the first URL rather than the last;
+    content opacity is unchanged, since a browser that followed the redirect
+    itself would load the same bytes. Returning the 3xx to the browser is
+    not a safe alternative: Chromium does not reliably re-enter this route
+    for a fulfilled redirect's follow-up request, so the next hop would
+    fetch outside the guard.
+    """
     validator = validator or validate_url_not_private
 
     def handle_route(route):
@@ -254,7 +275,8 @@ def make_ssrf_route_handler(
                 request.method,
                 request.url,
                 timeout=30,
-                follow_redirects=False,
+                follow_redirects=True,
+                max_redirects=MAX_REDIRECT_HOPS,
                 headers=headers,
                 data=request.post_data_buffer,
             )
@@ -263,9 +285,13 @@ def make_ssrf_route_handler(
                 and response.status_code != 304
                 and response.headers.get("Location")
             ):
+                # A validating transport that follows redirects never hands
+                # back an unfollowed 3xx. Refuse rather than fulfil a
+                # response whose remaining hops no validator has checked.
                 raise ValueError("browser redirect cannot be safely fulfilled")
             response_body = response.content
-            _sync_response_cookies(context, response)
+            for hop in [*(getattr(response, "history", None) or []), response]:
+                _sync_response_cookies(context, hop)
             route.fulfill(
                 status=response.status_code,
                 headers=_safe_response_headers(response),
