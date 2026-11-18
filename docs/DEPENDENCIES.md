@@ -240,10 +240,37 @@ The old bundled modules are removed before the official tree is copied into
 the Debian-rooted runtime. `scripts/verify_final_python_packages.py` checks
 the imported pair, normal XML consumers, Debian package version, loader path,
 and libpython cache; `scripts/verify_python_expat_layers.ts` checks every
-exported image layer. Both gates run for final images in CI. The exact Debian
-package pin fails the build or final check if the mutable archive supersedes
-this version; a saved Debian package or snapshot is needed for long-term
-replay of all apt inputs.
+exported image layer. Both gates run for final images in CI. Because the
+runtime image's apt inputs now come from the pinned Debian snapshot below,
+that package version stays installable after the live archive supersedes it.
+
+### apt snapshot pinning
+
+The runtime stage of the production image resolves all Debian packages from
+one fixed snapshot: the single `ARG APT_SNAPSHOT` at the top of `Dockerfile`
+(currently `20261113T203523Z`, chosen as the newest archive first-entry date
+among the package versions the stage installs — driven by `libpq5`
+17.12-0+deb13u1). The stage rewrites apt sources to
+`http://snapshot.debian.org/archive/debian/TIMESTAMP/` and
+`/archive/debian-security/TIMESTAMP/` for `trixie`, `trixie-updates` and
+`trixie-security`, waiving only the snapshot archives' short `Valid-Until`
+expiry, as the xdg snapshot in `runtime-security/xdg/prepare-client.sh` does over plain http (apt
+authenticates every fetch through the signed InRelease, not the transport);
+signed `InRelease` files are still verified against the archive keyring. The
+backport builder's `apt-get update`/`build-dep` path reads the same stamp from
+the environment (`docker/debian-backports/build-backport.sh`), so build
+dependencies resolve from the same archive the shipped packages came from.
+
+Refresh procedure (also inline above the `ARG`): pick a timestamp at least as
+new as the newest first-entry date among the current package versions, verify
+in the pinned base image on both `linux/amd64` and `linux/arm64` that
+`apt-get update` plus `apt-get -s install` of the full explicit package list
+at exact versions exits 0 with every version unchanged, then change the
+single `ARG` line and rebuild both architectures with the Get lines confirmed
+against `snapshot.debian.org`. The verification for `20261113T203523Z` ran
+`apt-get -s install` of all 69 explicitly installed runtime packages at their
+exact current versions inside the pinned base image on both architectures,
+with 200s for all three suites' Release files.
 
 ## The rest of the dependency inventories
 
