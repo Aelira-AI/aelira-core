@@ -15,6 +15,7 @@ import { scansApi } from '../api/scans';
 import type { DepartmentReviewSummary } from '../api/scans';
 import { unwrapResponse } from '../utils/apiUnwrap';
 import { AnalyticsDashboard } from '../components/AnalyticsDashboard';
+import { TrendEmptyState } from '../components/TrendEmptyState';
 import { EvidenceReportAction } from '../components/EvidenceReportAction';
 import { ConfidenceBadge } from '../components/review/ConfidenceBadge';
 import { useAuth } from '../context/auth-context';
@@ -129,6 +130,7 @@ export function Dashboard(): React.ReactElement {
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
   const [trendLoading, setTrendLoading] = useState<boolean>(true);
+  const [trendWithheldHistory, setTrendWithheldHistory] = useState<boolean>(false);
   const [reviewSummary, setReviewSummary] = useState<DepartmentReviewSummary | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -188,6 +190,7 @@ export function Dashboard(): React.ReactElement {
         try {
           setTrendLoading(true);
           const trendResponse = await scansApi.getComplianceTrend(departmentId, 30);
+          setTrendWithheldHistory(trendResponse?.has_withheld_history === true);
           interface RawTrendPoint { date: string; avg_compliance_score?: number | null; scan_count?: number }
           const trendArray = unwrapResponse<RawTrendPoint[]>(trendResponse, 'trend');
           const chartData = trendArray.filter((point) => point.avg_compliance_score != null).map((point) => ({
@@ -503,8 +506,8 @@ export function Dashboard(): React.ReactElement {
                     Loading trend data…
                   </div>
                 ) : trendData.length === 0 ? (
-                  <div className="h-[200px] flex items-center justify-center text-sm text-[var(--content-tertiary)]">
-                    Not enough data yet. Upload more scans to see progress.
+                  <div className="h-[200px] flex items-center justify-center px-6">
+                    <TrendEmptyState hasWithheldHistory={trendWithheldHistory} />
                   </div>
                 ) : (
                   <div

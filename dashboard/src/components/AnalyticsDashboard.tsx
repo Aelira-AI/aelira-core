@@ -11,6 +11,7 @@ import {
 import { scansApi } from '../api/scans';
 import type { DeadlineProjection, TrendAnalysis } from '../api/scans';
 import { unwrapResponse } from '../utils/apiUnwrap';
+import { TREND_RESTART_EXPLANATION } from './TrendEmptyState';
 import { hasDatedDeadline } from '../types/deadline';
 
 // ============================================================================
@@ -67,6 +68,7 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
   const [issueStats, setIssueStats] = useState<IssueStats | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [projectionWithheldHistory, setProjectionWithheldHistory] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchAnalytics = async (): Promise<void> => {
@@ -82,7 +84,10 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
         ]);
 
         // Backend may wrap responses — handle both wrapped and unwrapped
-        if (projectionData) setProjection(projectionData.projection);
+        if (projectionData) {
+          setProjection(projectionData.projection);
+          setProjectionWithheldHistory(projectionData.has_withheld_history === true);
+        }
         if (analysisData) setAnalysis(analysisData.analysis);
         if (statsData) setIssueStats(unwrapResponse<IssueStats>(statsData, 'stats'));
       } catch (err) {
@@ -206,7 +211,10 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
               </h3>
             </div>
             <p className="text-sm text-secondary">
-              {projection?.message || 'Need more verified scan data to project the target score.'}
+              {projection && !projection.projection_available && projectionWithheldHistory
+                ? TREND_RESTART_EXPLANATION
+                : projection?.message ||
+                  'Need more verified scan data to project the target score.'}
             </p>
           </div>
         )}
