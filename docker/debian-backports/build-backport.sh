@@ -86,6 +86,31 @@ profiles=$(awk '$1 == "profile" { print $2 }' "$conf" | paste -sd, -)
 # The builder stage installs the package's declared build dependencies from
 # the same pinned Debian archive as the base image. Nothing here ships.
 if test "${BACKPORT_INSTALL_BUILD_DEPS:-0}" = 1; then
+    # The Dockerfile passes its APT_SNAPSHOT stamp through the environment.
+    # When set, resolve build dependencies from the same fixed snapshot the
+    # runtime stage installs from, so a rebuild sees exactly the package set
+    # that shipped. Snapshot archives publish short Valid-Until headers, so
+    # only that expiry check is waived, exactly as
+    # runtime-security/xdg/prepare-client.sh does for its snapshot, http transport
+    # included: the signed
+    # InRelease is still verified against the Debian archive keyring.
+    if test -n "${APT_SNAPSHOT:-}"; then
+        printf '%s\n' \
+            'Types: deb' \
+            "URIs: http://snapshot.debian.org/archive/debian/$APT_SNAPSHOT/" \
+            'Suites: trixie trixie-updates' \
+            'Components: main' \
+            'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+            'Check-Valid-Until: no' \
+            '' \
+            'Types: deb' \
+            "URIs: http://snapshot.debian.org/archive/debian-security/$APT_SNAPSHOT/" \
+            'Suites: trixie-security' \
+            'Components: main' \
+            'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+            'Check-Valid-Until: no' \
+            > /etc/apt/sources.list.d/debian.sources
+    fi
     arch_only=""
     test "$build_type" = arch && arch_only=--arch-only
     export DEBIAN_FRONTEND=noninteractive

@@ -1,6 +1,32 @@
 # Production Dockerfile for Aelira Backend
 # Multi-stage build for smaller image size
 
+# Debian snapshot stamp for the runtime image's apt sources and the backport
+# builder's build-dependency path. This line is the single place the stamp
+# lives: every stage below re-declares ARG APT_SNAPSHOT and inherits this
+# default, and docker/debian-backports/build-backport.sh reads the same value
+# from the environment.
+#
+# Refresh procedure:
+#   1. Pick a timestamp at least as new as the newest archive first-entry date
+#      among the package versions the runtime stage installs now (snapshot's
+#      per-version history at https://snapshot.debian.org/mr/package/NAME/
+#      shows that date per architecture).
+#   2. In the pinned base image, on both linux/amd64 and linux/arm64, write
+#      the snapshot sources (the two-stanza deb822 file the runtime stage
+#      below produces) and run apt-get update, then
+#      apt-get -s install with the runtime stage's explicit package list at
+#      their exact current name=version pins; require exit 0 with every
+#      version selected unchanged.
+#   3. Confirm the trixie, trixie-updates and trixie-security Release files
+#      return 200 under both /archive/debian/TIMESTAMP/ and
+#      /archive/debian-security/TIMESTAMP/.
+#   4. Change only this line, rebuild the runtime stage on both
+#      architectures, and require the Get lines to come from
+#      snapshot.debian.org with the same versions.
+# See docs/DEPENDENCIES.md ("apt snapshot pinning").
+ARG APT_SNAPSHOT=20261113T203523Z
+
 # CI passes its cache of pinned build inputs as this named context
 # (--build-context build-inputs=DIR). Without it the stage is empty and each
 # pinned file comes from its upstream address. Either way the downloaders
@@ -13,6 +39,11 @@ FROM scratch AS build-inputs
 # zlib rebuild was retired when Debian shipped its own fix; see
 # docs/security/debian-backports-0.13.0.md.
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS debian-backport-builder
+# ENV so build-backport.sh pins its apt update and build-dep path to the same
+# snapshot the runtime stage installs from (the global ARG APT_SNAPSHOT at the
+# top of this Dockerfile, read by that script's APT_SNAPSHOT block).
+ARG APT_SNAPSHOT
+ENV APT_SNAPSHOT=${APT_SNAPSHOT}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential dpkg-dev perl quilt \
     && rm -rf /var/lib/apt/lists/*
@@ -192,6 +223,38 @@ RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 # Stage 2: Runtime
 FROM python-expat-base AS runtime
 
+# Runtime apt resolves from one fixed Debian snapshot, the stamp declared by
+# the global ARG APT_SNAPSHOT at the top of this file. Every package version
+# this stage installs stays installable byte-for-byte at that stamp, so the
+# image can be rebuilt from the same inputs years later, and the six existing
+# version pins (libdav1d7, libmp3lame0, libvorbis0a, libvorbisenc2, libogg0
+# and libexpat1) can no longer be silently invalidated by a mirror refresh.
+# The base image's sources file is replaced outright; it points at live
+# mirrors and carries a commented-out older snapshot that is stale here.
+# Snapshot archives publish short Valid-Until headers, so these stanzas waive
+# only that expiry check, exactly as runtime-security/xdg/prepare-client.sh
+# does for its snapshot, http transport included: apt authenticates a snapshot
+# archive through its signed InRelease and the keyring, not the TLS layer, and
+# each signed InRelease is still verified against the
+# Debian archive keyring, and the archive itself is content-addressed by the
+# stamp in the URI.
+ARG APT_SNAPSHOT
+RUN printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/$APT_SNAPSHOT/" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/$APT_SNAPSHOT/" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/debian.sources
+
 # The global repair and the final-image checks read the reviewed runtime pin.
 COPY --from=libxml2-backport /out/ /tmp/debian-backports/
 COPY --from=libx11-backport /out/ /tmp/debian-backports/
@@ -202,6 +265,10 @@ COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_pa
 COPY scripts/verify_final_os_packages.py /app/scripts/verify_final_os_packages.py
 
 # Install runtime dependencies + Playwright system dependencies + LaTeXML stack.
+# The bounded upgrade runs against the pinned snapshot above, so it only ever
+# brings the base image's packages up to that archive's versions instead of
+# chasing a moving mirror; it is kept (not dropped) so an older pinned base
+# image still converges to exactly the snapshot's package set.
 # TeX format dumps are content-nondeterministic even with a fixed epoch, so
 # omit them; Kpathsea recreates only the requested format in the user's cache.
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \

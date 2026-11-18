@@ -569,6 +569,48 @@ def test_api_runtime_upgrades_available_debian_packages_before_install() -> None
     )
 
 
+def test_api_runtime_apt_resolves_from_one_pinned_debian_snapshot() -> None:
+    import re
+
+    api = (ROOT / "Dockerfile").read_text()
+    script = (ROOT / "docker" / "debian-backports" / "build-backport.sh").read_text()
+
+    # The stamp is declared exactly once, above the first FROM, in the
+    # snapshot timestamp format; stages re-declare it bare and inherit the
+    # default, so a refresh changes one line and no test below.
+    stamp_lines = [
+        line
+        for line in api.splitlines()
+        if re.fullmatch(r"ARG APT_SNAPSHOT=\d{8}T\d{6}Z", line)
+    ]
+    assert len(stamp_lines) == 1
+    assert api.index(stamp_lines[0]) < api.index("FROM scratch AS build-inputs")
+    assert api.count("ARG APT_SNAPSHOT\n") == 2
+
+    runtime = api.split("# Stage 2: Runtime", 1)[1]
+    runtime = runtime.split("# Install runtime dependencies", 1)[0]
+    assert "URIs: http://snapshot.debian.org/archive/debian/$APT_SNAPSHOT/" in runtime
+    assert (
+        "URIs: http://snapshot.debian.org/archive/debian-security/"
+        "$APT_SNAPSHOT/" in runtime
+    )
+    assert "Suites: trixie trixie-updates" in runtime
+    assert "Suites: trixie-security" in runtime
+    # Only Valid-Until is waived, as in the xdg snapshot precedent; the
+    # keyring line keeps every InRelease verified.
+    assert runtime.count("Check-Valid-Until: no") == 2
+    assert (
+        runtime.count("Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg") == 2
+    )
+    assert "deb.debian.org" not in runtime.split("ARG APT_SNAPSHOT", 1)[1]
+
+    # The backport builder honors the same stamp through the environment.
+    assert "ENV APT_SNAPSHOT=${APT_SNAPSHOT}" in api
+    assert 'if test -n "${APT_SNAPSHOT:-}"; then' in script
+    assert "URIs: http://snapshot.debian.org/archive/debian/$APT_SNAPSHOT/" in script
+    assert script.count("Check-Valid-Until: no") == 2
+
+
 def test_api_builder_removes_bootstrap_setuptools_before_reviewed_requirements() -> (
     None
 ):
