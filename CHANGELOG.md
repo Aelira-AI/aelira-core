@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The xdg native-package build now runs each role-preparation phase (base-image pull, toolchain container run, builder commit) with a bounded two-attempt loop: an exit 137 (runner OOM kill on shared arm64 runners) or a docker daemon error (exit 125) re-runs the phase once, any other exit still fails immediately with its own code so a genuine build error is never masked, and per-attempt receipts plus an attempt-numbered build-status phase identify which attempt died ([#933](https://github.com/Aelira-AI/aelira-core/issues/933)). A docker-shim test (`runtime-security/xdg/test-build-retry.sh`, run first in the xdg CI job) proves pass-through, recovery, exhaustion, and fail-fast behavior without touching a real daemon; the change is CI-tooling only and has no user-facing effect.
 - The shipped-surface npm audit step now runs through `scripts/npm_audit_gate.ts`, a temporary CI-tooling exception that excepts only the unpatched GHSA-fc5q-39xc-vjpf / CVE-2026-112366 picomatch ReDoS advisory (no fixed release published upstream), prints a loud banner naming the exception and its removal condition on every run, and still fails the gate for every other high or critical advisory or whenever npm audit itself errors; it retires with the picomatch 4.0.8+ lockfile refresh and has no user-facing effect ([#1026](https://github.com/Aelira-AI/aelira-core/issues/1026)).
 
 ### Fixed

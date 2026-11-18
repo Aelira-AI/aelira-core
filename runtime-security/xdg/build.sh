@@ -39,16 +39,37 @@ for role in source client; do
   fi
   provenance="$output/$role-provenance"
   if test -z "$builder"; then
-    docker pull --platform "linux/$arch" "$base" > "$provenance/base-pull-private.log" 2>&1
-    test "$(docker image inspect --format '{{.Architecture}}' "$base")" = "$arch"
-    name="aelira-xdg-$role-prepare-$arch-$$"
-    docker run --name "$name" --platform "linux/$arch" --security-opt no-new-privileges \
-      --cpus 4 --memory 4g --pids-limit 256 -e AELIRA_XDG_HOST_ARCH="$arch" \
-      -v "$recipe:/recipe:ro" -v "$output/source-input:/source-input" \
-      -v "$provenance:/provenance" "$base" bash "/recipe/$preparer" \
-      > "$provenance/prepare-private.log" 2>&1
-    builder=$(docker commit "$name")
-    docker rm "$name" > /dev/null
+    for attempt in 1 2; do
+      phase="$role-preparation-$attempt"
+      name="aelira-xdg-$role-prepare-$arch-$$-$attempt"
+      status=0
+      docker pull --platform "linux/$arch" "$base" > "$provenance/base-pull-$attempt-private.log" 2>&1 \
+        && test "$(docker image inspect --format '{{.Architecture}}' "$base")" = "$arch" \
+        && docker run --name "$name" --platform "linux/$arch" --security-opt no-new-privileges \
+          --cpus 4 --memory 4g --pids-limit 256 -e AELIRA_XDG_HOST_ARCH="$arch" \
+          -v "$recipe:/recipe:ro" -v "$output/source-input:/source-input" \
+          -v "$provenance:/provenance" "$base" bash "/recipe/$preparer" \
+          > "$provenance/prepare-$attempt-private.log" 2>&1 \
+        && builder=$(docker commit "$name") || status=$?
+      printf '%s\n' "$status" > "$provenance/prepare-$attempt-exit.txt"
+      if test "$status" = 0; then
+        docker rm "$name" > /dev/null
+        break
+      fi
+      docker rm "$name" > /dev/null 2>&1 || true
+      # Retryable: 137 is SIGKILL (runner OOM kill on shared runners) and 125 is a
+      # docker daemon error such as an unreachable socket or runtime failure. Any
+      # other exit is a genuine build error and exits immediately with its own
+      # code, so a real failure is never masked by a second attempt.
+      case "$status" in
+        125|137)
+          if test "$attempt" = 2; then
+            exit "$status"
+          fi
+          ;;
+        *) exit "$status" ;;
+      esac
+    done
   else
     [[ "$builder" =~ ^sha256:[a-f0-9]{64}$ ]]
     if test "$role" = source; then
