@@ -27,6 +27,7 @@ class ImageOwnership:
     semantics: dict[str, tuple[bool, str | None]]
     exclusive_figures: dict[str, Any]
     figures: dict[tuple[int, int], Any]
+    unowned: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -328,6 +329,7 @@ def _resolve_image_ownership(
         item["occurrence_id"]: (False, None) for item in occurrences
     }
     exclusive_figures: dict[str, Any] = {}
+    unowned: set[str] = set()
     for position, (xref, artifact, mcid) in enumerate(draws):
         occurrence = occurrences[position]
         if occurrence["image_index"] != position or occurrence["image_xref"] != xref:
@@ -362,7 +364,11 @@ def _resolve_image_ownership(
                 and sum(draw[2] == mcid for draw in draws) == 1
             ):
                 exclusive_figures[occurrence["occurrence_id"]] = figure
-    return ImageOwnership(result, exclusive_figures, figures)
+        else:
+            # Drawn outside every marked-content sequence, so no structure
+            # element can own it: Matterhorn 13-004 never sees this image.
+            unowned.add(occurrence["occurrence_id"])
+    return ImageOwnership(result, exclusive_figures, figures, frozenset(unowned))
 
 
 def is_untagged_pdf(path: str) -> bool:
@@ -378,6 +384,46 @@ def is_untagged_pdf(path: str) -> bool:
             return "/StructTreeRoot" not in pdf.Root
     except Exception:
         return False
+
+
+def images_without_structure_owners(path: str) -> frozenset[tuple[int, int]] | None:
+    """Return every displayed image that no structure element owns, or None.
+
+    A partially tagged source can draw an image outside every marked-content
+    sequence, so no structure element owns it and Matterhorn 13-004 never sees
+    it ("No Figure elements found"), while its alternative text is missing
+    just as if a Figure held it undescribed. The set of such occurrences is
+    proven here for the caller that must not trust the shape of a pass.
+
+    The answer is None unless the file opens with a structure tree and every
+    page resolves completely under the same bounds and refusals as
+    ``missing_figure_occurrences``; an untagged file is not this proof, it is
+    ``is_untagged_pdf``. Every returned occurrence is drawn with no
+    marked-content id a ParentTree could bind to a structure element; an image
+    inside an Artifact block is decorative rather than unowned and never
+    appears. An empty set proves every image on every page is owned.
+    """
+    import pymupdf as fitz
+
+    from .image_checker import _displayed_image_occurrences
+
+    try:
+        with pikepdf.open(path, attempt_recovery=False) as pdf, fitz.open(path) as doc:
+            if "/StructTreeRoot" not in pdf.Root:
+                return None
+            if not 0 < len(pdf.pages) <= 128 or len(pdf.objects) > 20_000:
+                return None
+            positions: set[tuple[int, int]] = set()
+            for page_index, page in enumerate(doc):
+                occurrences = _displayed_image_occurrences(page, page_index + 1)
+                ownership = _resolve_image_ownership(pdf, path, page_index, occurrences)
+                by_id = {item["occurrence_id"]: item for item in occurrences}
+                for occurrence_id in ownership.unowned:
+                    item = by_id[occurrence_id]
+                    positions.add((item["page_number"], item["image_index"]))
+            return frozenset(positions)
+    except Exception:
+        return None
 
 
 def missing_figure_occurrences(
