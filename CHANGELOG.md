@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A web scan no longer fails as a whole when a required subresource (script, stylesheet, image, or font) is served through an HTTP redirect: the browser route guard now follows redirects with the shared validating transport, which re-checks the public-address rule at every hop and enforces the five-hop cap while dropping credentials on cross-origin hops, so a chain touching a private, loopback, link-local, or metadata target is still refused before the offending hop connects; the browser is fulfilled with the final body under the original request URL because the guard protects reachability rather than URL bookkeeping, and a redirect chain that touches a private target still aborts scoring exactly as before ([#800](https://github.com/Aelira-AI/aelira-core/issues/800)).
 - Alt text that is only a file name (`IMG_0042.jpg`, `nature1.png`) or an authoring-tool placeholder (`Picture 3`, `image001`, `Screenshot`) no longer passes as a description: the DOCX, XLSX and web-code image scanners and the PDF image checker now apply the same placeholder test the PPTX scanner shipped with, so such images are reported as missing alt text with wording that names the existing text as a filename or placeholder, while an explicit empty alt keeps its decorative meaning ([#719](https://github.com/Aelira-AI/aelira-core/issues/719)).
 
 ## [0.14.0] - 2026-11-15
