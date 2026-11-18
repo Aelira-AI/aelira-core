@@ -225,23 +225,29 @@ async def get_historical_trend(
 
     Only current-document stock snapshots with explicit provenance contribute
     scores; older unversioned snapshots remain history without score credit.
+    The response reports whether such snapshots exist in the requested window
+    so the dashboard can explain the v0.10.0 trend restart instead of showing
+    an unexplained empty chart.
 
     Args:
         days: Number of days to look back (7-365)
 
     Returns:
-        Array of trend data points for charting
+        Array of trend data points for charting, plus withheld-history flags
     """
     department_id = _authorize_department_analytics(principal, department_id)
     logger.info("Getting %s-day historical trend", days)
 
     try:
         trend_points = SnapshotService.get_historical_trend(db, department_id, days)
+        withheld = SnapshotService.count_withheld_snapshots(db, department_id, days)
 
         return {
             "department_id": department_id,
             "period_days": days,
             "data_points": len(trend_points),
+            "has_withheld_history": withheld > 0,
+            "withheld_snapshot_count": withheld,
             "trend": [
                 {
                     "date": p.date,
@@ -316,17 +322,27 @@ async def get_deadline_projection(
     """
     Get an automated scan-score projection for the configured target date.
 
-    Based on historical trend and current improvement rate.
+    Based on historical trend and current improvement rate. The response also
+    reports whether pre-v0.10.0 snapshots were withheld from the projection's
+    trend window, so the dashboard can explain insufficient-data projections
+    after the upgrade instead of reading them as a fault.
 
     Returns:
-        Projection data and canonical deadline applicability metadata
+        Projection data, canonical deadline applicability metadata, and
+        withheld-history flags
     """
     department_id = _authorize_department_analytics(principal, department_id)
     logger.info("Getting deadline projection")
 
     try:
         projection = SnapshotService.get_deadline_projection(db, department_id)
-        return {"department_id": department_id, "projection": projection}
+        withheld = SnapshotService.count_withheld_snapshots(db, department_id, 30)
+        return {
+            "department_id": department_id,
+            "projection": projection,
+            "has_withheld_history": withheld > 0,
+            "withheld_snapshot_count": withheld,
+        }
     except Exception as e:
         raise _internal_error(
             "Deadline projection", "Unable to retrieve deadline projection", e

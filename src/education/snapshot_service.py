@@ -15,7 +15,7 @@ Created: November 30, 2025
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass
@@ -205,9 +205,16 @@ class SnapshotService:
             .order_by(ComplianceSnapshot.snapshot_date.asc())
             .all()
         )
+        # The storage column is date-typed, but drivers and test fixtures
+        # hand back either a date or a datetime; accept both so trend reads
+        # never crash on the row types the column actually produces.
         return [
             TrendPoint(
-                date=snapshot.snapshot_date.date().isoformat(),
+                date=(
+                    snapshot.snapshot_date.date()
+                    if isinstance(snapshot.snapshot_date, datetime)
+                    else snapshot.snapshot_date
+                ).isoformat(),
                 avg_compliance_score=snapshot.avg_compliance_score,
                 scan_count=snapshot.total_scans,
                 total_issues=snapshot.total_issues,
@@ -218,6 +225,43 @@ class SnapshotService:
             for snapshot in snapshots
             if snapshot.metric_provenance == CURRENT_STOCK_PROVENANCE
         ]
+
+    @staticmethod
+    def count_withheld_snapshots(
+        db: Session, department_id: str, days: int = 30
+    ) -> int:
+        """Count snapshots inside the trend window withheld for provenance.
+
+        Snapshots recorded before v0.10.0 carry no metric provenance; their
+        averages counted unassessed items as 0%, so they stay in storage but
+        never contribute scores. Reporting the withheld count lets API
+        consumers explain an empty trend instead of showing a bare chart hole.
+
+        Args:
+            db: Database session
+            department_id: Department to query
+            days: Number of days to look back (same window as the trend)
+
+        Returns:
+            Number of snapshots excluded for missing or legacy provenance
+        """
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        withheld = (
+            db.query(func.count(ComplianceSnapshot.id))
+            .filter(
+                and_(
+                    ComplianceSnapshot.department_id == department_id,
+                    ComplianceSnapshot.snapshot_date >= cutoff_date,
+                    or_(
+                        ComplianceSnapshot.metric_provenance.is_(None),
+                        ComplianceSnapshot.metric_provenance
+                        != CURRENT_STOCK_PROVENANCE,
+                    ),
+                )
+            )
+            .scalar()
+        )
+        return int(withheld or 0)
 
     @staticmethod
     def analyze_trend(

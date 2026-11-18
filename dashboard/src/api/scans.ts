@@ -96,6 +96,22 @@ export interface TrendAnalysisResponse {
 export interface DeadlineProjectionResponse {
   department_id: string;
   projection: DeadlineProjection;
+  has_withheld_history?: boolean;
+  withheld_snapshot_count?: number;
+}
+
+/**
+ * Trend responses carry withheld-history flags: snapshots recorded before
+ * v0.10.0 have no metric provenance and are excluded from trend scoring, and
+ * the dashboard explains the restart only where history was actually withheld.
+ */
+export interface ComplianceTrendEnvelope {
+  department_id?: string;
+  period_days?: number;
+  data_points?: number;
+  has_withheld_history?: boolean;
+  withheld_snapshot_count?: number;
+  trend?: ComplianceTrendPoint[];
 }
 
 export interface DocumentCoverage {
@@ -495,8 +511,8 @@ export const scansApi = {
   getComplianceTrend: async (
     departmentId: string,
     days: number = 30
-  ): Promise<ComplianceTrendPoint[]> => {
-    const response = await apiClient.get<ComplianceTrendPoint[]>(
+  ): Promise<ComplianceTrendEnvelope> => {
+    const response = await apiClient.get<ComplianceTrendEnvelope>(
       `/education/compliance/${departmentId}/trend`,
       {
         params: { days },
@@ -524,8 +540,8 @@ export const scansApi = {
   getHistoricalTrend: async (
     departmentId: string,
     days: number = 30
-  ): Promise<ComplianceTrendPoint[]> => {
-    const response = await apiClient.get<ComplianceTrendPoint[]>(
+  ): Promise<ComplianceTrendEnvelope> => {
+    const response = await apiClient.get<ComplianceTrendEnvelope>(
       `/analytics/trend/${departmentId}`,
       {
         params: { days },

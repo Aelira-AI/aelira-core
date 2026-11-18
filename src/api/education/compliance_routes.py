@@ -238,9 +238,15 @@ async def get_compliance_trend(
 
     try:
         from ...education.compliance_dashboard import ComplianceDashboard
+        from ...education.snapshot_service import SnapshotService
 
         # Get trend data
         trend = ComplianceDashboard.get_compliance_trend(db, department_id, days=days)
+
+        # Snapshots taken before v0.10.0 have no metric provenance and are
+        # withheld from trend scoring; report them so the dashboard can
+        # explain the restart instead of showing an empty chart.
+        withheld = SnapshotService.count_withheld_snapshots(db, department_id, days)
 
         # Build array-of-objects format expected by the dashboard
         dates = trend.get("dates", [])
@@ -259,6 +265,8 @@ async def get_compliance_trend(
             "department_id": department_id,
             "period_days": days,
             "data_points": len(trend_points),
+            "has_withheld_history": withheld > 0,
+            "withheld_snapshot_count": withheld,
             "trend": trend_points,
         }
 

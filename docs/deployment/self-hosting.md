@@ -618,6 +618,23 @@ versions requires restoring the coordinated backup; changing only the image
 does not reverse the migration. A restore discards post-backup activity, and
 external writebacks need separate reconciliation.
 
+### v0.10.0 upgrade
+
+The v0.10.0 migration adds a nullable `metric_provenance` column to
+`compliance_snapshots` and backfills nothing. From v0.10.0 compliance trends
+and projections count only snapshots recorded with the
+`current_document_stock_v1` provenance; snapshots saved before the upgrade
+have no provenance and stay withheld, because their averages counted
+unassessed items as 0%. After upgrading, a workspace's trend chart therefore
+restarts and projections report insufficient data until seven new daily
+snapshots exist. A blank chart is the corrected method working, not data
+loss: the withheld rows remain in the database for audit, and trend and
+projection responses carry `has_withheld_history` and
+`withheld_snapshot_count` for the requested window so the dashboard can
+explain the restart in plain text wherever history was actually withheld.
+There is no operator action, and no supported way to reuse the pre-upgrade
+figures.
+
 ### v0.9.7 upgrade
 
 Before replacing v0.9.6, drain active work and pause intake. Back up PostgreSQL,

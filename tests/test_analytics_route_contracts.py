@@ -7,7 +7,7 @@ These contracts do not establish browser journeys or accessibility conformance.
 
 from src.database_url import engine_url
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -38,6 +38,7 @@ from src.db.models import (
     User,
     UserRole,
 )
+from src.education.snapshot_service import CURRENT_STOCK_PROVENANCE
 
 
 @pytest.fixture
@@ -370,15 +371,99 @@ def test_trend_serializes_exact_points_and_request_scope(
     }
     get_trend = Mock(return_value=[] if empty else [SimpleNamespace(**point)])
     monkeypatch.setattr(analytics.SnapshotService, "get_historical_trend", get_trend)
+    count_withheld = Mock(return_value=0)
+    monkeypatch.setattr(
+        analytics.SnapshotService, "count_withheld_snapshots", count_withheld
+    )
     response = c.client.get(c.url("trend/{department}"), params={"days": 14})
     assert response.status_code == 200
     assert response.json() == {
         "department_id": c.departments[0].id,
         "period_days": 14,
         "data_points": 0 if empty else 1,
+        "has_withheld_history": False,
+        "withheld_snapshot_count": 0,
         "trend": [] if empty else [point],
     }
     get_trend.assert_called_once_with(c.db, c.departments[0].id, 14)
+    count_withheld.assert_called_once_with(c.db, c.departments[0].id, 14)
+
+
+@pytest.mark.parametrize("legacy_rows", [0, 2])
+def test_trend_reports_withheld_history_only_for_withheld_snapshots(
+    analytics_case, legacy_rows
+):
+    c = analytics_case
+    for offset in range(legacy_rows):
+        c.db.add(
+            ComplianceSnapshot(
+                id=str(uuid4()),
+                department_id=c.departments[0].id,
+                snapshot_date=datetime.utcnow() - timedelta(days=offset + 1),
+                avg_compliance_score=100,
+                metric_provenance=None,
+                total_scans=1,
+                total_issues=0,
+                files_compliant=1,
+            )
+        )
+    # A legacy snapshot outside the requested window is history, but this
+    # response only reports what the chart window withheld.
+    c.db.add(
+        ComplianceSnapshot(
+            id=str(uuid4()),
+            department_id=c.departments[0].id,
+            snapshot_date=datetime.utcnow() - timedelta(days=90),
+            avg_compliance_score=100,
+            metric_provenance=None,
+            total_scans=1,
+            total_issues=0,
+        )
+    )
+    c.db.add(
+        ComplianceSnapshot(
+            id=str(uuid4()),
+            department_id=c.departments[0].id,
+            snapshot_date=datetime.utcnow(),
+            avg_compliance_score=None,
+            metric_provenance=CURRENT_STOCK_PROVENANCE,
+            total_scans=1,
+            total_issues=0,
+        )
+    )
+    c.db.commit()
+    response = c.client.get(c.url("trend/{department}"), params={"days": 30})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["has_withheld_history"] is (legacy_rows > 0)
+    assert body["withheld_snapshot_count"] == legacy_rows
+    assert body["data_points"] == 1
+
+
+def test_projection_reports_withheld_history(analytics_case, monkeypatch):
+    c = analytics_case
+    monkeypatch.setattr(
+        analytics.SnapshotService,
+        "get_deadline_projection",
+        Mock(return_value={"projection_available": False, "message": "later"}),
+    )
+    c.db.add(
+        ComplianceSnapshot(
+            id=str(uuid4()),
+            department_id=c.departments[0].id,
+            snapshot_date=datetime.utcnow() - timedelta(days=3),
+            avg_compliance_score=100,
+            metric_provenance=None,
+            total_scans=1,
+            total_issues=0,
+        )
+    )
+    c.db.commit()
+    response = c.client.get(c.url("projection/{department}"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["has_withheld_history"] is True
+    assert body["withheld_snapshot_count"] == 1
 
 
 def test_analysis_serializes_exact_service_fields(analytics_case, monkeypatch):
@@ -431,7 +516,12 @@ def test_prediction_routes_preserve_unknown_service_values(
     response = c.client.get(c.url(kind + "/{department}"))
     assert response.status_code == 200
     assert response.json() == (
-        {"department_id": c.departments[0].id, "projection": result}
+        {
+            "department_id": c.departments[0].id,
+            "projection": result,
+            "has_withheld_history": False,
+            "withheld_snapshot_count": 0,
+        }
         if kind == "projection"
         else result
     )

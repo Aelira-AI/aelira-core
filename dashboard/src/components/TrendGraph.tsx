@@ -12,6 +12,7 @@ import {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { TrendEmptyState } from './TrendEmptyState';
 
 // ============================================================================
 // Types
@@ -26,6 +27,12 @@ interface TrendDataPoint {
 interface TrendGraphProps {
   data: TrendDataPoint[] | null | undefined;
   loading?: boolean;
+  /**
+   * True when the API reported snapshots withheld from the trend for
+   * provenance reasons (recorded before v0.10.0), so the empty state can
+   * explain the restart instead of the generic insufficient-data message.
+   */
+  hasWithheldHistory?: boolean;
 }
 
 type TrendDirection = 'improving' | 'declining' | 'stable';
@@ -74,7 +81,11 @@ const CustomTooltip = ({ active, payload }: TooltipContentProps<ValueType, NameT
 // Component
 // ============================================================================
 
-export function TrendGraph({ data, loading }: TrendGraphProps): React.ReactElement {
+export function TrendGraph({
+  data,
+  loading,
+  hasWithheldHistory,
+}: TrendGraphProps): React.ReactElement {
   if (loading) {
     return (
       <div className="card-glass">
@@ -90,10 +101,8 @@ export function TrendGraph({ data, loading }: TrendGraphProps): React.ReactEleme
     return (
       <div className="card-glass">
         <h2 className="text-xl font-semibold text-primary mb-4">Compliance Trend</h2>
-        <div className="flex items-center justify-center h-64">
-          <div className="text-tertiary">
-            Not enough data to show trend. Upload more scans to see progress over time.
-          </div>
+        <div className="flex items-center justify-center h-64 px-6">
+          <TrendEmptyState hasWithheldHistory={hasWithheldHistory === true} />
         </div>
       </div>
     );
