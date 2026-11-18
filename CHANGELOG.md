@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The shipped-surface npm audit step now runs through `scripts/npm_audit_gate.ts`, a temporary CI-tooling exception that excepts only the unpatched GHSA-fc5q-39xc-vjpf / CVE-2026-112366 picomatch ReDoS advisory (no fixed release published upstream), prints a loud banner naming the exception and its removal condition on every run, and still fails the gate for every other high or critical advisory or whenever npm audit itself errors; it retires with the picomatch 4.0.8+ lockfile refresh and has no user-facing effect ([#1026](https://github.com/Aelira-AI/aelira-core/issues/1026)).
 
+### Fixed
+
+- Alt text that is only a file name (`IMG_0042.jpg`, `nature1.png`) or an authoring-tool placeholder (`Picture 3`, `image001`, `Screenshot`) no longer passes as a description: the DOCX, XLSX and web-code image scanners and the PDF image checker now apply the same placeholder test the PPTX scanner shipped with, so such images are reported as missing alt text with wording that names the existing text as a filename or placeholder, while an explicit empty alt keeps its decorative meaning ([#719](https://github.com/Aelira-AI/aelira-core/issues/719)).
+
 ## [0.14.0] - 2026-11-15
 
 See the [release notes](docs/releases/v0.14.0.md) for operator actions and

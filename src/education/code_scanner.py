@@ -28,6 +28,7 @@ import logging
 from src.ai.providers import get_provider_manager
 from src.education.math_speech import SPOKEN_MATH_INSTRUCTION, refuse_math_markup
 from src.education.model_json import parse_tolerant
+from src.education.alt_text_quality import alt_text_is_placeholder
 from src.education.color_blindness_simulator import (
     ColorBlindnessSimulator,
     ColorBlindnessAnalysisResult,
@@ -64,6 +65,9 @@ class ImageInCode(BaseModel):
     is_decorative: bool
     file_path: str
     suggested_alt: Optional[str] = None
+    # True when the alt attribute is only a file name or tool placeholder,
+    # which is reported as missing because it does not describe the image
+    alt_text_is_placeholder: bool = False
     # Alt text validation fields
     alt_text_validated: bool = False
     alt_text_accurate: Optional[bool] = None
@@ -367,7 +371,10 @@ class CodeScanner:
         for img in soup.find_all("img"):
             src = img.get("src", "")
             alt = img.get("alt")
-            has_alt = alt is not None
+            # A file name or tool placeholder in the alt attribute is not a
+            # description: it passes a presence check and says nothing.
+            placeholder_alt = alt_text_is_placeholder(alt)
+            has_alt = alt is not None and not placeholder_alt
 
             # Determine if decorative
             is_decorative = (
@@ -382,6 +389,7 @@ class CodeScanner:
                 has_alt=has_alt,
                 is_decorative=is_decorative,
                 file_path=file_path,
+                alt_text_is_placeholder=placeholder_alt,
             )
 
             # Validate existing alt text if enabled
@@ -413,12 +421,20 @@ class CodeScanner:
             images.append(image_info)
 
             if not has_alt and not is_decorative:
+                if image_info.alt_text_is_placeholder:
+                    alt_description = (
+                        f"Image missing alt text: {src}: the existing text "
+                        "appears to be a filename or placeholder, not a "
+                        "description"
+                    )
+                else:
+                    alt_description = f"Image missing alt text: {src}"
                 issues.append(
                     CodeIssue(
                         severity="critical",
                         category="html",
                         rule="image-alt",
-                        description=f"Image missing alt text: {src}",
+                        description=alt_description,
                         file_path=file_path,
                         code_snippet=str(img),
                         fix_suggestion='Add descriptive alt text: alt="description of image"',

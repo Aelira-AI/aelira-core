@@ -31,6 +31,7 @@ from PIL import Image
 from io import BytesIO
 import logging
 from .scan_completeness import record_incomplete_check
+from .alt_text_quality import alt_text_is_placeholder
 import re
 
 from src.education.color_blindness_simulator import (
@@ -72,6 +73,9 @@ class ChartIssue(BaseModel):
     chart_type: str
     has_alt_text: bool
     existing_alt_text: Optional[str] = None
+    # True when the existing description is only a file name or tool
+    # placeholder, which is reported as missing because it describes nothing
+    alt_text_is_placeholder: bool = False
     suggested_alt_text: Optional[str] = None
     detailed_description: Optional[str] = None
     data_summary: Optional[str] = None
@@ -84,6 +88,9 @@ class ImageIssue(BaseModel):
     image_index: int
     has_alt_text: bool
     existing_alt_text: Optional[str] = None
+    # True when the existing alt text is only a file name or tool placeholder,
+    # which is reported as missing because it does not describe the image
+    alt_text_is_placeholder: bool = False
     suggested_alt_text: Optional[str] = None
     detected_image_type: Optional[str] = None
     is_decorative: bool = False
@@ -274,6 +281,12 @@ class XlsxProcessingResult(BaseModel):
             for issue in sheet.chart_issues:
                 if issue.has_alt_text:
                     desc = f"{issue.chart_type} chart has alt text that may need review"
+                elif issue.alt_text_is_placeholder:
+                    desc = (
+                        f"{issue.chart_type} chart is missing alt text: the "
+                        "existing text appears to be a filename or placeholder, "
+                        "not a description"
+                    )
                 else:
                     desc = f"{issue.chart_type} chart is missing alternative text description"
                 all_issues.append(
@@ -337,9 +350,14 @@ class XlsxProcessingResult(BaseModel):
                         title = "Decorative Image — Needs Empty Alt Text"
                         severity = "low"
                     else:
-                        desc = (
-                            f"Image {issue.image_index + 1} is missing alternative text"
-                        )
+                        if issue.alt_text_is_placeholder:
+                            desc = (
+                                f"Image {issue.image_index + 1} is missing alt text: "
+                                "the existing text appears to be a filename or "
+                                "placeholder, not a description"
+                            )
+                        else:
+                            desc = f"Image {issue.image_index + 1} is missing alternative text"
                         title = "Missing Alt Text"
                         severity = "critical"
                 all_issues.append(
@@ -880,9 +898,21 @@ class XlsxProcessor:
 
             # Check for alt text/title
             has_alt = False
+            placeholder_alt = False
+            placeholder_title = None
 
             if hasattr(chart, "title") and chart.title:
-                has_alt = True
+                # chart.title is usually an openpyxl Title object; only a
+                # plain string can hold placeholder text.
+                if isinstance(chart.title, str) and alt_text_is_placeholder(
+                    chart.title
+                ):
+                    # A file name or tool placeholder is not a description:
+                    # it passes a presence check and tells no one anything.
+                    placeholder_alt = True
+                    placeholder_title = chart.title
+                else:
+                    has_alt = True
 
             suggested_alt = None
             detailed_desc = None
@@ -918,7 +948,8 @@ class XlsxProcessor:
                         chart_index=idx,
                         chart_type=chart_type,
                         has_alt_text=False,
-                        existing_alt_text=None,
+                        existing_alt_text=placeholder_title,
+                        alt_text_is_placeholder=placeholder_alt,
                         suggested_alt_text=suggested_alt,
                         detailed_description=detailed_desc,
                         data_summary=data_summary,
@@ -981,11 +1012,16 @@ class XlsxProcessor:
             # We'll flag all images as needing review
             has_alt = False
             existing_alt_text = None
+            placeholder_alt = False
 
             # Try to get description if available
             if hasattr(img, "desc") and img.desc:
-                has_alt = True
                 existing_alt_text = img.desc
+                # A file name or tool placeholder in the description field
+                # is not alt text: it passes a presence check and describes
+                # nothing.
+                placeholder_alt = alt_text_is_placeholder(img.desc)
+                has_alt = not placeholder_alt
 
             suggested_alt = None
             detected_type = None
@@ -1043,7 +1079,10 @@ class XlsxProcessor:
                         sheet_name=sheet_name,
                         image_index=idx,
                         has_alt_text=False,
-                        existing_alt_text=None,
+                        existing_alt_text=(
+                            existing_alt_text if placeholder_alt else None
+                        ),
+                        alt_text_is_placeholder=placeholder_alt,
                         suggested_alt_text=suggested_alt,
                         detected_image_type=detected_type,
                         is_decorative=is_decorative,

@@ -115,6 +115,9 @@ class PDFImageIssue(BaseModel):
     occurrence_id: str
     has_alt_text: bool
     existing_alt_text: Optional[str] = None  # The current alt text if present
+    # True when the existing alt text is only a file name or tool placeholder,
+    # which is reported as missing because it does not describe the image
+    alt_text_is_placeholder: bool = False
     suggested_alt_text: Optional[str] = None
     image_type: Optional[str] = None  # decorative, informative, functional, complex
     is_chart: bool = False  # True if detected as chart/graph/infographic

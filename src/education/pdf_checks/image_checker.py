@@ -9,6 +9,7 @@ import concurrent.futures
 import hashlib
 import logging
 from .completeness import record_incomplete_check
+from ..alt_text_quality import alt_text_is_placeholder
 import math
 import os
 import re
@@ -251,6 +252,14 @@ class ImageAccessibilityChecker:
                     has_alt_text, existing_alt_text = alt_lookup[
                         occurrence["occurrence_id"]
                     ]
+                    # An /Alt or structure alt that is only a file name or a
+                    # tool placeholder passes the presence check and describes
+                    # nothing: it counts as missing alt text.
+                    placeholder_alt = has_alt_text and alt_text_is_placeholder(
+                        existing_alt_text
+                    )
+                    if placeholder_alt:
+                        has_alt_text = False
 
                     if not has_alt_text:
                         # Source-derived inventory is fixed before optional AI work.
@@ -263,6 +272,10 @@ class ImageAccessibilityChecker:
                             PDFImageIssue(
                                 **occurrence,
                                 has_alt_text=False,
+                                existing_alt_text=(
+                                    existing_alt_text if placeholder_alt else None
+                                ),
+                                alt_text_is_placeholder=placeholder_alt,
                                 image_type="informative",  # conservative default
                             )
                         )
