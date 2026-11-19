@@ -110,6 +110,7 @@ from .math_fixer import (
     IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
     IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR,
     IMAGE_EQUATION_EXISTING_OWNER_ERROR,
+    IMAGE_EQUATION_PAGE_OWNERSHIP_UNRESOLVED_ERROR,
     PRINTED_EQUATION_SEMANTIC_DISAGREEMENT_ERROR,
     PRINTED_EQUATION_VERIFIER_DECLINED_ERROR,
     PRINTED_EQUATION_VERIFIER_FAILED_ERROR,
@@ -1564,6 +1565,7 @@ class PdfRemediator(BaseRemediator):
                     struct_tree=self._struct_tree,
                     ai_client=None,
                     alt_text_client=self.alt_text_client,
+                    file_path=self.file_path,
                 )
                 results = specialist.fix(issues)
                 for i, result in enumerate(results):
@@ -1644,6 +1646,15 @@ class PdfRemediator(BaseRemediator):
                 "This image could not be matched to exactly one drawing operation "
                 "in the page content, so the equation was not read. Describe the "
                 "equation manually, or remediate the source document."
+            )
+        if error == IMAGE_EQUATION_PAGE_OWNERSHIP_UNRESOLVED_ERROR:
+            return (
+                "This page carries marked content the saved-file ownership check "
+                "cannot resolve, such as a compatibility section (BX/EX), marked "
+                "content whose property resource is missing, or a marked-content "
+                "id used more than once, so the equation was not read. Correct "
+                "the page's marking in the source document and rescan, or "
+                "describe the equation manually."
             )
         if error in {
             PRINTED_EQUATION_VERIFIER_UNAVAILABLE_ERROR,
