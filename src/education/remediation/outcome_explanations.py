@@ -109,6 +109,11 @@ EXPLANATIONS = {
         "Describe the equation manually, or re-export the source document and rescan.",
         "not_attempted",
     ),
+    "image_equation_page_ownership_unresolved": (
+        "The page holding this image carries marked content the saved-file ownership check cannot resolve, such as a compatibility section elsewhere on the page, marked content whose property resource is missing, or a marked-content id used more than once, so the equation was not read or changed and no fix on the page could be credited.",
+        "Correct the page's marked content in the source document and rescan, or describe the equation manually.",
+        "not_attempted",
+    ),
     "image_equation_alt_text_deferred": (
         "The alternative text for this image was left to the equation fix, and that fix did not complete.",
         "Review the equation finding for this image and describe the image manually, then rescan.",
@@ -337,6 +342,9 @@ _MANUAL_REASON_CODES = {
     "image_occurrence_unidentified": "image_occurrence_unidentified",
     "image_equation_existing_owner_unsupported": "image_equation_existing_owner_unsupported",
     "image_equation_draw_unresolved": "image_equation_draw_unresolved",
+    "image_equation_page_ownership_unresolved": (
+        "image_equation_page_ownership_unresolved"
+    ),
     "image_equation_alt_text_deferred": "image_equation_alt_text_deferred",
     "image_equation_alt_text_withheld": "image_equation_alt_text_withheld",
     "equation_too_large_for_verification": "equation_too_large_for_verification",

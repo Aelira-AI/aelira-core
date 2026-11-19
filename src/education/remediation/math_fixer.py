@@ -91,6 +91,14 @@ IMAGE_EQUATION_EXISTING_OWNER_ERROR = "image_equation_existing_owner_unsupported
 # displayed images, or marked content that does not balance). No Formula can be
 # written for it and verified afterwards.
 IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR = "image_equation_draw_unresolved"
+# The saved-file rescan's ownership walk refuses this whole page for
+# structure that does not enclose the target draw: a compatibility
+# section elsewhere on the page, marked content whose property resource
+# is missing, or a marked-content id used twice. No fix on such a page
+# can be credited, so the equation is not read at all.
+IMAGE_EQUATION_PAGE_OWNERSHIP_UNRESOLVED_ERROR = (
+    "image_equation_page_ownership_unresolved"
+)
 # The plain-language description built from the equation's LaTeX could not be
 # trusted (see ``equation_alt_text_is_ambiguous``), so no Formula is staged.
 IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR = "image_equation_alt_text_ambiguous"
@@ -288,9 +296,15 @@ class MathFixer:
         handwritten_recognizer: Optional[Any] = None,
         handwritten_verifier: Optional[Any] = None,
         printed_equation_second_reader: Optional[Any] = None,
+        file_path: Optional[str] = None,
     ) -> None:
         self.pdf = pdf
         self.fitz_doc = fitz_doc
+        # The saved-file ownership resolution takes the source path for
+        # lazy page decoding it never performs on this path; the ownership
+        # rules read only the live document. Optional so in-memory callers
+        # keep working.
+        self.file_path = file_path
         self.ai_client = ai_client
         # Equation recognition is never an ambient AI operation. A client not
         # explicitly bound to the alt_text purpose is treated as absent, so no
@@ -522,9 +536,13 @@ class MathFixer:
         The target draw is refused when any marked content already encloses it,
         and when it cannot be resolved to exactly one drawing
         operation in balanced marked content: the saved-file verification would
-        refuse either one after the provider had been paid. A finding with no
-        usable occurrence identity is not probed here; source extraction rejects
-        it, and the writer and verification stay authoritative.
+        refuse either one after the provider had been paid. A page whose
+        ownership the saved-file rescan cannot resolve is refused too, because
+        the rescan could credit nothing written on it: the same resolution the
+        rescan performs is called here, never a second copy of its rules. A
+        finding with no usable occurrence identity is not probed here; source
+        extraction rejects it, and the writer and verification stay
+        authoritative.
         """
         from .content_tagger_v2 import image_draw_has_semantic_owner
         from .pdf_image_finding_identity import occurrence_identity
@@ -545,7 +563,25 @@ class MathFixer:
         )
         if owned is None:
             return IMAGE_EQUATION_DRAW_UNRESOLVED_ERROR
-        return IMAGE_EQUATION_EXISTING_OWNER_ERROR if owned else None
+        if owned:
+            return IMAGE_EQUATION_EXISTING_OWNER_ERROR
+        # The rescan's page-level resolution, run before any provider call:
+        # a page its ownership walk refuses could never credit this or any
+        # other fix, so the finding goes to manual work unpaid instead of
+        # buying a reading that the guard would set aside.
+        from ..pdf_checks.image_checker import _displayed_image_occurrences
+        from ..pdf_checks.image_semantics import page_ownership_refusal
+
+        try:
+            occurrences = _displayed_image_occurrences(
+                self.fitz_doc[page_number - 1], page_number
+            )
+            unresolved = page_ownership_refusal(
+                self.pdf, self.file_path, page_number - 1, occurrences
+            )
+        except Exception:
+            return None
+        return IMAGE_EQUATION_PAGE_OWNERSHIP_UNRESOLVED_ERROR if unresolved else None
 
     def _prepare_scanned_equation_region(
         self, metadata: dict[str, Any]

@@ -221,6 +221,67 @@ def _resolve_image_ownership(
         list(cast(Iterable[Any], kids)) if isinstance(kids, pikepdf.Array) else [kids]
     ):
         walk(child, root, -1, None, 0)
+    draws, non_image_mcids = _walk_page_stream(page, occurrences)
+    result: dict[str, tuple[bool, str | None]] = {
+        item["occurrence_id"]: (False, None) for item in occurrences
+    }
+    exclusive_figures: dict[str, Any] = {}
+    unowned: set[str] = set()
+    for position, (xref, artifact, mcid) in enumerate(draws):
+        occurrence = occurrences[position]
+        if occurrence["image_index"] != position or occurrence["image_xref"] != xref:
+            raise ValueError("draws")
+        if artifact:
+            result[occurrence["occurrence_id"]] = (True, None)
+        elif mcid is not None:
+            binding = owners.get((page_index, mcid))
+            if binding is None:
+                raise ValueError("owner")
+            owner = binding[0]
+            if binding[2]:
+                result[occurrence["occurrence_id"]] = (True, binding[2])
+            elif (
+                owner.objgen in formula_alts
+                and formula_keys[owner.objgen] == {(page_index, mcid)}
+                and mcid not in non_image_mcids
+                and sum(draw[2] == mcid for draw in draws) == 1
+            ):
+                # Credit only; the Formula is deliberately not an exclusive
+                # Figure, so no Figure Alt can be written over it.
+                result[occurrence["occurrence_id"]] = (
+                    True,
+                    formula_alts[owner.objgen],
+                )
+            figure = binding[1]
+            if (
+                figure is not None
+                and figure.objgen not in blocked_figures
+                and figure_keys[figure.objgen] == {(page_index, mcid)}
+                and mcid not in non_image_mcids
+                and sum(draw[2] == mcid for draw in draws) == 1
+            ):
+                exclusive_figures[occurrence["occurrence_id"]] = figure
+        else:
+            # Drawn outside every marked-content sequence, so no structure
+            # element can own it: Matterhorn 13-004 never sees this image.
+            unowned.add(occurrence["occurrence_id"])
+    return ImageOwnership(result, exclusive_figures, figures, frozenset(unowned))
+
+
+def _walk_page_stream(
+    page: Any, occurrences: list[dict[str, Any]]
+) -> tuple[list[tuple[int, bool, int | None]], set[int]]:
+    """Balance one page's marked content and locate its image draws.
+
+    The whole page is at stake: a compatibility section anywhere in the
+    stream, marked-content markers the rules below cannot read, or a draw
+    count that disagrees with the displayed occurrences refuses the page,
+    and the saved-file rescan credits nothing on a page it cannot walk.
+    The equation pre-flight runs this same walk through
+    ``page_ownership_refusal``, so the two paths share one implementation.
+    Returns the draws in stream order and the marked-content ids that
+    hold non-image paint, which no owner may be credited through.
+    """
     ops = list(pikepdf.parse_content_stream(page))
     if len(ops) > 100_000:
         raise ValueError("bounds")
@@ -325,50 +386,37 @@ def _resolve_image_ownership(
             non_image_mcids.update(value[1] for value in stack if value[1] is not None)
     if stack or len(draws) != len(occurrences):
         raise ValueError("draws")
-    result: dict[str, tuple[bool, str | None]] = {
-        item["occurrence_id"]: (False, None) for item in occurrences
-    }
-    exclusive_figures: dict[str, Any] = {}
-    unowned: set[str] = set()
-    for position, (xref, artifact, mcid) in enumerate(draws):
-        occurrence = occurrences[position]
-        if occurrence["image_index"] != position or occurrence["image_xref"] != xref:
-            raise ValueError("draws")
-        if artifact:
-            result[occurrence["occurrence_id"]] = (True, None)
-        elif mcid is not None:
-            binding = owners.get((page_index, mcid))
-            if binding is None:
-                raise ValueError("owner")
-            owner = binding[0]
-            if binding[2]:
-                result[occurrence["occurrence_id"]] = (True, binding[2])
-            elif (
-                owner.objgen in formula_alts
-                and formula_keys[owner.objgen] == {(page_index, mcid)}
-                and mcid not in non_image_mcids
-                and sum(draw[2] == mcid for draw in draws) == 1
-            ):
-                # Credit only; the Formula is deliberately not an exclusive
-                # Figure, so no Figure Alt can be written over it.
-                result[occurrence["occurrence_id"]] = (
-                    True,
-                    formula_alts[owner.objgen],
-                )
-            figure = binding[1]
-            if (
-                figure is not None
-                and figure.objgen not in blocked_figures
-                and figure_keys[figure.objgen] == {(page_index, mcid)}
-                and mcid not in non_image_mcids
-                and sum(draw[2] == mcid for draw in draws) == 1
-            ):
-                exclusive_figures[occurrence["occurrence_id"]] = figure
+    return draws, non_image_mcids
+
+
+def page_ownership_refusal(
+    pdf: pikepdf.Pdf,
+    path: str | None,
+    page_index: int,
+    occurrences: list[dict[str, Any]],
+) -> str | None:
+    """Return why the saved-file ownership walk cannot resolve this page.
+
+    This is the rescan's own resolution, not a copy of it. A tagged page
+    runs the whole ownership resolution, structure tree and content
+    stream together. An untagged source runs the page-stream rules,
+    because remediation tags the saved file and the rescan then walks
+    those same rules over this very page content. ``None`` means the page
+    resolves exactly as the rescan resolves it; any other value is the
+    structural cause the walk reported, so a caller can send the finding
+    to manual work before spending a provider call on a page that could
+    never be credited.
+    """
+    try:
+        if "/StructTreeRoot" in pdf.Root:
+            _resolve_image_ownership(pdf, path, page_index, occurrences)
         else:
-            # Drawn outside every marked-content sequence, so no structure
-            # element can own it: Matterhorn 13-004 never sees this image.
-            unowned.add(occurrence["occurrence_id"])
-    return ImageOwnership(result, exclusive_figures, figures, frozenset(unowned))
+            require_bounded_page_streams(pdf.pages[page_index])
+            _walk_page_stream(pdf.pages[page_index], occurrences)
+    except ValueError as error:
+        cause = str(error)
+        return None if cause == "untagged" else cause
+    return None
 
 
 def is_untagged_pdf(path: str) -> bool:
