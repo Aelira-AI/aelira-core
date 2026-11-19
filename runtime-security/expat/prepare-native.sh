@@ -37,6 +37,34 @@ run_step() {
   echo "expat-prepare: $label: done"
 }
 
+# Reproducibility pin: amd64 fetches come from a timestamped snapshot of
+# the Ubuntu archive, so a mirror rotation or a pocket moving a pinned
+# version cannot kill this job. Override the stamp with
+# AELIRA_EXPAT_UBUNTU_SNAPSHOT; an explicitly empty value keeps the live
+# mirrors, which is the offline-reviewer contract. arm64 stays live
+# because snapshot.ubuntu.com serves ubuntu-ports with HTTP 401 (probed
+# 2026-11-19): no ports snapshots exist to pin yet, so only amd64 can
+# be stamped. Note the plain ${VAR-default}: an empty override must
+# stay empty rather than fall back to the default stamp.
+snapshot_stamp="${AELIRA_EXPAT_UBUNTU_SNAPSHOT-20261118T120000Z}"
+if [[ "$arch" = amd64 && -n "$snapshot_stamp" ]]; then
+  # The CA bundle baked into the pinned base image fails certificate
+  # verification against snapshot.ubuntu.com. Lift trust with one round
+  # trip to the live http mirrors (install/upgrade ca-certificates,
+  # whose postinst reruns update-ca-certificates), then rewrite the
+  # sources to the pinned https snapshot. Every fetch after this block
+  # is timestamp-pinned and carries Acquire::https::CAInfo so apt uses
+  # the freshly regenerated bundle rather than any stale default.
+  run_step 'apt-get update for CA bootstrap' 300 /provenance/ca-bootstrap-update.log \
+    apt-get "${apt_opts[@]}" update
+  run_step 'ca-certificates from live mirrors' 300 /provenance/ca-bootstrap-install.log \
+    apt-get "${apt_opts[@]}" install -y ca-certificates
+  sed -i "s|^URIs: http://archive.ubuntu.com/ubuntu/$|URIs: https://snapshot.ubuntu.com/ubuntu/${snapshot_stamp}/|; s|^URIs: http://security.ubuntu.com/ubuntu/$|URIs: https://snapshot.ubuntu.com/ubuntu/${snapshot_stamp}/|" \
+    /etc/apt/sources.list.d/ubuntu.sources
+  grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources | tee /provenance/snapshot-pin.txt
+  apt_opts+=(-o Acquire::https::CAInfo=/etc/ssl/certs/ca-certificates.crt)
+fi
+
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/base-packages.tsv
 run_step 'apt-get update' 300 /provenance/apt-update.log \
   apt-get "${apt_opts[@]}" update
