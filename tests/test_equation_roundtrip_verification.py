@@ -502,6 +502,37 @@ def test_a_network_attempt_is_never_reported_as_an_oversized_formula():
         verifier.verify(image, "x")
 
 
+@pytest.mark.parametrize(
+    ("width", "height", "max_width", "max_height", "expected"),
+    [
+        (300.0, 96.0, 300, 2048, 1.0),  # inside both bounds renders unscaled
+        (301.0, 96.0, 300, 2048, 300 / 301),  # one pixel over width
+        (300.0, 2400.0, 300, 2048, 2048 / 2400),  # over height only
+        (9000.0, 4000.0, 300, 2048, 300 / 9000),  # both over, width binds
+    ],
+)
+def test_fit_scale_returns_the_uniform_zoom_that_fits(
+    width, height, max_width, max_height, expected
+):
+    from src.education.remediation.equation_verifier import _fit_scale
+
+    assert _fit_scale(width, height, max_width, max_height) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [
+        (float("inf"), 96.0),
+        (96.0, float("inf")),
+        (float("nan"), 96.0),
+    ],
+)
+def test_fit_scale_refuses_a_box_it_cannot_zoom_into_the_bound(width, height):
+    from src.education.remediation.equation_verifier import _fit_scale
+
+    assert _fit_scale(width, height, 300, 2048) is None
+
+
 @pytest.fixture(scope="module")
 def chromium_ready():
     """Drive the pinned renderer to a success once before reading its failures."""
@@ -587,26 +618,22 @@ def test_formula_exactly_at_the_width_bound_renders(chromium_ready):
         assert image.width == 300
 
 
-def test_formula_one_pixel_over_the_width_bound_reports_the_specific_reason(
-    chromium_ready,
-):
-    from src.education.remediation.equation_verifier import (
-        OfflineMathMLRenderer,
-        RendererDimensionLimit,
-    )
+def test_formula_one_pixel_over_the_width_bound_renders_downscaled(chromium_ready):
+    from src.education.remediation.equation_verifier import OfflineMathMLRenderer
 
     renderer = OfflineMathMLRenderer(max_width=300)
 
-    with pytest.raises(RendererDimensionLimit, match="^renderer_dimension_limit$"):
-        renderer.render(_spacer(300 - BOX_PADDING_PX + 1))
+    payload = renderer.render(_spacer(300 - BOX_PADDING_PX + 1))
+
+    with Image.open(BytesIO(payload)) as image:
+        assert image.width <= 300
+        # The overage is one pixel, so uniform downscaling stays near 1:1.
+        assert image.width >= 280
     assert renderer.network_requests == 0
 
 
-def test_formula_over_the_height_bound_reports_the_specific_reason(chromium_ready):
-    from src.education.remediation.equation_verifier import (
-        OfflineMathMLRenderer,
-        RendererDimensionLimit,
-    )
+def test_formula_over_the_height_bound_renders_downscaled(chromium_ready):
+    from src.education.remediation.equation_verifier import OfflineMathMLRenderer
 
     # A line box is 48px (48px font, line-height 1) plus the box padding.
     height = 48 + BOX_PADDING_PX
@@ -614,35 +641,61 @@ def test_formula_over_the_height_bound_reports_the_specific_reason(chromium_read
         BytesIO(OfflineMathMLRenderer(max_height=height).render(_spacer(10)))
     ) as image:
         assert image.height == height
-    with pytest.raises(RendererDimensionLimit, match="^renderer_dimension_limit$"):
-        OfflineMathMLRenderer(max_height=height - 1).render(_spacer(10))
+    with Image.open(
+        BytesIO(OfflineMathMLRenderer(max_height=height - 1).render(_spacer(10)))
+    ) as image:
+        assert image.height <= height - 1
+        # Downscaling is uniform, so a one-pixel overage stays near 1:1.
+        assert image.height >= height - 10
 
 
-def test_verifier_reports_an_oversized_formula_and_still_verifies_a_fitting_one(
+@pytest.mark.parametrize("terms", [60, 150])
+def test_long_sums_render_within_the_bound_and_pass_verification(chromium_ready, terms):
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+
+    latex = "+".join(["x"] * terms)
+    renderer = OfflineMathMLRenderer()
+
+    payload = renderer.render(convert(latex))
+
+    with Image.open(BytesIO(payload)) as image:
+        assert image.width <= 4096
+        assert image.height <= 2048
+    verifier = EquationVerifier(renderer=renderer.render)
+    assert verifier.verify(_validated(payload), latex).passed is True
+
+
+def test_verifier_scales_a_long_formula_into_the_bound_and_verifies_it(
     chromium_ready,
 ):
     from src.education.remediation.equation_verifier import (
-        EquationVerificationRejected,
         EquationVerifier,
         OfflineMathMLRenderer,
     )
 
     renderer = OfflineMathMLRenderer(max_width=200)
     narrow = "<math><mi>x</mi></math>"
-    wide = '<math><mi>x</mi><mspace width="400px"/></math>'
-    source = _validated(renderer.render(narrow))
+    long_sum = "<math>" + "<mo>+</mo>".join(["<mi>x</mi>"] * 40) + "</math>"
+
+    wide_payload = renderer.render(long_sum)
+    with Image.open(BytesIO(wide_payload)) as image:
+        assert image.width <= 200
 
     fitting = EquationVerifier(converter=lambda latex: narrow, renderer=renderer.render)
-    assert fitting.verify(source, "x").passed is True
+    assert fitting.verify(_validated(renderer.render(narrow)), "x").passed is True
 
-    oversized = EquationVerifier(converter=lambda latex: wide, renderer=renderer.render)
-    with pytest.raises(
-        EquationVerificationRejected, match="^renderer_dimension_limit$"
-    ):
-        oversized.verify(source, "x")
+    scaled = EquationVerifier(
+        converter=lambda latex: long_sum, renderer=renderer.render
+    )
+    assert scaled.verify(_validated(wide_payload), "x+x").passed is True
 
 
-def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
+def test_math_fixer_reports_an_equation_that_cannot_fit_even_after_scaling(
     chromium_ready,
 ):
     from types import SimpleNamespace
@@ -650,8 +703,10 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
     from latex2mathml.converter import convert
 
     from src.education.remediation.equation_verifier import (
+        RENDERER_DIMENSION_LIMIT,
         EquationVerifier,
         OfflineMathMLRenderer,
+        RendererDimensionLimit,
     )
     from tests.printed_equation_fixtures import StubSecondReader, primary_reading
     from tests.test_image_equation_math_fixer import METADATA, Verifier, fixer
@@ -667,7 +722,7 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
     # Two letters, because a one-letter equation has no usable generated alt text.
     source = renderer.render(convert("xx"))
 
-    def candidate(latex: str, converter):
+    def candidate(latex: str, converter, render=None):
         value = fixer(Verifier("unused"), StubSecondReader(latex))
         value.equation_recognizer = Recognizer(latex)
         value.image_source.payload.jpeg_bytes = source
@@ -675,7 +730,7 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
             source
         ).hexdigest()
         value.equation_verifier = EquationVerifier(
-            converter=converter, renderer=renderer.render
+            converter=converter, renderer=render or renderer.render
         )
         return value
 
@@ -685,10 +740,13 @@ def test_math_fixer_reports_an_oversized_equation_through_the_real_renderer(
     )
     assert fitting.error == "image_equation_association_pending"
 
-    oversized = candidate(
-        "xx",
-        lambda latex: '<math><mi>x</mi><mspace width="400px"/></math>',
-    )._fix_math_issue(SimpleNamespace(metadata=METADATA))
+    def too_large(mathml: str) -> bytes:
+        # The renderer's own verdict for a formula no uniform scale fits.
+        raise RendererDimensionLimit(RENDERER_DIMENSION_LIMIT)
+
+    oversized = candidate("xx", convert, render=too_large)._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
     assert oversized.success is False
     assert oversized.error == "equation_too_large_for_verification"
     assert oversized.pending_association is None
