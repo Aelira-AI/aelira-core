@@ -1084,20 +1084,11 @@ jobs:
           python -m pip install 'pip-audit==2.10.0'
           pip-audit --requirement requirements.txt --strict
           pip-audit --requirement requirements-dev.txt --strict
-      - name: Test npm audit exception gate
-        run: node --experimental-strip-types --test scripts/npm_audit_gate.test.ts
-      # Temporary scoped npm audit exception for GHSA-fc5q-39xc-vjpf
-      # (CVE-2026-112366, picomatch ReDoS, no upstream fix published), tracked
-      # in issue #1025. scripts/npm_audit_gate.ts runs the same audit command
-      # and still fails this gate for every other high or critical advisory;
-      # it only excepts that one identifier and announces it on every run.
-      # Remove this indirection with the picomatch 4.0.8+ lockfile refresh
-      # tracked in #1025 (decision tracker #1026).
       - name: Audit shipped npm surfaces
         run: |
-          node --experimental-strip-types scripts/npm_audit_gate.ts npm --prefix cli audit --audit-level=high
-          node --experimental-strip-types scripts/npm_audit_gate.ts npm --prefix dashboard audit --audit-level=high
-          node --experimental-strip-types scripts/npm_audit_gate.ts npm --prefix pa11y-runtime audit --audit-level=high
+          npm --prefix cli audit --audit-level=high
+          npm --prefix dashboard audit --audit-level=high
+          npm --prefix pa11y-runtime audit --audit-level=high
       - name: Review pull-request dependency changes
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
