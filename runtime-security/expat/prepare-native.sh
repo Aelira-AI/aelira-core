@@ -60,7 +60,7 @@ cd /provenance/toolchain-debs
 # Each package download is its own bounded step: 120 seconds per package,
 # with the failure naming the package that could not be fetched.
 echo 'expat-prepare: toolchain downloads: starting (120s per package)'
-while IFS="$(printf '\\t')" read -r package version architecture; do
+while IFS="$(printf '\t')" read -r package version architecture; do
   status=0
   timeout -k 15 120 apt-get "${apt_opts[@]}" download "$package:$architecture=$version" 2>&1 \
     | tee -a /provenance/toolchain-download.log || status=$?
