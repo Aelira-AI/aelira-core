@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List, Optional
+from typing import Any, List, NamedTuple, Optional
+from xml.etree import ElementTree
 
 from src.education.latex_commands import LATEX_COMMAND_NAMES
 
@@ -566,6 +567,358 @@ def equation_alt_text_is_ambiguous(latex: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Spoken text for the verified MathML
+#
+# The label above reads LaTeX with regular expressions, so its words are only
+# as right as those regexes are: ``\frac13`` reads "13" and ``x^10`` (x to the
+# first power, then 0) reads "x to the power 10". Verification, though, agrees
+# on canonical MathML, and the Formula carries that MathML. The walk below
+# speaks the MathML tree itself, so what a screen reader announces is what was
+# verified: a fraction is an mfrac with two children, a script is an msup, msub
+# or msubsup, and an argument written without braces is a single mi or mn
+# element, not a regex group.
+#
+# The walk refuses rather than guesses, and it never contradicts the tree. An
+# element it has no rule for, an operator outside the word list, an argument
+# that is not exactly one token, and a parse failure all return ``None``, and
+# the caller keeps the label it already trusted (or the generic one). Keeping
+# every construct's argument to one token is the same rule the ambiguity guard
+# applies to the LaTeX, applied here to the tree: it is what stops
+# ``\frac{a+b}{c}`` from reading "a + b over c", which is also how
+# ``\frac{a}{b} + c`` would read. The guard's refusals stand on their own
+# upstream; the walk never loosens them.
+# ---------------------------------------------------------------------------
+
+
+class _SpokenPart(NamedTuple):
+    """One spoken piece and how it may sit against its neighbours.
+
+    ``symbol`` is a single letter or number, which runs into the symbol
+    before it the way "3x" does. ``word`` is a leaf with its own word or
+    punctuation, and ``group`` is a construct (a fraction, a root, a script)
+    whose own words already carry its shape.
+    """
+
+    text: str
+    kind: str
+
+
+_SYMBOL = "symbol"
+_WORD = "word"
+_GROUP = "group"
+
+# The Greek letters mi carries, in the same words the LaTeX table speaks.
+_ML_LETTER_WORDS = {
+    "\u03b1": "alpha",
+    "\u03b2": "beta",
+    "\u03b3": "gamma",
+    "\u03b4": "delta",
+    "\u03b5": "epsilon",
+    "\u03b6": "zeta",
+    "\u03b7": "eta",
+    "\u03b8": "theta",
+    "\u03b9": "iota",
+    "\u03ba": "kappa",
+    "\u03bb": "lambda",
+    "\u03bc": "mu",
+    "\u03bd": "nu",
+    "\u03be": "xi",
+    "\u03c0": "pi",
+    "\u03c1": "rho",
+    "\u03c3": "sigma",
+    "\u03c4": "tau",
+    "\u03c5": "upsilon",
+    "\u03c6": "phi",
+    "\u03c7": "chi",
+    "\u03c8": "psi",
+    "\u03c9": "omega",
+    "\u0393": "Gamma",
+    "\u0394": "Delta",
+    "\u0398": "Theta",
+    "\u039b": "Lambda",
+    "\u039e": "Xi",
+    "\u03a0": "Pi",
+    "\u03a3": "Sigma",
+    "\u03a5": "Upsilon",
+    "\u03a6": "Phi",
+    "\u03a8": "Psi",
+    "\u03a9": "Omega",
+}
+
+# The operators mo carries that have words, in the same words the LaTeX table
+# speaks.
+_ML_OPERATOR_WORDS = {
+    "\u00d7": "times",
+    "\u00f7": "divided by",
+    "\u00b1": "plus or minus",
+    "\u2213": "minus or plus",
+    "\u2264": "less than or equal to",
+    "\u2265": "greater than or equal to",
+    "\u2260": "not equal to",
+    "\u2248": "approximately equal to",
+    "\u2261": "equivalent to",
+    "\u22c5": "dot",
+    "\u2026": "ellipsis",
+    "\u22ef": "centered ellipsis",
+    "\u221e": "infinity",
+    "\u2202": "partial",
+    "\u2207": "nabla",
+    "\u2211": "sum",
+    "\u220f": "product",
+    "\u222b": "integral",
+    "\u222e": "contour integral",
+}
+
+# What mo may say as itself. The Unicode minus is spoken as the ASCII hyphen
+# the equation was written with. Bars, asterisks and anything else outside
+# this list are refused rather than read.
+_ML_PUNCTUATION = frozenset("+-\u2212=<>()[],;!/")
+
+# A multi-letter mi is a function name. These are the words the LaTeX table
+# gives them; any other name is refused, because the tree cannot tell a
+# function from a product of letters.
+_ML_FUNCTION_WORDS = {
+    "sin": "sine",
+    "cos": "cosine",
+    "tan": "tangent",
+    "log": "log",
+    "ln": "natural log",
+}
+
+# A fence that opens or closes nothing it has words for reads best against
+# what it holds: "f(x)" and "(a over b)", not "f ( x )".
+_ML_OPENING = ("(", "[")
+_ML_CLOSING = (")", "]")
+
+# Punctuation that belongs to the word before it: "x, y", never "x , y".
+_ML_GLUED_PUNCTUATION = (",", ";")
+
+
+def _ml_local_name(tag: str) -> str:
+    """The MathML element name, with any namespace removed."""
+    _, brace, local = tag.rpartition("}")
+    return local if brace else tag
+
+
+def _ml_is_binomial(element: ElementTree.Element) -> bool:
+    """Whether an mfrac is the zero-rule fraction a binomial is drawn with."""
+    return (
+        _ml_local_name(element.tag) == "mfrac" and element.get("linethickness") == "0"
+    )
+
+
+def _ml_is_binomial_fence(
+    child: ElementTree.Element, siblings: List[ElementTree.Element], index: int
+) -> bool:
+    """Whether this parenthesis is one of the pair a binomial brings.
+
+    latex2mathml draws ``\\binom{n}{k}`` as ``( n choose k )``; the table above
+    says "n choose k", so the parentheses written straight against the
+    zero-rule fraction are its own drawing, not a grouping to announce. A
+    parenthesis outside that pair, as in ``(\\binom{n}{k})``, stays.
+    """
+    if _ml_local_name(child.tag) != "mo":
+        return False
+    text = (child.text or "").strip()
+    if text == "(":
+        return index + 1 < len(siblings) and _ml_is_binomial(siblings[index + 1])
+    if text == ")":
+        return index > 0 and _ml_is_binomial(siblings[index - 1])
+    return False
+
+
+def _ml_join(parts: List[_SpokenPart]) -> str:
+    joined: List[str] = []
+    for index, part in enumerate(parts):
+        if index:
+            previous = parts[index - 1]
+            run_together = (
+                (previous.kind == _SYMBOL and part.kind == _SYMBOL)
+                or previous.text in _ML_OPENING
+                or part.text in _ML_CLOSING
+                or part.text in _ML_GLUED_PUNCTUATION
+                or (previous.kind == _SYMBOL and part.text in _ML_OPENING)
+            )
+            if not run_together:
+                joined.append(" ")
+        joined.append(part.text)
+    return "".join(joined)
+
+
+def _ml_speak_leaf(
+    name: str, element: ElementTree.Element
+) -> Optional[List[_SpokenPart]]:
+    if len(list(element)):
+        return None
+    text = (element.text or "").strip()
+    if not text:
+        return None
+    if name == "mo":
+        word = _ML_OPERATOR_WORDS.get(text)
+        if word is not None:
+            return [_SpokenPart(word, _WORD)]
+        if len(text) == 1 and text in _ML_PUNCTUATION:
+            return [_SpokenPart("-" if text == "\u2212" else text, _WORD)]
+        return None
+    if name == "mn":
+        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+            return [_SpokenPart(text, _SYMBOL)]
+        return None
+    word = _ML_LETTER_WORDS.get(text)
+    if word is not None:
+        return [_SpokenPart(word, _WORD)]
+    if len(text) == 1 and text in _ML_OPERATOR_WORDS:
+        # latex2mathml sets \ldots on an mi, not an mo; the word is the same.
+        return [_SpokenPart(_ML_OPERATOR_WORDS[text], _WORD)]
+    if len(text) == 1 and text.isascii() and text.isalnum():
+        return [_SpokenPart(text, _SYMBOL)]
+    word = _ML_FUNCTION_WORDS.get(text)
+    if word is not None:
+        return [_SpokenPart(word, _WORD)]
+    return None
+
+
+def _ml_speak_children(element: ElementTree.Element) -> Optional[List[_SpokenPart]]:
+    """The parts of an element's children, or None if any child is refused."""
+    if (element.text or "").strip():
+        return None
+    children = list(element)
+    parts: List[_SpokenPart] = []
+    for index, child in enumerate(children):
+        if (child.tail or "").strip():
+            return None
+        if _ml_is_binomial_fence(child, children, index):
+            continue
+        spoken = _ml_speak(child)
+        if spoken is None:
+            return None
+        parts.extend(spoken)
+    return parts
+
+
+def _ml_token(element: ElementTree.Element) -> Optional[str]:
+    """The words of an element when it is exactly one token and no group."""
+    spoken = _ml_speak(element)
+    if not spoken or len(spoken) != 1 or spoken[0].kind == _GROUP:
+        return None
+    return spoken[0].text
+
+
+def _ml_root_word(index: str) -> Optional[str]:
+    """The word a root index is spoken as, as the LaTeX table speaks it."""
+    if re.fullmatch(r"[0-9]+", index):
+        return _ROOT_WORDS.get(index, f"{index}th")
+    if len(index) == 1 and index.isascii() and index.isalpha():
+        return f"{index}th"
+    return None
+
+
+def _ml_power_phrase(base: str, exponent: str) -> str:
+    if exponent == "2":
+        return f"{base} squared"
+    if exponent == "3":
+        return f"{base} cubed"
+    return f"{base} to the power {exponent}"
+
+
+def _ml_speak_script(element: ElementTree.Element) -> Optional[List[_SpokenPart]]:
+    name = _ml_local_name(element.tag)
+    children = list(element)
+    expected = 3 if name == "msubsup" else 2
+    if len(children) != expected:
+        return None
+    base = _ml_token(children[0])
+    if base is None:
+        return None
+    if name == "msub":
+        sub = _ml_token(children[1])
+        if sub is None:
+            return None
+        return [_SpokenPart(f"{base} sub {sub}", _GROUP)]
+    if name == "msup":
+        exponent = _ml_token(children[1])
+        if exponent is None:
+            return None
+        return [_SpokenPart(_ml_power_phrase(base, exponent), _GROUP)]
+    sub = _ml_token(children[1])
+    exponent = _ml_token(children[2])
+    if sub is None or exponent is None:
+        return None
+    return [_SpokenPart(f"{_ml_power_phrase(base, exponent)} sub {sub}", _GROUP)]
+
+
+def _ml_speak(element: ElementTree.Element) -> Optional[List[_SpokenPart]]:
+    """The spoken parts of one MathML element, or None if it cannot be said.
+
+    Only the elements canonical MathML carries a meaning for are spoken.
+    A style wrapper (an mstyle) says nothing of its own; munder, mover,
+    mtable, menclose, mtext, mspace and every other element are refused,
+    because the walk has no words that could not mislead.
+    """
+    name = _ml_local_name(element.tag)
+    if name in ("math", "mrow", "mstyle"):
+        return _ml_speak_children(element)
+    if name in ("mi", "mn", "mo"):
+        return _ml_speak_leaf(name, element)
+    if name == "mfrac":
+        arguments = list(element)
+        if len(arguments) != 2:
+            return None
+        numerator = _ml_token(arguments[0])
+        denominator = _ml_token(arguments[1])
+        if numerator is None or denominator is None:
+            return None
+        if _ml_is_binomial(element):
+            return [_SpokenPart(f"{numerator} choose {denominator}", _GROUP)]
+        return [_SpokenPart(f"{numerator} over {denominator}", _GROUP)]
+    if name == "msqrt":
+        radicand = _ml_speak_children(element)
+        if radicand is None or len(radicand) != 1 or radicand[0].kind == _GROUP:
+            return None
+        return [_SpokenPart(f"square root of {radicand[0].text}", _GROUP)]
+    if name == "mroot":
+        arguments = list(element)
+        if len(arguments) != 2:
+            return None
+        radicand = _ml_token(arguments[0])
+        index = _ml_token(arguments[1])
+        if radicand is None or index is None:
+            return None
+        word = _ml_root_word(index)
+        if word is None:
+            return None
+        return [_SpokenPart(f"{word} root of {radicand}", _GROUP)]
+    if name in ("msup", "msub", "msubsup"):
+        return _ml_speak_script(element)
+    return None
+
+
+def spoken_text_from_mathml(mathml: Any) -> Optional[str]:
+    """Return what a screen reader should announce for this MathML, or None.
+
+    The words come from walking the tree, so a construct is read the way the
+    tree groups it: ``<mfrac><mn>1</mn><mn>3</mn></mfrac>`` is "1 over 3"
+    however the LaTeX was braced, and ``x^10`` (an msup over 1, then a 0) is
+    "x to the power 1 0". The walk refuses rather than guesses: anything it
+    has no rule for, an argument that is not exactly one token, and a parse
+    failure all return ``None`` so the caller keeps a label it already
+    trusts. It never emits a reading the tree does not say.
+    """
+    if not isinstance(mathml, str) or not mathml.strip():
+        return None
+    try:
+        root = ElementTree.fromstring(mathml)
+        if _ml_local_name(root.tag) != "math":
+            return None
+        parts = _ml_speak(root)
+    except (ElementTree.ParseError, RecursionError):
+        return None
+    if not parts:
+        return None
+    return _ml_join(parts).strip() or None
+
+
+# ---------------------------------------------------------------------------
 # One check for every generated description
 #
 # A description that holds mathematics is never rewritten here. A prompt that
@@ -816,5 +1169,6 @@ __all__ = [
     "holds_math_markup",
     "holds_unreadable_characters",
     "refuse_math_markup",
+    "spoken_text_from_mathml",
     "strip_math_delimiters",
 ]
