@@ -35,6 +35,7 @@ from src.education.math_contracts import (
 from src.education.math_speech import (
     equation_alt_text_is_ambiguous,
     generate_equation_alt_text,
+    spoken_text_from_mathml,
     strip_math_delimiters,
 )
 from src.education.remediation.equation_verifier import (
@@ -275,7 +276,9 @@ class MathFixer:
         struct_tree: PDFStructureTree instance wrapping ``pdf``. If None a new
             one is created automatically.
         ai_client: Optional AI provider client. Reserved for future use —
-            currently ARIA labels are generated purely by regex substitution.
+            ARIA labels are read from the verified MathML
+            (``spoken_text_from_mathml``), falling back to the deterministic
+            LaTeX label when the walk refuses.
     """
 
     # Issue types this fixer handles
@@ -485,8 +488,9 @@ class MathFixer:
                 page_number=page_number,
             )
 
-        # Generate human-readable ARIA label
-        aria_label = self._generate_aria_label(equation_text)
+        # Generate the human-readable ARIA label from the MathML written
+        # beside it, falling back to the LaTeX label when the walk refuses.
+        aria_label = self._generate_aria_label(equation_text, mathml=mathml_string)
 
         # Add Formula structure element to the PDF
         success = self.struct_tree.add_formula(
@@ -746,7 +750,10 @@ class MathFixer:
         )
         if refusal is not None:
             return refusal
-        aria_label = self._generate_aria_label(recognition.latex)
+        # The MathML here is the canonical string whose digest the
+        # verification and the second reading both checked, so the label the
+        # screen reader announces is read from what was verified.
+        aria_label = self._generate_aria_label(recognition.latex, mathml=mathml_string)
         identity = validated.identity
         if scanned_region:
             if not isinstance(identity, PageRasterRegionLocator):
@@ -991,17 +998,19 @@ class MathFixer:
                 page_number=page_number,
             )
         # The two readings agree, so the equation itself is established. Its
-        # description is still built by regular expressions, and ``\frac12``
-        # would read "12", so an agreed reading whose notation the label cannot
-        # translate is refused here, before anything is staged. The verifier
-        # has already applied the same check to its own LaTeX.
+        # description is now read from the canonical MathML above, whose
+        # digest this check just compared, and an agreed reading whose
+        # notation the guard cannot vouch for (the label built from an
+        # unbraced one-half would read "12") is still refused here, before
+        # anything is staged. The verifier has already applied the same
+        # check to its own LaTeX.
         if equation_alt_text_is_ambiguous(recognition.latex):
             return MathFixResult(
                 success=False,
                 error=IMAGE_EQUATION_ALT_TEXT_AMBIGUOUS_ERROR,
                 page_number=page_number,
             )
-        aria_label = self._generate_aria_label(recognition.latex)
+        aria_label = self._generate_aria_label(recognition.latex, mathml=mathml_string)
         pending = self._pending_visual_equation_association(
             validated,
             scanned_region=scanned_region,
@@ -1206,16 +1215,30 @@ class MathFixer:
 
         return ""
 
-    def _generate_aria_label(self, latex: str) -> str:
-        """Generate a human-readable ARIA label from a LaTeX equation.
+    @staticmethod
+    def _generate_aria_label(latex: str, mathml: Optional[str] = None) -> str:
+        """Generate the human-readable label a screen reader announces.
 
-        Applies a series of regex substitutions to translate common LaTeX
-        notation into plain English suitable for screen-reader announcement.
+        When the MathML that passed verification is given, the words come from
+        walking that tree (``spoken_text_from_mathml``), so what is announced
+        is what was verified: ``\\frac13`` reads "1 over 3" and ``x^10`` (x to
+        the first power, then 0) reads "x to the power 1 0", not "13" or "x to
+        the power 10". When no MathML is given, or the walk refuses an element
+        it could not speak without guessing, the deterministic LaTeX label is
+        kept. Both readings are only ever written behind
+        ``equation_alt_text_is_ambiguous`` (#693), which stays in force and
+        refuses what neither reading can carry.
 
         Args:
             latex: LaTeX equation string (may include delimiters).
+            mathml: The canonical MathML for that equation, when one was
+                produced and verified.
 
         Returns:
             Plain-English label string.
         """
+        if mathml:
+            spoken = spoken_text_from_mathml(mathml)
+            if spoken is not None:
+                return spoken
         return generate_equation_alt_text(latex)
