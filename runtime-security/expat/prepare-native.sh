@@ -57,12 +57,15 @@ awk -F '\t' 'NR == FNR {base[$1] = $2 FS $3; next}
   > /provenance/toolchain-delta.tsv
 mkdir -p /provenance/toolchain-debs
 cd /provenance/toolchain-debs
-# Each package download is its own bounded step: 120 seconds per package,
-# with the failure naming the package that could not be fetched.
-echo 'expat-prepare: toolchain downloads: starting (120s per package)'
+# Each package download is its own bounded step: 300 seconds per package,
+# with the failure naming the package that could not be fetched. Large
+# compiler debs such as cpp-15 (~30MB) need minutes on a mildly degraded
+# mirror, while APT::Acquire::Retries=5 with Acquire::http::Timeout=20 still
+# kills a truly dead connection in about 100 seconds.
+echo 'expat-prepare: toolchain downloads: starting (300s per package)'
 while IFS="$(printf '\t')" read -r package version architecture; do
   status=0
-  timeout -k 15 120 apt-get "${apt_opts[@]}" download "$package:$architecture=$version" 2>&1 \
+  timeout -k 15 300 apt-get "${apt_opts[@]}" download "$package:$architecture=$version" 2>&1 \
     | tee -a /provenance/toolchain-download.log || status=$?
   if (( status != 0 )); then
     echo "expat-prepare: toolchain download FAILED for $package $version $architecture (status $status)" >&2
