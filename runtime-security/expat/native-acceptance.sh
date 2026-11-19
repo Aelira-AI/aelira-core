@@ -23,12 +23,57 @@ if [[ -z "$builder" ]]; then
   timeout 10m docker pull --platform "linux/$arch" "$base"
   [[ "$(docker image inspect --format '{{.Architecture}}' "$base")" = "$arch" ]]
   prepare_name="expat-prepare-$run_id"
-  timeout 30m docker run --name "$prepare_name" --platform "linux/$arch" \
+  marker="$output/provenance/prepare-complete.txt"
+  # The prepare container runs detached and its completion marker, not its
+  # exit, is the success signal (issue #1035): a leftover child wedged
+  # in-kernel on a degraded archive.ubuntu.com socket held an attached
+  # docker run open after every prepare step had completed, the foreground
+  # timeout fired at 30 minutes with exit 124, and the builder image was
+  # never committed.
+  prepare_started=$(date +%s)
+  timeout 10m docker run --name "$prepare_name" --detach --platform "linux/$arch" \
     --cpus 4 --memory 8g --pids-limit 512 -e AELIRA_EXPAT_HOST_ARCH="$arch" \
     -v "$recipe_dir:/recipe:ro" -v "$source_dir:/source-input" \
-    -v "$output/provenance:/provenance" "$base" /bin/sh /recipe/prepare-native.sh \
-    > "$output/provenance/prepare-console.log" 2>&1
+    -v "$output/provenance:/provenance" "$base" /bin/bash /recipe/prepare-native.sh
+  prepare_deadline=$(( prepare_started + 2100 ))
+  prepare_polls=0
+  while [[ ! -f "$marker" ]]; do
+    now=$(date +%s)
+    state="$(docker inspect -f '{{.State.Status}}' "$prepare_name")"
+    if [[ "$state" != running ]]; then
+      # The script can complete between the loop condition and this inspect;
+      # the marker wins before any failure is declared.
+      if [[ -f "$marker" ]]; then break; fi
+      exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$prepare_name")"
+      echo "expat-prepare: container ended as $state (exit $exit_code) without writing the completion marker" >&2
+    elif (( now >= prepare_deadline )); then
+      if [[ -f "$marker" ]]; then break; fi
+      echo "expat-prepare: completion marker still absent 35 minutes after container start; container still running" >&2
+    else
+      prepare_polls=$(( prepare_polls + 1 ))
+      if (( prepare_polls % 4 == 0 )); then
+        # shellcheck disable=SC2012  # names are this harness's own; sorting by mtime is the point
+        echo "expat-prepare: running for $(( now - prepare_started ))s; latest provenance file: $(ls -1t "$output/provenance" | head -n 1 || true)"
+      fi
+      sleep 15
+      continue
+    fi
+    docker logs "$prepare_name" > "$output/provenance/prepare-console.log" 2>&1 || true
+    tail -n 40 "$output/provenance/prepare-console.log" >&2 || true
+    # shellcheck disable=SC2012  # names are this harness's own; sorting by mtime is the point
+    echo "expat-prepare: newest provenance file: $(ls -1t "$output/provenance" | head -n 1 || true)" >&2
+    timeout 2m docker rm -f "$prepare_name" >/dev/null 2>&1 || true
+    exit 1
+  done
+  echo "expat-prepare: completion marker present after $(( $(date +%s) - prepare_started ))s; releasing the container"
+  # The marker means every prepare step finished. Stop the container, but
+  # tolerate a wedged child that ignores the stop: docker commit works on a
+  # running container, and the filesystem is complete once the marker is
+  # written. Removal is best effort for the same reason.
+  timeout 3m docker stop --time 15 "$prepare_name" >/dev/null 2>&1 || true
   builder="$(docker commit "$prepare_name")"
+  docker logs "$prepare_name" > "$output/provenance/prepare-console.log" 2>&1 || true
+  timeout 2m docker rm -f "$prepare_name" >/dev/null 2>&1 || true
 fi
 [[ "$builder" = sha256:* ]]
 [[ "$(docker image inspect --format '{{.Architecture}}' "$builder")" = "$arch" ]]

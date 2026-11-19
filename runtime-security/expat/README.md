@@ -28,7 +28,12 @@ downloads the exact `2.7.4-1ubuntu0.2` source, checks all three input hashes,
 and provisions build dependencies once. The signed APT source and binary
 index material, archive keyring, source fetch logs, base/toolchain package
 lists, exact added/upgraded package DEBs and hashes, and frozen builder image
-ID remain in the output. The pinned base digest and saved package delta retain
+ID remain in the output. `prepare-console.log` records the prepare container's
+per-step output, and `prepare-complete.txt` is that container's completion
+marker: the harness commits the detached prepare container when the marker
+appears instead of waiting for the container to exit, so a wedged teardown
+cannot lose a run whose downloads all completed. The pinned base digest and
+saved package delta retain
 the toolchain inputs after an ephemeral runner ends. APT's signed archive
 indexes authenticate the source; the original
 DSC uploader signature is not verified by this recipe.
