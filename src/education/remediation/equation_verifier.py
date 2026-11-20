@@ -125,11 +125,35 @@ RENDERER_DIMENSION_LIMIT = "renderer_dimension_limit"
 
 
 class RendererDimensionLimit(RuntimeError):
-    """The rendered formula was larger than the configured width or height."""
+    """The formula still exceeded the width or height bound after downscaling."""
 
 
 class _RenderedElementTooLarge(Exception):
-    """Worker-side signal that the formula box exceeded the size bound."""
+    """Worker-side signal that no uniform scale brought the box within bounds."""
+
+
+_SCALING_ATTEMPTS = 3
+
+_APPLY_ZOOM_JS = (
+    "(factor) => { document.getElementById('formula').style.zoom = String(factor); }"
+)
+
+
+def _fit_scale(
+    width: float, height: float, max_width: int, max_height: int
+) -> Optional[float]:
+    """Return the uniform zoom that fits the box within the bounds, else None.
+
+    ``1.0`` means the box already fits. A non-finite or zero ratio means the
+    formula cannot be scaled to fit and is reported as a dimension limit
+    rather than a renderer fault.
+    """
+    if width <= max_width and height <= max_height:
+        return 1.0
+    scale = min(max_width / width, max_height / height)
+    if not math.isfinite(scale) or scale <= 0.0:
+        return None
+    return scale
 
 
 def _expanded_mathml_name(tag: str) -> tuple[Optional[str], str]:
@@ -285,6 +309,13 @@ class EquationVerificationEvidence:
     required_pixel_similarity: float
 
 
+def _measured_box(locator) -> dict:
+    box = locator.bounding_box(timeout=5_000)
+    if box is None or box["width"] <= 0 or box["height"] <= 0:
+        raise RuntimeError("renderer_empty_element")
+    return box
+
+
 def _render_mathml_worker(
     mathml: str,
     font_data: str,
@@ -321,9 +352,25 @@ html,body{{margin:0;background:#fff;color:#000}}
                 page.set_content(html, wait_until="load", timeout=5_000)
                 page.evaluate("document.fonts.ready")
                 locator = page.locator("#formula")
-                box = locator.bounding_box(timeout=5_000)
-                if box is None or box["width"] <= 0 or box["height"] <= 0:
-                    raise RuntimeError("renderer_empty_element")
+                box = _measured_box(locator)
+                zoom = 1.0
+                for _ in range(_SCALING_ATTEMPTS):
+                    if box["width"] <= max_width and box["height"] <= max_height:
+                        break
+                    # A formula wider or taller than the bound is downscaled
+                    # uniformly with CSS zoom, which multiplies the whole box.
+                    # The comparator normalizes both images to one ink box,
+                    # so a uniform downscale changes what the comparison can
+                    # see no more than the comparator's own resample does,
+                    # and the bound itself stays the safety limit.
+                    scale = _fit_scale(
+                        box["width"], box["height"], max_width, max_height
+                    )
+                    if scale is None:
+                        raise _RenderedElementTooLarge
+                    zoom *= scale
+                    page.evaluate(_APPLY_ZOOM_JS, zoom)
+                    box = _measured_box(locator)
                 if box["width"] > max_width or box["height"] > max_height:
                     raise _RenderedElementTooLarge
                 output = locator.screenshot(animations="disabled", timeout=5_000)
@@ -339,7 +386,12 @@ html,body{{margin:0;background:#fff;color:#000}}
 
 
 class OfflineMathMLRenderer:
-    """Render passive MathML under a killable deadline with pinned assets."""
+    """Render passive MathML under a killable deadline with pinned assets.
+
+    A formula larger than ``max_width`` or ``max_height`` is downscaled
+    uniformly until it fits; the bounds stay the safety limit, and a formula
+    that still cannot fit after scaling raises ``RendererDimensionLimit``.
+    """
 
     def __init__(
         self,
