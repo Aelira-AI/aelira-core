@@ -54,6 +54,11 @@ EXPLANATIONS = {
         "Confirm that the image is decorative, then mark it as a background artifact in the source document or PDF editor and rescan. An empty description alone is insufficient.",
         "not_applied",
     ),
+    "alt_text_not_embedded": (
+        "The description could not be written into the saved PDF, so the image was left unchanged and no fix was recorded. An HTML alternative is not credited in place of a description the PDF itself carries.",
+        "Add the description to the image in the source document or a PDF editor, then rescan.",
+        "not_applied",
+    ),
     "reading_order_candidate_still_unverified": (
         "The proposed tag order did not pass the reading-order check. The proposal was rolled back and the original semantic groups were retained.",
         "Review the page's column groups, headings and footer in the PDF tag tree. Confirm the intended sequence with a screen reader before editing and rescanning.",
@@ -340,6 +345,7 @@ _MANUAL_REASON_CODES = {
     "image_draw_ambiguous": "image_draw_ambiguous",
     "image_in_marked_content": "image_in_marked_content",
     "image_occurrence_unidentified": "image_occurrence_unidentified",
+    "alt_text_not_embedded": "alt_text_not_embedded",
     "image_equation_existing_owner_unsupported": "image_equation_existing_owner_unsupported",
     "image_equation_draw_unresolved": "image_equation_draw_unresolved",
     "image_equation_page_ownership_unresolved": (
