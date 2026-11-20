@@ -490,3 +490,19 @@ finding stays in the published scan reports.
 | CVE-2026-119374 | libsqlite3-0 3.46.1-7+deb13u2 | Not affected: the application uses PostgreSQL; no user-supplied SQLite database is opened, so no corrupted FTS5 index is ever loaded. |
 | CVE-2026-119379 | libsqlite3-0 3.46.1-7+deb13u2 | Not affected: no code path opens a user-supplied SQLite database or applies session changesets. |
 | CVE-2026-85091 | zlib1g 1:1.3.dfsg+really1.3.1-1+b1+aelira1 | Not affected: `gz_vacate()` is reachable only through the gz* gzip-file interface; every zlib consumer in the image — libpng, libtiff, the Python zlib and gzip modules, libcurl — uses the raw inflate and deflate API. |
+
+## Advisory drift indexed 2026-11-20
+
+Advisory feeds indexed a new finding and turned the image gates red on PR #1040
+head 3d142814, run 44655544591: the API image Docker jobs report 1 unresolved
+HIGH on both architectures. CVE-2026-109908 (X.Org libfontenc heap buffer
+overflow when reading encoding files; CVSS 3.1 AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H;
+published 2026-11-18, not withdrawn) is fixed upstream only after 1.1.9, and
+Debian 13 still ships 1:1.1.8-1+b2 with no fix in trixie-security, so it is
+dispositioned rather than patched. The row in
+`.trivy-unfixed-dispositions.json` (reviewed 2026-11-20, expires 2027-02-16)
+records that the vulnerable parser is not on an execute path in this image.
+
+| Advisory | Package | Assessment |
+| --- | --- | --- |
+| CVE-2026-109908 | libfontenc1 1:1.1.8-1+b2 | Not affected: only `mkfontscale` and `fonttosfnt` from `xfonts-utils` link libfontenc in this image, no shipped code path runs them, and the image ships no X server, X font server or libXfont for the advisory's `.enc`-injecting local attacker to reach. |
