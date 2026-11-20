@@ -2035,6 +2035,22 @@
       "reviewed": "2026-11-13",
       "expires": "2027-02-09",
       "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
+    },
+    {
+      "id": "CVE-2026-109908",
+      "osFamily": "debian",
+      "packages": [
+        {
+          "name": "libfontenc1",
+          "installedVersion": "1:1.1.8-1+b2"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "reason": "X.Org libfontenc heap buffer overflow when reading X core font encoding files (.enc and .enc.gz). Reaching it needs a libfontenc-linked program that parses attacker-supplied encoding files: an X server or X font server, or the xfonts-utils programs mkfontscale and fonttosfnt. The image installs libfontenc1 only as a Depends of xfonts-utils, which the font stack drags in underneath fontconfig, cairo, pango, ghostscript, ImageMagick and TeX Live (fontconfig-config -> fonts-urw-base35 -> xfonts-utils; texlive-luatex -> lmodern -> xfonts-utils). The shipped image has no X server, no X font server and no libXfont, and no shipped code path runs mkfontscale or fonttosfnt: the LaTeX/MathML chain shells out to latexml, latexmlpost, lualatex and pandoc, which read font data through kpathsea, FreeType and fontconfig parsers, never libfontenc, and Chromium runs headless. The advisory attack needs a local attacker able to hand encoding files to the X font stack; this container ships no X font stack and no local interactive users, only the single service account.",
+      "reviewed": "2026-11-20",
+      "expires": "2027-02-16",
+      "disclosure": "docs/security/known-unfixed-advisories-0.9.12.md"
     }
   ]
 }
