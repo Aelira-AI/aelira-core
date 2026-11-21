@@ -554,10 +554,14 @@ def test_stored_alt_text_is_escaped_as_one_attribute(tmp_path):
     parser = _HtmlRecorder()
     parser.feed(rendered)
     assert "script" not in parser.start_tags
-    fallback_images = [
-        attributes for attributes in parser.image_attributes if "src" not in attributes
-    ]
-    assert fallback_images == [{"alt": payload}]
+    # One element for the one displayed image, carrying its own picture so
+    # the alt attribute provably belongs to it.
+    assert len(parser.image_attributes) == 1
+    described = parser.image_attributes[0]
+    assert described["alt"] == payload
+    assert (described.get("src") or "").startswith(
+        ("data:image/png;base64,", "data:image/jpeg;base64,")
+    )
     assert "[Image " not in rendered
 
 
@@ -598,7 +602,14 @@ def test_pymupdf_page_html_is_sanitized_without_double_escaping(tmp_path):
 
     with fitz.open(str(pdf_path)) as document:
         page_html = document[0].get_text("html")
+        # The generator asks for a text-only fragment; its images come from
+        # the displayed sequence with their own stored alt text.
+        text_only_html = document[0].get_text(
+            "html",
+            flags=fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_PRESERVE_WHITESPACE,
+        )
         sanitized_page_html = _sanitize_pymupdf_html_fragment(page_html)
+        sanitized_text_only_html = _sanitize_pymupdf_html_fragment(text_only_html)
         assert 'style="' in page_html
         assert "data:image/png;base64," in page_html
         assert "<script>" not in page_html
@@ -606,6 +617,7 @@ def test_pymupdf_page_html_is_sanitized_without_double_escaping(tmp_path):
             "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quoted&quot;"
             in page_html
         )
+        assert "<img" not in text_only_html
         assert 'style="' not in sanitized_page_html
         assert "class=" not in sanitized_page_html
         assert "onerror=" not in sanitized_page_html
@@ -617,11 +629,12 @@ def test_pymupdf_page_html_is_sanitized_without_double_escaping(tmp_path):
         )
         assert "&amp;lt;script&amp;gt;" not in sanitized_page_html
         _assert_fragment_contract(sanitized_page_html)
+        _assert_fragment_contract(sanitized_text_only_html)
         assert remediator._generate_accessible_html(document)
 
     assert remediator._html_output is not None
     assert page_html not in remediator._html_output
-    assert sanitized_page_html in remediator._html_output
+    assert sanitized_text_only_html in remediator._html_output
     assert "&amp;lt;script&amp;gt;" not in remediator._html_output
     parser = _HtmlRecorder()
     parser.feed(sanitized_page_html)

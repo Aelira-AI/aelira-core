@@ -31,17 +31,61 @@ chmod 0755 "$recipe"
 builder=${AELIRA_XRENDER_BUILDER_IMAGE:-}
 if test -z "$builder"; then
   phase=base-pull
-  docker pull --platform "linux/$arch" "$base" > "$output/provenance/base-pull-private.log" 2>&1
+  timeout 10m docker pull --platform "linux/$arch" "$base" > "$output/provenance/base-pull-private.log" 2>&1
   test "$(docker image inspect --format '{{.Architecture}}' "$base")" = "$arch"
   phase=online-preparation
   name="aelira-xrender-prepare-$arch-$$"
-  docker run --name "$name" --platform "linux/$arch" --security-opt no-new-privileges \
+  marker="$output/provenance/prepare-complete.txt"
+  # The prepare container runs detached and its completion marker, not its
+  # exit, is the success signal (issue #1037): the old attached run on a
+  # degraded archive mirror held the job open with zero console output
+  # until the workflow cancelled it at the job timeout with no verdict.
+  # The marker wall below fires well inside the job cap so the failure
+  # names the stalled step instead.
+  prepare_started=$(date +%s)
+  timeout 10m docker run --name "$name" --detach --platform "linux/$arch" --security-opt no-new-privileges \
     --cpus 4 --memory 4g --pids-limit 256 -e AELIRA_XRENDER_HOST_ARCH="$arch" \
     -v "$recipe:/recipe:ro" -v "$output/source-input:/source-input" \
-    -v "$output/provenance:/provenance" "$base" bash /recipe/prepare-native.sh \
-    > "$output/provenance/prepare-private.log" 2>&1
+    -v "$output/provenance:/provenance" "$base" bash /recipe/prepare-native.sh
+  prepare_deadline=$(( prepare_started + 2100 ))
+  prepare_polls=0
+  while [[ ! -f "$marker" ]]; do
+    now=$(date +%s)
+    state=$(docker inspect -f '{{.State.Status}}' "$name")
+    if [[ "$state" != running ]]; then
+      # The script can complete between the loop condition and this inspect;
+      # the marker wins before any failure is declared.
+      if [[ -f "$marker" ]]; then break; fi
+      exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$name")
+      echo "xrender-prepare: container ended as $state (exit $exit_code) without writing the completion marker" >&2
+    elif (( now >= prepare_deadline )); then
+      if [[ -f "$marker" ]]; then break; fi
+      echo "xrender-prepare: completion marker still absent 35 minutes after container start; container still running" >&2
+    else
+      prepare_polls=$(( prepare_polls + 1 ))
+      if (( prepare_polls % 4 == 0 )); then
+        # shellcheck disable=SC2012  # names are this harness's own; sorting by mtime is the point
+        echo "xrender-prepare: running for $(( now - prepare_started ))s; latest provenance file: $(ls -1t "$output/provenance" | head -n 1 || true)"
+      fi
+      sleep 15
+      continue
+    fi
+    docker logs "$name" > "$output/provenance/prepare-private.log" 2>&1 || true
+    tail -n 40 "$output/provenance/prepare-private.log" >&2 || true
+    # shellcheck disable=SC2012  # names are this harness's own; sorting by mtime is the point
+    echo "xrender-prepare: newest provenance file: $(ls -1t "$output/provenance" | head -n 1 || true)" >&2
+    timeout 2m docker rm -f "$name" >/dev/null 2>&1 || true
+    exit 1
+  done
+  echo "xrender-prepare: completion marker present after $(( $(date +%s) - prepare_started ))s; releasing the container"
+  # The marker means every prepare step finished. Stop the container, but
+  # tolerate a wedged child that ignores the stop: docker commit works on a
+  # running container, and the filesystem is complete once the marker is
+  # written. Removal is best effort for the same reason.
+  timeout 3m docker stop --time 15 "$name" >/dev/null 2>&1 || true
   builder=$(docker commit "$name")
-  docker rm "$name" > /dev/null
+  docker logs "$name" > "$output/provenance/prepare-private.log" 2>&1 || true
+  timeout 2m docker rm -f "$name" >/dev/null 2>&1 || true
 else
   phase=frozen-input-capture
   [[ "$builder" =~ ^sha256:[a-f0-9]{64}$ ]]
