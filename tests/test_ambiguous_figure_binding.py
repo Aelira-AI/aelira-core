@@ -535,6 +535,7 @@ REASONS = [
     "image_draw_ambiguous",
     "image_in_marked_content",
     "image_occurrence_unidentified",
+    "alt_text_not_embedded",
 ]
 
 

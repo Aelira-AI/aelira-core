@@ -19,7 +19,7 @@ KEYRING = '80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31'
 RECIPE = ('README.md', 'build.sh', 'ci-native.sh', 'prepare-native.sh', 'build-in-container.sh',
           'verify-provenance.py', 'inputs.sha256', 'patch.sha256', 'upstream-0564bce.patch',
           'changelog-entry.txt', 'generate-control.py', 'control-template.c', 'test-installed.sh', 'xrender-client.c')
-INDEX = re.compile(r'(?:archive\.ubuntu\.com_ubuntu|ports\.ubuntu\.com_ubuntu-ports|security\.ubuntu\.com_ubuntu)_dists_resolute(?:-updates|-security|-backports)?_(?:InRelease|(?:main|universe|restricted|multiverse)_(?:source_Sources|binary-(?:amd64|arm64)_Packages)(?:\.lz4)?)')
+INDEX = re.compile(r'(?:archive\.ubuntu\.com_ubuntu|ports\.ubuntu\.com_ubuntu-ports|security\.ubuntu\.com_ubuntu|snapshot\.ubuntu\.com_ubuntu_[0-9]{8}T[0-9]{6}Z)_dists_resolute(?:-updates|-security|-backports)?_(?:InRelease|(?:main|universe|restricted|multiverse)_(?:source_Sources|binary-(?:amd64|arm64)_Packages)(?:\.lz4)?)')
 
 
 def saved_image_contents(path):
