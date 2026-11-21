@@ -329,7 +329,7 @@ has SHA-256 `ee7c145e51c7988325296ea2cc1dc70b42ecd6e27b49386370b926c2211ff6f4`.
 Both hashes are checked before the OpenCV build. Its temporary build environment
 pins NumPy 2.3.2, setuptools 69.5.1 and wheel 0.45.1 as required by the
 sdist's legacy build backend on Python
-3.14; the final application keeps NumPy 2.5.4 and setuptools 84.2.1. FFmpeg's
+3.14; the final application keeps NumPy 2.5.5 and setuptools 84.2.1. FFmpeg's
 development headers and linker symlinks are removed after both wheels exist.
 The final-image verifier checks the installed PyAV version, native FFmpeg
 version tuples, every resolved FFmpeg SONAME and path, and the absence of
