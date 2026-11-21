@@ -181,6 +181,11 @@ _IMAGE_DRAW_AMBIGUOUS = "image_draw_ambiguous"
 _IMAGE_IN_MARKED_CONTENT = "image_in_marked_content"
 # The finding carries no occurrence identity and its page holds other images.
 _IMAGE_OCCURRENCE_UNIDENTIFIED = "image_occurrence_unidentified"
+# Nothing was written into the saved PDF: embedding in the structure failed,
+# or there is no structure or no text to embed. The HTML alternative is not a
+# fix the PDF itself carries, so the finding is refused rather than recorded,
+# and no HTML sidecar is produced.
+_ALT_TEXT_NOT_EMBEDDED = "alt_text_not_embedded"
 
 # What a person should do next for each of those reasons.
 _IMAGE_BINDING_RECOMMENDATIONS = {
@@ -206,6 +211,10 @@ _IMAGE_BINDING_RECOMMENDATIONS = {
         "the page holds other images. Rescan the document so each image is "
         "reported with its own identity, then describe this image if it is "
         "still undescribed."
+    ),
+    _ALT_TEXT_NOT_EMBEDDED: (
+        "The description could not be written into the saved PDF. Add it to "
+        "the image in the source document or a PDF editor, then rescan."
     ),
 }
 
@@ -633,6 +642,35 @@ def _is_verified_image(image_bytes: bytes, declared_format: str) -> bool:
     if declared_format == "png":
         return _is_complete_png_file(image_bytes)
     return _is_complete_jpeg_file(image_bytes)
+
+
+def _embedded_image_data_url(document: Any, xref: int) -> Optional[str]:
+    """Return a data URL for an image resource, or None when it cannot carry one.
+
+    Only PNG and JPEG payloads that pass the same bounded structural
+    verification the page-fragment sanitizer applies are embedded, so the
+    appended image sequence never carries a picture the text fragment would
+    have rejected.
+    """
+    try:
+        extracted = document.extract_image(xref)
+    except Exception:
+        return None
+    if not isinstance(extracted, dict):
+        return None
+    image_bytes = extracted.get("image")
+    extension = str(extracted.get("ext", "")).lower()
+    if extension not in ("png", "jpeg"):
+        return None
+    if not isinstance(image_bytes, (bytes, bytearray)):
+        return None
+    image_bytes = bytes(image_bytes)
+    if len(image_bytes) > _MAX_IMAGE_DATA_BYTES:
+        return None
+    if not _is_verified_image(image_bytes, extension):
+        return None
+    payload = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:image/{extension};base64,{payload}"
 
 
 def _normalize_untrusted_html_text(value: Any) -> str:
@@ -4552,7 +4590,9 @@ class PdfRemediator(BaseRemediator):
         This is the proper PDF/UA way to add alt text - screen readers will
         announce it when encountering the image.
 
-        Falls back to HTML alternative if pikepdf is not available.
+        When nothing can be written into the structure, the finding is refused
+        for manual handling. An HTML alternative is not a fix the saved PDF
+        carries, so it is never credited in place of one.
         """
         try:
             page_num = issue.metadata.get("page_number", 1)
@@ -4660,24 +4700,16 @@ class PdfRemediator(BaseRemediator):
                         f"{alt_text[:50]}{'...' if len(alt_text) > 50 else ''}"
                     )
                     return True
-                else:
-                    logger.warning(
-                        "Failed to embed alt text in structure, falling back to HTML"
-                    )
+                logger.warning(
+                    "Failed to embed alt text in structure; refusing the fix "
+                    "rather than crediting one the saved PDF would not carry"
+                )
+                return self._refuse_source_binding(issue, _ALT_TEXT_NOT_EMBEDDED)
 
-            # Fall back: Store alt text for HTML generation
-            if not hasattr(self, "_alt_texts"):
-                self._alt_texts = {}
-
-            key = (page_num, image_index)
-            self._alt_texts[key] = alt_text
-
-            # Trigger HTML generation if not already done
-            if not self._html_output:
-                self._generate_accessible_html(document)
-
-            logger.info(f"Stored alt text for HTML alternative on page {page_num}")
-            return True
+            # No structure tree, or no text to embed: nothing would be written
+            # into the saved PDF. Recording a fix here would credit a change
+            # only an HTML sidecar holds, so the finding is refused instead.
+            return self._refuse_source_binding(issue, _ALT_TEXT_NOT_EMBEDDED)
 
         except Exception as e:
             logger.error(f"Error applying alt text fix: {e}")
@@ -5374,7 +5406,16 @@ class PdfRemediator(BaseRemediator):
             return False
 
     def _generate_accessible_html(self, document: Any) -> bool:
-        """Generate an accessible HTML version of the PDF."""
+        """Generate an accessible HTML version of the PDF.
+
+        Images are emitted in display order, the order the page content draws
+        them, which is the numbering the image findings use. A stored alt text
+        is attached only to the element for the draw stored under that display
+        index; text stored for an index no displayed draw carries is refused
+        rather than placed on another image. The page fragment is requested
+        without images so each displayed image appears exactly once, carrying
+        its own embedded picture as its identity.
+        """
         try:
             html_parts = [
                 "<!DOCTYPE html>",
@@ -5405,20 +5446,32 @@ class PdfRemediator(BaseRemediator):
                         f'<div class="page-break"><span class="page-number">Page {page_num + 1}</span></div>'
                     )
 
-                # Extract text with structure
-                text = _sanitize_pymupdf_html_fragment(page.get_text("html"))
+                # Extract text with structure. Images come from the displayed
+                # sequence below, so the fragment is asked for text only.
+                text = _sanitize_pymupdf_html_fragment(
+                    page.get_text(
+                        "html",
+                        flags=fitz.TEXT_PRESERVE_LIGATURES
+                        | fitz.TEXT_PRESERVE_WHITESPACE,
+                    )
+                )
 
                 # Clean and add to output
                 html_parts.append(f'<section aria-label="Page {page_num + 1}">')
                 html_parts.append(text)
 
-                # Add images with alt text
-                images = page.get_images()
-                for img_index, img in enumerate(images):
-                    alt = self._get_alt_text_for_image(page_num + 1, img_index)
-                    html_parts.append(
-                        f'<img alt="{_escape_html_interpolation(alt, quote=True)}">'
+                # Add images with alt text, one element per displayed draw in
+                # display order, looked up by that draw's own display index.
+                for occurrence in _displayed_image_occurrences(page, page_num + 1):
+                    alt = self._get_alt_text_for_image(
+                        occurrence["page_number"], occurrence["image_index"]
                     )
+                    escaped_alt = _escape_html_interpolation(alt, quote=True)
+                    src = _embedded_image_data_url(document, occurrence["image_xref"])
+                    if src:
+                        html_parts.append(f'<img src="{src}" alt="{escaped_alt}">')
+                    else:
+                        html_parts.append(f'<img alt="{escaped_alt}">')
 
                 html_parts.append("</section>")
 
@@ -5445,7 +5498,11 @@ class PdfRemediator(BaseRemediator):
         return Path(self.file_path).stem
 
     def _get_alt_text_for_image(self, page_num: int, image_index: int) -> str:
-        """Get stored alt text for an image, or generate placeholder."""
+        """Get stored alt text for a displayed image, or generate a placeholder.
+
+        ``image_index`` is the display-order index of the draw, the same
+        identity the image findings number by, not a resource enumeration.
+        """
         if hasattr(self, "_alt_texts"):
             key = (page_num, image_index)
             if key in self._alt_texts:
