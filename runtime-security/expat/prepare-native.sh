@@ -13,7 +13,35 @@ set -euo pipefail
 arch="$(dpkg --print-architecture)"
 test "${AELIRA_EXPAT_HOST_ARCH:-}" = "$arch"
 case "$(uname -m):$arch" in aarch64:arm64|x86_64:amd64) ;; *) exit 1 ;; esac
-sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+# Binary indexes keep the base image's full component set (quilt and
+# devscripts — both build inputs — ship in universe), but SOURCE indexes are
+# restricted to main: the only source packages these recipes resolve are
+# expat 2.7.4-1ubuntu0.2 (resolute-security and resolute-updates pockets)
+# and libxrender 1:0.9.12-1build1 (resolute/main), and a blanket deb-src
+# over every component made each update below carry the universe and
+# multiverse source indexes (~16 MB and ~2 MB compressed) that nothing here
+# reads — what pushed the pinned-snapshot update past its bound on slow
+# snapshot windows. Trim the stanzas to main, then re-add the remaining
+# components as binary-only stanzas. The guard matches the amd64/ubuntu.com
+# layout only, so the arm64 ports file (main+restricted, no universe) keeps
+# exactly today's behavior.
+sed -i -e 's/^Types: deb$/Types: deb deb-src/' -e 's/^Components: main universe restricted multiverse$/Components: main/' /etc/apt/sources.list.d/ubuntu.sources
+if grep -q '^URIs: http://archive.ubuntu.com/ubuntu/$' /etc/apt/sources.list.d/ubuntu.sources; then
+  cat >> /etc/apt/sources.list.d/ubuntu.sources <<'AELIRA-BINARY-REST'
+
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: resolute resolute-updates resolute-backports
+Components: restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: resolute-security
+Components: restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+AELIRA-BINARY-REST
+fi
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C
 
@@ -66,15 +94,15 @@ if [[ "$arch" = amd64 && -n "$snapshot_stamp" ]]; then
 fi
 
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/base-packages.tsv
-run_step 'apt-get update' 300 /provenance/apt-update.log \
+run_step 'apt-get update' 900 /provenance/apt-update.log \
   apt-get "${apt_opts[@]}" update
-run_step 'install build tooling and libexpat1' 480 /provenance/tool-install.log \
+run_step 'install build tooling and libexpat1' 900 /provenance/tool-install.log \
   apt-get "${apt_opts[@]}" install -y dpkg-dev quilt devscripts python3 binutils libexpat1=2.7.4-1ubuntu0.2
 cd /source-input
-run_step 'download expat 2.7.4-1ubuntu0.2 source' 300 /provenance/source-fetch.log \
+run_step 'download expat 2.7.4-1ubuntu0.2 source' 600 /provenance/source-fetch.log \
   apt-get "${apt_opts[@]}" source --download-only expat=2.7.4-1ubuntu0.2
 sha256sum -c /recipe/inputs.sha256 > /provenance/source-hashes.log
-run_step 'install build dependencies' 480 /provenance/build-dep.log \
+run_step 'install build dependencies' 900 /provenance/build-dep.log \
   apt-get "${apt_opts[@]}" build-dep -y ./expat_2.7.4-1ubuntu0.2.dsc
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/toolchain-packages.tsv
 # The base digest retains its original packages. Save every added/upgraded

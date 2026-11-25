@@ -14,7 +14,34 @@ case "$(uname -m):$arch" in aarch64:arm64|x86_64:amd64) ;; *) exit 1 ;; esac
 test "${AELIRA_XRENDER_HOST_ARCH:-}" = "$arch"
 export DEBIAN_FRONTEND=noninteractive LC_ALL=C TZ=UTC
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/base-packages.tsv
-sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+# Binary indexes keep the base image's full component set (the X11 build
+# dependencies and toolchain resolve across main and universe), but SOURCE
+# indexes are restricted to main: the only source package this recipe
+# resolves is libxrender 1:0.9.12-1build1 (resolute/main), and a blanket
+# deb-src over every component made each update below carry the universe
+# and multiverse source indexes (~16 MB and ~2 MB compressed) that nothing
+# here reads — what pushed the pinned-snapshot update past its bound on
+# slow snapshot windows. Trim the stanzas to main, then re-add the
+# remaining components as binary-only stanzas. The guard matches the
+# amd64/ubuntu.com layout only, so the arm64 ports file (main+restricted,
+# no universe) keeps exactly today's behavior.
+sed -i -e 's/^Types: deb$/Types: deb deb-src/' -e 's/^Components: main universe restricted multiverse$/Components: main/' /etc/apt/sources.list.d/ubuntu.sources
+if grep -q '^URIs: http://archive.ubuntu.com/ubuntu/$' /etc/apt/sources.list.d/ubuntu.sources; then
+  cat >> /etc/apt/sources.list.d/ubuntu.sources <<'AELIRA-BINARY-REST'
+
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: resolute resolute-updates resolute-backports
+Components: restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: resolute-security
+Components: restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+AELIRA-BINARY-REST
+fi
 
 # Turn a degraded mirror fetch into a bounded, retried failure: 20 seconds
 # per connection attempt, five attempts before apt gives the URI up.
@@ -64,18 +91,18 @@ if [[ "$arch" = amd64 && -n "$snapshot_stamp" ]]; then
   apt_opts+=(-o Acquire::https::CAInfo=/etc/ssl/certs/ca-certificates.crt)
 fi
 
-run_step 'apt-get update' 300 /provenance/apt-update.log \
+run_step 'apt-get update' 900 /provenance/apt-update.log \
   apt-get "${apt_opts[@]}" update -o APT::Update::Error-Mode=any
-run_step 'install build tooling and libxrender' 600 /provenance/tool-install.log \
+run_step 'install build tooling and libxrender' 900 /provenance/tool-install.log \
   apt-get "${apt_opts[@]}" install -y --no-install-recommends \
   build-essential debhelper dpkg-dev fakeroot quilt python3 binutils \
   libxrender1=1:0.9.12-1build1 libxrender-dev=1:0.9.12-1build1 libx11-dev libxext-dev \
   xvfb x11-utils
 cd /source-input
-run_step 'download libxrender 1:0.9.12-1build1 source' 300 /provenance/source-fetch.log \
+run_step 'download libxrender 1:0.9.12-1build1 source' 600 /provenance/source-fetch.log \
   apt-get "${apt_opts[@]}" source --download-only libxrender=1:0.9.12-1build1
 sha256sum -c /recipe/inputs.sha256 > /provenance/source-hashes.log
-run_step 'install build dependencies' 600 /provenance/build-dep.log \
+run_step 'install build dependencies' 900 /provenance/build-dep.log \
   apt-get "${apt_opts[@]}" build-dep -y ./libxrender_0.9.12-1build1.dsc
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /provenance/toolchain-packages.tsv
 awk -F '\t' 'NR == FNR {base[$1] = $2 FS $3; next} !($1 in base) || base[$1] != $2 FS $3' \
