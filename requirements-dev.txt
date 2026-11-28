@@ -2,7 +2,7 @@
 -r requirements.txt
 
 # Tests and coverage
-coverage==7.17.3
+coverage==7.17.5
 iniconfig==2.3.1
 pytest==9.2.0
 pytest-asyncio==1.5.0
@@ -13,12 +13,12 @@ black==26.10.1
 mypy_extensions==1.2.0
 pathspec==1.1.1
 pytokens==0.4.1
-ruff==0.17.5
+ruff==0.17.6
 
 # Load testing and its exclusive dependency closure
 bidict==0.24.1
 blinker==1.9.0
-ConfigArgParse==1.10.1
+ConfigArgParse==1.10.2
 Flask==3.1.3
 flask-cors==6.0.5
 Flask-Login==0.6.3
